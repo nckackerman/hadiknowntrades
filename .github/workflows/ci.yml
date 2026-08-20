@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: lint, typecheck, format, build, test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Read Node version from mise.toml
+        id: node-version
+        # actions/setup-node@v4 claims mise.toml support via
+        # node-version-file, but in practice it mis-parses the [tools]
+        # table header as the version string and fails. Extracting the
+        # version ourselves instead, so mise.toml stays the single
+        # source of truth and nothing needs to be kept in sync by hand.
+        run: |
+          version=$(grep '^node ' mise.toml | sed -E 's/node = "(.*)"/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.node-version.outputs.version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Each check step below runs independently (continue-on-error) so a
+      # single push surfaces every failure at once instead of stopping at
+      # the first one; "Check results" fails the job if any of them did.
+      - name: Lint
+        id: lint
+        continue-on-error: true
+        run: pnpm lint
+
+      - name: Typecheck
+        id: typecheck
+        continue-on-error: true
+        run: pnpm typecheck
+
+      - name: Format check
+        id: format-check
+        continue-on-error: true
+        run: pnpm format:check
+
+      - name: Build
+        id: build
+        continue-on-error: true
+        run: pnpm build
+
+      # No package defines a "test" script yet (issue #4 adds the first
+      # ones, for the optimizer) — pnpm's --if-present makes this a no-op
+      # that passes rather than a failure, by design, until then.
+      - name: Test
+        id: test
+        continue-on-error: true
+        run: pnpm test
+
+      - name: Check results
+        if: always()
+        run: |
+          if [ "${{ steps.lint.outcome }}" != "success" ] || \
+             [ "${{ steps.typecheck.outcome }}" != "success" ] || \
+             [ "${{ steps.format-check.outcome }}" != "success" ] || \
+             [ "${{ steps.build.outcome }}" != "success" ] || \
+             [ "${{ steps.test.outcome }}" != "success" ]; then
+            echo "One or more checks failed:"
+            echo "  lint:         ${{ steps.lint.outcome }}"
+            echo "  typecheck:    ${{ steps.typecheck.outcome }}"
+            echo "  format-check: ${{ steps.format-check.outcome }}"
+            echo "  build:        ${{ steps.build.outcome }}"
+            echo "  test:         ${{ steps.test.outcome }}"
+            exit 1
+          fi
