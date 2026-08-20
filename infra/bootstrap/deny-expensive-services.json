@@ -1,0 +1,45 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyExpensiveAlwaysOnServices",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:RunInstances",
+        "ec2:CreateNatGateway",
+        "ec2:AllocateAddress",
+        "ec2:CreateVpnGateway",
+        "ec2:CreateVpnConnection",
+        "rds:CreateDBInstance",
+        "rds:CreateDBCluster",
+        "redshift:CreateCluster",
+        "redshift-serverless:CreateWorkgroup",
+        "eks:CreateCluster",
+        "ecs:CreateCluster",
+        "elasticache:CreateCacheCluster",
+        "elasticache:CreateReplicationGroup",
+        "es:CreateElasticsearchDomain",
+        "opensearch:CreateDomain",
+        "sagemaker:CreateNotebookInstance",
+        "sagemaker:CreateTrainingJob",
+        "sagemaker:CreateEndpoint",
+        "sagemaker:CreateEndpointConfig",
+        "workspaces:CreateWorkspaces",
+        "globalaccelerator:Create*",
+        "directconnect:Create*",
+        "kafka:CreateCluster",
+        "kafka:CreateClusterV2",
+        "kinesisanalytics:CreateApplication",
+        "kinesisanalyticsv2:CreateApplication",
+        "neptune:CreateDBInstance",
+        "neptune:CreateDBCluster",
+        "docdb:CreateDBInstance",
+        "docdb:CreateDBCluster",
+        "mq:CreateBroker",
+        "fsx:CreateFileSystem",
+        "outposts:CreateOutpost"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
