@@ -10,11 +10,11 @@ into a chat with Claude (including via the `!` shell-passthrough prefix).
 In **IAM → Policies → Create policy → JSON**, paste each file below and save
 with the given name.
 
-| File | Policy name | Purpose |
-|---|---|---|
-| `deny-expensive-services.json` | `hadiknowntrades-deny-expensive` | Explicit `Deny` on always-on/hourly-billed resource types (EC2 instances, RDS, NAT gateways, EKS/ECS clusters, SageMaker, etc). An explicit `Deny` always wins over any `Allow`, so this makes the expensive stuff structurally impossible regardless of what else is granted. |
-| `scoped-iam-for-cdk.json` | `hadiknowntrades-scoped-iam` | Narrow IAM permissions, only for role/policy/OIDC-provider resources named `hadiknowntrades-*` or `cdk-*`. `PowerUserAccess` deliberately excludes IAM management, and CDK needs to create Lambda execution roles — this adds that back without granting IAM access to anything else in the account. |
-| `lockdown-policy.json` | `hadiknowntrades-lockdown` | **Not attached to the user directly.** This is the "kill switch" policy a Budget Action attaches automatically if spend crosses the threshold (step 3). A blanket `Deny *` on that one user, nothing else in the account is affected. |
+| File                           | Policy name                      | Purpose                                                                                                                                                                                                                                                                                              |
+| ------------------------------ | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deny-expensive-services.json` | `hadiknowntrades-deny-expensive` | Explicit `Deny` on always-on/hourly-billed resource types (EC2 instances, RDS, NAT gateways, EKS/ECS clusters, SageMaker, etc). An explicit `Deny` always wins over any `Allow`, so this makes the expensive stuff structurally impossible regardless of what else is granted.                       |
+| `scoped-iam-for-cdk.json`      | `hadiknowntrades-scoped-iam`     | Narrow IAM permissions, only for role/policy/OIDC-provider resources named `hadiknowntrades-*` or `cdk-*`. `PowerUserAccess` deliberately excludes IAM management, and CDK needs to create Lambda execution roles — this adds that back without granting IAM access to anything else in the account. |
+| `lockdown-policy.json`         | `hadiknowntrades-lockdown`       | **Not attached to the user directly.** This is the "kill switch" policy a Budget Action attaches automatically if spend crosses the threshold (step 3). A blanket `Deny *` on that one user, nothing else in the account is affected.                                                                |
 
 ## 2. Create the IAM user
 
@@ -28,7 +28,7 @@ with the given name.
   - Customer managed: `hadiknowntrades-scoped-iam`
 - Do **not** attach `hadiknowntrades-lockdown` here — that one only gets attached automatically by the Budget Action.
 
-Then **user → Security credentials → Create access key** → choose *Command Line Interface (CLI)* → download the CSV. Don't paste these values into the chat with Claude.
+Then **user → Security credentials → Create access key** → choose _Command Line Interface (CLI)_ → download the CSV. Don't paste these values into the chat with Claude.
 
 ## 3. Set up the budget + automatic circuit breaker
 
@@ -38,7 +38,7 @@ Then **user → Security credentials → Create access key** → choose *Command
 - Amount: e.g. $15/month (adjust to taste)
 - Alert: email you at 80% (belt-and-suspenders, in addition to the action below)
 - **Add an action:**
-  - Action type: *Apply an IAM policy*
+  - Action type: _Apply an IAM policy_
   - Target: the `hadiknowntrades-agent` user
   - IAM policy: `hadiknowntrades-lockdown`
   - Threshold: e.g. 100% of budget (or lower if you want it to trip earlier)
