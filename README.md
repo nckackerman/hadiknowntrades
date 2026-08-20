@@ -54,9 +54,11 @@ infra/
 
 ## Getting started
 
-Requires Node 22+ and pnpm (this repo pins `pnpm@11.22.0` via
-`packageManager`; if you use [mise](https://mise.jdx.dev), `node` and `pnpm`
-are picked up automatically).
+Requires Node 22+ and pnpm. Versions are pinned in `mise.toml` and in
+`package.json`'s `packageManager` field; if you use
+[mise](https://mise.jdx.dev), run `mise trust && mise install` in the repo
+root once and it'll install and use the exact pinned versions automatically
+from then on.
 
 ```bash
 pnpm install
