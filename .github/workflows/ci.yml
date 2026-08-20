@@ -24,7 +24,11 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version-file: mise.toml
+          # actions/setup-node@v4 claims mise.toml support via
+          # node-version-file, but in practice it mis-parses the [tools]
+          # table header as the version string and fails. Pinning
+          # explicitly here instead — keep in sync with mise.toml.
+          node-version: "24.19.0"
           cache: pnpm
 
       - name: Install dependencies
