@@ -3,6 +3,3 @@
 // Populated starting with issue #2 (S&P 500 ticker universe).
 
 export const CORE_PACKAGE_NAME = "@hadiknowntrades/core";
-
-const unusedTestVar = 123;
-export const typeCheckTestBreak: string = 42;
