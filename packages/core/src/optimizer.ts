@@ -1,0 +1,252 @@
+// The core "had I known" optimizer: given daily closing prices for many
+// tickers over a date range, finds the sequence of up to N sequential,
+// all-in, long-only round-trip trades (buy on a close, sell on a later
+// close, full balance reinvested each time, can switch tickers between
+// trades) that maximizes the ending balance.
+//
+// Algorithm: a backward DP generalizing the classic "best time to buy and
+// sell stock IV" problem across many tickers instead of one.
+//
+// Let bestValue[k][d] = the best achievable growth multiplier using at
+// most k trades, where any trade's buy day must be on or after day d.
+// bestValue[0][d] = 1 for all d (no trades left).
+//
+// bestValue[k][d] = max(
+//   bestValue[k-1][d],                          // don't use this trade slot
+//   max over ticker t, buyIdx >= d, sellIdx > buyIdx (both with a known
+//     price for t) of (price_t[sellIdx] / price_t[buyIdx]) * bestValue[k-1][sellIdx+1]
+// )
+//
+// Computed efficiently per level via a suffix-max pass per ticker (see
+// computeLevel below), giving O(days * tickers * maxTrades) total time —
+// no brute force needed even across the full S&P 500 and decades of data.
+//
+// The DP tracks which branch won at each (k, d) so the actual trade
+// sequence can be reconstructed afterward, not just the final value.
+
+import type { DailyClose } from "./yahoo-client.js";
+
+export interface Trade {
+  ticker: string;
+  buyDate: string;
+  buyPrice: number;
+  sellDate: string;
+  sellPrice: number;
+}
+
+export interface OptimizationResult {
+  startingCapital: number;
+  endingBalance: number;
+  trades: Trade[];
+}
+
+export interface OptimizeOptions {
+  startingCapital: number;
+  /** Maximum number of trades allowed (the optimizer may use fewer if that's better, though with real price data across many tickers it essentially always uses the full budget). */
+  maxTrades: number;
+}
+
+/** A trading-day calendar (the union of every date present across all tickers, sorted) with each ticker's price reindexed onto it — null where that ticker has no price for that day. */
+export interface Calendar {
+  dates: string[];
+  pricesByTicker: Map<string, (number | null)[]>;
+}
+
+/**
+ * Builds the unified trading calendar the DP operates over: the sorted
+ * union of every date present in any ticker's series, with each ticker's
+ * prices reindexed onto that shared axis (null on days that ticker has
+ * no data for — before its IPO, after delisting, a data gap, etc).
+ */
+export function buildCalendar(priceSeriesByTicker: Map<string, DailyClose[]>): Calendar {
+  const dateSet = new Set<string>();
+  for (const series of priceSeriesByTicker.values()) {
+    for (const point of series) dateSet.add(point.date);
+  }
+  const dates = [...dateSet].sort();
+  const dateIndex = new Map(dates.map((date, i) => [date, i]));
+
+  const pricesByTicker = new Map<string, (number | null)[]>();
+  for (const [ticker, series] of priceSeriesByTicker) {
+    const prices = new Array<number | null>(dates.length).fill(null);
+    for (const point of series) {
+      const i = dateIndex.get(point.date);
+      if (i !== undefined) prices[i] = point.close;
+    }
+    pricesByTicker.set(ticker, prices);
+  }
+
+  return { dates, pricesByTicker };
+}
+
+interface TradeChoice {
+  ticker: string;
+  buyIdx: number;
+  sellIdx: number;
+}
+
+interface Level {
+  /** bestValue[d] for this k, length T+1 (index T = "no days left"). */
+  value: number[];
+  /** The trade taken at bestValue[d] if the "take a trade" branch won; null if the "carry forward k-1" branch won (or won the tie). Length T+1. */
+  choice: (TradeChoice | null)[];
+}
+
+const NEG_INFINITY = Number.NEGATIVE_INFINITY;
+
+/**
+ * Computes one level of the DP (bestValue[k] from bestValue[k-1]) via a
+ * suffix-max pass per ticker, merged incrementally across tickers so
+ * peak extra memory is O(days) rather than O(days * tickers).
+ */
+function computeLevel(calendar: Calendar, prevValue: number[]): Level {
+  const T = calendar.dates.length;
+
+  // Best (value, choice) from taking a trade, accumulated across tickers.
+  const bestTradeValue = new Array<number>(T).fill(NEG_INFINITY);
+  const bestTradeChoice = new Array<TradeChoice | null>(T).fill(null);
+
+  for (const [ticker, prices] of calendar.pricesByTicker) {
+    // g[sellIdx] = value of selling this ticker on sellIdx, given the
+    // best remaining path (k-1 trades) starting the day after.
+    // All array accesses below are within statically-known loop bounds
+    // against arrays pre-sized to exactly T (or T+1) elements — genuinely
+    // safe, just not provable to noUncheckedIndexedAccess, hence the `!`.
+    const g = new Array<number>(T);
+    for (let i = 0; i < T; i++) {
+      const p = prices[i]!;
+      g[i] = p === null ? NEG_INFINITY : p * prevValue[i + 1]!;
+    }
+
+    // suffixMaxG[i] = max(g[i..T-1]), with the sellIdx that achieves it.
+    const suffixMaxG = new Array<number>(T + 1).fill(NEG_INFINITY);
+    const suffixMaxSellIdx = new Array<number>(T + 1).fill(-1);
+    for (let i = T - 1; i >= 0; i--) {
+      if (g[i]! >= suffixMaxG[i + 1]!) {
+        suffixMaxG[i] = g[i]!;
+        suffixMaxSellIdx[i] = i;
+      } else {
+        suffixMaxG[i] = suffixMaxG[i + 1]!;
+        suffixMaxSellIdx[i] = suffixMaxSellIdx[i + 1]!;
+      }
+    }
+
+    // candidateRatio[buyIdx] = best achievable ratio*continuation buying
+    // this ticker on buyIdx and selling on the best later day.
+    const candidateRatio = new Array<number>(T).fill(NEG_INFINITY);
+    const candidateSellIdx = new Array<number>(T).fill(-1);
+    for (let buyIdx = 0; buyIdx < T; buyIdx++) {
+      const p = prices[buyIdx]!;
+      if (p === null) continue;
+      const bestSellValue = suffixMaxG[buyIdx + 1]!;
+      if (bestSellValue === NEG_INFINITY) continue;
+      candidateRatio[buyIdx] = bestSellValue / p;
+      candidateSellIdx[buyIdx] = suffixMaxSellIdx[buyIdx + 1]!;
+    }
+
+    // runningBest[d] = max over buyIdx >= d of candidateRatio[buyIdx].
+    let runningBestValue = NEG_INFINITY;
+    let runningBestBuyIdx = -1;
+    let runningBestSellIdx = -1;
+    for (let d = T - 1; d >= 0; d--) {
+      if (candidateRatio[d]! >= runningBestValue) {
+        runningBestValue = candidateRatio[d]!;
+        runningBestBuyIdx = d;
+        runningBestSellIdx = candidateSellIdx[d]!;
+      }
+      if (runningBestValue > bestTradeValue[d]!) {
+        bestTradeValue[d] = runningBestValue;
+        bestTradeChoice[d] =
+          runningBestBuyIdx === -1
+            ? null
+            : { ticker, buyIdx: runningBestBuyIdx, sellIdx: runningBestSellIdx };
+      }
+    }
+  }
+
+  const value = new Array<number>(T + 1);
+  const choice = new Array<TradeChoice | null>(T + 1);
+  value[T] = prevValue[T]!;
+  choice[T] = null;
+  for (let d = 0; d < T; d++) {
+    if (bestTradeValue[d]! > prevValue[d]!) {
+      value[d] = bestTradeValue[d]!;
+      choice[d] = bestTradeChoice[d]!;
+    } else {
+      value[d] = prevValue[d]!;
+      choice[d] = null; // carry forward: recurse into k-1 at the same day
+    }
+  }
+
+  return { value, choice };
+}
+
+function reconstructTrades(levels: Level[], maxTrades: number): TradeChoice[] {
+  const trades: TradeChoice[] = [];
+  let k = maxTrades;
+  let d = 0;
+  while (k > 0) {
+    const level = levels[k]!;
+    const c = level.choice[d];
+    if (!c) {
+      k -= 1;
+    } else {
+      trades.push(c);
+      d = c.sellIdx + 1;
+      k -= 1;
+    }
+  }
+  return trades;
+}
+
+/**
+ * Finds the sequence of up to `maxTrades` sequential, all-in, long-only
+ * round-trip trades across all provided tickers that maximizes the
+ * ending balance starting from `startingCapital`.
+ */
+export function optimizeTrades(
+  priceSeriesByTicker: Map<string, DailyClose[]>,
+  options: OptimizeOptions,
+): OptimizationResult {
+  const { startingCapital, maxTrades } = options;
+  const calendar = buildCalendar(priceSeriesByTicker);
+  const T = calendar.dates.length;
+
+  const level0: Level = {
+    value: new Array(T + 1).fill(1),
+    choice: new Array(T + 1).fill(null),
+  };
+  const levels: Level[] = [level0];
+  for (let k = 1; k <= maxTrades; k++) {
+    levels.push(computeLevel(calendar, levels[k - 1]!.value));
+  }
+
+  const finalMultiplier = T === 0 ? 1 : levels[maxTrades]!.value[0]!;
+  const tradeChoices = T === 0 ? [] : reconstructTrades(levels, maxTrades);
+
+  const trades: Trade[] = tradeChoices.map((c) => {
+    const prices = calendar.pricesByTicker.get(c.ticker);
+    const buyPrice = prices?.[c.buyIdx];
+    const sellPrice = prices?.[c.sellIdx];
+    if (buyPrice == null || sellPrice == null) {
+      // Should be unreachable: computeLevel only ever selects indices
+      // where this ticker has a known price.
+      throw new Error(
+        `internal error: reconstructed trade for ${c.ticker} references a day with no price`,
+      );
+    }
+    return {
+      ticker: c.ticker,
+      buyDate: calendar.dates[c.buyIdx] as string,
+      buyPrice,
+      sellDate: calendar.dates[c.sellIdx] as string,
+      sellPrice,
+    };
+  });
+
+  return {
+    startingCapital,
+    endingBalance: startingCapital * finalMultiplier,
+    trades,
+  };
+}

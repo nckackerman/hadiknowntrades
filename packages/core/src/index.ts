@@ -1,6 +1,9 @@
 // Shared domain logic for Had I Known Trades: ticker universe, the Yahoo
 // Finance data client, and the multi-ticker trade optimizer live here.
 
+export { buildCalendar, optimizeTrades } from "./optimizer.js";
+export type { Calendar, OptimizationResult, OptimizeOptions, Trade } from "./optimizer.js";
+
 export { SP500_CONSTITUENTS } from "./sp500-constituents.js";
 export type { SP500Constituent } from "./sp500-constituents.js";
 
