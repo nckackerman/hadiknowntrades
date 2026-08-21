@@ -70,8 +70,25 @@ export function buildCalendar(priceSeriesByTicker: Map<string, DailyClose[]>): C
   for (const [ticker, series] of priceSeriesByTicker) {
     const prices = new Array<number | null>(dates.length).fill(null);
     for (const point of series) {
+      // A non-positive or non-finite close is never legitimate data (a
+      // stock price can't be <= 0) -- treat it as missing rather than
+      // letting it divide-by-zero or propagate Infinity/NaN through the
+      // whole DP. Defense in depth: the Yahoo client filters these too,
+      // but buildCalendar accepts data from any caller.
+      if (!Number.isFinite(point.close) || point.close <= 0) {
+        console.warn(
+          `[optimizer] ignoring invalid close for ${ticker} on ${point.date}: ${point.close}`,
+        );
+        continue;
+      }
       const i = dateIndex.get(point.date);
-      if (i !== undefined) prices[i] = point.close;
+      if (i === undefined) continue;
+      if (prices[i] !== null) {
+        console.warn(
+          `[optimizer] duplicate price for ${ticker} on ${point.date} -- keeping the last value seen (${point.close}, discarding ${prices[i]})`,
+        );
+      }
+      prices[i] = point.close;
     }
     pricesByTicker.set(ticker, prices);
   }
@@ -93,6 +110,11 @@ interface Level {
 }
 
 const NEG_INFINITY = Number.NEGATIVE_INFINITY;
+// Well beyond any realistic product use (the app always requests 3) --
+// exists to reject an obviously-wrong caller value (e.g. a bug passing a
+// day count instead of a trade count) before it runs an unbounded number
+// of O(days * tickers) DP levels.
+const MAX_REASONABLE_TRADES = 50;
 
 /**
  * Computes one level of the DP (bestValue[k] from bestValue[k-1]) via a
@@ -106,7 +128,13 @@ function computeLevel(calendar: Calendar, prevValue: number[]): Level {
   const bestTradeValue = new Array<number>(T).fill(NEG_INFINITY);
   const bestTradeChoice = new Array<TradeChoice | null>(T).fill(null);
 
-  for (const [ticker, prices] of calendar.pricesByTicker) {
+  // Sorted alphabetically so the cross-ticker merge below has a
+  // deterministic, documented tie-break (the alphabetically-first ticker
+  // wins an exact tie) instead of depending on Map insertion order, which
+  // a caller building the input map differently could otherwise change.
+  const tickers = [...calendar.pricesByTicker.entries()].sort(([a], [b]) => a.localeCompare(b));
+
+  for (const [ticker, prices] of tickers) {
     // g[sellIdx] = value of selling this ticker on sellIdx, given the
     // best remaining path (k-1 trades) starting the day after.
     // All array accesses below are within statically-known loop bounds
@@ -131,28 +159,23 @@ function computeLevel(calendar: Calendar, prevValue: number[]): Level {
       }
     }
 
-    // candidateRatio[buyIdx] = best achievable ratio*continuation buying
-    // this ticker on buyIdx and selling on the best later day.
-    const candidateRatio = new Array<number>(T).fill(NEG_INFINITY);
-    const candidateSellIdx = new Array<number>(T).fill(-1);
-    for (let buyIdx = 0; buyIdx < T; buyIdx++) {
-      const p = prices[buyIdx]!;
-      if (p === null) continue;
-      const bestSellValue = suffixMaxG[buyIdx + 1]!;
-      if (bestSellValue === NEG_INFINITY) continue;
-      candidateRatio[buyIdx] = bestSellValue / p;
-      candidateSellIdx[buyIdx] = suffixMaxSellIdx[buyIdx + 1]!;
-    }
-
-    // runningBest[d] = max over buyIdx >= d of candidateRatio[buyIdx].
+    // runningBest[d] = max over buyIdx >= d of (candidate ratio buying on
+    // buyIdx). candidateRatio for a given buyIdx is only ever needed once,
+    // right here, so it's computed inline rather than staged into its own
+    // array first.
     let runningBestValue = NEG_INFINITY;
     let runningBestBuyIdx = -1;
     let runningBestSellIdx = -1;
     for (let d = T - 1; d >= 0; d--) {
-      if (candidateRatio[d]! >= runningBestValue) {
-        runningBestValue = candidateRatio[d]!;
-        runningBestBuyIdx = d;
-        runningBestSellIdx = candidateSellIdx[d]!;
+      const p = prices[d]!;
+      const bestSellValue = suffixMaxG[d + 1]!;
+      if (p !== null && bestSellValue !== NEG_INFINITY) {
+        const candidateRatio = bestSellValue / p;
+        if (candidateRatio >= runningBestValue) {
+          runningBestValue = candidateRatio;
+          runningBestBuyIdx = d;
+          runningBestSellIdx = suffixMaxSellIdx[d + 1]!;
+        }
       }
       if (runningBestValue > bestTradeValue[d]!) {
         bestTradeValue[d] = runningBestValue;
@@ -209,6 +232,16 @@ export function optimizeTrades(
   options: OptimizeOptions,
 ): OptimizationResult {
   const { startingCapital, maxTrades } = options;
+
+  if (!Number.isInteger(maxTrades) || maxTrades < 0 || maxTrades > MAX_REASONABLE_TRADES) {
+    throw new Error(
+      `maxTrades must be a non-negative integer no greater than ${MAX_REASONABLE_TRADES}, got ${maxTrades}`,
+    );
+  }
+  if (!Number.isFinite(startingCapital)) {
+    throw new Error(`startingCapital must be a finite number, got ${startingCapital}`);
+  }
+
   const calendar = buildCalendar(priceSeriesByTicker);
   const T = calendar.dates.length;
 
@@ -221,8 +254,8 @@ export function optimizeTrades(
     levels.push(computeLevel(calendar, levels[k - 1]!.value));
   }
 
-  const finalMultiplier = T === 0 ? 1 : levels[maxTrades]!.value[0]!;
-  const tradeChoices = T === 0 ? [] : reconstructTrades(levels, maxTrades);
+  const finalMultiplier = levels[maxTrades]!.value[0]!;
+  const tradeChoices = reconstructTrades(levels, maxTrades);
 
   const trades: Trade[] = tradeChoices.map((c) => {
     const prices = calendar.pricesByTicker.get(c.ticker);

@@ -276,7 +276,20 @@ function parseChartResult(result: YahooChartResult): DailyClose[] {
   for (let i = 0; i < timestamp.length; i++) {
     const ts = timestamp[i];
     const close = closes[i];
-    if (ts === undefined || close === null || close === undefined) continue;
+    // A non-positive or non-finite close is never legitimate — a stock
+    // price can't be <= 0 — so treat a glitched bar from the upstream
+    // feed as missing data for that day rather than passing it through
+    // to downstream consumers (e.g. the optimizer, which would otherwise
+    // divide by it).
+    if (
+      ts === undefined ||
+      close === null ||
+      close === undefined ||
+      !Number.isFinite(close) ||
+      close <= 0
+    ) {
+      continue;
+    }
     out.push({
       date: unixToLocalDateString(ts, meta.gmtoffset),
       close,

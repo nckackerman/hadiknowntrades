@@ -1,9 +1,6 @@
 // Shared domain logic for Had I Known Trades: ticker universe, the Yahoo
 // Finance data client, and the multi-ticker trade optimizer live here.
 
-export { buildCalendar, optimizeTrades } from "./optimizer.js";
-export type { Calendar, OptimizationResult, OptimizeOptions, Trade } from "./optimizer.js";
-
 export { SP500_CONSTITUENTS } from "./sp500-constituents.js";
 export type { SP500Constituent } from "./sp500-constituents.js";
 
@@ -25,3 +22,6 @@ export type { DailyClose } from "./yahoo-client.js";
 // whatever runs the pipeline once issue #5 lands), but NOT from a bare
 // `node script.mjs` — there's no compiled .js output and no tsx/ts-node
 // in this repo (yet) to make that work outside a TS-aware runtime.
+
+export { buildCalendar, optimizeTrades } from "./optimizer.js";
+export type { Calendar, OptimizationResult, OptimizeOptions, Trade } from "./optimizer.js";
