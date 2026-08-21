@@ -43,6 +43,12 @@ function toSuperscript(exponent: number): string {
     .join("");
 }
 
+function formatScientific(sign: string, abs: number): string {
+  const exponential = abs.toExponential(2); // e.g. "1.23e+16"
+  const [mantissa, exponent] = exponential.split("e");
+  return `${sign}$${mantissa}×10${toSuperscript(Number(exponent))}`;
+}
+
 const plainCurrencyWithCents = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -84,23 +90,36 @@ function formatCurrency(value: number, { cents }: { cents: boolean }): string {
   }
 
   if (abs >= SCIENTIFIC_THRESHOLD) {
-    const exponential = abs.toExponential(2); // e.g. "1.23e+16"
-    const [mantissa, exponent] = exponential.split("e");
-    return `${sign}$${mantissa}×10${toSuperscript(Number(exponent))}`;
+    return formatScientific(sign, abs);
   }
 
-  const unit = COMPACT_UNITS.find((u) => abs >= u.threshold);
-  if (!unit) {
-    // Shouldn't happen (abs >= 1000 above), but fall back to plain
-    // formatting rather than throwing on a display path.
-    return sign + (cents ? plainCurrencyWithCents : plainCurrencyWhole).format(abs);
-  }
-
-  const scaled = abs / unit.threshold;
+  // COMPACT_UNITS' smallest threshold is 1e3 and abs >= 1000 is already
+  // guaranteed above, so this always finds a unit -- non-null assertion
+  // documents that instead of an unreachable fallback branch.
+  const unitIndex = COMPACT_UNITS.findIndex((u) => abs >= u.threshold);
+  let unit = COMPACT_UNITS[unitIndex]!;
+  let scaled = abs / unit.threshold;
   // One decimal place, but don't show a trailing ".0" (e.g. "$20K" not
   // "$20.0K") -- matches the stat-tile convention from the dataviz skill
   // (auto-compact: 1,284 / 12.9K / $4.2M).
-  const digits = scaled >= 100 ? 0 : 1;
+  let digits = scaled >= 100 ? 0 : 1;
+
+  // toFixed rounds, and rounding can push a value right up to the next
+  // unit's boundary (e.g. 999,600 -> "1000" at the K unit) -- step up to
+  // the next larger unit instead of ever displaying an out-of-range
+  // "$1000K".
+  if (Number(scaled.toFixed(digits)) >= 1000) {
+    if (unitIndex === 0) {
+      // Already at the largest compact unit (T): rounding pushed it
+      // past 999T, which is effectively the scientific-notation
+      // boundary this function already draws at 1e15.
+      return formatScientific(sign, abs);
+    }
+    unit = COMPACT_UNITS[unitIndex - 1]!;
+    scaled = abs / unit.threshold;
+    digits = scaled >= 100 ? 0 : 1;
+  }
+
   const formatted = scaled.toFixed(digits).replace(/\.0$/, "");
   return `${sign}$${formatted}${unit.suffix}`;
 }

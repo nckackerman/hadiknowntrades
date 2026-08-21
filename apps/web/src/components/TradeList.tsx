@@ -1,34 +1,15 @@
 import type { Trade } from "@hadiknowntrades/core";
 
+import { formatDate } from "@/lib/format-date";
 import { formatHeroCurrency, formatPercent } from "@/lib/format-currency";
 
 interface TradeListProps {
+  /** Non-empty -- the caller (ResultsPanel) owns the empty ("no trade beat cash") state, since it has the range context needed for good copy there; this component only renders an actual trade sequence. */
   trades: readonly Trade[];
-}
-
-function formatDate(isoDate: string): string {
-  // Parsed as UTC (not the browser's local zone) since these are plain
-  // calendar dates from the pipeline, not timestamps -- parsing
-  // "2025-08-21" as local time can roll it back a day in zones west of
-  // UTC.
-  return new Date(`${isoDate}T00:00:00Z`).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    timeZone: "UTC",
-  });
 }
 
 /** "Buy TICKER on DATE at $price -> Sell on DATE at $price (+X%)" for each trade in the sequence. */
 export function TradeList({ trades }: TradeListProps) {
-  if (trades.length === 0) {
-    return (
-      <p className="text-sm text-[var(--text-secondary)]">
-        No profitable trade was found in this window -- the best outcome was to hold cash.
-      </p>
-    );
-  }
-
   return (
     <ol className="flex flex-col gap-3">
       {trades.map((trade, index) => {

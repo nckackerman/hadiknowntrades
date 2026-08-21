@@ -14,9 +14,10 @@
 // ~$716M+ demo run), and a linear axis would render the entire early
 // history as indistinguishable from zero.
 
-import { useId, useMemo, useState } from "react";
+import { memo, useId, useMemo, useState } from "react";
 
 import { formatAxisCurrency, formatHeroCurrency } from "@/lib/format-currency";
+import { formatDate } from "@/lib/format-date";
 import { buildLogScale, buildTimeScale, niceLogTicks } from "@/lib/chart-scales";
 import type { PortfolioPoint } from "@/lib/portfolio-series";
 
@@ -32,15 +33,6 @@ const PLOT_HEIGHT = HEIGHT - MARGIN.top - MARGIN.bottom;
 
 function toTimestamp(isoDate: string): number {
   return new Date(`${isoDate}T00:00:00Z`).getTime();
-}
-
-function formatDate(isoDate: string): string {
-  return new Date(`${isoDate}T00:00:00Z`).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    timeZone: "UTC",
-  });
 }
 
 /** Anchors a label so it never runs past the plot's left/right edge. */
@@ -293,7 +285,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
             <span className="font-semibold text-[var(--text-primary)]">
               {formatDate(hovered.date)}
             </span>
-            {" — "}
+            {" - "}
             <span className="font-semibold text-[var(--text-primary)]">
               {formatHeroCurrency(hovered.value)}
             </span>
@@ -310,35 +302,52 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
         )}
       </div>
 
-      <details className="text-sm">
-        <summary className="cursor-pointer text-[var(--text-secondary)]">
-          View chart data as a table
-        </summary>
-        <div className="mt-2 overflow-x-auto">
-          <table className="w-full min-w-[24rem] border-collapse text-left text-sm">
-            <thead>
-              <tr className="border-b border-[var(--gridline)] text-[var(--text-muted)]">
-                <th className="py-1 pr-4 font-medium">Date</th>
-                <th className="py-1 pr-4 font-medium">Value</th>
-                <th className="py-1 font-medium">Event</th>
-              </tr>
-            </thead>
-            <tbody>
-              {points.map((p, i) => (
-                <tr key={i} className="border-b border-[var(--gridline)] last:border-0">
-                  <td className="py-1 pr-4">{formatDate(p.date)}</td>
-                  <td className="py-1 pr-4 tabular-nums">{formatHeroCurrency(p.value)}</td>
-                  <td className="py-1">
-                    {p.event
-                      ? `${p.event.type === "buy" ? "Buy" : "Sell"} ${p.event.ticker} @ ${formatHeroCurrency(p.event.price)}`
-                      : ""}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </details>
+      <ChartDataTable points={points} />
     </div>
   );
 }
+
+/**
+ * The accessible data-table fallback, split out and memoized on `points`
+ * alone -- PortfolioChart itself re-renders on every hover/focus move
+ * (hoverIndex is component-local state), and this table's content is
+ * invariant under hovering, so without this split every mouse move would
+ * re-map and re-format every row for no visible change.
+ */
+const ChartDataTable = memo(function ChartDataTable({
+  points,
+}: {
+  points: readonly PortfolioPoint[];
+}) {
+  return (
+    <details className="text-sm">
+      <summary className="cursor-pointer text-[var(--text-secondary)]">
+        View chart data as a table
+      </summary>
+      <div className="mt-2 overflow-x-auto">
+        <table className="w-full min-w-[24rem] border-collapse text-left text-sm">
+          <thead>
+            <tr className="border-b border-[var(--gridline)] text-[var(--text-muted)]">
+              <th className="py-1 pr-4 font-medium">Date</th>
+              <th className="py-1 pr-4 font-medium">Value</th>
+              <th className="py-1 font-medium">Event</th>
+            </tr>
+          </thead>
+          <tbody>
+            {points.map((p, i) => (
+              <tr key={i} className="border-b border-[var(--gridline)] last:border-0">
+                <td className="py-1 pr-4">{formatDate(p.date)}</td>
+                <td className="py-1 pr-4 tabular-nums">{formatHeroCurrency(p.value)}</td>
+                <td className="py-1">
+                  {p.event
+                    ? `${p.event.type === "buy" ? "Buy" : "Sell"} ${p.event.ticker} @ ${formatHeroCurrency(p.event.price)}`
+                    : ""}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+});

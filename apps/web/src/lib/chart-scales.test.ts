@@ -33,8 +33,8 @@ describe("buildLogScale", () => {
 });
 
 describe("niceLogTicks", () => {
-  it("returns every power of ten when the domain is small", () => {
-    expect(niceLogTicks(20, 6876.86)).toEqual([10, 100, 1000, 10000]);
+  it("returns every in-domain power of ten when the domain is small", () => {
+    expect(niceLogTicks(20, 6876.86)).toEqual([100, 1000]);
   });
 
   it("thins ticks when the domain spans many orders of magnitude", () => {
@@ -50,5 +50,32 @@ describe("niceLogTicks", () => {
     expect(niceLogTicks(0, 100)).toEqual([]);
     expect(niceLogTicks(-5, 100)).toEqual([]);
     expect(niceLogTicks(100, 20)).toEqual([]);
+  });
+
+  it("every returned tick falls within [min, max], never off the visible axis", () => {
+    // A domain narrower than one decade -- e.g. a flat/modest-gain
+    // result padded by PortfolioChart's own 1.15x factor -- has no
+    // whole power of ten inside it at all, which is exactly the case
+    // that used to render every gridline/label off-canvas.
+    const cases: Array<[number, number]> = [
+      [17.4, 25.3],
+      [20, 20.001],
+      [1, 9],
+      [999, 1001],
+    ];
+    for (const [min, max] of cases) {
+      const ticks = niceLogTicks(min, max);
+      expect(ticks.length).toBeGreaterThan(0);
+      for (const tick of ticks) {
+        expect(tick).toBeGreaterThanOrEqual(min);
+        expect(tick).toBeLessThanOrEqual(max);
+      }
+    }
+  });
+
+  it("falls back to evenly log-spaced ticks when no power of ten lands in a sub-decade domain", () => {
+    const ticks = niceLogTicks(17.4, 25.3);
+    expect(ticks[0]).toBeCloseTo(17.4, 5);
+    expect(ticks[ticks.length - 1]).toBeCloseTo(25.3, 5);
   });
 });

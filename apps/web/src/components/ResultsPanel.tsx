@@ -1,6 +1,8 @@
+import { useMemo } from "react";
+
 import type { PresetRange } from "@hadiknowntrades/core";
 
-import type { ResultsState } from "@/lib/use-results";
+import type { ClientErrorCode, ResultsState } from "@/lib/use-results";
 import { derivePortfolioSeries } from "@/lib/portfolio-series";
 import { HeroStat } from "@/components/HeroStat";
 import { PortfolioChart } from "@/components/PortfolioChart";
@@ -15,7 +17,7 @@ const RANGE_COPY: Record<PresetRange, string> = {
 };
 
 /** A human error message per API error code (see ../app/api/results/route.ts's errorResponse calls) -- the API's own `message` is logged/available too, but these read better as UI copy for each specific, known failure shape. */
-function errorCopy(error: string, apiMessage: string): { title: string; body: string } {
+function errorCopy(error: ClientErrorCode, apiMessage: string): { title: string; body: string } {
   switch (error) {
     case "not_found":
       return {
@@ -72,6 +74,21 @@ interface ResultsPanelProps {
 
 /** Switches on the fetch state to render loading / error / (empty or full) success -- see useResults for the state machine this drives off of. */
 export function ResultsPanel({ range, state }: ResultsPanelProps) {
+  // Must run unconditionally (before the early returns below) per the
+  // Rules of Hooks, and memoized on `state` so PortfolioChart's own
+  // useMemo (keyed on this array's reference) doesn't get defeated by a
+  // fresh `points` array on every ResultsPanel render that isn't
+  // actually a new fetch result.
+  const points = useMemo(() => {
+    if (state.status !== "success") return [];
+    return derivePortfolioSeries(
+      state.data.startingCapital,
+      state.data.startDate,
+      state.data.endDate,
+      state.data.trades,
+    );
+  }, [state]);
+
   if (state.status === "loading") {
     return <LoadingSkeleton />;
   }
@@ -90,12 +107,6 @@ export function ResultsPanel({ range, state }: ResultsPanelProps) {
   }
 
   const { data } = state;
-  const points = derivePortfolioSeries(
-    data.startingCapital,
-    data.startDate,
-    data.endDate,
-    data.trades,
-  );
   const isEmpty = data.trades.length === 0;
 
   return (

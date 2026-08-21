@@ -2,21 +2,14 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 
-import { PRESET_RANGES, type PresetRange } from "@hadiknowntrades/core";
+import type { PresetRange } from "@hadiknowntrades/core";
 
 import { useResults } from "@/lib/use-results";
+import { parseRange } from "@/lib/results-api";
 import { RangeSelector } from "@/components/RangeSelector";
 import { ResultsPanel } from "@/components/ResultsPanel";
 
 const DEFAULT_RANGE: PresetRange = "1Y";
-
-function parseRangeParam(raw: string | null): PresetRange {
-  if (!raw) return DEFAULT_RANGE;
-  const upper = raw.toUpperCase();
-  return (PRESET_RANGES as readonly string[]).includes(upper)
-    ? (upper as PresetRange)
-    : DEFAULT_RANGE;
-}
 
 /**
  * Owns the selected range as URL state (?range=1Y, case-insensitive on
@@ -26,7 +19,7 @@ function parseRangeParam(raw: string | null): PresetRange {
 export function ResultsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const range = parseRangeParam(searchParams.get("range"));
+  const range = parseRange(searchParams.get("range")) ?? DEFAULT_RANGE;
   const state = useResults(range);
 
   function selectRange(next: PresetRange) {

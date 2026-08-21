@@ -44,6 +44,24 @@ describe("formatHeroCurrency", () => {
   it("handles negative values (theoretical, but this is display code)", () => {
     expect(formatHeroCurrency(-6876.86)).toBe("-$6.9K");
   });
+
+  it("steps up to the next unit instead of rounding to an out-of-range value like $1000K", () => {
+    // 999,600 / 1000 = 999.6, which toFixed(0)'s to "1000" -- must step
+    // up to M rather than display "$1000K".
+    expect(formatHeroCurrency(999_600)).toBe("$1M");
+    // Same boundary one unit up: 999,950,000,000 rounds to "1000B" at
+    // the B unit, must step up to T.
+    expect(formatHeroCurrency(999_950_000_000)).toBe("$1T");
+    // Just under the boundary: no step-up, still shows at the smaller unit.
+    expect(formatHeroCurrency(999_400)).toBe("$999K");
+  });
+
+  it("falls through to scientific notation when rounding would push the largest compact unit (T) out of range", () => {
+    // 999,960,000,000,000 / 1e12 = 999.96, which toFixed(0)'s to "1000"
+    // -- there's no unit above T to step up to, so this must format as
+    // scientific instead of showing "$1000T".
+    expect(formatHeroCurrency(999_960_000_000_000)).toBe("$1.00×10¹⁵");
+  });
 });
 
 describe("formatAxisCurrency", () => {

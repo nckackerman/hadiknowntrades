@@ -43,6 +43,13 @@ export function buildLogScale(domain: [number, number], range: [number, number])
  * stepping over exponents rather than crowding every single one in
  * (e.g. a 20-order-of-magnitude domain gets every 4th power of ten, not
  * all 20).
+ *
+ * Whole powers of ten only work as gridlines when they actually land
+ * inside [min, max] -- a domain narrower than one decade (a flat result,
+ * or a modest gain on a short range) can have none at all, which would
+ * otherwise render every gridline/label off the visible plot. Falls
+ * back to evenly log-spaced points across the real domain in that case,
+ * so the axis always has *some* in-bounds reference ticks.
  */
 export function niceLogTicks(min: number, max: number, maxTicks = 5): number[] {
   if (!(min > 0) || !(max > 0) || min > max) {
@@ -52,15 +59,27 @@ export function niceLogTicks(min: number, max: number, maxTicks = 5): number[] {
   const loExp = Math.floor(Math.log10(min));
   const hiExp = Math.ceil(Math.log10(max));
   const exponentCount = hiExp - loExp + 1;
+  const step = exponentCount <= maxTicks ? 1 : Math.ceil(exponentCount / maxTicks);
 
-  if (exponentCount <= maxTicks) {
-    return Array.from({ length: exponentCount }, (_, i) => 10 ** (loExp + i));
-  }
-
-  const step = Math.ceil(exponentCount / maxTicks);
-  const ticks: number[] = [];
+  const powersOfTen: number[] = [];
   for (let exp = loExp; exp <= hiExp; exp += step) {
-    ticks.push(10 ** exp);
+    powersOfTen.push(10 ** exp);
   }
-  return ticks;
+
+  const inDomain = powersOfTen.filter((tick) => tick >= min && tick <= max);
+  if (inDomain.length > 0) {
+    return inDomain;
+  }
+
+  const logMin = Math.log10(min);
+  const logMax = Math.log10(max);
+  const count = Math.min(maxTicks, 4);
+  // Clamp rather than trust the interpolated 10**x round-trip exactly --
+  // floating-point error can otherwise land the last tick a hair past
+  // `max` (or the first a hair before `min`), which is the exact bug
+  // this fallback exists to avoid.
+  return Array.from({ length: count }, (_, i) => {
+    const value = 10 ** (logMin + ((logMax - logMin) * i) / (count - 1));
+    return Math.min(max, Math.max(min, value));
+  });
 }

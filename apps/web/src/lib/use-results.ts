@@ -9,15 +9,26 @@ import { useEffect, useState } from "react";
 
 import type { PrecomputedResult, PresetRange } from "@hadiknowntrades/core";
 
+import type { ApiErrorCode } from "./results-api";
+
+/**
+ * Every error code a consumer of useResults can see -- the server's own
+ * ApiErrorCode (see results-api.ts), plus two purely client-side ones
+ * for failure modes the server never reports itself (a response body
+ * that isn't valid JSON matching the expected shape, or the fetch never
+ * reaching the server at all).
+ */
+export type ClientErrorCode = ApiErrorCode | "unknown_error" | "network_error";
+
 /** The shape of every error response from /api/results -- see route.ts's errorResponse(). */
 interface ApiErrorBody {
-  error: string;
+  error: ApiErrorCode;
   message: string;
 }
 
 export type ResultsState =
   | { status: "loading" }
-  | { status: "error"; httpStatus: number; error: string; message: string }
+  | { status: "error"; httpStatus: number; error: ClientErrorCode; message: string }
   | { status: "success"; data: PrecomputedResult };
 
 function isApiErrorBody(value: unknown): value is ApiErrorBody {
