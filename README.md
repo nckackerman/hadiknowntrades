@@ -14,8 +14,11 @@ decades.
 
 - **Data**: daily adjusted-close prices for all S&P 500 constituents,
   sourced from Yahoo Finance's unofficial chart endpoint, end-of-day only.
-  (Originally planned to use Stooq, which now actively blocks
-  programmatic access — see issue #3 for details.)
+  "Adjusted" means split- and dividend-adjusted -- a trade's return
+  reflects the real total return a holder would have seen, not a raw price
+  change distorted by a stock split. (Originally planned to use Stooq,
+  which now actively blocks programmatic access -- see issue #3 for
+  details.)
 - **Optimizer**: a backward DP (generalizing the classic "best time to
   buy/sell stock IV" problem across many tickers) finds the sequence of up
   to 3 non-overlapping round-trip trades — buy on a close, sell on a later
@@ -67,6 +70,25 @@ pnpm install
 pnpm dev          # runs the Next.js app in apps/web
 ```
 
+`pnpm dev` runs and renders fine with no further setup -- but the app's
+`/api/results` route reads precomputed results from S3, so without pointing
+it at a real bucket you'll see the app's normal "results are temporarily
+unavailable" error state instead of real data. To see real data locally,
+set `RESULTS_BUCKET` (read explicitly in
+`apps/web/src/app/api/results/route.ts`) and `AWS_REGION` (read implicitly
+by the AWS SDK's own default region/credential provider chain, not by any
+line in this app's own code) before running `pnpm dev`:
+
+```bash
+RESULTS_BUCKET=<your-deployed-bucket-name> AWS_REGION=us-west-2 pnpm dev
+```
+
+This requires AWS credentials with read access to that bucket (e.g. via
+`aws configure`, picked up automatically by the AWS SDK) and a bucket that
+already has results in it -- either your own deployment (see
+`infra/cdk/`) or ask a maintainer for read access to theirs. There's no
+public demo bucket.
+
 Other useful root-level scripts (run across all workspace packages):
 
 ```bash
@@ -78,8 +100,27 @@ pnpm build
 pnpm test
 ```
 
+## Contributing
+
+- One branch/PR per issue; open PRs against `main`.
+- CI (`.github/workflows/ci.yml`) runs lint, typecheck, format check,
+  build, and test on every PR -- all five must pass.
+- Match the existing code's comment density and style; nested `CLAUDE.md`
+  files throughout the repo (`packages/core/CLAUDE.md`,
+  `apps/pipeline/CLAUDE.md`, `infra/CLAUDE.md`, `.github/workflows/CLAUDE.md`)
+  document non-obvious facts and decisions specific to that area -- read
+  the relevant one before touching that part of the codebase.
+- This is a learning-project-scale codebase, not high-stakes production
+  software -- keep that in mind when judging how much process a given
+  change deserves.
+
 ## Status
 
-Early scaffolding — see the
-[v1: MVP launch milestone](https://github.com/nckackerman/hadiknowntrades/milestone/1)
-for the build-out plan.
+The [v1: MVP launch milestone](https://github.com/nckackerman/hadiknowntrades/milestone/1)
+is code-complete: the optimizer, nightly precompute pipeline, and the core
+visualization UI are all built and merged, and infra is deployed and
+running the real pipeline against real data. The one open piece is the
+public site itself -- CloudFront is still blocked by an AWS account
+verification step outside this repo's control (see `infra/CLAUDE.md`), so
+there's no live public URL yet even though everything behind it works.
+See that milestone and the `backlog`-labeled issues for what's next.
