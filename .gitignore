@@ -8,6 +8,10 @@ out/
 dist/
 build/
 
+# CDK synth output / cached account-id-to-availability-zone lookups
+cdk.out/
+cdk.context.json
+
 # env
 .env
 .env.local

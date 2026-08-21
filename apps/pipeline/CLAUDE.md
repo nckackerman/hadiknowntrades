@@ -27,8 +27,16 @@ code.
   `endDate` (the requested boundary) are deliberately different fields —
   they can genuinely diverge (e.g. asOf lands on a weekend) and both are
   useful; don't collapse them back into one field.
-- `S3ResultStore` (`src/s3-store.ts`) and the real entry point
-  (`src/index.ts`) exist and typecheck but **have never been run against
-  a real AWS bucket** — that requires issue #6's infrastructure first
-  (see `infra/CLAUDE.md`). Don't assume they've been exercised for real
-  just because they're merged.
+- `S3ResultStore` (`src/s3-store.ts`) exists and typechecks but **has
+  never been run against a real AWS bucket or a real Lambda invocation**
+  — infra/cdk (issue #6) defines but has never deployed the
+  infrastructure that would exercise it for real (see `infra/CLAUDE.md`).
+  Don't assume it's been exercised for real just because it's merged.
+- Two entry points, both thin wrappers around the shared
+  `runNightlyPipeline()` in `src/run.ts` (kept DRY on purpose — same
+  logic, different completion handling):
+  - `src/index.ts` — local/manual CLI run, sets `process.exitCode` on
+    failure.
+  - `src/lambda-handler.ts` — the real AWS Lambda entry point, wired up
+    by infra/cdk's EventBridge nightly schedule. Lets errors propagate
+    to fail the Lambda invocation (no custom retry/alerting).
