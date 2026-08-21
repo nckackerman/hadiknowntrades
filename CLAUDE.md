@@ -35,8 +35,7 @@ packages/
              preset-range math, date utils -- see packages/core/CLAUDE.md
 infra/
   bootstrap/ One-time sandbox AWS/IAM setup docs+policies (not the CDK app)
-  cdk/       AWS infrastructure as code (issue #6, not built yet)
-             -- see infra/CLAUDE.md
+  cdk/       AWS infrastructure as code (issue #6) -- see infra/CLAUDE.md
 ```
 
 Data flow: `packages/core`'s Yahoo client fetches daily closes ->
