@@ -27,11 +27,19 @@ code.
   `endDate` (the requested boundary) are deliberately different fields —
   they can genuinely diverge (e.g. asOf lands on a weekend) and both are
   useful; don't collapse them back into one field.
-- `S3ResultStore` (`src/s3-store.ts`) exists and typechecks but **has
-  never been run against a real AWS bucket or a real Lambda invocation**
-  — infra/cdk (issue #6) defines but has never deployed the
-  infrastructure that would exercise it for real (see `infra/CLAUDE.md`).
-  Don't assume it's been exercised for real just because it's merged.
+- `S3ResultStore` (`src/s3-store.ts`) **has been run for real**, via a
+  direct async invoke of the deployed `hadiknowntrades-pipeline` Lambda
+  (`aws lambda invoke --function-name hadiknowntrades-pipeline
+--invocation-type Event --payload '{}'`, see infra/CLAUDE.md's
+  "Current deployment state" for the real bucket/function names) --
+  not just a local/manual run. Real results: full run in ~37s, 0 of 503
+  tickers skipped, all 5 range files written with the correct shape.
+  Memory usage was 903MB of the Lambda's 1024MB allocation -- closer to
+  the ceiling than "comfortable" (the stack's own comment says
+  "comfortably needs more than the default"); worth reconsidering the
+  `memorySize` in `infra/cdk/lib/hadiknowntrades-stack.ts` before the
+  universe size or per-ticker history grows, rather than assuming
+  there's a lot of headroom.
 - Two entry points, both thin wrappers around the shared
   `runNightlyPipeline()` in `src/run.ts` (kept DRY on purpose — same
   logic, different completion handling):
