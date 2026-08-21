@@ -60,6 +60,27 @@ No live recomputation per request -- everything is precomputed nightly.
   it before writing any Next-specific code, don't assume older App
   Router conventions from training data.
 
+## Issue tracking conventions
+
+- `enhancement` = active/shippable work. Grouped under a milestone once more
+  than one issue belongs to the same effort (e.g. milestone **Intraday
+  per-day trading view** for #28-#30, **Reveal animation & visual delight**
+  for #35-#36). No milestone just means a standalone enhancement.
+- `backlog` = a deferred idea, written down but not scheduled (#11-#15,
+  #31-#34). Filing something here isn't a commitment to build it, just a
+  way to stop re-deriving it from scratch every planning session.
+- `wontfix` = an idea that was considered and explicitly rejected during
+  planning. File it as an issue with the rejection rationale in the body,
+  then close it immediately (see #37, #38) - don't just let it fade out of
+  conversation undocumented. The point is to stop it from getting silently
+  re-proposed and re-litigated in some future session.
+- Issues meant to be picked up and built (not `backlog`) should be
+  self-contained and agent-ready: a Goal, relevant background/architecture
+  pointers (file paths, not just descriptions), explicit Scope and Out of
+  scope, and Acceptance criteria - see #28 or #31-#36 as examples. A fresh
+  Claude instance with none of the conversation history that produced the
+  issue should be able to read it alone and start work.
+
 ## Working agreements (how we build this together)
 
 - One branch/PR per issue, roughly in dependency order.
