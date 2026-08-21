@@ -6,8 +6,9 @@
 // Known v1 limitation: this is the *current* constituent list applied
 // retroactively across all historical date ranges -- see README.md.
 //
-// Two symbols use a dot for share class (BRK.B, BF.B) -- the Stooq data
-// client (issue #3) will need to map these to Stooq's own symbol format.
+// Two symbols use a dot for share class (BRK.B, BF.B) -- the Yahoo data
+// client (see yahoo-client.ts) maps these to Yahoo's own symbol format
+// (a hyphen instead of a dot, e.g. BRK-B).
 //
 // Refresh: re-fetch data/constituents.csv from the source repo above and
 // regenerate this file, or ask Claude to refresh it.

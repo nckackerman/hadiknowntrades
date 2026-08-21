@@ -13,7 +13,9 @@ decades.
 ## How it works
 
 - **Data**: daily adjusted-close prices for all S&P 500 constituents,
-  sourced from [Stooq](https://stooq.com), end-of-day only.
+  sourced from Yahoo Finance's unofficial chart endpoint, end-of-day only.
+  (Originally planned to use Stooq, which now actively blocks
+  programmatic access — see issue #3 for details.)
 - **Optimizer**: a backward DP (generalizing the classic "best time to
   buy/sell stock IV" problem across many tickers) finds the sequence of up
   to 3 non-overlapping round-trip trades — buy on a close, sell on a later
@@ -46,7 +48,7 @@ apps/
   web/       Next.js + TypeScript frontend, deployed to AWS
   pipeline/  Nightly precompute job (data fetch + optimizer + S3 write)
 packages/
-  core/      Shared domain logic: ticker universe, Stooq client, optimizer
+  core/      Shared domain logic: ticker universe, Yahoo client, optimizer
 infra/
   bootstrap/ One-time sandbox AWS/IAM setup (not part of the CDK app)
   cdk/       AWS infrastructure as code (added in issue #6)
