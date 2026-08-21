@@ -22,3 +22,6 @@ export type { DailyClose } from "./yahoo-client.js";
 // whatever runs the pipeline once issue #5 lands), but NOT from a bare
 // `node script.mjs` — there's no compiled .js output and no tsx/ts-node
 // in this repo (yet) to make that work outside a TS-aware runtime.
+
+export { buildCalendar, optimizeTrades, OptimizerInputError } from "./optimizer.js";
+export type { Calendar, OptimizationResult, OptimizeOptions, Trade } from "./optimizer.js";

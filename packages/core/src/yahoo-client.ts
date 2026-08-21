@@ -12,6 +12,8 @@
 // - An invalid/delisted symbol returns HTTP 200 with a
 //   `{ chart: { result: null, error: {...} } }` body, not an HTTP error.
 
+import { isValidPrice } from "./is-valid-price.js";
+
 const CHART_BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart";
 
 // A realistic browser User-Agent. Required — see note above.
@@ -247,20 +249,22 @@ export async function fetchDailyCloses(
     }
 
     const timestamps = firstResult.timestamp ?? [];
-    const closes =
-      firstResult.indicators.adjclose?.[0]?.adjclose ??
-      firstResult.indicators.quote[0]?.close ??
-      [];
-    if (timestamps.length > 0 && closes.length === 0) {
-      // Timestamps present but no price data at all lines up with a
-      // glitchy/partial response, not a legitimately empty range (which
-      // has zero timestamps too) — retry rather than silently returning
-      // an empty result that looks identical to "no trading days here."
-      lastError = new Error("malformed result: timestamps present but no close data");
+    const parsed = parseChartResult(firstResult);
+    if (timestamps.length > 0 && parsed.length === 0) {
+      // Timestamps present but nothing survived parsing (no price data
+      // at all, or every close was invalid — e.g. all zero/NaN during a
+      // feed glitch) lines up with a malformed/glitchy response, not a
+      // legitimately empty range (which has zero timestamps too) — retry
+      // rather than silently returning an empty result that looks
+      // identical to "no trading days here." Checked on the *parsed*
+      // output, not the raw close array, so this still catches the case
+      // where every raw value was present but invalid and got filtered
+      // out inside parseChartResult.
+      lastError = new Error("malformed result: timestamps present but no valid close data");
       continue;
     }
 
-    return parseChartResult(firstResult);
+    return parsed;
   }
 
   throw new TransientFetchError(symbol, lastError);
@@ -277,6 +281,17 @@ function parseChartResult(result: YahooChartResult): DailyClose[] {
     const ts = timestamp[i];
     const close = closes[i];
     if (ts === undefined || close === null || close === undefined) continue;
+    // A non-positive or non-finite close is never legitimate — a stock
+    // price can't be <= 0 — so treat a glitched bar from the upstream
+    // feed as missing data for that day rather than passing it through
+    // to downstream consumers (e.g. the optimizer, which would otherwise
+    // divide by it).
+    if (!isValidPrice(close)) {
+      console.warn(
+        `[yahoo-client] ignoring invalid close on ${unixToLocalDateString(ts, meta.gmtoffset)}: ${close}`,
+      );
+      continue;
+    }
     out.push({
       date: unixToLocalDateString(ts, meta.gmtoffset),
       close,
