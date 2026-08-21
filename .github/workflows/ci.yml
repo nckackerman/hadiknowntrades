@@ -64,9 +64,6 @@ jobs:
         continue-on-error: true
         run: pnpm build
 
-      # No package defines a "test" script yet (issue #4 adds the first
-      # ones, for the optimizer) — pnpm's --if-present makes this a no-op
-      # that passes rather than a failure, by design, until then.
       - name: Test
         id: test
         continue-on-error: true

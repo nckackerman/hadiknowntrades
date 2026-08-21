@@ -27,4 +27,22 @@ describe("SP500_CONSTITUENTS", () => {
       expect(symbols.has(ticker)).toBe(true);
     }
   });
+
+  // Catches upstream data-quality artifacts (stray formatting characters
+  // from the source dataset) that a mere non-empty check misses — this
+  // exact class of bug shipped once already (a literal "|" in a name).
+  const PLAUSIBLE_TEXT = /^[A-Za-z0-9 .,&'()\-–é!]+$/;
+
+  it("names and sectors contain only plausible characters", () => {
+    for (const constituent of SP500_CONSTITUENTS) {
+      expect(constituent.name).toMatch(PLAUSIBLE_TEXT);
+      expect(constituent.sector).toMatch(PLAUSIBLE_TEXT);
+    }
+  });
+
+  it("symbols contain only letters and dots (e.g. BRK.B)", () => {
+    for (const constituent of SP500_CONSTITUENTS) {
+      expect(constituent.symbol).toMatch(/^[A-Z.]+$/);
+    }
+  });
 });

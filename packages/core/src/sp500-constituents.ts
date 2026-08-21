@@ -417,7 +417,7 @@ export const SP500_CONSTITUENTS: SP500Constituent[] = [
   { symbol: "REGN", name: "Regeneron Pharmaceuticals", sector: "Health Care" },
   { symbol: "RF", name: "Regions Financial Corporation", sector: "Financials" },
   { symbol: "RSG", name: "Republic Services", sector: "Industrials" },
-  { symbol: "RMD", name: "ResMed|", sector: "Health Care" },
+  { symbol: "RMD", name: "ResMed", sector: "Health Care" },
   { symbol: "RVTY", name: "Revvity", sector: "Health Care" },
   { symbol: "HOOD", name: "Robinhood Markets", sector: "Financials" },
   { symbol: "ROK", name: "Rockwell Automation", sector: "Industrials" },
