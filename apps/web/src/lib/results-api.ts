@@ -1,0 +1,90 @@
+// Core logic for GET /api/results?range=... , factored out of the route
+// handler (see ../app/api/results/route.ts) so it can be unit tested with
+// a mocked ResultReader instead of a real S3Client or a full Next.js
+// request/response cycle.
+
+import { PRESET_RANGES, type PrecomputedResult, type PresetRange } from "@hadiknowntrades/core";
+
+/**
+ * Minimal interface for reading a precomputed result's raw JSON body by
+ * its S3 key. Implemented by S3ResultReader (see s3-result-reader.ts) for
+ * production, and by a hand-rolled mock in tests.
+ */
+export interface ResultReader {
+  /** Returns the object's raw body as a string, or null if the key doesn't exist. */
+  getObject(key: string): Promise<string | null>;
+}
+
+// Data only changes on the nightly pipeline run, so it's safe for
+// browsers and any CDN in front of this route to reuse a response for a
+// while without re-checking -- but short enough that a same-day rerun of
+// the pipeline (e.g. a manual fix) shows up reasonably quickly, and with
+// stale-while-revalidate so a cache doesn't serve indefinitely-stale data
+// if the origin is briefly unreachable past max-age.
+const CACHE_CONTROL = "public, max-age=300, s-maxage=300, stale-while-revalidate=3600";
+
+function errorResponse(status: number, error: string, message: string): Response {
+  return Response.json({ error, message }, { status });
+}
+
+/** Case-insensitively matches a raw query-string value against PRESET_RANGES, or returns null if it doesn't match any of them. */
+export function parseRange(raw: string | null): PresetRange | null {
+  if (!raw) return null;
+  const upper = raw.toUpperCase();
+  return (PRESET_RANGES as readonly string[]).includes(upper) ? (upper as PresetRange) : null;
+}
+
+/**
+ * Handles GET /api/results?range=... : validates the range, reads the
+ * corresponding precomputed result via `reader`, and returns it as JSON
+ * with caching headers -- or a clear JSON error response (with an
+ * appropriate status code) for an invalid range, missing bucket
+ * configuration, a not-yet-published range, or an unreadable/corrupt
+ * stored object.
+ */
+export async function getResultsResponse(
+  rawRange: string | null,
+  reader: ResultReader | null,
+): Promise<Response> {
+  const range = parseRange(rawRange);
+  if (!range) {
+    return errorResponse(
+      400,
+      "invalid_range",
+      `Unsupported or missing "range" query parameter. Expected one of: ${PRESET_RANGES.join(", ")} (case-insensitive). Received: ${rawRange ?? "(none)"}.`,
+    );
+  }
+
+  if (!reader) {
+    console.error("[api/results] RESULTS_BUCKET environment variable is not set");
+    return errorResponse(500, "server_misconfigured", "Results storage is not configured.");
+  }
+
+  let raw: string | null;
+  try {
+    raw = await reader.getObject(`results/${range}.json`);
+  } catch (error) {
+    console.error(`[api/results] failed to read results for range ${range}:`, error);
+    return errorResponse(502, "upstream_error", "Failed to read precomputed results.");
+  }
+
+  if (raw === null) {
+    return errorResponse(
+      404,
+      "not_found",
+      `No precomputed results are available yet for range "${range}".`,
+    );
+  }
+
+  let result: PrecomputedResult;
+  try {
+    result = JSON.parse(raw) as PrecomputedResult;
+  } catch (error) {
+    console.error(`[api/results] stored result for range ${range} is not valid JSON:`, error);
+    return errorResponse(502, "corrupt_data", "Stored results could not be parsed.");
+  }
+
+  return Response.json(result, {
+    headers: { "Cache-Control": CACHE_CONTROL },
+  });
+}

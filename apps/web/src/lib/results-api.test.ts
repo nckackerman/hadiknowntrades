@@ -1,0 +1,127 @@
+import { PRESET_RANGES, type PrecomputedResult } from "@hadiknowntrades/core";
+import { describe, expect, it, vi } from "vitest";
+
+import { getResultsResponse, parseRange, type ResultReader } from "./results-api";
+
+function fixtureResult(range: (typeof PRESET_RANGES)[number]): PrecomputedResult {
+  return {
+    schemaVersion: 1,
+    range,
+    generatedAt: "2024-06-15T00:00:00.000Z",
+    dataAsOf: "2024-06-14",
+    startDate: "2024-05-14",
+    endDate: "2024-06-15",
+    startingCapital: 20,
+    endingBalance: 42,
+    trades: [],
+    universeSize: 500,
+    skippedTickers: [],
+  };
+}
+
+/** A ResultReader backed by a plain Map, so tests can control exactly what's "in the bucket". */
+function memoryReader(objects: Map<string, string>): ResultReader {
+  return {
+    async getObject(key) {
+      return objects.get(key) ?? null;
+    },
+  };
+}
+
+describe("parseRange", () => {
+  it("accepts every preset range, case-insensitively", () => {
+    for (const range of PRESET_RANGES) {
+      expect(parseRange(range)).toBe(range);
+      expect(parseRange(range.toLowerCase())).toBe(range);
+    }
+  });
+
+  it("rejects null, empty, and unsupported values", () => {
+    expect(parseRange(null)).toBeNull();
+    expect(parseRange("")).toBeNull();
+    expect(parseRange("2Y")).toBeNull();
+    expect(parseRange("bogus")).toBeNull();
+  });
+});
+
+describe("getResultsResponse", () => {
+  it("returns a clear 400 error for a missing range", async () => {
+    const response = await getResultsResponse(null, memoryReader(new Map()));
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("invalid_range");
+    expect(body.message).toContain("1M");
+    expect(body.message).toContain("MAX");
+  });
+
+  it("returns a clear 400 error for an unsupported range", async () => {
+    const response = await getResultsResponse("2Y", memoryReader(new Map()));
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("invalid_range");
+    expect(body.message).toContain("2Y");
+  });
+
+  it("returns a 500 when no reader is configured (RESULTS_BUCKET unset)", async () => {
+    const response = await getResultsResponse("1Y", null);
+
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body.error).toBe("server_misconfigured");
+  });
+
+  it("returns a 404 when the range hasn't been published yet", async () => {
+    const response = await getResultsResponse("1Y", memoryReader(new Map()));
+
+    expect(response.status).toBe(404);
+    const body = await response.json();
+    expect(body.error).toBe("not_found");
+  });
+
+  it("returns a 502 when the S3 read fails", async () => {
+    const reader: ResultReader = {
+      getObject: vi.fn().mockRejectedValue(new Error("access denied")),
+    };
+
+    const response = await getResultsResponse("1Y", reader);
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("upstream_error");
+  });
+
+  it("returns a 502 when the stored object isn't valid JSON", async () => {
+    const objects = new Map([["results/1Y.json", "{not json"]]);
+
+    const response = await getResultsResponse("1Y", memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("corrupt_data");
+  });
+
+  it("reads the range-specific key and returns the parsed result with 200 and caching headers, case-insensitively", async () => {
+    const result = fixtureResult("1Y");
+    const objects = new Map([["results/1Y.json", JSON.stringify(result)]]);
+
+    const response = await getResultsResponse("1y", memoryReader(objects));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual(result);
+    const cacheControl = response.headers.get("Cache-Control");
+    expect(cacheControl).toContain("max-age=300");
+    expect(cacheControl).toContain("stale-while-revalidate");
+  });
+
+  it("reads a distinct key per range", async () => {
+    const getObject = vi.fn().mockResolvedValue(JSON.stringify(fixtureResult("MAX")));
+    const reader: ResultReader = { getObject };
+
+    await getResultsResponse("max", reader);
+
+    expect(getObject).toHaveBeenCalledWith("results/MAX.json");
+  });
+});

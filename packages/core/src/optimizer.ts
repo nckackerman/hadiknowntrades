@@ -24,8 +24,8 @@
 // The DP tracks which branch won at each (k, d) so the actual trade
 // sequence can be reconstructed afterward, not just the final value.
 
-import { isValidPrice } from "./is-valid-price.js";
-import type { DailyClose } from "./yahoo-client.js";
+import { isValidPrice } from "./is-valid-price";
+import type { DailyClose } from "./yahoo-client";
 
 export interface Trade {
   ticker: string;

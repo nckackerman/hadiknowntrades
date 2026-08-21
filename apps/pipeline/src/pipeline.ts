@@ -14,14 +14,13 @@ import {
   optimizeTrades,
   PRESET_RANGES,
   presetRangeStartDate,
+  RESULTS_SCHEMA_VERSION,
   toDateString,
   UnexpectedResponseError,
   type DailyClose,
-  type PresetRange,
-  type Trade,
+  type PrecomputedResult,
 } from "@hadiknowntrades/core";
 
-const SCHEMA_VERSION = 1;
 const DEFAULT_STARTING_CAPITAL = 20;
 const DEFAULT_MAX_TRADES = 3;
 // Deliberately early enough to predate any current S&P 500 constituent's
@@ -34,24 +33,8 @@ export interface ResultStore {
   putObject(key: string, body: string): Promise<void>;
 }
 
-export interface PipelineResult {
-  schemaVersion: number;
-  range: PresetRange;
-  generatedAt: string;
-  /** The most recent trading date actually found in the fetched data — a fact about the data, which can lag the requested `endDate` (e.g. if the pipeline runs before the latest close is posted). */
-  dataAsOf: string;
-  startDate: string | null;
-  /** The requested "as of" boundary for this run — see dataAsOf for what data was actually available. */
-  endDate: string;
-  startingCapital: number;
-  endingBalance: number;
-  trades: Trade[];
-  universeSize: number;
-  skippedTickers: string[];
-}
-
 export interface PipelineRunSummary {
-  results: PipelineResult[];
+  results: PrecomputedResult[];
   skippedTickers: string[];
 }
 
@@ -183,7 +166,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // (e.g. a single combined manifest object) and is deliberately not
   // built here; issue #5's acceptance criteria only calls for
   // idempotency, which this satisfies.
-  const results: PipelineResult[] = PRESET_RANGES.map((range) => {
+  const results: PrecomputedResult[] = PRESET_RANGES.map((range) => {
     const startDate = presetRangeStartDate(range, asOf);
     const startDateString = startDate ? toDateString(startDate) : null;
 
@@ -198,7 +181,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     const optimized = optimizeTrades(windowed, { startingCapital, maxTrades });
 
     return {
-      schemaVersion: SCHEMA_VERSION,
+      schemaVersion: RESULTS_SCHEMA_VERSION,
       range,
       generatedAt,
       dataAsOf,
