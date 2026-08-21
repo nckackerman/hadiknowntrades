@@ -21,8 +21,12 @@ const USER_AGENT =
 
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 500;
+const MAX_RETRY_AFTER_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 const ONE_DAY_SECONDS = 24 * 60 * 60;
+// HTTP status Yahoo has been empirically confirmed (see issue #3) to use
+// for a genuinely nonexistent symbol.
+const NOT_FOUND_STATUS = 404;
 
 export interface DailyClose {
   /** Trading day, in the exchange's local timezone, as YYYY-MM-DD. */
@@ -59,6 +63,24 @@ export class BlockedError extends Error {
   }
 }
 
+/**
+ * Thrown on a non-retryable HTTP status this client doesn't have a
+ * specific interpretation for (i.e. not 401/403, and not the 404 we've
+ * empirically confirmed Yahoo uses for a genuinely nonexistent symbol).
+ * Distinct from TickerNotFoundError so callers don't mistake "the request
+ * itself was malformed" (a client-side bug, likely permanent regardless
+ * of symbol) for "this specific ticker has no data."
+ */
+export class UnexpectedResponseError extends Error {
+  constructor(
+    public readonly symbol: string,
+    public readonly status: number,
+  ) {
+    super(`Unexpected response for symbol "${symbol}": HTTP ${status}`);
+    this.name = "UnexpectedResponseError";
+  }
+}
+
 /** Thrown when the request fails for a non-permanent reason after all retries are exhausted. */
 export class TransientFetchError extends Error {
   constructor(
@@ -81,10 +103,14 @@ export function toYahooSymbol(symbol: string): string {
 
 interface YahooChartResult {
   meta: { gmtoffset: number };
-  timestamp: number[];
+  // Verified live: absent entirely (not an empty array) for a range
+  // with no trading data, e.g. a weekend-only window.
+  timestamp?: number[];
   indicators: {
-    quote: [{ close: (number | null)[] }] | [];
-    adjclose?: [{ adjclose: (number | null)[] }];
+    // Verified live: `[{}]` (no `close` key at all) for an empty range —
+    // not `[{ close: [] }]`.
+    quote: [{ close?: (number | null)[] }] | [];
+    adjclose?: [{ adjclose?: (number | null)[] }];
   };
 }
 
@@ -107,16 +133,28 @@ async function sleep(ms: number): Promise<void> {
 
 /**
  * Parses a Retry-After header (either delta-seconds or an HTTP-date, per
- * RFC 9110 §10.2.3) into milliseconds to wait. Returns null if absent or
- * unparseable.
+ * RFC 9110 §10.2.3) into milliseconds to wait, capped at
+ * MAX_RETRY_AFTER_MS so a server-supplied value can't stall a batch job
+ * indefinitely. Returns null if absent or unparseable.
  */
 function parseRetryAfterMs(header: string | null): number | null {
   if (!header) return null;
+  let ms: number | null = null;
   const seconds = Number(header);
-  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
-  const dateMs = Date.parse(header);
-  if (!Number.isNaN(dateMs)) return Math.max(0, dateMs - Date.now());
-  return null;
+  if (Number.isFinite(seconds)) {
+    ms = seconds * 1000;
+  } else {
+    const dateMs = Date.parse(header);
+    if (!Number.isNaN(dateMs)) ms = dateMs - Date.now();
+  }
+  return ms === null ? null : Math.min(MAX_RETRY_AFTER_MS, Math.max(0, ms));
+}
+
+/** Exponential backoff with +/-20% jitter, so concurrent retries (e.g. many symbols rate-limited around the same moment) don't resynchronize into identical bursts. */
+function backoffWithJitter(attempt: number): number {
+  const base = RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+  const jitter = base * 0.2 * (Math.random() * 2 - 1);
+  return Math.round(base + jitter);
 }
 
 /**
@@ -149,7 +187,7 @@ export async function fetchDailyCloses(
   let retryAfterMs: number | null = null;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     if (attempt > 0) {
-      await sleep(retryAfterMs ?? RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+      await sleep(retryAfterMs ?? backoffWithJitter(attempt));
       retryAfterMs = null;
     }
 
@@ -175,7 +213,13 @@ export async function fetchDailyCloses(
         retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
         continue;
       }
-      throw new TickerNotFoundError(symbol, `HTTP ${response.status}`);
+      if (response.status === NOT_FOUND_STATUS) {
+        throw new TickerNotFoundError(symbol, `HTTP ${response.status}`);
+      }
+      // A non-retryable status we don't have a specific interpretation
+      // for (not 401/403, not the confirmed "not found" status) — don't
+      // conflate it with "ticker doesn't exist."
+      throw new UnexpectedResponseError(symbol, response.status);
     }
 
     let body: YahooChartResponse;
@@ -194,11 +238,25 @@ export async function fetchDailyCloses(
     }
 
     const [firstResult] = body.chart.result ?? [];
-    if (!firstResult || firstResult.indicators.quote.length === 0) {
-      // Ambiguous/malformed shape rather than a definitive "not found" —
-      // could be a transient partial response, so retry rather than fail
-      // the whole batch on one glitchy response.
-      lastError = new Error("empty or malformed result");
+    // Runtime-validate the shape beyond what the `as` cast promises —
+    // Yahoo's response is untrusted input, and a raw TypeError from an
+    // unguarded access here would escape the retry loop unwrapped.
+    if (!firstResult || !Array.isArray(firstResult.indicators?.quote)) {
+      lastError = new Error("empty or malformed result: missing quote data");
+      continue;
+    }
+
+    const timestamps = firstResult.timestamp ?? [];
+    const closes =
+      firstResult.indicators.adjclose?.[0]?.adjclose ??
+      firstResult.indicators.quote[0]?.close ??
+      [];
+    if (timestamps.length > 0 && closes.length === 0) {
+      // Timestamps present but no price data at all lines up with a
+      // glitchy/partial response, not a legitimately empty range (which
+      // has zero timestamps too) — retry rather than silently returning
+      // an empty result that looks identical to "no trading days here."
+      lastError = new Error("malformed result: timestamps present but no close data");
       continue;
     }
 
@@ -209,7 +267,8 @@ export async function fetchDailyCloses(
 }
 
 function parseChartResult(result: YahooChartResult): DailyClose[] {
-  const { timestamp, indicators, meta } = result;
+  const { indicators, meta } = result;
+  const timestamp = result.timestamp ?? [];
   const quote = indicators.quote[0];
   const closes = indicators.adjclose?.[0]?.adjclose ?? quote?.close ?? [];
 

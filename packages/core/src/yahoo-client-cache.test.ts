@@ -63,6 +63,29 @@ describe("fetchDailyClosesCached", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("hits the cache even when the caller constructs a fresh `to` Date each call (same calendar day)", async () => {
+    // The natural "fetch through today" pattern for iterative local dev
+    // — the whole reason this cache exists — constructs `to: new Date()`
+    // fresh each call. Millisecond-precision keys would miss every time.
+    const fetchImpl = vi
+      .fn()
+      .mockImplementation(() => Promise.resolve(jsonResponse(validChartBody())));
+
+    const first = await fetchDailyClosesCached("AAPL", from, new Date(to.getTime()), {
+      fetchImpl,
+      cacheDir,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = await fetchDailyClosesCached("AAPL", from, new Date(to.getTime() + 5), {
+      fetchImpl,
+      cacheDir,
+    });
+
+    expect(first).toEqual(EXPECTED);
+    expect(second).toEqual(EXPECTED);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("treats a corrupt cache file as a miss and refetches", async () => {
     const fetchImpl = vi
       .fn()

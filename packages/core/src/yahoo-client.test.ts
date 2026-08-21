@@ -6,6 +6,7 @@ import {
   TickerNotFoundError,
   toYahooSymbol,
   TransientFetchError,
+  UnexpectedResponseError,
 } from "./yahoo-client.js";
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -139,6 +140,43 @@ describe("fetchDailyCloses", () => {
     },
   );
 
+  it("throws UnexpectedResponseError (not TickerNotFoundError) on a non-retryable status other than 404/401/403", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(400, {}));
+
+    const error = await fetchDailyCloses("AAPL", from, to, { fetchImpl }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(UnexpectedResponseError);
+    expect(error).not.toBeInstanceOf(TickerNotFoundError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns an empty array for a legitimately empty range without retrying or erroring", async () => {
+    // Verified live (issue #3 follow-up): Yahoo's real response for a
+    // range with no trading data (e.g. a weekend-only window) omits
+    // `timestamp` entirely and returns `quote: [{}]` / `adjclose: [{}]`
+    // — no `close`/`adjclose` key at all, not even an empty array. A
+    // hand-guessed `{ timestamp: [], quote: [{ close: [] }] }` fixture
+    // would NOT have caught the real bug this shape triggered.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        chart: {
+          result: [
+            {
+              meta: { gmtoffset: -14400 },
+              indicators: { quote: [{}], adjclose: [{}] },
+            },
+          ],
+          error: null,
+        },
+      }),
+    );
+
+    const result = await fetchDailyCloses("AAPL", from, to, { fetchImpl });
+
+    expect(result).toEqual([]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("pads period2 so the requested end date is fully covered", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, validChartBody()));
 
@@ -228,6 +266,53 @@ describe("fetchDailyCloses", () => {
 
       const promise = fetchDailyCloses("AAPL", from, to, { fetchImpl });
       await vi.runAllTimersAsync();
+      const result = await promise;
+
+      expect(result.length).toBe(2);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
+    it("retries when timestamps are present but close data is entirely empty (malformed, not legitimately empty)", async () => {
+      const malformed = {
+        chart: {
+          result: [
+            {
+              meta: { gmtoffset: -14400 },
+              timestamp: [1704205800, 1704292200],
+              indicators: { quote: [{ close: [] }], adjclose: [{ adjclose: [] }] },
+            },
+          ],
+          error: null,
+        },
+      };
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(200, malformed))
+        .mockResolvedValueOnce(jsonResponse(200, validChartBody()));
+
+      const promise = fetchDailyCloses("AAPL", from, to, { fetchImpl });
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      expect(result.length).toBe(2);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
+    it("caps the Retry-After wait instead of honoring an arbitrarily large server-supplied value", async () => {
+      const rateLimited = new Response(JSON.stringify({}), {
+        status: 429,
+        headers: { "Retry-After": "3600" }, // 1 hour — should be capped
+      });
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(rateLimited)
+        .mockResolvedValueOnce(jsonResponse(200, validChartBody()));
+
+      const promise = fetchDailyCloses("AAPL", from, to, { fetchImpl });
+
+      // The cap (30s) should have elapsed and triggered the retry well
+      // before the full requested hour would have.
+      await vi.advanceTimersByTimeAsync(31_000);
       const result = await promise;
 
       expect(result.length).toBe(2);

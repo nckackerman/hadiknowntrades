@@ -29,8 +29,13 @@ const DEFAULT_CACHE_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", ".
 // see the cache miss but only one of them actually hits the network.
 const inFlight = new Map<string, Promise<DailyClose[]>>();
 
+// Date-only (not full ISO-with-time) so a caller constructing `to` as
+// `new Date()` fresh each call — a natural "fetch through today" pattern
+// for iterative local dev, which is this cache's whole purpose — still
+// hits the cache instead of missing on every call due to the differing
+// millisecond timestamp.
 function cacheKey(symbol: string, from: Date, to: Date): string {
-  const raw = `${symbol}:${from.toISOString()}:${to.toISOString()}`;
+  const raw = `${symbol}:${from.toISOString().slice(0, 10)}:${to.toISOString().slice(0, 10)}`;
   return createHash("sha256").update(raw).digest("hex");
 }
 
@@ -71,13 +76,9 @@ async function readCache(cacheFile: string): Promise<DailyClose[] | null> {
   return parsed;
 }
 
-async function writeCache(
-  cacheDir: string,
-  cacheFile: string,
-  result: DailyClose[],
-): Promise<void> {
+async function writeCache(cacheFile: string, result: DailyClose[]): Promise<void> {
   try {
-    await mkdir(cacheDir, { recursive: true });
+    await mkdir(dirname(cacheFile), { recursive: true });
     await writeFile(cacheFile, JSON.stringify(result), "utf-8");
   } catch (error) {
     // A cache write failure shouldn't lose an already-successfully-fetched
@@ -108,7 +109,7 @@ export async function fetchDailyClosesCached(
     if (cached) return cached;
 
     const result = await fetchDailyCloses(symbol, from, to, options);
-    await writeCache(cacheDir, cacheFile, result);
+    await writeCache(cacheFile, result);
     return result;
   })();
 
