@@ -16,8 +16,14 @@ import { S3ResultReader } from "@/lib/s3-result-reader";
 // Next's own build-time static optimization.
 export const dynamic = "force-dynamic";
 
+// Built once per warm process and reused across requests, not
+// reconstructed on every GET -- an S3Client resolves its credential
+// provider chain and opens its own connection pool at construction time,
+// so a fresh one per request would throw away keep-alive reuse for no
+// benefit on a bucket name that never changes at runtime.
+const bucket = process.env.RESULTS_BUCKET;
+const reader = bucket ? new S3ResultReader(bucket) : null;
+
 export async function GET(request: NextRequest): Promise<Response> {
-  const bucket = process.env.RESULTS_BUCKET;
-  const reader = bucket ? new S3ResultReader(bucket) : null;
   return getResultsResponse(request.nextUrl.searchParams.get("range"), reader);
 }

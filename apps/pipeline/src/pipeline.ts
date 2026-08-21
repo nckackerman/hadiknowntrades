@@ -14,6 +14,7 @@ import {
   optimizeTrades,
   PRESET_RANGES,
   presetRangeStartDate,
+  resultKey,
   RESULTS_SCHEMA_VERSION,
   toDateString,
   UnexpectedResponseError,
@@ -200,7 +201,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // network latency for them.
   await Promise.all(
     results.map((result) =>
-      options.store.putObject(`results/${result.range}.json`, JSON.stringify(result, null, 2)),
+      options.store.putObject(resultKey(result.range), JSON.stringify(result, null, 2)),
     ),
   );
 

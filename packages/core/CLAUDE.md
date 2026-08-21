@@ -43,7 +43,7 @@ Using **Yahoo Finance's unofficial chart endpoint** instead
 ## Internal imports: no `.js` extension on relative specifiers
 
 `src/*.ts` files import each other with plain extensionless relative
-specifiers (`from "./date-utils"`, not `from "./date-utils.js"`) —
+specifiers (`from "./date-utils"`, not `from "./date-utils.js"`) -
 consistent with `tsconfig.base.json`'s `moduleResolution: "Bundler"`,
 which doesn't need or want the NodeNext-style `.js`-pointing-at-`.ts`
 convention. Don't add `.js` back onto these: `apps/web` (issue #7)
@@ -51,7 +51,7 @@ imports this package directly by its `@hadiknowntrades/core` package
 specifier (a pnpm workspace symlink into `src`, not a compiled `dist`),
 and empirically, Turbopack's `next build` fails to resolve a `.js`
 specifier against a sibling `.ts` file once resolution crosses into a
-package reached through `node_modules` (even a workspace symlink) —
+package reached through `node_modules` (even a workspace symlink) -
 `Module not found: Can't resolve './date-utils.js'`, even though tsc and
 vitest both resolve it fine. Not documented anywhere in Next.js's own
 docs; found by bisecting a real `next build` failure. Reintroducing `.js`

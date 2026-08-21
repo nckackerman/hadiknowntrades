@@ -3,7 +3,13 @@
 // a mocked ResultReader instead of a real S3Client or a full Next.js
 // request/response cycle.
 
-import { PRESET_RANGES, type PrecomputedResult, type PresetRange } from "@hadiknowntrades/core";
+import {
+  PRESET_RANGES,
+  resultKey,
+  RESULTS_SCHEMA_VERSION,
+  type PrecomputedResult,
+  type PresetRange,
+} from "@hadiknowntrades/core";
 
 /**
  * Minimal interface for reading a precomputed result's raw JSON body by
@@ -24,7 +30,11 @@ export interface ResultReader {
 const CACHE_CONTROL = "public, max-age=300, s-maxage=300, stale-while-revalidate=3600";
 
 function errorResponse(status: number, error: string, message: string): Response {
-  return Response.json({ error, message }, { status });
+  // Explicit no-store so an intermediate cache never applies heuristic
+  // freshness to an error -- 404 in particular is heuristically
+  // cacheable by default per RFC 7231 section 6.1, which would otherwise risk
+  // a stale "not published yet" response outliving the real data.
+  return Response.json({ error, message }, { status, headers: { "Cache-Control": "no-store" } });
 }
 
 /** Case-insensitively matches a raw query-string value against PRESET_RANGES, or returns null if it doesn't match any of them. */
@@ -62,7 +72,7 @@ export async function getResultsResponse(
 
   let raw: string | null;
   try {
-    raw = await reader.getObject(`results/${range}.json`);
+    raw = await reader.getObject(resultKey(range));
   } catch (error) {
     console.error(`[api/results] failed to read results for range ${range}:`, error);
     return errorResponse(502, "upstream_error", "Failed to read precomputed results.");
@@ -82,6 +92,16 @@ export async function getResultsResponse(
   } catch (error) {
     console.error(`[api/results] stored result for range ${range} is not valid JSON:`, error);
     return errorResponse(502, "corrupt_data", "Stored results could not be parsed.");
+  }
+
+  // apps/pipeline (writer) and this API (reader) are independently
+  // deployable -- a schema bump on one side without the other must not
+  // silently serve a shape this reader doesn't understand.
+  if (result.schemaVersion !== RESULTS_SCHEMA_VERSION) {
+    console.error(
+      `[api/results] stored result for range ${range} has schemaVersion ${String(result.schemaVersion)}, expected ${RESULTS_SCHEMA_VERSION}`,
+    );
+    return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
   }
 
   return Response.json(result, {

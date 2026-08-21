@@ -12,6 +12,17 @@ import type { Trade } from "./optimizer";
 /** Bumped whenever the shape of PrecomputedResult changes in a way a reader needs to know about. */
 export const RESULTS_SCHEMA_VERSION = 1;
 
+/**
+ * The S3 key a precomputed result is stored/read under for a given range.
+ * Single source of truth for both sides of the S3 contract -- the writer
+ * (apps/pipeline/src/pipeline.ts) and the reader
+ * (apps/web/src/lib/results-api.ts) both call this instead of each hand-typing
+ * the same template literal, so the two can't drift apart.
+ */
+export function resultKey(range: PresetRange): string {
+  return `results/${range}.json`;
+}
+
 export interface PrecomputedResult {
   schemaVersion: number;
   range: PresetRange;

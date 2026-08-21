@@ -124,4 +124,27 @@ describe("getResultsResponse", () => {
 
     expect(getObject).toHaveBeenCalledWith("results/MAX.json");
   });
+
+  it("returns a 502 when the stored object's schemaVersion doesn't match the reader's", async () => {
+    const staleResult = { ...fixtureResult("1Y"), schemaVersion: 999 };
+    const objects = new Map([["results/1Y.json", JSON.stringify(staleResult)]]);
+
+    const response = await getResultsResponse("1Y", memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("schema_mismatch");
+  });
+
+  it("sets Cache-Control: no-store on every error response", async () => {
+    const responses = await Promise.all([
+      getResultsResponse(null, memoryReader(new Map())),
+      getResultsResponse("1Y", null),
+      getResultsResponse("1Y", memoryReader(new Map())),
+    ]);
+
+    for (const response of responses) {
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+    }
+  });
 });
