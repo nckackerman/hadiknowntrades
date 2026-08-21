@@ -45,13 +45,20 @@ Data flow: `packages/core`'s Yahoo client fetches daily closes ->
 to S3 -> (future) a thin API serves it to the frontend. No live
 recomputation per request — everything is precomputed nightly.
 
-## Toolchain gotcha (repo-wide)
+## Toolchain gotchas (repo-wide)
 
-Node + pnpm are managed via `mise` (see `mise.toml`) — pinned versions,
-not whatever's on `PATH`. On this machine specifically, the `node`/`npm`
-that show up on `PATH` by default are **Windows binaries leaking into
-WSL**, not a real Linux install — always verify `which node` resolves to
-the mise shim before assuming the toolchain is sane in a new environment.
+- Node + pnpm are managed via `mise` (see `mise.toml`) — pinned versions,
+  not whatever's on `PATH`. On this machine specifically, the `node`/`npm`
+  that show up on `PATH` by default are **Windows binaries leaking into
+  WSL**, not a real Linux install — always verify `which node` resolves
+  to the mise shim before assuming the toolchain is sane in a new
+  environment.
+- `apps/web` runs **Next.js 16.3.1** — newer than typical model training
+  data, with breaking API/convention changes. Its own generated
+  `apps/web/AGENTS.md` (auto-imported via `apps/web/CLAUDE.md`) already
+  warns about this and points at `node_modules/next/dist/docs/` — read
+  it before writing any Next-specific code, don't assume older App
+  Router conventions from training data.
 
 ## Working agreements (how we build this together)
 
@@ -72,7 +79,9 @@ the mise shim before assuming the toolchain is sane in a new environment.
   feature, not after every incremental fix once the test suite is
   solid — repeating full live verification after every small change
   mostly just inflates context for little new signal.
-- Merge my own PRs once tests + review are clean, for code-only changes
-  (`.claude/settings.json` grants standing permission for `gh pr merge`).
-  Anything touching real AWS/infra needs the user's explicit go-ahead
-  first, every time, regardless of how clean the diff is.
+- Merge my own PRs once tests + review are clean, for code-only changes.
+  `.claude/settings.json` grants standing permission for `gh pr merge`
+  (see its own comments) — that was a real harness permission wall hit
+  once already, already solved, don't re-litigate it. Anything touching
+  real AWS/infra needs the user's explicit go-ahead first, every time,
+  regardless of how clean the diff is.
