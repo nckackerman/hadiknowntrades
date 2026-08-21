@@ -120,6 +120,21 @@ export async function getResultsResponse(
     return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
   }
 
+  // Since issue #28, PrecomputedResult is a discriminated union on
+  // `model` ("window" | "intraday-daily") -- schemaVersion alone
+  // doesn't guarantee this field is one of those two values. A stored
+  // object with a corrupted/wrong `model` (e.g. a partial write --
+  // apps/pipeline's own writes are explicitly documented as non-atomic)
+  // would otherwise pass this check silently and go on to crash the UI
+  // with a raw TypeError (e.g. `data.trades` undefined) instead of
+  // failing cleanly the same way a schemaVersion mismatch already does.
+  if (result.model !== "window" && result.model !== "intraday-daily") {
+    console.error(
+      `[api/results] stored result for range ${range} has an unrecognized model ${JSON.stringify((result as { model?: unknown }).model)}`,
+    );
+    return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
+  }
+
   return Response.json(result, {
     headers: { "Cache-Control": CACHE_CONTROL },
   });

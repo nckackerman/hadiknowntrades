@@ -5,12 +5,14 @@ import { getResultsResponse, parseRange, type ResultReader } from "./results-api
 
 function fixtureResult(range: (typeof PRESET_RANGES)[number]): PrecomputedResult {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    model: "window",
     range,
     generatedAt: "2024-06-15T00:00:00.000Z",
     dataAsOf: "2024-06-14",
     startDate: "2024-05-14",
     endDate: "2024-06-15",
+    maxTrades: 3,
     startingCapital: 20,
     endingBalance: 42,
     trades: [],
@@ -128,6 +130,23 @@ describe("getResultsResponse", () => {
   it("returns a 502 when the stored object's schemaVersion doesn't match the reader's", async () => {
     const staleResult = { ...fixtureResult("1Y"), schemaVersion: 999 };
     const objects = new Map([["results/1Y.json", JSON.stringify(staleResult)]]);
+
+    const response = await getResultsResponse("1Y", memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("schema_mismatch");
+  });
+
+  it("returns a 502 when a schemaVersion-2 object has an unrecognized `model` (e.g. a partial/corrupted write)", async () => {
+    // schemaVersion alone doesn't guarantee `model` is one of the two
+    // real values -- issue #28 made PrecomputedResult a discriminated
+    // union, and this is the check that catches a corrupted/wrong
+    // discriminant instead of letting it reach the UI and crash on a
+    // missing field (e.g. `.trades` on what the reader assumed was a
+    // WindowResult).
+    const corrupted = { ...fixtureResult("1Y"), model: "bogus-model" };
+    const objects = new Map([["results/1Y.json", JSON.stringify(corrupted)]]);
 
     const response = await getResultsResponse("1Y", memoryReader(objects));
 

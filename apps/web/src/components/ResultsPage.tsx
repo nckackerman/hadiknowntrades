@@ -22,10 +22,24 @@ export function ResultsPage() {
   const searchParams = useSearchParams();
   const range = parseRange(searchParams.get("range")) ?? DEFAULT_RANGE;
   const state = useResults(range);
+  // Which day is selected for the intraday model (issue #28) -- null
+  // means "none set," and ResultsPanel falls back to the most recent
+  // day. Shareable/bookmarkable the same way ?range= already is.
+  const selectedDay = searchParams.get("day");
 
   function selectRange(next: PresetRange) {
     const params = new URLSearchParams(searchParams);
     params.set("range", next);
+    // A day selected under the previous range's data isn't meaningful
+    // for a different range's day list -- drop it, falling back to that
+    // range's own most recent day.
+    params.delete("day");
+    router.replace(`/?${params.toString()}`, { scroll: false });
+  }
+
+  function selectDay(next: string) {
+    const params = new URLSearchParams(searchParams);
+    params.set("day", next);
     router.replace(`/?${params.toString()}`, { scroll: false });
   }
 
@@ -42,7 +56,7 @@ export function ResultsPage() {
         <RangeSelector selected={range} onSelect={selectRange} />
       </header>
 
-      <ResultsPanel range={range} state={state} />
+      <ResultsPanel range={range} state={state} selectedDay={selectedDay} onSelectDay={selectDay} />
 
       <AboutSection />
     </div>

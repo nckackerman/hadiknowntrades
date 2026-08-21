@@ -6,12 +6,14 @@ import { useResults } from "./use-results";
 
 function fixtureResult(): PrecomputedResult {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    model: "window",
     range: "1Y",
     generatedAt: "2026-08-21T19:50:21.468Z",
     dataAsOf: "2026-08-21",
     startDate: "2025-08-21",
     endDate: "2026-08-21",
+    maxTrades: 3,
     startingCapital: 20,
     endingBalance: 42,
     trades: [],

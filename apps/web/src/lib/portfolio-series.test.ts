@@ -1,7 +1,7 @@
-import type { Trade } from "@hadiknowntrades/core";
+import type { IntradayTrade, Trade } from "@hadiknowntrades/core";
 import { describe, expect, it } from "vitest";
 
-import { derivePortfolioSeries } from "./portfolio-series";
+import { deriveIntradayPortfolioSeries, derivePortfolioSeries } from "./portfolio-series";
 
 function trade(overrides: Partial<Trade>): Trade {
   return {
@@ -9,6 +9,18 @@ function trade(overrides: Partial<Trade>): Trade {
     buyDate: "2025-01-02",
     buyPrice: 10,
     sellDate: "2025-01-10",
+    sellPrice: 20,
+    ...overrides,
+  };
+}
+
+function intradayTrade(overrides: Partial<IntradayTrade>): IntradayTrade {
+  return {
+    ticker: "AAA",
+    date: "2025-01-02",
+    buyTime: "09:30:00",
+    buyPrice: 10,
+    sellTime: "10:30:00",
     sellPrice: 20,
     ...overrides,
   };
@@ -117,5 +129,50 @@ describe("derivePortfolioSeries", () => {
 
     const eventsOnJan10 = points.filter((p) => p.date === "2025-01-10" && p.event !== null);
     expect(eventsOnJan10.map((p) => p.event?.type)).toEqual(["sell", "buy"]);
+  });
+});
+
+describe("deriveIntradayPortfolioSeries", () => {
+  it("is a single flat point at startingCapital when there are no trades that day", () => {
+    const points = deriveIntradayPortfolioSeries(20, "2025-01-02", []);
+
+    expect(points).toEqual([{ date: "2025-01-02T12:00:00", value: 20, event: null }]);
+  });
+
+  it("derives a single trade as flat, buy annotation, flat through the hold, then a jump at sell -- using full local datetimes, not calendar dates", () => {
+    const trades = [intradayTrade({})];
+    const points = deriveIntradayPortfolioSeries(20, "2025-01-02", trades);
+
+    expect(points).toEqual([
+      { date: "2025-01-02T09:30:00", value: 20, event: null },
+      { date: "2025-01-02T09:30:00", value: 20, event: { type: "buy", ticker: "AAA", price: 10 } },
+      { date: "2025-01-02T10:30:00", value: 20, event: null },
+      { date: "2025-01-02T10:30:00", value: 40, event: { type: "sell", ticker: "AAA", price: 20 } },
+    ]);
+  });
+
+  it("compounds value across multiple sequential same-day trades", () => {
+    const trades = [
+      intradayTrade({ buyTime: "09:30:00", buyPrice: 10, sellTime: "10:30:00", sellPrice: 20 }),
+      intradayTrade({
+        ticker: "BBB",
+        buyTime: "11:30:00",
+        buyPrice: 5,
+        sellTime: "13:30:00",
+        sellPrice: 15,
+      }),
+    ];
+    const points = deriveIntradayPortfolioSeries(20, "2025-01-02", trades);
+
+    const sellPoints = points.filter((p) => p.event?.type === "sell");
+    expect(sellPoints.map((p) => p.value)).toEqual([40, 120]);
+  });
+
+  it("handles a losing trade (value decreases at the sell)", () => {
+    const trades = [intradayTrade({ buyPrice: 20, sellPrice: 10 })];
+    const points = deriveIntradayPortfolioSeries(20, "2025-01-02", trades);
+
+    const sellPoint = points.find((p) => p.event?.type === "sell");
+    expect(sellPoint?.value).toBe(10);
   });
 });

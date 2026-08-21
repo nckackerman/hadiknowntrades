@@ -14,3 +14,49 @@ export function formatDate(isoDate: string): string {
     timeZone: "UTC",
   });
 }
+
+/**
+ * Formats a bare local time-of-day ("14:30:00", no date) as "2:30 PM" --
+ * for IntradayTrade's buyTime/sellTime (issue #28), which don't carry a
+ * date of their own since the day is already known from context (the
+ * selected day in the intraday view).
+ */
+export function formatTime(time: string): string {
+  // Parsed against a fixed, arbitrary reference date and treated as UTC
+  // so the literal wall-clock time renders unchanged regardless of the
+  // viewer's timezone -- consistent with treating these already-local
+  // time strings "as if UTC" the same way formatDate does for plain
+  // calendar dates (see packages/core's date-utils comments on the same
+  // convention).
+  return new Date(`2000-01-01T${time}Z`).toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "UTC",
+  });
+}
+
+/**
+ * Whether a PortfolioPoint's `date` field is a full local datetime
+ * ("2025-08-21T14:30:00", an intraday day's chart -- issue #28) rather
+ * than a plain calendar date ("2025-08-21", the window model) --
+ * detected by the presence of a "T" separator. The single canonical
+ * place this detection happens: PortfolioChart's `toTimestamp` uses
+ * this too (instead of its own copy of the same check), so the two
+ * can't drift on what counts as "a datetime" the way two independently
+ * written string-sniffing checks otherwise could.
+ */
+export function isPortfolioDatetime(date: string): boolean {
+  return date.includes("T");
+}
+
+/**
+ * Formats a PortfolioPoint's `date` field (see isPortfolioDatetime) --
+ * a datetime formats as time-only ("2:30 PM"): the chart already shows
+ * which single day is selected elsewhere in the intraday view, so
+ * repeating the date on every point would be redundant.
+ */
+export function formatDateTime(date: string): string {
+  if (!isPortfolioDatetime(date)) return formatDate(date);
+  const separatorIndex = date.indexOf("T");
+  return formatTime(date.slice(separatorIndex + 1));
+}

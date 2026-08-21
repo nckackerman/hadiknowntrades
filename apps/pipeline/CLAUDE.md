@@ -48,3 +48,95 @@ code.
   - `src/lambda-handler.ts` — the real AWS Lambda entry point, wired up
     by infra/cdk's EventBridge nightly schedule. Lets errors propagate
     to fail the Lambda invocation (no custom retry/alerting).
+
+## Two independent paths since issue #28: window (5Y/MAX) vs. intraday (1M/3M/1Y)
+
+`runPipeline` fetches and computes two paths concurrently, sharing the
+same generalized `fetchUniverseHistory` worker pool (now generic over
+bar type, not daily-close-specific):
+
+- **Window path (5Y/MAX)**: unchanged from before #28 -- one daily-close
+  fetch from `earliestDate`, sliced per range, run through
+  `optimizeTrades`. Writes a `WindowResult`.
+- **Intraday path (1M/3M/1Y)**: one 60-minute-bar fetch from the 1Y
+  start date (`presetRangeStartDate("1Y", asOf)` -- reused rather than a
+  second hand-maintained lookback constant; comfortably inside Yahoo's
+  730-day retention), sliced per range, run through `optimizeIntradayDays`.
+  Writes an `IntradayResult` (one entry per trading day found, see
+  `packages/core/CLAUDE.md`).
+- **The two paths fail independently for _writing_, but not for
+  _alerting_** (refined during code review -- see below for why the
+  first cut of this was a real bug): a systemic abort
+  (`BlockedError`/`UnexpectedResponseError`) or zero usable data on
+  _one_ path refuses to write only _that path's_ range keys -- the
+  other path's ranges still write normally if its own fetch succeeded.
+  But `runPipeline` still throws (after writing) if _either_ path
+  failed, not only when _both_ end up with nothing -- see the next
+  bullet for why. This was a deliberate design choice (see
+  `docs/plans/issue-28-plan.md`), not an accident of the refactor -- the
+  two paths hit the same Yahoo endpoint but are otherwise unrelated, and
+  there's no reason a daily-close-specific failure should also block
+  1M/3M/1Y (or vice versa) if the other fetch is fine.
+- **Real bug caught in code review, since fixed**: an earlier version of
+  this split only threw when _both_ paths came up empty, exactly
+  mirroring the original pre-#28 "refuse to overwrite with an empty run"
+  guarantee. That silently broke this system's only alerting mechanism
+  (letting an error propagate is what fails the Lambda invocation --
+  see "no custom retry/alerting" above): a persistent failure confined
+  to just one path (e.g. Yahoo starts blocking `interval=60m`
+  specifically while daily-close fetches keep working) would have let
+  every nightly run "succeed" indefinitely while that path's ranges
+  silently served increasingly stale data, with nothing beyond a
+  `console.warn` buried in CloudWatch to notice. Fixed: `runPipeline`
+  writes whatever succeeded, then still throws if _either_ path failed
+  -- the thrown message includes both paths' status and the accumulated
+  `skippedTickers`, so nothing operationally useful is lost by failing
+  the invocation. Only when _both_ paths end up with nothing does it
+  throw _without_ writing anything.
+- `n` for the intraday path is `DEFAULT_MAX_TRADES_PER_DAY` in
+  `pipeline.ts`, next to (but deliberately distinct from) the existing
+  `DEFAULT_MAX_TRADES` -- both currently 3, but "trades across the whole
+  window" and "trades within one day" are different knobs that could
+  reasonably diverge later.
+- `optimizeIntradayDays` is run **once**, over the full fetched intraday
+  history (capped only at `endDateString`), and its output is _sliced_
+  per range (1M/3M/1Y) afterward -- not re-run separately for each
+  range. An earlier version did re-run it per range, which was a real,
+  needless cost caught in code review: a given trading day's own result
+  never depends on which range window it falls inside (range-slicing
+  only ever drops whole out-of-range days, never bars within an
+  in-range one), so re-solving the same day's DP up to 3 times (1M/3M/1Y
+  are nested subsets of each other) was pure waste on a Lambda already
+  documented above as running close to its memory ceiling.
+- `fetchUniverseHistory`'s abort case (`BlockedError`/
+  `UnexpectedResponseError`) returns `abortError` rather than throwing,
+  specifically so the `skipped` array it had already accumulated (real
+  per-ticker failures that happened _before_ the abort) survives even
+  though the caller discards the untrusted partial `history` -- losing
+  that bookkeeping used to not matter (pre-#28, any abort always failed
+  the whole run and nothing downstream ever looked at partial data
+  anyway), but matters now that a single path's failure can coexist with
+  a written, partially-successful run.
+- **Doubled Yahoo request volume risk (flagged during planning, not yet
+  hit in practice)**: this issue doubles per-run request volume -- the
+  window and intraday fetches each hit the full ~503-ticker universe,
+  running concurrently. `packages/core/CLAUDE.md` already documents this
+  endpoint as unofficial and liable to start blocking without notice;
+  no throttling/rate-limiting was added to mitigate this, just flagged
+  as something to watch if blocking behavior is ever observed in a real
+  run (see "Current deployment state" in `infra/CLAUDE.md` for how a
+  real run's memory/timing has been tracked before -- the same kind of
+  real-run observation is worth doing here once this is deployed).
+- `RESULTS_SCHEMA_VERSION` bumped to 2 for this issue (see
+  `packages/core/src/results-schema.ts`) -- a global version number
+  across a discriminated union (`WindowResult` | `IntradayResult`), not
+  a per-range version. Concretely: 5Y/MAX are behaviorally unchanged by
+  #28, but their _stored JSON_ still changes shape (gains `model:
+"window"` and `maxTrades`) purely because the version number is
+  shared. This means a pipeline run that writes the new schema must
+  happen (rewriting _all 5_ range keys) before or atomically with
+  deploying the schema-2-only `apps/web` -- otherwise every range,
+  including the two untouched ones, 502s with `schema_mismatch` until
+  the next nightly run. Real-AWS action, needs the user's go-ahead per
+  this repo's standing working agreement -- not yet performed as of this
+  issue's implementation; see the PR for issue #28.

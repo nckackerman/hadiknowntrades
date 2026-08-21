@@ -75,6 +75,38 @@ milestone (#36):
   render a second, static `sr-only` element holding the final value the
   whole time -- no dependency on aria-live announcement timing at all.
 
+## Two result models since issue #28: window vs. intraday-daily
+
+`ResultsPanel.tsx` branches on the fetched `PrecomputedResult`'s
+`model` field:
+
+- `"window"` (5Y/MAX, and every range before #28): unchanged rendering
+  path -- `HeroStat` + `PortfolioChart` + `TradeList` over the whole
+  window's trades.
+- `"intraday-daily"` (1M/3M/1Y): a `DaySelector` (plain `<select>`, not
+  a pill toggle like `RangeSelector` -- a window can hold ~252 trading
+  days, too many for buttons) picks which day's `IntradayDayResult` to
+  view, defaulting to the most recent day. Selected day is URL state
+  (`?day=YYYY-MM-DD`, owned by `ResultsPage.tsx` the same way `?range=`
+  already is) -- cleared on range change, since a day selected under one
+  range's data isn't meaningful for another range's day list.
+  `HeroStat`/`PortfolioChart` are reused as-is per selected day;
+  `IntradayTradeList` (not `TradeList` -- different field shape,
+  `buyTime`/`sellTime` instead of `buyDate`/`sellDate`) renders that
+  day's trades. Both trade-list components share row markup via
+  `TradeRow.tsx`.
+
+`PortfolioChart.tsx` and `format-date.ts` are now datetime-aware, not
+date-only: `PortfolioPoint.date` is either a plain calendar date (window
+model) or a full local datetime (`YYYY-MM-DDTHH:MM:SS`, one intraday
+day's chart, via `portfolio-series.ts`'s `deriveIntradayPortfolioSeries`)
+-- detected by `format-date.ts`'s exported `isPortfolioDatetime` (a "T"
+separator check), the single shared place this detection happens.
+`PortfolioChart`'s `toTimestamp` and `format-date.ts`'s own
+`formatDateTime` both call it rather than each re-implementing the same
+check -- a real duplication caught in code review before this note was
+written; don't reintroduce a second copy of the check.
+
 ## Importing `@hadiknowntrades/core`
 
 Import it by its normal package specifier

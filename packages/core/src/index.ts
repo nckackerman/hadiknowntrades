@@ -6,13 +6,14 @@ export type { SP500Constituent } from "./sp500-constituents";
 
 export {
   fetchDailyCloses,
+  fetchIntradayBars,
   toYahooSymbol,
   BlockedError,
   TickerNotFoundError,
   UnexpectedResponseError,
   TransientFetchError,
 } from "./yahoo-client";
-export type { DailyClose } from "./yahoo-client";
+export type { DailyClose, IntradayBar } from "./yahoo-client";
 
 // fetchDailyClosesCached is deliberately not re-exported here — it's a
 // dev-only convenience, not part of the production API. Import it
@@ -26,10 +27,22 @@ export type { DailyClose } from "./yahoo-client";
 export { buildCalendar, optimizeTrades, OptimizerInputError } from "./optimizer";
 export type { Calendar, OptimizationResult, OptimizeOptions, Trade } from "./optimizer";
 
+export { optimizeIntradayDays } from "./intraday-optimizer";
+export type {
+  IntradayDayResult,
+  IntradayTrade,
+  OptimizeIntradayOptions,
+} from "./intraday-optimizer";
+
 export { PRESET_RANGES, presetRangeStartDate } from "./preset-ranges";
 export type { PresetRange } from "./preset-ranges";
 
 export { toDateString } from "./date-utils";
 
 export { resultKey, RESULTS_SCHEMA_VERSION } from "./results-schema";
-export type { PrecomputedResult } from "./results-schema";
+export type {
+  PrecomputedResult,
+  WindowResult,
+  IntradayResult,
+  ResultModel,
+} from "./results-schema";
