@@ -25,3 +25,8 @@ export type { DailyClose } from "./yahoo-client.js";
 
 export { buildCalendar, optimizeTrades, OptimizerInputError } from "./optimizer.js";
 export type { Calendar, OptimizationResult, OptimizeOptions, Trade } from "./optimizer.js";
+
+export { PRESET_RANGES, presetRangeStartDate } from "./preset-ranges.js";
+export type { PresetRange } from "./preset-ranges.js";
+
+export { toDateString } from "./date-utils.js";

@@ -17,6 +17,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { toDateString } from "./date-utils.js";
 import { fetchDailyCloses, type DailyClose } from "./yahoo-client.js";
 
 // Resolved relative to this module's own location, not process.cwd() —
@@ -35,7 +36,7 @@ const inFlight = new Map<string, Promise<DailyClose[]>>();
 // hits the cache instead of missing on every call due to the differing
 // millisecond timestamp.
 function cacheKey(symbol: string, from: Date, to: Date): string {
-  const raw = `${symbol}:${from.toISOString().slice(0, 10)}:${to.toISOString().slice(0, 10)}`;
+  const raw = `${symbol}:${toDateString(from)}:${toDateString(to)}`;
   return createHash("sha256").update(raw).digest("hex");
 }
 
