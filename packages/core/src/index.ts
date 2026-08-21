@@ -7,9 +7,12 @@ export type { SP500Constituent } from "./sp500-constituents.js";
 export {
   fetchDailyCloses,
   toYahooSymbol,
+  BlockedError,
   TickerNotFoundError,
   TransientFetchError,
 } from "./yahoo-client.js";
 export type { DailyClose } from "./yahoo-client.js";
 
-export { fetchDailyClosesCached } from "./yahoo-client-cache.js";
+// fetchDailyClosesCached is deliberately not re-exported here — it's a
+// dev-only convenience, not part of the production API. Import it
+// directly: `import { fetchDailyClosesCached } from "@hadiknowntrades/core/src/yahoo-client-cache.js"`.

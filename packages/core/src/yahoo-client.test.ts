@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  BlockedError,
   fetchDailyCloses,
   TickerNotFoundError,
   toYahooSymbol,
@@ -125,6 +126,39 @@ describe("fetchDailyCloses", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it.each([401, 403])(
+    "throws BlockedError immediately on HTTP %d, distinct from TickerNotFoundError (no retries)",
+    async (status) => {
+      const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(status, {}));
+
+      const error = await fetchDailyCloses("AAPL", from, to, { fetchImpl }).catch((e) => e);
+
+      expect(error).toBeInstanceOf(BlockedError);
+      expect(error).not.toBeInstanceOf(TickerNotFoundError);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("pads period2 so the requested end date is fully covered", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, validChartBody()));
+
+    await fetchDailyCloses("AAPL", from, to, { fetchImpl });
+
+    const [url] = fetchImpl.mock.calls[0] as [string];
+    const period2 = Number(new URL(url).searchParams.get("period2"));
+    const requestedEndSeconds = Math.floor(to.getTime() / 1000);
+    expect(period2).toBeGreaterThanOrEqual(requestedEndSeconds + 24 * 60 * 60);
+  });
+
+  it("passes an AbortSignal (timeout) to the fetch call", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, validChartBody()));
+
+    await fetchDailyCloses("AAPL", from, to, { fetchImpl });
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
   describe("retry behavior", () => {
     beforeEach(() => {
       vi.useFakeTimers();
@@ -168,6 +202,59 @@ describe("fetchDailyCloses", () => {
       const expectation = expect(promise).rejects.toThrow(TransientFetchError);
       await vi.runAllTimersAsync();
       await expectation;
+    });
+
+    it("retries a 200 response with a non-JSON body (e.g. an anti-bot HTML page) instead of crashing", async () => {
+      const htmlResponse = new Response("<html>not json</html>", { status: 200 });
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(htmlResponse)
+        .mockResolvedValueOnce(jsonResponse(200, validChartBody()));
+
+      const promise = fetchDailyCloses("AAPL", from, to, { fetchImpl });
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      expect(result.length).toBe(2);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
+    it("retries an empty/malformed result shape instead of throwing immediately", async () => {
+      const malformed = { chart: { result: [], error: null } };
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(200, malformed))
+        .mockResolvedValueOnce(jsonResponse(200, validChartBody()));
+
+      const promise = fetchDailyCloses("AAPL", from, to, { fetchImpl });
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      expect(result.length).toBe(2);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
+    it("waits at least the Retry-After duration before retrying a 429", async () => {
+      const rateLimited = new Response(JSON.stringify({}), {
+        status: 429,
+        headers: { "Retry-After": "5" },
+      });
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(rateLimited)
+        .mockResolvedValueOnce(jsonResponse(200, validChartBody()));
+
+      const promise = fetchDailyCloses("AAPL", from, to, { fetchImpl });
+
+      // Advancing only 1s (less than Retry-After: 5) should NOT trigger the retry yet.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(4500);
+      const result = await promise;
+
+      expect(result.length).toBe(2);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
     });
   });
 });
