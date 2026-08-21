@@ -21,6 +21,9 @@ pnpm-debug.log*
 # testing / coverage
 coverage/
 
+# local dev cache (Yahoo client)
+.cache/
+
 # typescript
 *.tsbuildinfo
 
