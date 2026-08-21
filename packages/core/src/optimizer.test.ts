@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { buildCalendar, optimizeTrades, type Calendar } from "./optimizer.js";
+import { buildCalendar, optimizeTrades, OptimizerInputError, type Calendar } from "./optimizer.js";
 import type { DailyClose } from "./yahoo-client.js";
 
 // Backstop against a spy leaking into later tests if an assertion throws
@@ -153,21 +153,23 @@ describe("optimizeTrades: edge cases", () => {
   });
 
   it.each([-1, 1.5, NaN, Infinity, 51])(
-    "rejects an invalid maxTrades (%s) with a clear error instead of crashing or hanging",
+    "rejects an invalid maxTrades (%s) with a typed error instead of crashing or hanging",
     (maxTrades) => {
       const prices = new Map([["A", series([10, 20])]]);
 
-      expect(() => optimizeTrades(prices, { startingCapital: 20, maxTrades })).toThrow(/maxTrades/);
+      expect(() => optimizeTrades(prices, { startingCapital: 20, maxTrades })).toThrow(
+        OptimizerInputError,
+      );
     },
   );
 
-  it.each([NaN, Infinity, -Infinity])(
-    "rejects a non-finite startingCapital (%s) instead of silently propagating garbage",
+  it.each([0, -20, NaN, Infinity, -Infinity])(
+    "rejects a non-positive or non-finite startingCapital (%s) instead of silently propagating garbage",
     (startingCapital) => {
       const prices = new Map([["A", series([10, 20])]]);
 
       expect(() => optimizeTrades(prices, { startingCapital, maxTrades: 1 })).toThrow(
-        /startingCapital/,
+        OptimizerInputError,
       );
     },
   );

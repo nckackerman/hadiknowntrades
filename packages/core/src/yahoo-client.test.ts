@@ -319,6 +319,36 @@ describe("fetchDailyCloses", () => {
       expect(fetchImpl).toHaveBeenCalledTimes(2);
     });
 
+    it("retries when every close is present but invalid (all zero), not just when the array is empty", async () => {
+      // Regression test: the malformed-response check used to look at
+      // the raw close array length, which is non-empty here even though
+      // every value is invalid and gets filtered out by parseChartResult
+      // — the check must run on the *parsed* output, not the raw shape.
+      const allInvalid = {
+        chart: {
+          result: [
+            {
+              meta: { gmtoffset: -14400 },
+              timestamp: [1704205800, 1704292200],
+              indicators: { quote: [{ close: [0, 0] }], adjclose: [{ adjclose: [0, 0] }] },
+            },
+          ],
+          error: null,
+        },
+      };
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(200, allInvalid))
+        .mockResolvedValueOnce(jsonResponse(200, validChartBody()));
+
+      const promise = fetchDailyCloses("AAPL", from, to, { fetchImpl });
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      expect(result.length).toBe(2);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
     it("waits at least the Retry-After duration before retrying a 429", async () => {
       const rateLimited = new Response(JSON.stringify({}), {
         status: 429,
