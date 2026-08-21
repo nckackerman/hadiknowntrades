@@ -12,7 +12,7 @@
 // - An invalid/delisted symbol returns HTTP 200 with a
 //   `{ chart: { result: null, error: {...} } }` body, not an HTTP error.
 
-import { isValidPrice } from "./is-valid-price.js";
+import { isValidPrice } from "./is-valid-price";
 
 const CHART_BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart";
 
