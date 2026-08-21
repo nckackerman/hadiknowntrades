@@ -1,7 +1,9 @@
 import {
   BlockedError,
   TickerNotFoundError,
+  toDateString,
   TransientFetchError,
+  UnexpectedResponseError,
   type DailyClose,
 } from "@hadiknowntrades/core";
 import { describe, expect, it } from "vitest";
@@ -9,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import { runPipeline, type ResultStore } from "./pipeline.js";
 
 function daily(dateFromAsOf: (asOf: Date) => Date, close: number): DailyClose {
-  return { date: dateFromAsOf(new Date("2024-06-15")).toISOString().slice(0, 10), close };
+  return { date: toDateString(dateFromAsOf(new Date("2024-06-15"))), close };
 }
 
 /** In-memory ResultStore, so tests can inspect exactly what was written. */
@@ -36,7 +38,7 @@ describe("runPipeline", () => {
 
   it("writes one result per preset range, with the correct schema", async () => {
     const fixtureData = new Map<string, DailyClose[]>([
-      ["AAPL", [daily(daysBack(20), 10), daily(daysBack(10), 15), daily(daysBack(1), 20)]],
+      ["AAPL", [daily(daysBack(20), 10), daily(daysBack(10), 15), daily(daysBack(2), 20)]],
     ]);
     const store = memoryStore();
 
@@ -55,7 +57,10 @@ describe("runPipeline", () => {
       expect(parsed).toMatchObject({
         schemaVersion: 1,
         range,
-        dataAsOf: "2024-06-15",
+        // The most recent point in the fixture is 2 days before asOf --
+        // dataAsOf reflects the actual data, not the requested asOf.
+        dataAsOf: "2024-06-13",
+        endDate: "2024-06-15",
         startingCapital: 20,
       });
       expect(typeof parsed.generatedAt).toBe("string");
@@ -92,6 +97,25 @@ describe("runPipeline", () => {
     }
   });
 
+  it("computes a single generatedAt for the whole run, shared across all 5 results", async () => {
+    const fixtureData = new Map<string, DailyClose[]>([
+      ["AAPL", [daily(daysBack(20), 10), daily(daysBack(1), 30)]],
+    ]);
+    const store = memoryStore();
+
+    await runPipeline({
+      tickers: ["AAPL"],
+      fetchDailyCloses: async (symbol) => fixtureData.get(symbol) ?? [],
+      store,
+      asOf,
+    });
+
+    const generatedAts = new Set(
+      [...store.objects.values()].map((body) => JSON.parse(body).generatedAt),
+    );
+    expect(generatedAts.size).toBe(1);
+  });
+
   it("slices each ticker's history to the correct window per range", async () => {
     // Prices spread across 1M, 1Y, and beyond-5Y windows, each distinct
     // enough that the chosen range changes which points are visible.
@@ -123,6 +147,30 @@ describe("runPipeline", () => {
     expect(oneMonth.endingBalance).toBe(20);
     // MAX sees the full spread, from 1 up to 50 -> a very large multiplier is possible.
     expect(max.endingBalance).toBeGreaterThan(20);
+  });
+
+  it("excludes data points after the requested asOf, even if the fetch client returns them", async () => {
+    // A fetch client that (incorrectly, or via Yahoo's own end-of-day
+    // padding) returns a point after the requested asOf shouldn't leak
+    // into the computed window.
+    const fixtureData = new Map<string, DailyClose[]>([
+      [
+        "AAPL",
+        [daily(daysBack(5), 10), daily(daysBack(0), 20), { date: "2024-06-16", close: 999 }],
+      ],
+    ]);
+    const store = memoryStore();
+
+    await runPipeline({
+      tickers: ["AAPL"],
+      fetchDailyCloses: async (symbol) => fixtureData.get(symbol) ?? [],
+      store,
+      asOf,
+    });
+
+    const max = JSON.parse(store.objects.get("results/MAX.json")!);
+    expect(max.dataAsOf).toBe("2024-06-15"); // not 2024-06-16
+    expect(max.trades.every((t: { sellDate: string }) => t.sellDate <= "2024-06-15")).toBe(true);
   });
 
   it("skips a ticker on TickerNotFoundError and continues, recording it as skipped", async () => {
@@ -173,6 +221,70 @@ describe("runPipeline", () => {
         asOf,
       }),
     ).rejects.toThrow(BlockedError);
+
+    expect(store.objects.size).toBe(0);
+  });
+
+  it("aborts the entire run on UnexpectedResponseError without writing any results", async () => {
+    const store = memoryStore();
+
+    await expect(
+      runPipeline({
+        tickers: ["AAPL", "MSFT"],
+        fetchDailyCloses: async () => {
+          throw new UnexpectedResponseError("AAPL", 400);
+        },
+        store,
+        asOf,
+      }),
+    ).rejects.toThrow(UnexpectedResponseError);
+
+    expect(store.objects.size).toBe(0);
+  });
+
+  it("stops starting new fetches once a worker hits BlockedError, instead of every worker running to completion", async () => {
+    const store = memoryStore();
+    const attempted: string[] = [];
+    const tickers = Array.from({ length: 20 }, (_, i) => `T${i}`);
+
+    await runPipeline({
+      tickers,
+      fetchConcurrency: 4,
+      fetchDailyCloses: async (symbol) => {
+        attempted.push(symbol);
+        if (symbol === "T0") throw new BlockedError(symbol, 403);
+        // Small delay so the block has a chance to propagate before
+        // every ticker gets a chance to start.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return [daily(daysBack(20), 10), daily(daysBack(1), 40)];
+      },
+      store,
+      asOf,
+    }).catch(() => {
+      // expected to reject; asserting on `attempted` below is the point
+    });
+
+    // Without the fix, all 20 tickers would eventually be attempted
+    // (each of the 4 workers keeps pulling new work). With the fix,
+    // workers stop pulling new tickers once the block is detected, so
+    // only a small handful (bounded by concurrency + in-flight timing)
+    // should ever have started.
+    expect(attempted.length).toBeLessThan(tickers.length);
+  });
+
+  it("refuses to write empty results and throws when every ticker fails", async () => {
+    const store = memoryStore();
+
+    await expect(
+      runPipeline({
+        tickers: ["A", "B"],
+        fetchDailyCloses: async (symbol) => {
+          throw new TickerNotFoundError(symbol, "no data");
+        },
+        store,
+        asOf,
+      }),
+    ).rejects.toThrow(/no ticker data/);
 
     expect(store.objects.size).toBe(0);
   });
