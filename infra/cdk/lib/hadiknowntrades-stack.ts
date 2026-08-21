@@ -18,15 +18,25 @@
 import { fileURLToPath } from "node:url";
 import * as path from "node:path";
 
-import { CfnOutput, Duration, RemovalPolicy, Stack, type StackProps } from "aws-cdk-lib";
+import {
+  Aspects,
+  CfnOutput,
+  CfnResource,
+  Duration,
+  RemovalPolicy,
+  Stack,
+  type IAspect,
+  type StackProps,
+} from "aws-cdk-lib";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
 import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
+import { CfnRole, ManagedPolicy, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { FunctionUrlAuthType, Runtime } from "aws-cdk-lib/aws-lambda";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { BlockPublicAccess, Bucket } from "aws-cdk-lib/aws-s3";
-import type { Construct } from "constructs";
+import type { Construct, IConstruct } from "constructs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -52,6 +62,59 @@ const WEB_PLACEHOLDER_LAMBDA_ENTRY = path.join(
 // `/favicon.ico` or public/* passthrough) -- left minimal for now since
 // there's no real static output to serve yet either.
 const STATIC_ASSET_PATH_PATTERNS = ["/_next/static/*"];
+
+// The sandbox account's deploying IAM user has no general IAM access --
+// PowerUserAccess deliberately excludes it (infra/bootstrap/SETUP.md) --
+// only the narrow `hadiknowntrades-scoped-iam` policy, which permits
+// iam:CreateRole/PutRolePolicy/etc solely for role names matching
+// `hadiknowntrades-*` or `cdk-*` (infra/bootstrap/scoped-iam-for-cdk.json).
+// CDK's own default (unnamed) execution roles get CloudFormation-generated
+// names that match neither prefix, which would fail with AccessDenied on
+// the first real `cdk deploy`. Every role this stack creates -- explicitly
+// or via a construct's internals -- must carry this prefix.
+const ROLE_NAME_PREFIX = "hadiknowntrades-";
+
+/**
+ * Catches any IAM role left with no explicit name -- specifically the
+ * shared custom-resource execution role CDK's S3 `autoDeleteObjects`
+ * support creates internally (aws-cdk-lib/aws-s3 exposes no prop to name
+ * it directly). Both Lambda execution roles in this stack are already
+ * given explicit `hadiknowntrades-*` names below, so in practice this
+ * only ever touches that one internal role -- but doing it as an Aspect
+ * means any other CDK-internal role added later is covered too, without
+ * having to special-case each construct that happens to create one.
+ */
+class ScopedIamRoleNames implements IAspect {
+  private count = 0;
+
+  visit(node: IConstruct): void {
+    if (node instanceof CfnRole) {
+      // Typed roles (this stack only creates these via an explicit
+      // `new Role(...)` with a name already set) -- nothing to do, but
+      // handled for completeness in case one is ever added without one.
+      if (node.roleName === undefined) node.roleName = this.nextName();
+      return;
+    }
+    // CDK's `CustomResourceProvider` framework -- what S3's
+    // `autoDeleteObjects: true` uses internally to create its shared
+    // cleanup-Lambda execution role -- builds it as a raw L1
+    // `CfnResource` escape hatch rather than the typed `CfnRole` class,
+    // so it never matches the branch above. There's no public prop
+    // anywhere to name it directly, hence patching it here via property
+    // override instead.
+    if (node instanceof CfnResource && node.cfnResourceType === "AWS::IAM::Role") {
+      node.addPropertyOverride("RoleName", this.nextName());
+    }
+  }
+
+  private nextName(): string {
+    this.count += 1;
+    // IAM role names are capped at 64 characters; a short incrementing
+    // suffix keeps this well under that regardless of how deeply nested
+    // the construct that created the role is.
+    return `${ROLE_NAME_PREFIX}cdk-internal-role-${this.count}`;
+  }
+}
 
 export class HadIKnownTradesStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
@@ -90,8 +153,19 @@ export class HadIKnownTradesStack extends Stack {
     // wrapper around the same runPipeline() the CLI entry point uses)
     // with esbuild at synth time -- no Docker, no network calls beyond
     // what a normal local build needs.
+    const pipelineFnRole = new Role(this, "PipelineFunctionRole", {
+      // Explicit name (not CDK's default auto-generated one) so it falls
+      // under the sandbox account's scoped IAM policy -- see
+      // ROLE_NAME_PREFIX above.
+      roleName: `${ROLE_NAME_PREFIX}pipeline-fn-role`,
+      assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
+      managedPolicies: [
+        ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole"),
+      ],
+    });
     const pipelineFn = new NodejsFunction(this, "PipelineFunction", {
       functionName: "hadiknowntrades-pipeline",
+      role: pipelineFnRole,
       entry: PIPELINE_LAMBDA_ENTRY,
       handler: "handler",
       runtime: Runtime.NODEJS_22_X,
@@ -126,8 +200,16 @@ export class HadIKnownTradesStack extends Stack {
     });
 
     // --- Lambda: web app (PLACEHOLDER, see lambda/web-placeholder) ------
+    const webFnRole = new Role(this, "WebFunctionRole", {
+      roleName: `${ROLE_NAME_PREFIX}web-fn-role`,
+      assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
+      managedPolicies: [
+        ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole"),
+      ],
+    });
     const webFn = new NodejsFunction(this, "WebFunction", {
       functionName: "hadiknowntrades-web",
+      role: webFnRole,
       entry: WEB_PLACEHOLDER_LAMBDA_ENTRY,
       handler: "handler",
       runtime: Runtime.NODEJS_22_X,
@@ -169,6 +251,11 @@ export class HadIKnownTradesStack extends Stack {
         ]),
       ),
     });
+
+    // Must run after every construct above exists, since it walks the
+    // whole stack's construct tree looking for roles CDK created without
+    // an explicit name (see ScopedIamRoleNames' own doc comment).
+    Aspects.of(this).add(new ScopedIamRoleNames());
 
     // --- Outputs ------------------------------------------------------
     new CfnOutput(this, "ResultsBucketName", { value: resultsBucket.bucketName });

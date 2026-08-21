@@ -49,6 +49,26 @@ targeting it, and a placeholder web-hosting Lambda.
   `package.json` and `infra/cdk/package.json` for that reason; don't
   remove either without re-verifying `cdk synth` still bundles locally
   instead of falling back to (unavailable) Docker.
+- **Every IAM role the stack creates has an explicit `hadiknowntrades-*`
+  name** - required, not cosmetic. The sandbox account's deploying user
+  has no general IAM access (`hadiknowntrades-scoped-iam` only permits
+  `iam:CreateRole`/etc for role names matching `hadiknowntrades-*` or
+  `cdk-*`); CDK's own default auto-generated role names match neither
+  prefix and would fail with AccessDenied on the first real deploy. Both
+  Lambda execution roles are explicit `Role` constructs with a
+  `roleName` set. The one role this stack doesn't create directly - the
+  shared execution role for S3's `autoDeleteObjects: true` custom
+  resource - is patched by a stack-level `Aspects.of(this).add(...)`
+  (`ScopedIamRoleNames` in the stack file) since `aws-cdk-lib/aws-s3`
+  exposes no prop to name it, and it's built internally as a raw L1
+  `CfnResource` escape hatch rather than the typed `CfnRole` class (so
+  an `instanceof CfnRole` check alone misses it - verified by
+  synthesizing and inspecting the template's `AWS::IAM::Role`
+  resources directly, not assumed). If a `cdk synth`/`assertions` test
+  ever needs to find a role by logical ID, note the pipeline Lambda's
+  role construct id is `PipelineFunctionRole` (its own explicit `Role`),
+  not CDK's default `PipelineFunctionServiceRole` naming for an unnamed
+  one.
 - **The web Lambda is a placeholder** (`cdk/lambda/web-placeholder/`),
   not a real OpenNext build — apps/web (issues #7/#8) is still just the
   default Next.js starter scaffold, there's no `.open-next` build

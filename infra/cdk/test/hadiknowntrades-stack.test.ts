@@ -6,7 +6,7 @@
 
 import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import { HadIKnownTradesStack } from "../lib/hadiknowntrades-stack.js";
 
@@ -19,9 +19,15 @@ function synthTemplate(): Template {
 }
 
 describe("HadIKnownTradesStack", () => {
-  it("creates exactly two S3 buckets, both private with SSL enforced", () => {
-    const template = synthTemplate();
+  // The stack's input never varies between these assertions, so synth
+  // (including two real, uncached esbuild Lambda bundles) only needs to
+  // run once for the whole suite instead of once per `it()`.
+  let template: Template;
+  beforeAll(() => {
+    template = synthTemplate();
+  });
 
+  it("creates exactly two S3 buckets, both private with SSL enforced", () => {
     template.resourceCountIs("AWS::S3::Bucket", 2);
     template.allResourcesProperties("AWS::S3::Bucket", {
       PublicAccessBlockConfiguration: {
@@ -47,8 +53,6 @@ describe("HadIKnownTradesStack", () => {
   });
 
   it("creates a CloudFront distribution with a Lambda default origin and an S3 static-asset behavior", () => {
-    const template = synthTemplate();
-
     template.resourceCountIs("AWS::CloudFront::Distribution", 1);
     template.hasResourceProperties("AWS::CloudFront::Distribution", {
       DistributionConfig: Match.objectLike({
@@ -64,8 +68,6 @@ describe("HadIKnownTradesStack", () => {
   });
 
   it("creates the pipeline Lambda wired to RESULTS_BUCKET and a matching nightly EventBridge rule", () => {
-    const template = synthTemplate();
-
     template.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "hadiknowntrades-pipeline",
       Handler: "index.handler",
@@ -100,8 +102,6 @@ describe("HadIKnownTradesStack", () => {
   });
 
   it("creates the web Lambda with an IAM-authenticated Function URL", () => {
-    const template = synthTemplate();
-
     template.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "hadiknowntrades-web",
       Handler: "index.handler",
@@ -112,8 +112,6 @@ describe("HadIKnownTradesStack", () => {
   });
 
   it("scopes the pipeline Lambda's S3 permission to the results/ prefix only", () => {
-    const template = synthTemplate();
-
     // Bucket.grantPut() expands to the put-object action family (plain
     // put + the legal-hold/retention/tagging/multipart-abort variants
     // that go with actually writing an object) -- not a single literal
@@ -142,9 +140,13 @@ describe("HadIKnownTradesStack", () => {
     // -- the stack also contains an unrelated CDK-managed IAM policy
     // for the S3 auto-delete-objects custom resource (with its own,
     // broader S3 actions), which isn't what this test is about.
-    const template = synthTemplate();
+    // Its logical ID is "PipelineFunctionRole..." (its own explicit
+    // `Role` construct id, given a real name so it falls under the
+    // sandbox account's scoped IAM policy -- see the stack's
+    // ScopedIamRoleNames aspect), not CDK's default
+    // "PipelineFunctionServiceRole..." naming for an unnamed role.
     const pipelineRoleLogicalId = Object.keys(template.findResources("AWS::IAM::Role")).find((id) =>
-      id.startsWith("PipelineFunctionServiceRole"),
+      id.startsWith("PipelineFunctionRole"),
     );
     expect(pipelineRoleLogicalId).toBeDefined();
 
@@ -180,5 +182,26 @@ describe("HadIKnownTradesStack", () => {
         "s3:PutObjectVersionTagging",
       ].sort(),
     );
+  });
+
+  it("names every IAM role hadiknowntrades-* or cdk-*, matching the sandbox account's scoped IAM policy", () => {
+    // The deploying IAM user (infra/bootstrap/scoped-iam-for-cdk.json)
+    // can only create/manage roles named `hadiknowntrades-*` or
+    // `cdk-*` -- CDK's own default (unnamed) execution roles get a
+    // CloudFormation-generated name that matches neither prefix, which
+    // would fail with AccessDenied on the first real deploy. This
+    // covers every role the stack creates, including ones CDK builds
+    // internally (e.g. the S3 autoDeleteObjects custom resource's
+    // shared role) as a raw L1 escape hatch rather than the typed
+    // CfnRole class.
+    const roles = template.findResources("AWS::IAM::Role");
+    const roleNames = Object.values(roles).map(
+      (role) => (role as { Properties: { RoleName: string } }).Properties.RoleName,
+    );
+
+    expect(roleNames.length).toBeGreaterThan(0);
+    for (const name of roleNames) {
+      expect(name).toEqual(expect.stringMatching(/^(hadiknowntrades-|cdk-)/));
+    }
   });
 });
