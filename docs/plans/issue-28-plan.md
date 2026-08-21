@@ -19,7 +19,7 @@ at commit `2965c6a`.
   field itself), making it structurally interchangeable with
   `DailyClose` everywhere daily-close-shaped data already flows.
 - **5Y/MAX schema note**: the acceptance criteria says 5Y/MAX get "same
-  schema as today." Precisely: same *behavior and values* - same trades,
+  schema as today." Precisely: same _behavior and values_ - same trades,
   same data, same optimizer call. The JSON shape technically changes
   (adds `model: "window"` and `maxTrades`, bumps `schemaVersion` to 2)
   because the version number is global across the discriminated union
@@ -82,9 +82,11 @@ interval-specific. Plan:
     close: number;
   }
   export async function fetchIntradayBars(
-    symbol: string, from: Date, to: Date,
+    symbol: string,
+    from: Date,
+    to: Date,
     options: { fetchImpl?: typeof fetch } = {},
-  ): Promise<IntradayBar[]>
+  ): Promise<IntradayBar[]>;
   ```
   Interval is hardcoded to `60m` inside this function for now (not a
   parameter) - the issue is explicit that finer granularities are
@@ -100,7 +102,7 @@ interval-specific. Plan:
   the calendar date, but that reasoning does not obviously extend to
   every 60m bar - the first bar of the day sits right at market open
   (9:30 ET) and the last near market close (16:00 ET), and Yahoo's
-  `gmtoffset` reflects the *request-time* offset, not the historically
+  `gmtoffset` reflects the _request-time_ offset, not the historically
   correct one for that specific historical bar. A DST-boundary week could
   misattribute a 9:30am bar to the wrong calendar day if the offset used
   is off by an hour in the wrong direction. **This needs a real check
@@ -111,7 +113,7 @@ interval-specific. Plan:
   "ticker has no data" (`TickerNotFoundError`). For intraday, the same
   field is also how Yahoo reports "interval not available for this date
   range" (per the issue's verified retention table, e.g. `"1m data not
-  available for startTime=... range must be within the last 30 days"`).
+available for startTime=... range must be within the last 30 days"`).
   Since the pipeline will only ever request a 60m range comfortably
   inside the 730-day cap (see §4), this should never actually fire for
   us - but if it ever does, it'll surface as a misleading
@@ -144,7 +146,7 @@ This lives in a new `packages/core/src/intraday-optimizer.ts`:
 
 ```ts
 export interface IntradayDayResult {
-  date: string;               // YYYY-MM-DD
+  date: string; // YYYY-MM-DD
   startingCapital: number;
   endingBalance: number;
   trades: IntradayTrade[];
@@ -152,8 +154,8 @@ export interface IntradayDayResult {
 
 export interface IntradayTrade {
   ticker: string;
-  buyDate: string;   // YYYY-MM-DD, same as sellDate (same-day only)
-  buyTime: string;   // HH:MM:SS local
+  buyDate: string; // YYYY-MM-DD, same as sellDate (same-day only)
+  buyTime: string; // HH:MM:SS local
   buyPrice: number;
   sellTime: string;
   sellPrice: number;
@@ -162,7 +164,7 @@ export interface IntradayTrade {
 export function optimizeIntradayDays(
   barsByTicker: Map<string, IntradayBar[]>,
   options: { startingCapital: number; maxTradesPerDay: number },
-): IntradayDayResult[]
+): IntradayDayResult[];
 ```
 
 Internally, `optimizeTrades`'s returned `Trade.buyDate`/`sellDate` will
@@ -218,7 +220,7 @@ export interface WindowResult extends PrecomputedResultBase {
   model: "window";
   startDate: string | null;
   endDate: string;
-  maxTrades: number;          // was implicit/undocumented before; now explicit, see #5
+  maxTrades: number; // was implicit/undocumented before; now explicit, see #5
   endingBalance: number;
   trades: Trade[];
 }
@@ -243,14 +245,14 @@ export type PrecomputedResult = WindowResult | IntradayResult;
 - **Real deploy-ordering hazard worth flagging explicitly**: 5Y/MAX are
   functionally unchanged by this issue (still `WindowResult`), but they
   still get a `schemaVersion` bump (2) and a new required `model: "window"`
-  field, purely because the version number is global. That means *all
-  five* range files need to be rewritten by a pipeline run before or
+  field, purely because the version number is global. That means _all
+  five_ range files need to be rewritten by a pipeline run before or
   atomically with deploying the new `apps/web` (which will reject
   `schemaVersion: 1` objects, including 5Y/MAX's, once deployed) - not
   just the three ranges this issue actually changes behavior for.
   Concretely this means: deploy pipeline first, manually trigger one
   real run (writes all 5 keys with `schemaVersion: 2`), confirm via S3
-  the objects are correct, *then* deploy `apps/web`. That manual trigger
+  the objects are correct, _then_ deploy `apps/web`. That manual trigger
   is a real-AWS action and needs the user's explicit go-ahead per this
   repo's working agreement - not performed in this plan, called out here
   as a required step in the implementation PR's rollout, not skipped
@@ -286,13 +288,13 @@ one daily-close fetch. Split into two parallel paths:
 - **Judgment call on fetch independence**: run the daily and intraday
   universe fetches concurrently (`Promise.all`) rather than serially, and
   treat their abort conditions independently - a systemic `BlockedError`
-  on the *intraday* fetch (e.g. Yahoo disables the 60m interval, or
+  on the _intraday_ fetch (e.g. Yahoo disables the 60m interval, or
   starts blocking it specifically) shouldn't take down 5Y/MAX, which
   don't depend on it, and vice versa. Concretely: if the intraday fetch
   aborts or the resulting per-range `days` list ends up empty (mirroring
   the existing "zero tickers succeeded" guard, generalized to "zero days
   produced any result"), refuse to overwrite the existing 1M/3M/1Y S3
-  objects for *those three ranges only*, while 5Y/MAX still write
+  objects for _those three ranges only_, while 5Y/MAX still write
   normally if their own fetch succeeded. This is a natural extension of
   the existing "don't overwrite good data with an empty run" principle,
   just scoped per-path instead of globally all-or-nothing.
@@ -389,7 +391,8 @@ one daily-close fetch. Split into two parallel paths:
   called out as a required step before merge.
 
 ## 7. Open questions / judgment calls this plan made without a resolving
-   answer in the issue text
+
+answer in the issue text
 
 1. **Per-day starting capital: resets to $20 every day, does not
    compound across days.** This is the single biggest interpretive call
@@ -404,8 +407,8 @@ one daily-close fetch. Split into two parallel paths:
    redundant/always-$20 vs. genuinely per-day-varying) and the DP
    structure (independent per-day calls vs. threading a running balance
    between them, which is still O(days) and still fits the "no cross-day
-   state in the *search*" computational note even if a compounding
-   reading were chosen for the *display*).
+   state in the _search_" computational note even if a compounding
+   reading were chosen for the _display_).
 2. **DST bucketing at 60m granularity** - flagged concretely in §1, needs
    a live check against a real DST-transition week before trusting the
    existing `unixToLocalDateString` reasoning extends to hourly bars.

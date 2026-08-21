@@ -8,9 +8,29 @@
 // dated copies — re-running for the same day (or any day) just replaces
 // the same objects with freshly computed content, no duplicate or
 // conflicting state.
+//
+// Issue #28 split this into two independent paths sharing the same
+// fetch/abort machinery (fetchUniverseHistory, generalized below):
+//   - the "window" path (5Y/MAX): unchanged from before #28 -- one daily-
+//     close fetch (from earliestDate), sliced per range, run through
+//     optimizeTrades.
+//   - the "intraday" path (1M/3M/1Y): one 60-minute-bar fetch (from the
+//     1Y start date -- comfortably covers all three, same "fetch once,
+//     slice many" pattern), sliced per range, run through
+//     optimizeIntradayDays.
+// The two paths' fetches run concurrently and fail independently: a
+// systemic failure (BlockedError/UnexpectedResponseError, or literally
+// zero usable data) on one path refuses to overwrite *that path's*
+// range keys, but doesn't prevent the other path's ranges from writing
+// if its own fetch succeeded. Only if *both* paths end up with nothing
+// does the whole run throw, generalizing the original "refuse to
+// overwrite good results with an empty run" guarantee to two paths
+// instead of one. See docs/plans/issue-28-plan.md for the design
+// rationale.
 
 import {
   BlockedError,
+  optimizeIntradayDays,
   optimizeTrades,
   PRESET_RANGES,
   presetRangeStartDate,
@@ -19,16 +39,33 @@ import {
   toDateString,
   UnexpectedResponseError,
   type DailyClose,
+  type IntradayBar,
+  type IntradayResult,
   type PrecomputedResult,
+  type PresetRange,
+  type WindowResult,
 } from "@hadiknowntrades/core";
 
 const DEFAULT_STARTING_CAPITAL = 20;
 const DEFAULT_MAX_TRADES = 3;
+// Distinct from DEFAULT_MAX_TRADES on purpose, even though both are
+// currently 3 -- "trades across the whole window" and "trades within one
+// day" are conceptually different knobs (see issue #28) that could
+// reasonably diverge later; collapsing them into one shared constant
+// would be a coincidence today, not an invariant worth encoding.
+const DEFAULT_MAX_TRADES_PER_DAY = 3;
 // Deliberately early enough to predate any current S&P 500 constituent's
 // IPO — the Yahoo client naturally returns only what actually exists in
 // range, so this just means "give me everything you have."
 const DEFAULT_EARLIEST_DATE = new Date("1970-01-01T00:00:00Z");
 const DEFAULT_FETCH_CONCURRENCY = 10;
+
+// The "window" (whole-window, daily-close) ranges vs. the "intraday"
+// (per-day, 60m-bar) ranges introduced by issue #28. Together these must
+// cover every PresetRange exactly once -- see pipeline.test.ts for a
+// check that they do.
+const WINDOW_RANGES: readonly PresetRange[] = ["5Y", "MAX"];
+const INTRADAY_RANGES: readonly PresetRange[] = ["1M", "3M", "1Y"];
 
 export interface ResultStore {
   putObject(key: string, body: string): Promise<void>;
@@ -36,28 +73,36 @@ export interface ResultStore {
 
 export interface PipelineRunSummary {
   results: PrecomputedResult[];
+  /** Union of tickers skipped by either fetch path (a ticker can be skipped from one path's fetch but not the other's, but this summary doesn't distinguish which). */
   skippedTickers: string[];
 }
 
 export interface RunPipelineOptions {
   tickers: readonly string[];
   fetchDailyCloses: (symbol: string, from: Date, to: Date) => Promise<DailyClose[]>;
+  fetchIntradayBars: (symbol: string, from: Date, to: Date) => Promise<IntradayBar[]>;
   store: ResultStore;
   /** Defaults to now. */
   asOf?: Date;
   startingCapital?: number;
+  /** Max whole-window trades for the window (5Y/MAX) path. */
   maxTrades?: number;
+  /** Max same-day trades per day for the intraday (1M/3M/1Y) path. */
+  maxTradesPerDay?: number;
   earliestDate?: Date;
   fetchConcurrency?: number;
 }
 
 /**
- * Fetches full history (earliestDate..asOf) for every ticker, with
- * bounded concurrency. A ticker that fails with TickerNotFoundError or
+ * Fetches full history (from..to) for every ticker, with bounded
+ * concurrency. A ticker that fails with TickerNotFoundError or
  * TransientFetchError is skipped (logged, doesn't fail the run) — those
- * are per-ticker problems.
+ * are per-ticker problems. Generic over the bar shape so the same
+ * concurrency/abort/skip logic backs both the daily-close fetch and the
+ * intraday-bar fetch (issue #28) instead of a second copy-pasted worker
+ * pool.
  *
- * BlockedError or UnexpectedResponseError abort the whole run: a block
+ * BlockedError or UnexpectedResponseError abort the whole fetch: a block
  * means we shouldn't keep firing off hundreds more requests, and an
  * unexpected-response is documented (see yahoo-client.ts) as "likely
  * permanent regardless of symbol" — i.e. a systemic problem, not a
@@ -69,14 +114,14 @@ export interface RunPipelineOptions {
  * without threading an AbortSignal through the fetch client — but no
  * further tickers get queued once the flag is set).
  */
-async function fetchUniverseHistory(
+async function fetchUniverseHistory<TBar>(
   tickers: readonly string[],
   from: Date,
   to: Date,
-  fetchDailyCloses: RunPipelineOptions["fetchDailyCloses"],
+  fetchFn: (symbol: string, from: Date, to: Date) => Promise<TBar[]>,
   concurrency: number,
-): Promise<{ history: Map<string, DailyClose[]>; skipped: string[] }> {
-  const history = new Map<string, DailyClose[]>();
+): Promise<{ history: Map<string, TBar[]>; skipped: string[] }> {
+  const history = new Map<string, TBar[]>();
   const skipped: string[] = [];
   let nextIndex = 0;
   let abortError: BlockedError | UnexpectedResponseError | null = null;
@@ -88,7 +133,7 @@ async function fetchUniverseHistory(
       if (i >= tickers.length) return;
       const ticker = tickers[i]!;
       try {
-        const series = await fetchDailyCloses(ticker, from, to);
+        const series = await fetchFn(ticker, from, to);
         history.set(ticker, series);
       } catch (error) {
         if (error instanceof BlockedError || error instanceof UnexpectedResponseError) {
@@ -112,62 +157,101 @@ async function fetchUniverseHistory(
 }
 
 /**
- * The most recent date actually present across the whole fetched
- * universe, not exceeding upperBound, or null if there's no such data.
- * Excluding anything past upperBound keeps this consistent with the
- * per-range window filter below — a fetch client returning data past
+ * The most recent date (per `dateOf`) actually present across the whole
+ * fetched universe, not exceeding upperBound, or null if there's no such
+ * data. Excluding anything past upperBound keeps this consistent with
+ * the per-range window filter below — a fetch client returning data past
  * what was requested (in violation of its own contract) shouldn't make
  * dataAsOf claim freshness beyond what was actually asked for.
+ *
+ * Generic over `dateOf` (rather than assuming `.date` is already a
+ * comparable calendar-date string) so this also backs the intraday path,
+ * whose bars' `.date` is a full local datetime string — comparing that
+ * directly against a calendar-date upperBound would be wrong (e.g.
+ * "2024-06-15T15:30:00" > "2024-06-15" lexicographically, incorrectly
+ * excluding same-day intraday bars); callers pass a `dateOf` that
+ * extracts just the calendar-date part for that case.
  */
-function findMaxDate(history: Map<string, DailyClose[]>, upperBound: string): string | null {
+function findMaxDate<T>(
+  history: Map<string, T[]>,
+  upperBound: string,
+  dateOf: (item: T) => string,
+): string | null {
   let max: string | null = null;
   for (const series of history.values()) {
     for (const point of series) {
-      if (point.date > upperBound) continue;
-      if (max === null || point.date > max) max = point.date;
+      const date = dateOf(point);
+      if (date > upperBound) continue;
+      if (max === null || date > max) max = date;
     }
   }
   return max;
 }
 
-export async function runPipeline(options: RunPipelineOptions): Promise<PipelineRunSummary> {
-  const asOf = options.asOf ?? new Date();
-  const startingCapital = options.startingCapital ?? DEFAULT_STARTING_CAPITAL;
-  const maxTrades = options.maxTrades ?? DEFAULT_MAX_TRADES;
-  const earliestDate = options.earliestDate ?? DEFAULT_EARLIEST_DATE;
-  const fetchConcurrency = options.fetchConcurrency ?? DEFAULT_FETCH_CONCURRENCY;
-  const endDateString = toDateString(asOf);
+/** The calendar-date (YYYY-MM-DD) prefix of an intraday bar's full local-datetime `date` field ("YYYY-MM-DDTHH:MM:SS"). */
+function localDatePart(datetime: string): string {
+  return datetime.slice(0, 10);
+}
 
-  const { history, skipped } = await fetchUniverseHistory(
-    options.tickers,
-    earliestDate,
-    asOf,
-    options.fetchDailyCloses,
-    fetchConcurrency,
-  );
+interface PathFetchOutcome<TBar> {
+  history: Map<string, TBar[]>;
+  skipped: string[];
+  /** The most recent date with usable data, or null if this path has none (see failureReason for why). */
+  dataAsOf: string | null;
+  /** Non-null (and dataAsOf/history/skipped effectively empty) if this path should refuse to write any results this run -- either the fetch aborted (BlockedError/UnexpectedResponseError) or produced zero usable data across every ticker. Null on success. */
+  failureReason: string | null;
+}
 
-  const dataAsOf = findMaxDate(history, endDateString);
-  if (dataAsOf === null) {
-    // Refuse to overwrite S3's existing (presumably good) results with
-    // empty-but-schema-valid output — better to fail the run loudly and
-    // keep yesterday's data than to silently erase it.
-    throw new Error(
-      `pipeline aborted: no ticker data was successfully fetched (${skipped.length} of ${options.tickers.length} tickers skipped) — refusing to overwrite existing results with empty output`,
+/**
+ * Runs fetchUniverseHistory for one path (window or intraday) and
+ * classifies the outcome: a systemic abort or "zero usable data" both
+ * become a non-null `failureReason` instead of throwing, so one path's
+ * failure doesn't prevent the other path's results from being computed
+ * and written (see the module header comment).
+ */
+async function fetchPathHistory<TBar>(
+  label: string,
+  tickers: readonly string[],
+  from: Date,
+  to: Date,
+  fetchFn: (symbol: string, from: Date, to: Date) => Promise<TBar[]>,
+  concurrency: number,
+  upperBoundDateString: string,
+  dateOf: (bar: TBar) => string,
+): Promise<PathFetchOutcome<TBar>> {
+  let history: Map<string, TBar[]>;
+  let skipped: string[];
+  try {
+    ({ history, skipped } = await fetchUniverseHistory(tickers, from, to, fetchFn, concurrency));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `[pipeline] ${label} fetch aborted, that path will write no results this run: ${message}`,
     );
+    return { history: new Map(), skipped: [], dataAsOf: null, failureReason: message };
   }
 
-  const generatedAt = new Date().toISOString();
+  const dataAsOf = findMaxDate(history, upperBoundDateString, dateOf);
+  if (dataAsOf === null) {
+    const reason = `no ${label} data was successfully fetched (${skipped.length} of ${tickers.length} tickers skipped)`;
+    console.warn(`[pipeline] ${reason} -- that path will write no results this run`);
+    return { history, skipped, dataAsOf: null, failureReason: reason };
+  }
 
-  // Compute everything before writing anything, so a failure in
-  // optimizeTrades (e.g. an unexpected data shape) can't leave some
-  // ranges' S3 objects updated and others stale. This doesn't make the
-  // 5 S3 writes themselves atomic — a failure partway through the write
-  // loop below can still leave a mix of fresh and stale range files —
-  // true cross-range atomicity would need a different storage strategy
-  // (e.g. a single combined manifest object) and is deliberately not
-  // built here; issue #5's acceptance criteria only calls for
-  // idempotency, which this satisfies.
-  const results: PrecomputedResult[] = PRESET_RANGES.map((range) => {
+  return { history, skipped, dataAsOf, failureReason: null };
+}
+
+function buildWindowResults(
+  history: Map<string, DailyClose[]>,
+  dataAsOf: string,
+  asOf: Date,
+  endDateString: string,
+  generatedAt: string,
+  startingCapital: number,
+  maxTrades: number,
+  skipped: readonly string[],
+): WindowResult[] {
+  return WINDOW_RANGES.map((range) => {
     const startDate = presetRangeStartDate(range, asOf);
     const startDateString = startDate ? toDateString(startDate) : null;
 
@@ -183,11 +267,13 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
 
     return {
       schemaVersion: RESULTS_SCHEMA_VERSION,
+      model: "window",
       range,
       generatedAt,
       dataAsOf,
       startDate: startDateString,
       endDate: endDateString,
+      maxTrades,
       startingCapital,
       endingBalance: optimized.endingBalance,
       trades: optimized.trades,
@@ -195,6 +281,149 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
       skippedTickers: [...skipped],
     };
   });
+}
+
+function buildIntradayResults(
+  history: Map<string, IntradayBar[]>,
+  dataAsOf: string,
+  asOf: Date,
+  endDateString: string,
+  generatedAt: string,
+  startingCapital: number,
+  maxTradesPerDay: number,
+  skipped: readonly string[],
+): IntradayResult[] {
+  return INTRADAY_RANGES.map((range) => {
+    // Never null: presetRangeStartDate only returns null for "MAX",
+    // which isn't one of INTRADAY_RANGES.
+    const startDate = presetRangeStartDate(range, asOf)!;
+    const startDateString = toDateString(startDate);
+
+    const windowed = new Map<string, IntradayBar[]>();
+    for (const [ticker, series] of history) {
+      const sliced = series.filter((bar) => {
+        const date = localDatePart(bar.date);
+        return date >= startDateString && date <= endDateString;
+      });
+      if (sliced.length > 0) windowed.set(ticker, sliced);
+    }
+
+    const days = optimizeIntradayDays(windowed, { startingCapital, maxTradesPerDay });
+
+    return {
+      schemaVersion: RESULTS_SCHEMA_VERSION,
+      model: "intraday-daily",
+      range,
+      generatedAt,
+      dataAsOf,
+      endDate: endDateString,
+      maxTradesPerDay,
+      startingCapital,
+      days,
+      universeSize: windowed.size,
+      skippedTickers: [...skipped],
+    };
+  });
+}
+
+export async function runPipeline(options: RunPipelineOptions): Promise<PipelineRunSummary> {
+  const asOf = options.asOf ?? new Date();
+  const startingCapital = options.startingCapital ?? DEFAULT_STARTING_CAPITAL;
+  const maxTrades = options.maxTrades ?? DEFAULT_MAX_TRADES;
+  const maxTradesPerDay = options.maxTradesPerDay ?? DEFAULT_MAX_TRADES_PER_DAY;
+  const earliestDate = options.earliestDate ?? DEFAULT_EARLIEST_DATE;
+  const fetchConcurrency = options.fetchConcurrency ?? DEFAULT_FETCH_CONCURRENCY;
+  const endDateString = toDateString(asOf);
+  // The intraday fetch covers exactly the widest intraday range (1Y),
+  // then gets sliced locally for 3M/1M below -- same "fetch once, slice
+  // many" pattern as the window path's daily-close fetch, and reuses
+  // presetRangeStartDate rather than a second hand-maintained lookback
+  // constant. Comfortably within Yahoo's 730-day retention for
+  // interval=60m (verified -- see packages/core/CLAUDE.md).
+  const intradayFrom = presetRangeStartDate("1Y", asOf)!;
+
+  // The two paths' fetches are independent (see module header comment):
+  // run concurrently, and neither's failure prevents the other's
+  // results from being computed and written.
+  const [windowFetch, intradayFetch] = await Promise.all([
+    fetchPathHistory(
+      "daily-close",
+      options.tickers,
+      earliestDate,
+      asOf,
+      options.fetchDailyCloses,
+      fetchConcurrency,
+      endDateString,
+      (p: DailyClose) => p.date,
+    ),
+    fetchPathHistory(
+      "intraday",
+      options.tickers,
+      intradayFrom,
+      asOf,
+      options.fetchIntradayBars,
+      fetchConcurrency,
+      endDateString,
+      (bar: IntradayBar) => localDatePart(bar.date),
+    ),
+  ]);
+
+  // Compute everything before writing anything, so a failure in the
+  // optimizer (e.g. an unexpected data shape) can't leave some ranges'
+  // S3 objects updated and others stale. This doesn't make the S3 writes
+  // themselves atomic — a failure partway through the write loop below
+  // can still leave a mix of fresh and stale range files — true
+  // cross-range atomicity would need a different storage strategy (e.g.
+  // a single combined manifest object) and is deliberately not built
+  // here.
+  const generatedAt = new Date().toISOString();
+
+  const windowResults = windowFetch.failureReason
+    ? []
+    : buildWindowResults(
+        windowFetch.history,
+        windowFetch.dataAsOf!,
+        asOf,
+        endDateString,
+        generatedAt,
+        startingCapital,
+        maxTrades,
+        windowFetch.skipped,
+      );
+
+  const intradayResults = intradayFetch.failureReason
+    ? []
+    : buildIntradayResults(
+        intradayFetch.history,
+        intradayFetch.dataAsOf!,
+        asOf,
+        endDateString,
+        generatedAt,
+        startingCapital,
+        maxTradesPerDay,
+        intradayFetch.skipped,
+      );
+
+  if (windowResults.length === 0 && intradayResults.length === 0) {
+    // Refuse to overwrite S3's existing (presumably good) results with
+    // empty-but-schema-valid output — better to fail the run loudly and
+    // keep yesterday's data than to silently erase it. Generalizes the
+    // original single-path guarantee to "both paths came up empty," not
+    // just one.
+    throw new Error(
+      `pipeline aborted: neither the daily-close nor intraday fetch produced usable data -- refusing to overwrite existing results with empty output. ` +
+        `Window (5Y/MAX) path: ${windowFetch.failureReason}. Intraday (1M/3M/1Y) path: ${intradayFetch.failureReason}.`,
+    );
+  }
+
+  // Keep the original PRESET_RANGES order regardless of which path(s)
+  // succeeded, rather than "all window ranges, then all intraday ranges."
+  const resultByRange = new Map<PresetRange, PrecomputedResult>();
+  for (const result of windowResults) resultByRange.set(result.range, result);
+  for (const result of intradayResults) resultByRange.set(result.range, result);
+  const results = PRESET_RANGES.filter((range) => resultByRange.has(range)).map((range) =>
+    resultByRange.get(range)!,
+  );
 
   // Independent writes to unrelated keys, already accepted as non-atomic
   // as a group (see the comment above) -- no reason to pay serial
@@ -205,5 +434,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     ),
   );
 
-  return { results, skippedTickers: skipped };
+  const skippedTickers = [...new Set([...windowFetch.skipped, ...intradayFetch.skipped])];
+
+  return { results, skippedTickers };
 }

@@ -3,8 +3,11 @@ import { useMemo } from "react";
 import type { PresetRange } from "@hadiknowntrades/core";
 
 import type { ClientErrorCode, ResultsState } from "@/lib/use-results";
-import { derivePortfolioSeries } from "@/lib/portfolio-series";
+import { deriveIntradayPortfolioSeries, derivePortfolioSeries } from "@/lib/portfolio-series";
+import { formatDate } from "@/lib/format-date";
+import { DaySelector } from "@/components/DaySelector";
 import { HeroStat } from "@/components/HeroStat";
+import { IntradayTradeList } from "@/components/IntradayTradeList";
 import { PortfolioChart } from "@/components/PortfolioChart";
 import { TradeList } from "@/components/TradeList";
 
@@ -70,24 +73,34 @@ function LoadingSkeleton() {
 interface ResultsPanelProps {
   range: PresetRange;
   state: ResultsState;
+  /** The day currently selected in the URL for the intraday model (issue #28), or null if none is set (or the range/data is window-model) -- ResultsPanel falls back to the most recent day in that case. */
+  selectedDay?: string | null;
+  /** Called when the user picks a different day from the DaySelector. Required whenever the data can be intraday-model; omit only where a caller (e.g. a window-only test) never needs it. */
+  onSelectDay?: (day: string) => void;
 }
 
-/** Switches on the fetch state to render loading / error / (empty or full) success -- see useResults for the state machine this drives off of. */
-export function ResultsPanel({ range, state }: ResultsPanelProps) {
+/** Switches on the fetch state to render loading / error / (empty or full) success -- see useResults for the state machine this drives off of. Success further switches on the result's `model` (issue #28): the original whole-window model, or the per-day intraday model. */
+export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: ResultsPanelProps) {
   // Must run unconditionally (before the early returns below) per the
-  // Rules of Hooks, and memoized on `state` so PortfolioChart's own
-  // useMemo (keyed on this array's reference) doesn't get defeated by a
-  // fresh `points` array on every ResultsPanel render that isn't
-  // actually a new fetch result.
+  // Rules of Hooks, and memoized so PortfolioChart's own useMemo (keyed
+  // on this array's reference) doesn't get defeated by a fresh `points`
+  // array on every ResultsPanel render that isn't actually a new fetch
+  // result or day selection.
   const points = useMemo(() => {
     if (state.status !== "success") return [];
-    return derivePortfolioSeries(
-      state.data.startingCapital,
-      state.data.startDate,
-      state.data.endDate,
-      state.data.trades,
+    const { data } = state;
+    if (data.model === "window") {
+      return derivePortfolioSeries(data.startingCapital, data.startDate, data.endDate, data.trades);
+    }
+    if (data.days.length === 0) return [];
+    const activeDay =
+      data.days.find((d) => d.date === selectedDay) ?? data.days[data.days.length - 1]!;
+    return deriveIntradayPortfolioSeries(
+      activeDay.startingCapital,
+      activeDay.date,
+      activeDay.trades,
     );
-  }, [state]);
+  }, [state, selectedDay]);
 
   if (state.status === "loading") {
     return <LoadingSkeleton />;
@@ -107,6 +120,59 @@ export function ResultsPanel({ range, state }: ResultsPanelProps) {
   }
 
   const { data } = state;
+
+  if (data.model === "intraday-daily") {
+    if (data.days.length === 0) {
+      return (
+        <div className="rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
+          No trading days are available yet for {RANGE_COPY[range]}.
+        </div>
+      );
+    }
+
+    const activeDay =
+      data.days.find((d) => d.date === selectedDay) ?? data.days[data.days.length - 1]!;
+    const isEmptyDay = activeDay.trades.length === 0;
+
+    return (
+      <div className="flex flex-col gap-8">
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <HeroStat
+              startingCapital={activeDay.startingCapital}
+              endingBalance={activeDay.endingBalance}
+            />
+            {onSelectDay && (
+              <DaySelector
+                days={data.days.map((d) => d.date)}
+                selected={activeDay.date}
+                onSelect={onSelectDay}
+              />
+            )}
+          </div>
+          <p className="text-sm text-[var(--text-secondary)]">
+            Best possible outcome on {formatDate(activeDay.date)}, with at most{" "}
+            {data.maxTradesPerDay} same-day all-in trades across the S&amp;P 500, using real
+            60-minute intraday prices. As of {data.dataAsOf}.
+          </p>
+        </div>
+
+        <PortfolioChart points={points} />
+
+        <div className="flex flex-col gap-3">
+          <h2 className="text-lg font-semibold text-[var(--text-primary)]">Trades</h2>
+          {isEmptyDay ? (
+            <div className="rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
+              No trade would have beaten holding cash on {formatDate(activeDay.date)}.
+            </div>
+          ) : (
+            <IntradayTradeList trades={activeDay.trades} />
+          )}
+        </div>
+      </div>
+    );
+  }
+
   const isEmpty = data.trades.length === 0;
 
   return (
@@ -114,8 +180,9 @@ export function ResultsPanel({ range, state }: ResultsPanelProps) {
       <div className="flex flex-col gap-2">
         <HeroStat startingCapital={data.startingCapital} endingBalance={data.endingBalance} />
         <p className="text-sm text-[var(--text-secondary)]">
-          Best possible outcome over {RANGE_COPY[range]}, with at most 3 sequential all-in trades
-          across the S&amp;P 500, using only closed (EOD) prices. As of {data.dataAsOf}.
+          Best possible outcome over {RANGE_COPY[range]}, with at most {data.maxTrades} sequential
+          all-in trades across the S&amp;P 500, using only closed (EOD) prices. As of{" "}
+          {data.dataAsOf}.
         </p>
       </div>
 

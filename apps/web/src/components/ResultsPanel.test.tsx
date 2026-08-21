@@ -1,18 +1,21 @@
-import type { PrecomputedResult } from "@hadiknowntrades/core";
+import type { IntradayResult, WindowResult } from "@hadiknowntrades/core";
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 
 import type { ResultsState } from "@/lib/use-results";
 import { ResultsPanel } from "./ResultsPanel";
 
-function fixtureResult(overrides: Partial<PrecomputedResult> = {}): PrecomputedResult {
+function fixtureResult(overrides: Partial<WindowResult> = {}): WindowResult {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    model: "window",
     range: "1Y",
     generatedAt: "2026-08-21T19:50:21.468Z",
     dataAsOf: "2026-08-21",
     startDate: "2025-08-21",
     endDate: "2026-08-21",
+    maxTrades: 3,
     startingCapital: 20,
     endingBalance: 6876.860256895814,
     trades: [
@@ -40,6 +43,54 @@ function fixtureResult(overrides: Partial<PrecomputedResult> = {}): PrecomputedR
     ],
     universeSize: 503,
     skippedTickers: [],
+    ...overrides,
+  };
+}
+
+function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): IntradayResult {
+  return {
+    schemaVersion: 2,
+    model: "intraday-daily",
+    range: "1M",
+    generatedAt: "2026-08-21T19:50:21.468Z",
+    dataAsOf: "2026-08-21",
+    endDate: "2026-08-21",
+    maxTradesPerDay: 3,
+    startingCapital: 20,
+    universeSize: 503,
+    skippedTickers: [],
+    days: [
+      {
+        date: "2026-08-20",
+        startingCapital: 20,
+        endingBalance: 25,
+        trades: [
+          {
+            ticker: "AAPL",
+            date: "2026-08-20",
+            buyTime: "09:30:00",
+            buyPrice: 100,
+            sellTime: "10:30:00",
+            sellPrice: 125,
+          },
+        ],
+      },
+      {
+        date: "2026-08-21",
+        startingCapital: 20,
+        endingBalance: 40,
+        trades: [
+          {
+            ticker: "MSFT",
+            date: "2026-08-21",
+            buyTime: "09:30:00",
+            buyPrice: 200,
+            sellTime: "10:30:00",
+            sellPrice: 400,
+          },
+        ],
+      },
+    ],
     ...overrides,
   };
 }
@@ -146,6 +197,13 @@ describe("ResultsPanel", () => {
     expect(screen.getAllByText(/MRNA/).length).toBeGreaterThan(0);
   });
 
+  it("mentions maxTrades from the data, not a hardcoded literal", () => {
+    const state: ResultsState = { status: "success", data: fixtureResult({ maxTrades: 5 }) };
+    render(<ResultsPanel range="1Y" state={state} />);
+
+    expect(screen.getByText(/at most 5 sequential/i)).toBeInTheDocument();
+  });
+
   it("renders fewer than 3 trades gracefully", () => {
     const state: ResultsState = {
       status: "success",
@@ -166,5 +224,75 @@ describe("ResultsPanel", () => {
 
     expect(screen.getAllByText(/AAPL/).length).toBeGreaterThan(0);
     expect(screen.queryByText(/no trade would have beaten/i)).not.toBeInTheDocument();
+  });
+
+  describe("intraday-daily model (issue #28)", () => {
+    it("defaults to the most recent day when no day is selected", () => {
+      const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+      render(<ResultsPanel range="1M" state={state} />);
+
+      // Most recent day is 2026-08-21 (MSFT), not 2026-08-20 (AAPL).
+      expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
+      expect(screen.queryByText(/AAPL/)).not.toBeInTheDocument();
+      expect(screen.getByText(/Aug 21, 2026/)).toBeInTheDocument();
+    });
+
+    it("shows the selected day's result when selectedDay matches an earlier day", () => {
+      const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+      render(<ResultsPanel range="1M" state={state} selectedDay="2026-08-20" />);
+
+      expect(screen.getAllByText(/AAPL/).length).toBeGreaterThan(0);
+      expect(screen.queryByText(/MSFT/)).not.toBeInTheDocument();
+    });
+
+    it("falls back to the most recent day when selectedDay doesn't match any day in the result", () => {
+      const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+      render(<ResultsPanel range="1M" state={state} selectedDay="2020-01-01" />);
+
+      expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
+    });
+
+    it("calls onSelectDay when a different day is chosen from the DaySelector", async () => {
+      const user = userEvent.setup();
+      const onSelectDay = vi.fn();
+      const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+      render(<ResultsPanel range="1M" state={state} onSelectDay={onSelectDay} />);
+
+      await user.selectOptions(screen.getByRole("combobox"), "2026-08-20");
+
+      expect(onSelectDay).toHaveBeenCalledWith("2026-08-20");
+    });
+
+    it("shows an empty state for a day with no trades", () => {
+      const state: ResultsState = {
+        status: "success",
+        data: fixtureIntradayResult({
+          days: [{ date: "2026-08-21", startingCapital: 20, endingBalance: 20, trades: [] }],
+        }),
+      };
+      render(<ResultsPanel range="1M" state={state} />);
+
+      expect(screen.getByText(/no trade would have beaten holding cash on/i)).toBeInTheDocument();
+    });
+
+    it("shows a fallback message when the range has no trading days at all", () => {
+      const state: ResultsState = {
+        status: "success",
+        data: fixtureIntradayResult({ days: [] }),
+      };
+      render(<ResultsPanel range="1M" state={state} />);
+
+      expect(screen.getByText(/no trading days are available/i)).toBeInTheDocument();
+    });
+
+    it("mentions maxTradesPerDay from the data, not a hardcoded literal", () => {
+      const state: ResultsState = {
+        status: "success",
+        data: fixtureIntradayResult({ maxTradesPerDay: 5 }),
+      };
+      render(<ResultsPanel range="1M" state={state} />);
+
+      expect(screen.getByText(/at most 5 same-day/i)).toBeInTheDocument();
+    });
   });
 });

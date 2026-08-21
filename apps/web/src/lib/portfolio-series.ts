@@ -26,13 +26,19 @@
 // naturally produce two points at the same date/value -- that's fine,
 // it's a zero-length flat segment, not a bug.
 
-import type { Trade } from "@hadiknowntrades/core";
+import type { IntradayTrade, Trade } from "@hadiknowntrades/core";
 
 export type PortfolioEvent =
   { type: "buy"; ticker: string; price: number } | { type: "sell"; ticker: string; price: number };
 
 export interface PortfolioPoint {
-  /** ISO date (YYYY-MM-DD) this point falls on. */
+  /**
+   * Either a plain calendar date (YYYY-MM-DD, the window model) or a
+   * full local datetime (YYYY-MM-DDTHH:MM:SS, an intraday day's chart --
+   * see deriveIntradayPortfolioSeries below) this point falls on.
+   * PortfolioChart's toTimestamp/formatDateTime both detect which one
+   * they've been given by the presence of a "T" separator.
+   */
   date: string;
   /** Portfolio value at this point. */
   value: number;
@@ -78,6 +84,55 @@ export function derivePortfolioSeries(
   const last = points[points.length - 1];
   if (!last || last.date !== endDate) {
     points.push({ date: endDate, value, event: null });
+  }
+
+  return points;
+}
+
+/**
+ * Same derivation as derivePortfolioSeries above, but for one intraday
+ * day's trades (issue #28): IntradayTrade carries separate buyTime/
+ * sellTime (not buyDate/sellDate, since every trade is same-day by
+ * construction), so points use a full local datetime (`date` +
+ * buyTime/sellTime) instead of a calendar date, letting PortfolioChart
+ * plot intraday spacing within the day.
+ *
+ * Unlike the window model, there's no known session-start/session-end
+ * time to anchor a flat line on the way startDate/endDate do above (an
+ * IntradayDayResult only carries realized trades, not the day's full
+ * price series) -- a day with zero trades is a single point instead of
+ * a padded flat line; PortfolioChart already handles a single-point
+ * domain (see its dayMs padding).
+ */
+export function deriveIntradayPortfolioSeries(
+  startingCapital: number,
+  date: string,
+  trades: readonly IntradayTrade[],
+): PortfolioPoint[] {
+  if (trades.length === 0) {
+    return [{ date: `${date}T12:00:00`, value: startingCapital, event: null }];
+  }
+
+  const points: PortfolioPoint[] = [];
+  let value = startingCapital;
+
+  points.push({ date: `${date}T${trades[0]!.buyTime}`, value, event: null });
+
+  for (const trade of trades) {
+    points.push({
+      date: `${date}T${trade.buyTime}`,
+      value,
+      event: { type: "buy", ticker: trade.ticker, price: trade.buyPrice },
+    });
+
+    points.push({ date: `${date}T${trade.sellTime}`, value, event: null });
+
+    value = value * (trade.sellPrice / trade.buyPrice);
+    points.push({
+      date: `${date}T${trade.sellTime}`,
+      value,
+      event: { type: "sell", ticker: trade.ticker, price: trade.sellPrice },
+    });
   }
 
   return points;

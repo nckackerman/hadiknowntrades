@@ -5,12 +5,14 @@ import { getResultsResponse, parseRange, type ResultReader } from "./results-api
 
 function fixtureResult(range: (typeof PRESET_RANGES)[number]): PrecomputedResult {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    model: "window",
     range,
     generatedAt: "2024-06-15T00:00:00.000Z",
     dataAsOf: "2024-06-14",
     startDate: "2024-05-14",
     endDate: "2024-06-15",
+    maxTrades: 3,
     startingCapital: 20,
     endingBalance: 42,
     trades: [],

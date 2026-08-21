@@ -17,7 +17,7 @@
 import { memo, useId, useMemo, useState } from "react";
 
 import { formatAxisCurrency, formatHeroCurrency } from "@/lib/format-currency";
-import { formatDate } from "@/lib/format-date";
+import { formatDateTime } from "@/lib/format-date";
 import { buildLogScale, buildTimeScale, niceLogTicks } from "@/lib/chart-scales";
 import type { PortfolioPoint } from "@/lib/portfolio-series";
 
@@ -31,8 +31,19 @@ const MARGIN = { top: 56, right: 16, bottom: 32, left: 76 };
 const PLOT_WIDTH = WIDTH - MARGIN.left - MARGIN.right;
 const PLOT_HEIGHT = HEIGHT - MARGIN.top - MARGIN.bottom;
 
-function toTimestamp(isoDate: string): number {
-  return new Date(`${isoDate}T00:00:00Z`).getTime();
+/**
+ * A PortfolioPoint's `date` is either a plain calendar date
+ * ("2025-08-21", the window model) or a full local datetime
+ * ("2025-08-21T14:30:00", an intraday day's chart -- issue #28),
+ * detected by the presence of a "T" separator -- same detection
+ * format-date.ts's formatDateTime uses, so the two stay in sync. Both
+ * are parsed "as if UTC" (a "Z" appended, not re-interpreted through any
+ * real timezone) purely to get a monotonic numeric timestamp to lay out
+ * points along the x-axis -- consistent with how plain calendar dates
+ * were already treated here before intraday support existed.
+ */
+function toTimestamp(date: string): number {
+  return new Date(date.includes("T") ? `${date}Z` : `${date}T00:00:00Z`).getTime();
 }
 
 /** Anchors a label so it never runs past the plot's left/right edge. */
@@ -188,7 +199,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
             fontSize={11}
             fill="var(--text-muted)"
           >
-            {formatDate(points[0]!.date)}
+            {formatDateTime(points[0]!.date)}
           </text>
           <text
             x={PLOT_WIDTH}
@@ -197,7 +208,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
             fontSize={11}
             fill="var(--text-muted)"
           >
-            {formatDate(points[points.length - 1]!.date)}
+            {formatDateTime(points[points.length - 1]!.date)}
           </text>
 
           {/* Area wash + line */}
@@ -257,7 +268,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
                   fontSize={10}
                   fill="var(--text-secondary)"
                 >
-                  {formatDate(p.date)} · {formatHeroCurrency(event.price)}
+                  {formatDateTime(p.date)} · {formatHeroCurrency(event.price)}
                 </text>
               </g>
             );
@@ -283,7 +294,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
         {hovered ? (
           <p>
             <span className="font-semibold text-[var(--text-primary)]">
-              {formatDate(hovered.date)}
+              {formatDateTime(hovered.date)}
             </span>
             {" - "}
             <span className="font-semibold text-[var(--text-primary)]">
@@ -336,7 +347,7 @@ const ChartDataTable = memo(function ChartDataTable({
           <tbody>
             {points.map((p, i) => (
               <tr key={i} className="border-b border-[var(--gridline)] last:border-0">
-                <td className="py-1 pr-4">{formatDate(p.date)}</td>
+                <td className="py-1 pr-4">{formatDateTime(p.date)}</td>
                 <td className="py-1 pr-4 tabular-nums">{formatHeroCurrency(p.value)}</td>
                 <td className="py-1">
                   {p.event

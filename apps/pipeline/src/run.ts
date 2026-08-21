@@ -6,7 +6,7 @@
 // (process.exitCode vs. letting the error propagate to fail the Lambda
 // invocation).
 
-import { fetchDailyCloses, SP500_CONSTITUENTS } from "@hadiknowntrades/core";
+import { fetchDailyCloses, fetchIntradayBars, SP500_CONSTITUENTS } from "@hadiknowntrades/core";
 
 import { runPipeline } from "./pipeline.js";
 import { S3ResultStore } from "./s3-store.js";
@@ -20,6 +20,7 @@ export async function runNightlyPipeline(): Promise<void> {
   const summary = await runPipeline({
     tickers: SP500_CONSTITUENTS.map((c) => c.symbol),
     fetchDailyCloses,
+    fetchIntradayBars,
     store: new S3ResultStore(bucket),
   });
 

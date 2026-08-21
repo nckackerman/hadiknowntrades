@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BlockedError,
   fetchDailyCloses,
+  fetchIntradayBars,
   TickerNotFoundError,
   toYahooSymbol,
   TransientFetchError,
@@ -371,5 +372,73 @@ describe("fetchDailyCloses", () => {
       expect(result.length).toBe(2);
       expect(fetchImpl).toHaveBeenCalledTimes(2);
     });
+  });
+});
+
+describe("fetchIntradayBars", () => {
+  const from = new Date("2024-01-01T00:00:00Z");
+  const to = new Date("2024-01-05T00:00:00Z");
+
+  it("parses a valid response into full local-datetime/close pairs (issue #28)", async () => {
+    // Same two timestamps as fetchDailyCloses's fixtures, gmtoffset -4h
+    // (EDT) -- 1704205800 -> 2024-01-02T10:30:00 local, not just
+    // "2024-01-02": the whole point of this function vs. fetchDailyCloses
+    // is keeping the time-of-day, not truncating to a calendar date.
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, validChartBody()));
+
+    const result = await fetchIntradayBars("AAPL", from, to, { fetchImpl });
+
+    expect(result).toEqual([
+      { date: "2024-01-02T10:30:00", close: 183.4 },
+      { date: "2024-01-03T10:30:00", close: 182.03 },
+    ]);
+  });
+
+  it("requests interval=60m, distinct from fetchDailyCloses's interval=1d", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, validChartBody()));
+
+    await fetchIntradayBars("AAPL", from, to, { fetchImpl });
+
+    const [url] = fetchImpl.mock.calls[0] as [string];
+    expect(new URL(url).searchParams.get("interval")).toBe("60m");
+  });
+
+  it("does NOT pad period2 by a day (unlike fetchDailyCloses) -- intraday bars don't need day-boundary coverage padding", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, validChartBody()));
+
+    await fetchIntradayBars("AAPL", from, to, { fetchImpl });
+
+    const [url] = fetchImpl.mock.calls[0] as [string];
+    const period2 = Number(new URL(url).searchParams.get("period2"));
+    expect(period2).toBe(Math.floor(to.getTime() / 1000));
+  });
+
+  it("shares the same error classification as fetchDailyCloses (e.g. BlockedError on 401, not retried)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(401, {}));
+
+    const error = await fetchIntradayBars("AAPL", from, to, { fetchImpl }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(BlockedError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares the same malformed-shape retry as fetchDailyCloses", async () => {
+    vi.useFakeTimers();
+    try {
+      const malformed = { chart: { result: [], error: null } };
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(200, malformed))
+        .mockResolvedValueOnce(jsonResponse(200, validChartBody()));
+
+      const promise = fetchIntradayBars("AAPL", from, to, { fetchImpl });
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      expect(result.length).toBe(2);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
