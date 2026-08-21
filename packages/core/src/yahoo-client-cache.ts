@@ -17,8 +17,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { toDateString } from "./date-utils.js";
-import { fetchDailyCloses, type DailyClose } from "./yahoo-client.js";
+import { toDateString } from "./date-utils";
+import { fetchDailyCloses, type DailyClose } from "./yahoo-client";
 
 // Resolved relative to this module's own location, not process.cwd() —
 // otherwise the "shared" dev cache silently fragments into a different
