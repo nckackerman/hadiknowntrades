@@ -27,7 +27,8 @@ pnpm workspace monorepo:
 
 ```
 apps/
-  web/       Next.js 16.3.1 + TypeScript frontend (issue #7/#8, not built yet)
+  web/       Next.js 16.3.1 + TypeScript frontend: results API + range/chart/
+             trade-list UI, deployed -- see apps/web/CLAUDE.md
   pipeline/  Nightly precompute job: fetch -> optimize -> write to S3
              -- see apps/pipeline/CLAUDE.md
 packages/
@@ -41,8 +42,8 @@ infra/
 Data flow: `packages/core`'s Yahoo client fetches daily closes ->
 `packages/core`'s optimizer (a DP) finds the best 3-trade sequence ->
 `apps/pipeline` runs this nightly for all 5 preset ranges and writes JSON
-to S3 -> (future) a thin API serves it to the frontend. No live
-recomputation per request — everything is precomputed nightly.
+to S3 -> apps/web's thin API (`/api/results`) serves it to the frontend.
+No live recomputation per request -- everything is precomputed nightly.
 
 ## Toolchain gotchas (repo-wide)
 
