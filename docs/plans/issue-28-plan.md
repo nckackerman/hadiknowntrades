@@ -1,7 +1,56 @@
 # Plan: issue #28 - per-day intraday trading model (1M/3M/1Y, 60m bars)
 
-Status: draft for review, no implementation yet. Written against the repo
+Status: reviewed and approved (independent code-verification pass, plus
+two design questions routed to the human user - both resolved, see
+addendum below). Proceeding to implementation. Written against the repo
 at commit `2965c6a`.
+
+## Addendum: post-review corrections and decisions
+
+- **Fix (real bug in the original draft, not a style nit)**: §2/§4 below
+  originally specified `IntradayBar.datetime`. That does not
+  structurally match `optimizeTrades`/`buildCalendar`/
+  `fetchUniverseHistory`/`findMaxDate`, which all require a `date` field
+  (from `DailyClose`'s shape) - as originally written this would not
+  compile, and the "no new machinery, direct reuse" claim would have
+  required three separate silent adapter shims to actually work. Fixed
+  throughout this doc: `IntradayBar` has a `date` field (holding a full
+  local datetime string, not a calendar-only one - documented on the
+  field itself), making it structurally interchangeable with
+  `DailyClose` everywhere daily-close-shaped data already flows.
+- **5Y/MAX schema note**: the acceptance criteria says 5Y/MAX get "same
+  schema as today." Precisely: same *behavior and values* - same trades,
+  same data, same optimizer call. The JSON shape technically changes
+  (adds `model: "window"` and `maxTrades`, bumps `schemaVersion` to 2)
+  because the version number is global across the discriminated union
+  (see §3). Not byte-identical to the old schema, but behaviorally
+  unchanged, which is what the acceptance criteria is actually protecting.
+- **Risk note (requested, not a blocker)**: this issue doubles per-run
+  Yahoo request volume - the existing daily fetch and the new intraday
+  fetch each hit ~503 tickers, and §4 runs them concurrently.
+  `packages/core/CLAUDE.md` already documents this endpoint as
+  unofficial/undocumented and liable to start blocking without notice;
+  doubling steady-state request volume is a small but real incremental
+  risk of tripping that. Not mitigated here (no rate-limiting/throttling
+  added) - just documented, and worth specifically watching during the
+  live verification step in §6.
+- **§7 open questions, resolved**:
+  - #1 (per-day starting capital) - **user decision: resets to $20 every
+    day, does not compound.** Implement exactly as originally described
+    in §2 (independent per-day `optimizeTrades` calls,
+    `IntradayDayResult.startingCapital` constant every day).
+  - #2 (DST bucketing) and #5 (partial trading days) - reclassified as
+    implementer-resolvable engineering details, not open design
+    questions. Executed as originally planned: live-check DST during
+    implementation (§6), document partial-day behavior as encountered.
+  - #3 (chart adaptation) - **user decision: option (a)** - extend
+    `PortfolioChart`/`format-date.ts` to understand intraday datetimes,
+    not a list-only fallback.
+  - #4 (deploy ordering) - reclassified as already-resolved policy, not
+    an open question: pipeline deploys and runs first (real-AWS action,
+    needs the user's go-ahead), then `apps/web`. Captured as an explicit
+    rollout checklist item on the implementation PR rather than presented
+    as unresolved.
 
 ## 1. Data fetch: 60-minute bars in `packages/core`
 
@@ -24,8 +73,12 @@ interval-specific. Plan:
   export interface IntradayBar {
     /** Local datetime the bar starts at, e.g. "2026-08-21T14:30:00" (no
      *  timezone suffix - local to the exchange, matching how DailyClose's
-     *  date string is already exchange-local, not UTC). */
-    datetime: string;
+     *  date string is already exchange-local, not UTC). Named `date`, not
+     *  `datetime`, so this stays structurally interchangeable with
+     *  DailyClose ({ date, close }) everywhere daily-close-shaped data
+     *  already flows (optimizeTrades, buildCalendar,
+     *  fetchUniverseHistory, findMaxDate) -- no adapter shims needed. */
+    date: string;
     close: number;
   }
   export async function fetchIntradayBars(
@@ -79,7 +132,7 @@ is just an opaque, sortable, unique string key - it never assumes
 calendar-day semantics. So a "per-day optimizer" is a thin wrapper that:
 
 1. Groups a window's `IntradayBar[]` per ticker by calendar date (the
-   `YYYY-MM-DD` prefix of `datetime`).
+   `YYYY-MM-DD` prefix of each bar's `date` field).
 2. For each date present in the window (sorted), builds a
    `Map<string, IntradayBar[]>` containing only that date's bars across
    all tickers, and calls `optimizeTrades(dayBars, { startingCapital, maxTrades: n })`
@@ -113,8 +166,9 @@ export function optimizeIntradayDays(
 ```
 
 Internally, `optimizeTrades`'s returned `Trade.buyDate`/`sellDate` will
-literally contain the full `datetime` string we fed it (since it just
-echoes back whatever key/date string the caller supplied) - the wrapper
+literally contain the full local-datetime string we fed it as each bar's
+`date` (since it just echoes back whatever key/date string the caller
+supplied) - the wrapper
 splits that back into `{ date, time }` before returning, so the public
 `IntradayTrade` shape is unambiguous instead of silently overloading
 `Trade.buyDate` to sometimes mean "date" and sometimes "full timestamp."
