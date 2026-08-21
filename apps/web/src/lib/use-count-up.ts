@@ -67,7 +67,12 @@ export function useCountUp(from: number, to: number, durationMs: number): number
       }
 
       const elapsed = now - startTime;
-      const t = Math.min(elapsed / durationMs, 1);
+      // `durationMs <= 0` short-circuits straight to done: besides being
+      // the only sane reading of a non-positive duration, it also avoids
+      // 0/0 = NaN when `elapsed` is also (near) zero, which the `t >= 1`
+      // check below can't catch on its own (NaN >= 1 is false, so it'd
+      // otherwise fall through to rendering "--" instead of `to`).
+      const t = durationMs <= 0 ? 1 : Math.min(elapsed / durationMs, 1);
       if (t >= 1) {
         // Set the exact target rather than `from + (to - from) * 1`,
         // which is mathematically the same but not guaranteed

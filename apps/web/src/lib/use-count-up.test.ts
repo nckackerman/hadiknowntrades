@@ -66,6 +66,23 @@ describe("useCountUp", () => {
     expect(raf).toHaveBeenCalledTimes(1); // settled on the first frame, no animation loop
   });
 
+  it("settles on `to` immediately for a non-positive duration, without producing NaN", () => {
+    stubPrefersReducedMotion(false);
+    // Pin performance.now() so the first frame's `elapsed` is exactly 0
+    // -- with durationMs = 0 that's 0/0 = NaN unless the hook special-
+    // cases a non-positive duration (see the `t >= 1` short-circuit in
+    // use-count-up.ts).
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+      cb(1000);
+      return 1;
+    });
+
+    const { result } = renderHook(() => useCountUp(20, 6876.86, 0));
+
+    expect(result.current).toBe(6876.86);
+  });
+
   it("treats a missing matchMedia (unsupported environment) as motion-allowed, not reduced", () => {
     // No stubPrefersReducedMotion call -- matchMedia is left undefined,
     // matching jsdom's default in this repo's test setup.
