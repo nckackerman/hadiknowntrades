@@ -6,6 +6,7 @@ import type { PresetRange } from "@hadiknowntrades/core";
 
 import { useResults } from "@/lib/use-results";
 import { parseRange } from "@/lib/results-api";
+import { AboutSection } from "@/components/AboutSection";
 import { RangeSelector } from "@/components/RangeSelector";
 import { ResultsPanel } from "@/components/ResultsPanel";
 
@@ -42,6 +43,8 @@ export function ResultsPage() {
       </header>
 
       <ResultsPanel range={range} state={state} />
+
+      <AboutSection />
     </div>
   );
 }
