@@ -21,6 +21,22 @@ export interface ResultReader {
   getObject(key: string): Promise<string | null>;
 }
 
+/**
+ * Every error code this route can emit, as a single source of truth --
+ * see the `errorResponse(...)` calls below. Client code (use-results.ts,
+ * ResultsPanel.tsx) imports this instead of typing the error field as a
+ * bare `string`, so renaming or removing a code here is a compile error
+ * at every call site that still switches on the old name, instead of a
+ * silently-unreachable UI branch.
+ */
+export type ApiErrorCode =
+  | "invalid_range"
+  | "server_misconfigured"
+  | "upstream_error"
+  | "not_found"
+  | "corrupt_data"
+  | "schema_mismatch";
+
 // Data only changes on the nightly pipeline run, so it's safe for
 // browsers and any CDN in front of this route to reuse a response for a
 // while without re-checking -- but short enough that a same-day rerun of
@@ -29,7 +45,7 @@ export interface ResultReader {
 // if the origin is briefly unreachable past max-age.
 const CACHE_CONTROL = "public, max-age=300, s-maxage=300, stale-while-revalidate=3600";
 
-function errorResponse(status: number, error: string, message: string): Response {
+function errorResponse(status: number, error: ApiErrorCode, message: string): Response {
   // Explicit no-store so an intermediate cache never applies heuristic
   // freshness to an error -- 404 in particular is heuristically
   // cacheable by default per RFC 7231 section 6.1, which would otherwise risk
