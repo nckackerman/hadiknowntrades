@@ -4,10 +4,11 @@ import { describe, expect, it } from "vitest";
 import { AboutSection } from "./AboutSection";
 
 describe("AboutSection", () => {
-  it("shows the disclaimer without requiring a click", () => {
+  it("shows the disclaimer without requiring a click, as an alert region", () => {
     render(<AboutSection />);
     expect(screen.getByText("Not investment advice")).toBeVisible();
     expect(screen.getByText(/says nothing about what will happen next/)).toBeVisible();
+    expect(screen.getByRole("alert")).toContainElement(screen.getByText("Not investment advice"));
   });
 
   it("documents every v1 assumption from issue #10's scope", () => {

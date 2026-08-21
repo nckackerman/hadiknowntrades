@@ -17,7 +17,7 @@ decades.
   "Adjusted" means split- and dividend-adjusted -- a trade's return
   reflects the real total return a holder would have seen, not a raw price
   change distorted by a stock split. (Originally planned to use Stooq,
-  which now actively blocks programmatic access — see issue #3 for
+  which now actively blocks programmatic access -- see issue #3 for
   details.)
 - **Optimizer**: a backward DP (generalizing the classic "best time to
   buy/sell stock IV" problem across many tickers) finds the sequence of up
@@ -74,8 +74,10 @@ pnpm dev          # runs the Next.js app in apps/web
 `/api/results` route reads precomputed results from S3, so without pointing
 it at a real bucket you'll see the app's normal "results are temporarily
 unavailable" error state instead of real data. To see real data locally,
-set the two env vars the API route reads (see
-`apps/web/src/app/api/results/route.ts`) before running `pnpm dev`:
+set `RESULTS_BUCKET` (read explicitly in
+`apps/web/src/app/api/results/route.ts`) and `AWS_REGION` (read implicitly
+by the AWS SDK's own default region/credential provider chain, not by any
+line in this app's own code) before running `pnpm dev`:
 
 ```bash
 RESULTS_BUCKET=<your-deployed-bucket-name> AWS_REGION=us-west-2 pnpm dev
@@ -115,6 +117,10 @@ pnpm test
 ## Status
 
 The [v1: MVP launch milestone](https://github.com/nckackerman/hadiknowntrades/milestone/1)
-is complete: the optimizer, nightly precompute pipeline, AWS deployment,
-and the core visualization UI are all built and merged. See that
-milestone and the `backlog`-labeled issues for what's next.
+is code-complete: the optimizer, nightly precompute pipeline, and the core
+visualization UI are all built and merged, and infra is deployed and
+running the real pipeline against real data. The one open piece is the
+public site itself -- CloudFront is still blocked by an AWS account
+verification step outside this repo's control (see `infra/CLAUDE.md`), so
+there's no live public URL yet even though everything behind it works.
+See that milestone and the `backlog`-labeled issues for what's next.

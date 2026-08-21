@@ -1,15 +1,18 @@
 // Methodology + disclaimer copy, always visible on the site (issue #10 --
 // not tucked behind a click, since a disclaimer that requires effort to
-// find isn't really "clear"). The v1-assumptions list here must stay in
-// sync with reality: EOD-only prices, current S&P 500 constituents
-// applied retroactively, split/dividend-adjusted closes, no fees/
-// slippage/taxes modeled. See root CLAUDE.md and packages/core/CLAUDE.md
-// for the underlying facts this copy summarizes.
+// find isn't really "clear"). The v1-assumptions list below the summary
+// is the source of truth for what's actually modeled -- see root
+// CLAUDE.md and packages/core/CLAUDE.md for the underlying facts it
+// summarizes, and keep it in sync if either changes.
 
+/** The site's always-visible disclaimer plus a methodology/assumptions section behind a details/summary. */
 export function AboutSection() {
   return (
     <footer className="flex flex-col gap-4 border-t border-[var(--gridline)] pt-8 text-sm text-[var(--text-secondary)]">
-      <div className="rounded-lg border border-[var(--status-critical)]/30 bg-[var(--status-critical)]/5 px-4 py-3">
+      <div
+        role="alert"
+        className="rounded-lg border border-[var(--status-critical)]/30 bg-[var(--status-critical)]/5 px-4 py-3"
+      >
         <p className="font-semibold text-[var(--status-critical)]">Not investment advice</p>
         <p className="mt-1">
           This is a hindsight visualization, not a predictor and not a recommendation. It shows what
@@ -19,8 +22,11 @@ export function AboutSection() {
         </p>
       </div>
 
+      {/* Matches PortfolioChart's own details/summary disclosure (its "View
+          chart data as a table") so the two disclosures in the app look and
+          behave the same way. */}
       <details>
-        <summary className="cursor-pointer font-medium text-[var(--text-primary)]">
+        <summary className="cursor-pointer text-[var(--text-secondary)]">
           Methodology &amp; assumptions
         </summary>
         <div className="mt-2 flex flex-col gap-2">
