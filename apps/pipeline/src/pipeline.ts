@@ -212,9 +212,14 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     };
   });
 
-  for (const result of results) {
-    await options.store.putObject(`results/${result.range}.json`, JSON.stringify(result, null, 2));
-  }
+  // Independent writes to unrelated keys, already accepted as non-atomic
+  // as a group (see the comment above) -- no reason to pay serial
+  // network latency for them.
+  await Promise.all(
+    results.map((result) =>
+      options.store.putObject(`results/${result.range}.json`, JSON.stringify(result, null, 2)),
+    ),
+  );
 
   return { results, skippedTickers: skipped };
 }
