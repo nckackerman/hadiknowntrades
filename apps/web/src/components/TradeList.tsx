@@ -17,6 +17,7 @@ export function TradeList({ trades }: TradeListProps) {
           key={`${trade.ticker}-${trade.buyDate}`}
           index={index}
           ticker={trade.ticker}
+          preposition="on"
           buyLabel={formatDate(trade.buyDate)}
           buyPrice={trade.buyPrice}
           sellLabel={formatDate(trade.sellDate)}

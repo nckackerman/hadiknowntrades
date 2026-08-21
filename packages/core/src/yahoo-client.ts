@@ -27,7 +27,7 @@ import { isValidPrice } from "./is-valid-price";
 
 const CHART_BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart";
 
-// A realistic browser User-Agent. Required — see note above.
+// A realistic browser User-Agent. Required -- see note above.
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -81,9 +81,9 @@ export class TickerNotFoundError extends Error {
 }
 
 /**
- * Thrown on HTTP 401/403 — distinct from TickerNotFoundError on purpose.
+ * Thrown on HTTP 401/403 -- distinct from TickerNotFoundError on purpose.
  * A block means "we can't fetch anything right now," not "this symbol
- * doesn't exist" — conflating the two is exactly the failure mode this
+ * doesn't exist" -- conflating the two is exactly the failure mode this
  * client's migration off Stooq was meant to move away from. Not retried:
  * an active block is unlikely to clear within a few seconds of backoff.
  */
@@ -193,7 +193,7 @@ function backoffWithJitter(attempt: number): number {
 
 /**
  * Shared request/retry/error-classification loop behind both
- * fetchDailyCloses and fetchIntradayBars (issue #28) — everything about
+ * fetchDailyCloses and fetchIntradayBars (issue #28) -- everything about
  * *how* to talk to the chart endpoint (UA header, timeout, backoff,
  * status-code classification, malformed-shape detection) is identical
  * regardless of interval; only the URL and how to parse one bar's date
@@ -222,7 +222,7 @@ async function fetchChartSeries<T extends { date: string; close: number }>(
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (error) {
-      // Network error or timeout — treat as transient and retry.
+      // Network error or timeout -- treat as transient and retry.
       lastError = error;
       continue;
     }
@@ -241,7 +241,7 @@ async function fetchChartSeries<T extends { date: string; close: number }>(
         throw new TickerNotFoundError(symbol, `HTTP ${response.status}`);
       }
       // A non-retryable status we don't have a specific interpretation
-      // for (not 401/403, not the confirmed "not found" status) — don't
+      // for (not 401/403, not the confirmed "not found" status) -- don't
       // conflate it with "ticker doesn't exist."
       throw new UnexpectedResponseError(symbol, response.status);
     }
@@ -251,7 +251,7 @@ async function fetchChartSeries<T extends { date: string; close: number }>(
       body = (await response.json()) as YahooChartResponse;
     } catch (error) {
       // A 200 with a non-JSON body (e.g. an HTML anti-bot interstitial)
-      // — treat as transient rather than crashing the whole batch.
+      // -- treat as transient rather than crashing the whole batch.
       lastError = error;
       continue;
     }
@@ -282,9 +282,9 @@ async function fetchChartSeries<T extends { date: string; close: number }>(
     const parsed = parse(firstResult);
     if (timestamps.length > 0 && parsed.length === 0) {
       // Timestamps present but nothing survived parsing (no price data
-      // at all, or every close was invalid — e.g. all zero/NaN during a
+      // at all, or every close was invalid -- e.g. all zero/NaN during a
       // feed glitch) lines up with a malformed/glitchy response, not a
-      // legitimately empty range (which has zero timestamps too) — retry
+      // legitimately empty range (which has zero timestamps too) -- retry
       // rather than silently returning an empty result that looks
       // identical to "no trading days here." Checked on the *parsed*
       // output, not the raw close array, so this still catches the case
@@ -306,7 +306,7 @@ async function fetchChartSeries<T extends { date: string; close: number }>(
  * @param symbol Ticker as commonly quoted, e.g. "AAPL", "BRK.B". Mapped
  *   internally to Yahoo's symbol format.
  * @param from Start of the range (inclusive).
- * @param to End of the range (inclusive) — internally padded by a day so
+ * @param to End of the range (inclusive) -- internally padded by a day so
  *   that whatever time-of-day `to` carries, its calendar date is still
  *   covered even though daily bars are timestamped at market open, not
  *   midnight.
@@ -331,7 +331,7 @@ export async function fetchDailyCloses(
 /**
  * Fetches 60-minute intraday price bars for a symbol over a date range
  * (issue #28). Yahoo's retention for `interval=60m` is 730 days
- * (verified — see packages/core/CLAUDE.md), which comfortably covers
+ * (verified -- see packages/core/CLAUDE.md), which comfortably covers
  * 1M/3M/1Y in a single request with no chunking; the caller is
  * responsible for keeping `from`/`to` within that window (see the
  * chart.error note in fetchChartSeries for what happens if it isn't).
@@ -339,12 +339,15 @@ export async function fetchDailyCloses(
  * @param symbol Ticker as commonly quoted, e.g. "AAPL", "BRK.B". Mapped
  *   internally to Yahoo's symbol format.
  * @param from Start of the range (inclusive).
- * @param to End of the range (inclusive). Unlike fetchDailyCloses, this
- *   is NOT padded by a day: intraday bars already sit at real intraday
- *   moments within the trading day (not anchored near midnight), so the
- *   day-padding daily bars need to guarantee full calendar-day coverage
- *   would only pull in an extra day's worth of bars beyond what the
- *   caller asked for.
+ * @param to End of the range (inclusive) -- like fetchDailyCloses,
+ *   internally padded by a day so the requested day's market-hours bars
+ *   are fully covered regardless of what time-of-day `to` carries (e.g.
+ *   a caller passing a midnight-UTC "as of" date, matching this
+ *   package's own `toDateString` convention, would otherwise land
+ *   `period2` before that day's 9:30am-ET-and-later bars exist, silently
+ *   dropping the whole day). The pipeline's per-range slicing already
+ *   discards anything past its own requested end date, so this padding
+ *   never leaks an extra day into a written result.
  * @param options.fetchImpl Override for the fetch implementation (tests).
  */
 export async function fetchIntradayBars(
@@ -355,7 +358,7 @@ export async function fetchIntradayBars(
 ): Promise<IntradayBar[]> {
   const yahooSymbol = toYahooSymbol(symbol);
   const period1 = Math.floor(from.getTime() / 1000);
-  const period2 = Math.floor(to.getTime() / 1000);
+  const period2 = Math.floor(to.getTime() / 1000) + ONE_DAY_SECONDS;
   const url =
     `${CHART_BASE_URL}/${encodeURIComponent(yahooSymbol)}` +
     `?period1=${period1}&period2=${period2}&interval=${INTRADAY_INTERVAL}&includeAdjustedClose=true`;
@@ -369,57 +372,48 @@ function extractCloses(result: YahooChartResult): (number | null | undefined)[] 
   return indicators.adjclose?.[0]?.adjclose ?? quote?.close ?? [];
 }
 
-function parseDailyChartResult(result: YahooChartResult): DailyClose[] {
+/**
+ * Shared per-bar parsing loop behind both parseDailyChartResult and
+ * parseIntradayChartResult (issue #28) -- the only difference between
+ * the two is which timestamp-to-local-string function turns a bar's
+ * unix timestamp into its `date` field, and what a skipped-invalid-bar
+ * warning calls that bar ("close" vs. "intraday close").
+ */
+function parseBars<T extends { date: string; close: number }>(
+  result: YahooChartResult,
+  formatTimestamp: (unixSeconds: number, gmtoffsetSeconds: number) => string,
+  warnLabel: string,
+): T[] {
   const timestamp = result.timestamp ?? [];
   const closes = extractCloses(result);
   const { meta } = result;
 
-  const out: DailyClose[] = [];
+  const out: T[] = [];
   for (let i = 0; i < timestamp.length; i++) {
     const ts = timestamp[i];
     const close = closes[i];
     if (ts === undefined || close === null || close === undefined) continue;
-    // A non-positive or non-finite close is never legitimate — a stock
-    // price can't be <= 0 — so treat a glitched bar from the upstream
-    // feed as missing data for that day rather than passing it through
-    // to downstream consumers (e.g. the optimizer, which would otherwise
-    // divide by it).
+    // A non-positive or non-finite close is never legitimate -- a stock
+    // price can't be <= 0 -- so treat a glitched bar from the upstream
+    // feed as missing data rather than passing it through to downstream
+    // consumers (e.g. the optimizer, which would otherwise divide by it).
     if (!isValidPrice(close)) {
       console.warn(
-        `[yahoo-client] ignoring invalid close on ${unixToLocalDateString(ts, meta.gmtoffset)}: ${close}`,
+        `[yahoo-client] ignoring invalid ${warnLabel} on ${formatTimestamp(ts, meta.gmtoffset)}: ${close}`,
       );
       continue;
     }
-    out.push({
-      date: unixToLocalDateString(ts, meta.gmtoffset),
-      close,
-    });
+    out.push({ date: formatTimestamp(ts, meta.gmtoffset), close } as T);
   }
   return out;
 }
 
-function parseIntradayChartResult(result: YahooChartResult): IntradayBar[] {
-  const timestamp = result.timestamp ?? [];
-  const closes = extractCloses(result);
-  const { meta } = result;
+function parseDailyChartResult(result: YahooChartResult): DailyClose[] {
+  return parseBars(result, unixToLocalDateString, "close");
+}
 
-  const out: IntradayBar[] = [];
-  for (let i = 0; i < timestamp.length; i++) {
-    const ts = timestamp[i];
-    const close = closes[i];
-    if (ts === undefined || close === null || close === undefined) continue;
-    if (!isValidPrice(close)) {
-      console.warn(
-        `[yahoo-client] ignoring invalid intraday close on ${unixToLocalDateTimeString(ts, meta.gmtoffset)}: ${close}`,
-      );
-      continue;
-    }
-    out.push({
-      date: unixToLocalDateTimeString(ts, meta.gmtoffset),
-      close,
-    });
-  }
-  return out;
+function parseIntradayChartResult(result: YahooChartResult): IntradayBar[] {
+  return parseBars(result, unixToLocalDateTimeString, "intraday close");
 }
 
 /**
@@ -436,7 +430,7 @@ function parseIntradayChartResult(result: YahooChartResult): IntradayBar[] {
  * table to fix properly.
  *
  * Intraday bars (unixToLocalDateTimeString, below) are the case this was
- * flagged as a risk for — verified live during issue #28's
+ * flagged as a risk for -- verified live during issue #28's
  * implementation, see packages/core/CLAUDE.md's "60-minute intraday
  * bars" section for the result.
  */
@@ -451,16 +445,16 @@ function unixToLocalDateString(unixSeconds: number, gmtoffsetSeconds: number): s
 
 /**
  * Same conversion as unixToLocalDateString, but keeping the
- * hours/minutes/seconds instead of truncating to a calendar date — for
+ * hours/minutes/seconds instead of truncating to a calendar date -- for
  * 60-minute intraday bars (issue #28), where the time-of-day is real
  * data, not an artifact to discard.
  *
  * Shares unixToLocalDateString's DST caveat (`meta.gmtoffset` is the
  * *current* offset applied uniformly to every timestamp in the range,
- * not the historically-correct one per timestamp) — see that function's
+ * not the historically-correct one per timestamp) -- see that function's
  * doc comment. Unlike daily bars, this was a real open question for
  * intraday bars specifically (first/last bar of a day sit close to
- * market open/close, not safely mid-day) — resolved by live
+ * market open/close, not safely mid-day) -- resolved by live
  * verification during implementation; see
  * packages/core/CLAUDE.md's "60-minute intraday bars" section for the
  * result.

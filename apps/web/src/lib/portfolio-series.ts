@@ -37,13 +37,52 @@ export interface PortfolioPoint {
    * full local datetime (YYYY-MM-DDTHH:MM:SS, an intraday day's chart --
    * see deriveIntradayPortfolioSeries below) this point falls on.
    * PortfolioChart's toTimestamp/formatDateTime both detect which one
-   * they've been given by the presence of a "T" separator.
+   * they've been given via format-date.ts's isPortfolioDatetime.
    */
   date: string;
   /** Portfolio value at this point. */
   value: number;
   /** The trade event this point annotates, if any. */
   event: PortfolioEvent | null;
+}
+
+/**
+ * Appends the buy/flat/sell steps for each trade in sequence to
+ * `points` (mutated in place), compounding and returning the running
+ * value -- the mechanical part shared by derivePortfolioSeries and
+ * deriveIntradayPortfolioSeries below, which only differ in how a
+ * trade's buy/sell *labels* are derived (a calendar date vs. a full
+ * intraday datetime) and in their own start/end boundary-point handling
+ * around this shared middle section.
+ */
+function appendTradeSteps(
+  points: PortfolioPoint[],
+  startingValue: number,
+  trades: readonly { ticker: string; buyPrice: number; sellPrice: number }[],
+  labelsFor: (index: number) => { buyLabel: string; sellLabel: string },
+): number {
+  let value = startingValue;
+
+  trades.forEach((trade, index) => {
+    const { buyLabel, sellLabel } = labelsFor(index);
+
+    points.push({
+      date: buyLabel,
+      value,
+      event: { type: "buy", ticker: trade.ticker, price: trade.buyPrice },
+    });
+
+    points.push({ date: sellLabel, value, event: null });
+
+    value = value * (trade.sellPrice / trade.buyPrice);
+    points.push({
+      date: sellLabel,
+      value,
+      event: { type: "sell", ticker: trade.ticker, price: trade.sellPrice },
+    });
+  });
+
+  return value;
 }
 
 /**
@@ -59,27 +98,14 @@ export function derivePortfolioSeries(
   trades: readonly Trade[],
 ): PortfolioPoint[] {
   const points: PortfolioPoint[] = [];
-  let value = startingCapital;
 
   const firstDate = startDate ?? trades[0]?.buyDate ?? endDate;
-  points.push({ date: firstDate, value, event: null });
+  points.push({ date: firstDate, value: startingCapital, event: null });
 
-  for (const trade of trades) {
-    points.push({
-      date: trade.buyDate,
-      value,
-      event: { type: "buy", ticker: trade.ticker, price: trade.buyPrice },
-    });
-
-    points.push({ date: trade.sellDate, value, event: null });
-
-    value = value * (trade.sellPrice / trade.buyPrice);
-    points.push({
-      date: trade.sellDate,
-      value,
-      event: { type: "sell", ticker: trade.ticker, price: trade.sellPrice },
-    });
-  }
+  const value = appendTradeSteps(points, startingCapital, trades, (index) => ({
+    buyLabel: trades[index]!.buyDate,
+    sellLabel: trades[index]!.sellDate,
+  }));
 
   const last = points[points.length - 1];
   if (!last || last.date !== endDate) {
@@ -114,26 +140,12 @@ export function deriveIntradayPortfolioSeries(
   }
 
   const points: PortfolioPoint[] = [];
-  let value = startingCapital;
+  points.push({ date: `${date}T${trades[0]!.buyTime}`, value: startingCapital, event: null });
 
-  points.push({ date: `${date}T${trades[0]!.buyTime}`, value, event: null });
-
-  for (const trade of trades) {
-    points.push({
-      date: `${date}T${trade.buyTime}`,
-      value,
-      event: { type: "buy", ticker: trade.ticker, price: trade.buyPrice },
-    });
-
-    points.push({ date: `${date}T${trade.sellTime}`, value, event: null });
-
-    value = value * (trade.sellPrice / trade.buyPrice);
-    points.push({
-      date: `${date}T${trade.sellTime}`,
-      value,
-      event: { type: "sell", ticker: trade.ticker, price: trade.sellPrice },
-    });
-  }
+  appendTradeSteps(points, startingCapital, trades, (index) => ({
+    buyLabel: `${date}T${trades[index]!.buyTime}`,
+    sellLabel: `${date}T${trades[index]!.sellTime}`,
+  }));
 
   return points;
 }

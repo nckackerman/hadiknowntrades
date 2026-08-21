@@ -82,25 +82,35 @@ interface ResultsPanelProps {
 /** Switches on the fetch state to render loading / error / (empty or full) success -- see useResults for the state machine this drives off of. Success further switches on the result's `model` (issue #28): the original whole-window model, or the per-day intraday model. */
 export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: ResultsPanelProps) {
   // Must run unconditionally (before the early returns below) per the
-  // Rules of Hooks, and memoized so PortfolioChart's own useMemo (keyed
-  // on this array's reference) doesn't get defeated by a fresh `points`
-  // array on every ResultsPanel render that isn't actually a new fetch
-  // result or day selection.
+  // Rules of Hooks. Computed once here (not re-derived again later in
+  // the intraday render branch below) so there's a single source of
+  // truth for "which day is active" -- two independent copies of this
+  // fallback logic previously risked drifting (e.g. a future change to
+  // the fallback rule applied to one copy and missed the other).
+  const activeDay = useMemo(() => {
+    if (state.status !== "success" || state.data.model !== "intraday-daily") return null;
+    const { days } = state.data;
+    if (days.length === 0) return null;
+    return days.find((d) => d.date === selectedDay) ?? days[days.length - 1]!;
+  }, [state, selectedDay]);
+
+  // Memoized so PortfolioChart's own useMemo (keyed on this array's
+  // reference) doesn't get defeated by a fresh `points` array on every
+  // ResultsPanel render that isn't actually a new fetch result or day
+  // selection.
   const points = useMemo(() => {
     if (state.status !== "success") return [];
     const { data } = state;
     if (data.model === "window") {
       return derivePortfolioSeries(data.startingCapital, data.startDate, data.endDate, data.trades);
     }
-    if (data.days.length === 0) return [];
-    const activeDay =
-      data.days.find((d) => d.date === selectedDay) ?? data.days[data.days.length - 1]!;
+    if (!activeDay) return [];
     return deriveIntradayPortfolioSeries(
       activeDay.startingCapital,
       activeDay.date,
       activeDay.trades,
     );
-  }, [state, selectedDay]);
+  }, [state, activeDay]);
 
   if (state.status === "loading") {
     return <LoadingSkeleton />;
@@ -122,7 +132,7 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
   const { data } = state;
 
   if (data.model === "intraday-daily") {
-    if (data.days.length === 0) {
+    if (data.days.length === 0 || !activeDay) {
       return (
         <div className="rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
           No trading days are available yet for {RANGE_COPY[range]}.
@@ -130,8 +140,6 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
       );
     }
 
-    const activeDay =
-      data.days.find((d) => d.date === selectedDay) ?? data.days[data.days.length - 1]!;
     const isEmptyDay = activeDay.trades.length === 0;
 
     return (
@@ -139,6 +147,15 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <HeroStat
+              // Keyed on the active day so switching days (via
+              // DaySelector) remounts HeroStat instead of just updating
+              // its props in place -- useCountUp's reveal animation only
+              // fires on mount (see HeroStat's own doc comment), so
+              // without this key the visible figure would stay frozen
+              // at the previous day's animated value while the sr-only
+              // figure (driven directly by the prop) correctly updated,
+              // silently disagreeing with each other.
+              key={activeDay.date}
               startingCapital={activeDay.startingCapital}
               endingBalance={activeDay.endingBalance}
             />

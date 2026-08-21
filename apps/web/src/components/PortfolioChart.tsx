@@ -17,7 +17,7 @@
 import { memo, useId, useMemo, useState } from "react";
 
 import { formatAxisCurrency, formatHeroCurrency } from "@/lib/format-currency";
-import { formatDateTime } from "@/lib/format-date";
+import { formatDateTime, isPortfolioDatetime } from "@/lib/format-date";
 import { buildLogScale, buildTimeScale, niceLogTicks } from "@/lib/chart-scales";
 import type { PortfolioPoint } from "@/lib/portfolio-series";
 
@@ -34,16 +34,16 @@ const PLOT_HEIGHT = HEIGHT - MARGIN.top - MARGIN.bottom;
 /**
  * A PortfolioPoint's `date` is either a plain calendar date
  * ("2025-08-21", the window model) or a full local datetime
- * ("2025-08-21T14:30:00", an intraday day's chart -- issue #28),
- * detected by the presence of a "T" separator -- same detection
- * format-date.ts's formatDateTime uses, so the two stay in sync. Both
- * are parsed "as if UTC" (a "Z" appended, not re-interpreted through any
- * real timezone) purely to get a monotonic numeric timestamp to lay out
- * points along the x-axis -- consistent with how plain calendar dates
- * were already treated here before intraday support existed.
+ * ("2025-08-21T14:30:00", an intraday day's chart -- issue #28) -- see
+ * format-date.ts's isPortfolioDatetime for the (single, shared)
+ * detection this and formatDateTime both use. Both are parsed "as if
+ * UTC" (a "Z" appended, not re-interpreted through any real timezone)
+ * purely to get a monotonic numeric timestamp to lay out points along
+ * the x-axis -- consistent with how plain calendar dates were already
+ * treated here before intraday support existed.
  */
 function toTimestamp(date: string): number {
-  return new Date(date.includes("T") ? `${date}Z` : `${date}T00:00:00Z`).getTime();
+  return new Date(isPortfolioDatetime(date) ? `${date}Z` : `${date}T00:00:00Z`).getTime();
 }
 
 /** Anchors a label so it never runs past the plot's left/right edge. */

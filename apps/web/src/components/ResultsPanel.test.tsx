@@ -227,6 +227,47 @@ describe("ResultsPanel", () => {
   });
 
   describe("intraday-daily model (issue #28)", () => {
+    it("re-triggers HeroStat's reveal animation when switching days, instead of leaving the visible figure frozen on the previous day's value", () => {
+      // Regression test for a real bug caught in code review: HeroStat
+      // was rendered without a `key` in the intraday branch, so
+      // switching days updated its props in place (ResultsPanel doesn't
+      // remount its success subtree just because `selectedDay` changed)
+      // -- useCountUp's reveal only re-runs on mount (see its own doc
+      // comment), so without the key the visible figure stayed on the
+      // *previous* day's fully-animated value while the sr-only figure
+      // (driven directly by the prop) correctly updated -- the two
+      // silently disagreeing.
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+        // Complete the reveal on the very first frame, deterministically.
+        cb(performance.now() + 100_000);
+        return 1;
+      });
+
+      const data = fixtureIntradayResult();
+      const state: ResultsState = { status: "success", data };
+      const { rerender } = render(
+        <ResultsPanel range="1M" state={state} selectedDay="2026-08-20" />,
+      );
+
+      // Day 1 (2026-08-20): endingBalance 25.
+      expect(
+        screen.getByText("$25.00", { selector: "span[aria-hidden]:not(.sr-only)" }),
+      ).toBeInTheDocument();
+
+      rerender(<ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />);
+
+      // Day 2 (2026-08-21): endingBalance 40 -- the visible figure must
+      // update to match, not stay frozen at day 1's $25.00.
+      expect(
+        screen.getByText("$40.00", { selector: "span[aria-hidden]:not(.sr-only)" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText("$25.00", { selector: "span[aria-hidden]:not(.sr-only)" }),
+      ).not.toBeInTheDocument();
+
+      vi.restoreAllMocks();
+    });
+
     it("defaults to the most recent day when no day is selected", () => {
       const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
       render(<ResultsPanel range="1M" state={state} />);
@@ -235,6 +276,15 @@ describe("ResultsPanel", () => {
       expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
       expect(screen.queryByText(/AAPL/)).not.toBeInTheDocument();
       expect(screen.getByText(/Aug 21, 2026/)).toBeInTheDocument();
+    });
+
+    it("labels each trade with 'at TIME', not 'on TIME' -- a real grammar bug caught in code review (TradeRow hardcoded the window model's 'on')", () => {
+      const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+      render(<ResultsPanel range="1M" state={state} />);
+
+      expect(screen.getByText(/at 9:30 AM/)).toBeInTheDocument();
+      expect(screen.getByText(/at 10:30 AM/)).toBeInTheDocument();
+      expect(screen.queryByText(/on 9:30 AM/)).not.toBeInTheDocument();
     });
 
     it("shows the selected day's result when selectedDay matches an earlier day", () => {

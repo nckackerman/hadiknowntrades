@@ -403,14 +403,15 @@ describe("fetchIntradayBars", () => {
     expect(new URL(url).searchParams.get("interval")).toBe("60m");
   });
 
-  it("does NOT pad period2 by a day (unlike fetchDailyCloses) -- intraday bars don't need day-boundary coverage padding", async () => {
+  it("pads period2 by a day, same as fetchDailyCloses -- a midnight-UTC `to` (e.g. toDateString's convention) must still cover that day's market-hours bars", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, validChartBody()));
 
     await fetchIntradayBars("AAPL", from, to, { fetchImpl });
 
     const [url] = fetchImpl.mock.calls[0] as [string];
     const period2 = Number(new URL(url).searchParams.get("period2"));
-    expect(period2).toBe(Math.floor(to.getTime() / 1000));
+    const requestedEndSeconds = Math.floor(to.getTime() / 1000);
+    expect(period2).toBeGreaterThanOrEqual(requestedEndSeconds + 24 * 60 * 60);
   });
 
   it("shares the same error classification as fetchDailyCloses (e.g. BlockedError on 401, not retried)", async () => {

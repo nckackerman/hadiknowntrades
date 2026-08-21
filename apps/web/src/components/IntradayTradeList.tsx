@@ -24,6 +24,7 @@ export function IntradayTradeList({ trades }: IntradayTradeListProps) {
           key={`${trade.ticker}-${trade.buyTime}`}
           index={index}
           ticker={trade.ticker}
+          preposition="at"
           buyLabel={formatTime(trade.buyTime)}
           buyPrice={trade.buyPrice}
           sellLabel={formatTime(trade.sellTime)}

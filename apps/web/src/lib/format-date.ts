@@ -36,16 +36,27 @@ export function formatTime(time: string): string {
 }
 
 /**
- * Formats a PortfolioPoint's `date` field, which is either a plain
- * calendar date ("2025-08-21", the window model) or a full local
- * datetime ("2025-08-21T14:30:00", an intraday day's chart -- issue
- * #28) -- detected by the presence of a "T" separator. A datetime
- * formats as time-only ("2:30 PM"): the chart already shows which
- * single day is selected elsewhere in the intraday view, so repeating
- * the date on every point would be redundant.
+ * Whether a PortfolioPoint's `date` field is a full local datetime
+ * ("2025-08-21T14:30:00", an intraday day's chart -- issue #28) rather
+ * than a plain calendar date ("2025-08-21", the window model) --
+ * detected by the presence of a "T" separator. The single canonical
+ * place this detection happens: PortfolioChart's `toTimestamp` uses
+ * this too (instead of its own copy of the same check), so the two
+ * can't drift on what counts as "a datetime" the way two independently
+ * written string-sniffing checks otherwise could.
+ */
+export function isPortfolioDatetime(date: string): boolean {
+  return date.includes("T");
+}
+
+/**
+ * Formats a PortfolioPoint's `date` field (see isPortfolioDatetime) --
+ * a datetime formats as time-only ("2:30 PM"): the chart already shows
+ * which single day is selected elsewhere in the intraday view, so
+ * repeating the date on every point would be redundant.
  */
 export function formatDateTime(date: string): string {
+  if (!isPortfolioDatetime(date)) return formatDate(date);
   const separatorIndex = date.indexOf("T");
-  if (separatorIndex === -1) return formatDate(date);
   return formatTime(date.slice(separatorIndex + 1));
 }

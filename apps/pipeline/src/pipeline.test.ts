@@ -1,5 +1,6 @@
 import {
   BlockedError,
+  PRESET_RANGES,
   TickerNotFoundError,
   toDateString,
   TransientFetchError,
@@ -44,6 +45,16 @@ function daysBack(days: number) {
 /** A fetcher that returns no data for every ticker -- used where a test only cares about the *other* path, and wants this path to independently produce nothing rather than error. */
 const noDailyData = async (): Promise<DailyClose[]> => [];
 const noIntradayData = async (): Promise<IntradayBar[]> => [];
+
+/** Awaits a promise expected to reject, returning the rejection reason (typed as Error, for asserting on `.message`). Throws if the promise unexpectedly resolves. */
+async function rejectionOf(promise: Promise<unknown>): Promise<Error> {
+  try {
+    await promise;
+  } catch (error) {
+    return error as Error;
+  }
+  throw new Error("expected the promise to reject, but it resolved");
+}
 
 describe("runPipeline", () => {
   const asOf = ASOF;
@@ -115,6 +126,16 @@ describe("runPipeline", () => {
     // A single generatedAt shared across every successfully-written
     // result -- window and intraday paths alike.
     expect(generatedAts.size).toBe(1);
+
+    // The window path (5Y/MAX) and intraday path (1M/3M/1Y) between them
+    // cover every PresetRange exactly once -- if a future range is ever
+    // added to PRESET_RANGES without also assigning it to one of the two
+    // paths' range lists, this catches it (it would otherwise silently
+    // never get written, with no error and no other test noticing).
+    const writtenRanges = [...store.objects.keys()]
+      .map((key) => key.replace("results/", "").replace(".json", ""))
+      .sort();
+    expect(writtenRanges).toEqual([...PRESET_RANGES].sort());
   });
 
   it("is idempotent: running twice for the same day produces the same content", async () => {
@@ -164,13 +185,17 @@ describe("runPipeline", () => {
       ]);
       const store = memoryStore();
 
+      // The intraday path deliberately has no data here and now makes
+      // the overall run reject (see the dedicated "still fails the run"
+      // tests below) -- irrelevant to this test, which only cares about
+      // the window path's own slicing, so the rejection is swallowed.
       await runPipeline({
         tickers: ["AAPL"],
         fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
         fetchIntradayBars: noIntradayData,
         store,
         asOf,
-      });
+      }).catch(() => {});
 
       const fiveYear = JSON.parse(store.objects.get("results/5Y.json")!);
       const max = JSON.parse(store.objects.get("results/MAX.json")!);
@@ -190,37 +215,46 @@ describe("runPipeline", () => {
       ]);
       const store = memoryStore();
 
+      // See the comment on the previous test -- the intraday path's
+      // deliberate lack of data now makes the run reject, which this
+      // test doesn't care about.
       await runPipeline({
         tickers: ["AAPL"],
         fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
         fetchIntradayBars: noIntradayData,
         store,
         asOf,
-      });
+      }).catch(() => {});
 
       const max = JSON.parse(store.objects.get("results/MAX.json")!);
       expect(max.dataAsOf).toBe("2024-06-15"); // not 2024-06-16
       expect(max.trades.every((t: { sellDate: string }) => t.sellDate <= "2024-06-15")).toBe(true);
     });
 
-    it("independently produces no results (without erroring) when only the intraday path has data", async () => {
+    it("writes the intraday path's results even when the window path independently has no data, but still fails the run (for alerting)", async () => {
       const intradayFixture = new Map<string, IntradayBar[]>([
         ["AAPL", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 20)]],
       ]);
       const store = memoryStore();
 
-      const summary = await runPipeline({
-        tickers: ["AAPL"],
-        fetchDailyCloses: noDailyData,
-        fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
-        store,
-        asOf,
-      });
+      await expect(
+        runPipeline({
+          tickers: ["AAPL"],
+          fetchDailyCloses: noDailyData,
+          fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+          store,
+          asOf,
+        }),
+      ).rejects.toThrow(/wrote 3 of 5 ranges/);
 
+      // The intraday path's real results were still written -- a single
+      // failed path doesn't hold the other path's good data hostage --
+      // but the run still rejects so a real, persistent single-path
+      // failure doesn't go unnoticed indefinitely (see runPipeline's own
+      // comment on why this must still fail the Lambda invocation).
       expect(store.objects.has("results/5Y.json")).toBe(false);
       expect(store.objects.has("results/MAX.json")).toBe(false);
-      expect(store.objects.size).toBe(3); // 1M/3M/1Y still wrote successfully
-      expect(summary.results.map((r) => r.range).sort()).toEqual(["1M", "1Y", "3M"]);
+      expect(store.objects.size).toBe(3);
     });
   });
 
@@ -244,13 +278,16 @@ describe("runPipeline", () => {
       ]);
       const store = memoryStore();
 
+      // The window path deliberately has no data here and now makes the
+      // overall run reject -- irrelevant to this test, which only cares
+      // about the intraday path's own day-bucketing/slicing.
       await runPipeline({
         tickers: ["AAPL"],
         fetchDailyCloses: noDailyData,
         fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
         store,
         asOf,
-      });
+      }).catch(() => {});
 
       const oneMonth = JSON.parse(store.objects.get("results/1M.json")!);
       const threeMonth = JSON.parse(store.objects.get("results/3M.json")!);
@@ -281,13 +318,16 @@ describe("runPipeline", () => {
       ]);
       const store = memoryStore();
 
+      // See the comment on the previous test -- the window path's
+      // deliberate lack of data now makes the run reject, which this
+      // test doesn't care about.
       await runPipeline({
         tickers: ["AAPL"],
         fetchDailyCloses: noDailyData,
         fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
         store,
         asOf,
-      });
+      }).catch(() => {});
 
       const oneMonth = JSON.parse(store.objects.get("results/1M.json")!);
       const [firstDay, secondDay] = oneMonth.days;
@@ -296,25 +336,26 @@ describe("runPipeline", () => {
       expect(secondDay.startingCapital).toBe(20); // not firstDay.endingBalance
     });
 
-    it("independently produces no results (without erroring) when only the window path has data", async () => {
+    it("writes the window path's results even when the intraday path independently has no data, but still fails the run (for alerting)", async () => {
       const dailyFixture = new Map<string, DailyClose[]>([
         ["AAPL", [daily(daysBack(2000), 5), daily(daysBack(10), 50)]],
       ]);
       const store = memoryStore();
 
-      const summary = await runPipeline({
-        tickers: ["AAPL"],
-        fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
-        fetchIntradayBars: noIntradayData,
-        store,
-        asOf,
-      });
+      await expect(
+        runPipeline({
+          tickers: ["AAPL"],
+          fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
+          fetchIntradayBars: noIntradayData,
+          store,
+          asOf,
+        }),
+      ).rejects.toThrow(/wrote 2 of 5 ranges/);
 
       expect(store.objects.has("results/1M.json")).toBe(false);
       expect(store.objects.has("results/3M.json")).toBe(false);
       expect(store.objects.has("results/1Y.json")).toBe(false);
       expect(store.objects.size).toBe(2); // 5Y/MAX still wrote successfully
-      expect(summary.results.map((r) => r.range).sort()).toEqual(["5Y", "MAX"]);
     });
   });
 
@@ -361,70 +402,79 @@ describe("runPipeline", () => {
     expect(summary.skippedTickers).toEqual(["FLAKY"]);
   });
 
-  it("a ticker skipped on only one path is still recorded in the summary, and still contributes on the other path", async () => {
+  it("a ticker skipped on only one path still fails the run, but the skipped ticker and the other path's results are preserved", async () => {
     const store = memoryStore();
 
-    const summary = await runPipeline({
-      tickers: ["GOOD"],
-      fetchDailyCloses: async () => {
-        throw new TickerNotFoundError("GOOD", "no daily data");
-      },
-      fetchIntradayBars: async () => [
-        bar(daysBack(5), "09:30:00", 10),
-        bar(daysBack(5), "10:30:00", 40),
-      ],
-      store,
-      asOf,
-    });
+    const error = await rejectionOf(
+      runPipeline({
+        tickers: ["GOOD"],
+        fetchDailyCloses: async () => {
+          throw new TickerNotFoundError("GOOD", "no daily data");
+        },
+        fetchIntradayBars: async () => [
+          bar(daysBack(5), "09:30:00", 10),
+          bar(daysBack(5), "10:30:00", 40),
+        ],
+        store,
+        asOf,
+      }),
+    );
 
-    expect(summary.skippedTickers).toEqual(["GOOD"]);
+    // The thrown error still surfaces the skipped-ticker bookkeeping,
+    // even though it's no longer available via a returned summary (the
+    // call rejected) -- real per-ticker information shouldn't vanish
+    // just because the overall run also fails for a different reason.
+    expect(error.message).toMatch(/Skipped tickers: GOOD/);
     // Window path had zero usable data (its only ticker was skipped) --
-    // no window results written -- but the intraday path still succeeded.
+    // no window results written -- but the intraday path still succeeded
+    // and its real results are still in the store.
     expect(store.objects.has("results/MAX.json")).toBe(false);
     const oneMonth = JSON.parse(store.objects.get("results/1M.json")!);
     expect(oneMonth.days[0].endingBalance).toBeGreaterThan(20);
   });
 
-  it("aborts only the window path on a window-fetch BlockedError, leaving the intraday path's results written", async () => {
+  it("aborts only the window path on a window-fetch BlockedError, still writing (but failing the run over) the intraday path's results", async () => {
     const store = memoryStore();
 
-    const summary = await runPipeline({
-      tickers: ["AAPL"],
-      fetchDailyCloses: async () => {
-        throw new BlockedError("AAPL", 403);
-      },
-      fetchIntradayBars: async () => [
-        bar(daysBack(5), "09:30:00", 10),
-        bar(daysBack(5), "10:30:00", 40),
-      ],
-      store,
-      asOf,
-    });
+    await expect(
+      runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: async () => {
+          throw new BlockedError("AAPL", 403);
+        },
+        fetchIntradayBars: async () => [
+          bar(daysBack(5), "09:30:00", 10),
+          bar(daysBack(5), "10:30:00", 40),
+        ],
+        store,
+        asOf,
+      }),
+    ).rejects.toThrow(/wrote 3 of 5 ranges/);
 
     expect(store.objects.has("results/5Y.json")).toBe(false);
     expect(store.objects.has("results/MAX.json")).toBe(false);
     expect(store.objects.size).toBe(3);
-    expect(summary.results.map((r) => r.range).sort()).toEqual(["1M", "1Y", "3M"]);
   });
 
-  it("aborts only the intraday path on an intraday-fetch UnexpectedResponseError, leaving the window path's results written", async () => {
+  it("aborts only the intraday path on an intraday-fetch UnexpectedResponseError, still writing (but failing the run over) the window path's results", async () => {
     const store = memoryStore();
 
-    const summary = await runPipeline({
-      tickers: ["AAPL"],
-      fetchDailyCloses: async () => [daily(daysBack(20), 10), daily(daysBack(1), 40)],
-      fetchIntradayBars: async () => {
-        throw new UnexpectedResponseError("AAPL", 400);
-      },
-      store,
-      asOf,
-    });
+    await expect(
+      runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: async () => [daily(daysBack(20), 10), daily(daysBack(1), 40)],
+        fetchIntradayBars: async () => {
+          throw new UnexpectedResponseError("AAPL", 400);
+        },
+        store,
+        asOf,
+      }),
+    ).rejects.toThrow(/wrote 2 of 5 ranges/);
 
     expect(store.objects.has("results/1M.json")).toBe(false);
     expect(store.objects.has("results/3M.json")).toBe(false);
     expect(store.objects.has("results/1Y.json")).toBe(false);
     expect(store.objects.size).toBe(2);
-    expect(summary.results.map((r) => r.range).sort()).toEqual(["5Y", "MAX"]);
   });
 
   it("aborts the entire run and writes nothing when BOTH paths fail", async () => {
@@ -445,6 +495,37 @@ describe("runPipeline", () => {
     ).rejects.toThrow(/neither the daily-close nor intraday fetch/);
 
     expect(store.objects.size).toBe(0);
+  });
+
+  it("preserves per-ticker skips that happened before an abort, instead of discarding them along with the untrusted partial data", async () => {
+    const store = memoryStore();
+    // Serial (concurrency 1) so the fetch order is deterministic: two
+    // tickers fail individually for an unrelated per-ticker reason
+    // *before* the third one triggers a systemic abort.
+    const error = await rejectionOf(
+      runPipeline({
+        tickers: ["MISSING1", "MISSING2", "BLOCKED"],
+        fetchConcurrency: 1,
+        fetchDailyCloses: async (symbol) => {
+          if (symbol === "MISSING1" || symbol === "MISSING2") {
+            throw new TickerNotFoundError(symbol, "no data");
+          }
+          throw new BlockedError(symbol, 403);
+        },
+        fetchIntradayBars: async () => [
+          bar(daysBack(5), "09:30:00", 10),
+          bar(daysBack(5), "10:30:00", 40),
+        ],
+        store,
+        asOf,
+      }),
+    );
+
+    // Both individually-skipped tickers survive the later abort on the
+    // same path, not just tickers skipped on the (unrelated, succeeding)
+    // intraday path.
+    expect(error.message).toMatch(/Skipped tickers:.*MISSING1/);
+    expect(error.message).toMatch(/Skipped tickers:.*MISSING2/);
   });
 
   it("stops starting new fetches once a worker hits BlockedError, instead of every worker running to completion", async () => {
