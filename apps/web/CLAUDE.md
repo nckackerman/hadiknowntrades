@@ -40,6 +40,41 @@ source functions (see git history for examples), not an actual rendered
 screenshot -- ask the user to run the `sudo` install themselves if real
 screenshot-based visual QA is ever needed.
 
+## Client-side animation (`useCountUp`, issue #35)
+
+`HeroStat.tsx`'s count-up reveal (`lib/use-count-up.ts`) is a plain
+`requestAnimationFrame` loop, no library. A few things that weren't
+obvious going in, worth knowing before the next animation in this
+milestone (#36):
+
+- **jsdom in this repo's Vitest setup has no `window.matchMedia` at
+  all** (checked the actual jsdom 30 source, not assumed) -- calling it
+  unguarded throws in every test that mounts the component. Guard with
+  `typeof window.matchMedia !== "function"` and stub it per-test with
+  `vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches, ... }))`
+  the way `HeroStat.test.tsx`/`use-count-up.test.ts` do.
+- jsdom **does** implement `requestAnimationFrame`/`cancelAnimationFrame`
+  (Vitest's jsdom environment defaults `pretendToBeVisual: true`), but
+  it's backed by a real ~16.67ms `setInterval`, not a fake-timers-friendly
+  clock. Don't wait on real frames in a test -- `vi.spyOn(window,
+"requestAnimationFrame").mockImplementation(cb => { cb(...); return 1;
+})` to fire (or withhold) a frame deterministically and synchronously.
+- The `react-hooks/set-state-in-effect` lint (see `use-results.ts`'s own
+  note on it) also bites animation code: don't branch-and-`setState`
+  synchronously at the top of the effect body (e.g. "if reduced motion,
+  jump to the end"). Fold that check into the `requestAnimationFrame`
+  callback itself instead, so every `setValue` call happens inside a
+  callback from an external system (the pattern the lint wants) --
+  this also means the very first render (server and client hydration
+  alike) is always the same fixed starting value, sidestepping any
+  hydration-mismatch risk from reading `matchMedia` during render.
+- Accessibility for a value that animates: don't wire `aria-live` to a
+  per-frame value (spams assistive tech with every intermediate
+  number, and the issue explicitly calls this out). Simpler and more
+  robust: mark the visible animating element `aria-hidden="true"` and
+  render a second, static `sr-only` element holding the final value the
+  whole time -- no dependency on aria-live announcement timing at all.
+
 ## Importing `@hadiknowntrades/core`
 
 Import it by its normal package specifier
