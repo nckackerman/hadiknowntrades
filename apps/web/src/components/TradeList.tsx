@@ -5,7 +5,7 @@ import { formatHeroCurrency, formatPercent } from "@/lib/format-currency";
 import { narrateTrades } from "@/lib/narrate-trades";
 
 interface TradeListProps {
-  /** Non-empty -- the caller (ResultsPanel) owns the empty ("no trade beat cash") state, since it has the range context needed for good copy there; this component only renders an actual trade sequence. */
+  /** Expected non-empty -- the caller (ResultsPanel) owns the empty ("no trade beat cash") state today, since it has the range context needed for good copy there. TradeList still defends against an empty array itself (a brief generic fallback, see the component body) rather than rendering a silently blank box, since narrateTrades itself is documented to tolerate `[]` and a future caller (e.g. IntradayTradeList reusing this narration path) might not carry the same guard ResultsPanel does today. */
   trades: readonly Trade[];
   /** The window's starting balance -- the base the first trade's "turning your $X into $Y" narrates from (see narrate-trades.ts). */
   startingCapital: number;
@@ -47,8 +47,21 @@ export function TradeList({ trades, startingCapital }: TradeListProps) {
     startingCapital,
   );
 
+  // Defensive fallback, not the primary empty-state path: ResultsPanel
+  // already guards against calling TradeList with an empty `trades`
+  // array today (see the prop doc comment above), but this keeps the
+  // component itself from ever rendering a silently blank bordered box
+  // if that guard is ever missing for a future caller.
+  if (narrations.length === 0) {
+    return (
+      <div className="rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
+        No trades to show.
+      </div>
+    );
+  }
+
   return (
-    <p className="rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-3 text-sm leading-relaxed text-[var(--text-primary)]">
+    <ol className="rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-3 text-sm leading-relaxed text-[var(--text-primary)]">
       {narrations.map((narration, index) => {
         // Built as plain JS template-literal strings (not raw JSX text)
         // so the exact wording/spacing is deterministic -- JSX's own
@@ -64,8 +77,16 @@ export function TradeList({ trades, startingCapital }: TradeListProps) {
           `${narration.sellLabel} at ${formatHeroCurrency(narration.sellPrice)}, turning ` +
           `${startPhrase} into ${formatHeroCurrency(narration.endBalance)} `;
 
+        // Each trade is an <li>, not a <span>: a screen reader gets
+        // "list, 3 items" and per-item navigation (getByRole("list") /
+        // getAllByRole("listitem") in TradeList.test.tsx) even though
+        // `display: inline` (see globals.css's `.trade-narration-item`)
+        // makes it flow as one visual paragraph with no bullets/line
+        // breaks -- restoring the semantic list structure the original
+        // TradeRow-based <ol>/<li> rendering had, underneath the new
+        // prose styling, rather than trading it away for the prose look.
         return (
-          <span key={narration.key}>
+          <li key={narration.key} className="trade-narration-item">
             {before}
             <span className="font-semibold">{narration.ticker}</span>
             {middle}
@@ -76,9 +97,9 @@ export function TradeList({ trades, startingCapital }: TradeListProps) {
               ({formatPercent(narration.returnFraction)})
             </span>
             {"."}
-          </span>
+          </li>
         );
       })}
-    </p>
+    </ol>
   );
 }

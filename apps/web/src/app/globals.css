@@ -94,3 +94,18 @@ body {
     opacity: 0;
   }
 }
+
+/*
+ * TradeList's prose trade narration (issue #32): each trade's sentence is
+ * an <li> inside an <ol> -- real list semantics for assistive tech
+ * ("list, 3 items", per-item navigation) -- rather than a <span>, but
+ * needs to flow as one visual paragraph with no bullet/marker and no
+ * block-level line break between trades. Preflight already strips
+ * list-style/margin/padding from `ol`/`li` (see
+ * node_modules/tailwindcss/preflight.css); the one remaining default
+ * this overrides is `<li>`'s own `display: list-item`, which would
+ * otherwise force each trade onto its own line.
+ */
+.trade-narration-item {
+  display: inline;
+}

@@ -5,6 +5,13 @@
 // isn't wired up yet). All formatting of the numbers this returns (the
 // dollar figures, the percent) stays the caller's job -- this module only
 // computes the values and the per-trade "lead-in" phrase.
+//
+// The per-trade return and the running-balance compounding are both
+// delegated to trade-math.ts's shared helpers rather than re-derived here
+// -- see that module's own doc comment for why (this was independently
+// re-implemented in three places before that extraction).
+
+import { compoundBalance, computeTradeReturn } from "./trade-math";
 
 /**
  * The minimum a trade needs to carry to be narrated: a ticker, already
@@ -47,9 +54,9 @@ export interface TradeNarration {
    * compact/scientific form instead of a wall of digits.
    */
   endBalance: number;
-  /** sellPrice / buyPrice - 1 -- identical to this trade's own portfolio-return fraction (an all-in, fully-reinvested trade means the ticker's own price return *is* the portfolio's return for that leg), so there's no separate "portfolio return" to compute. Negative for a loss leg -- today's optimizer never produces one, but this isn't assumed here (see TradeRow.tsx's own identical, pre-existing computation, which this mirrors). */
+  /** sellPrice / buyPrice - 1 -- identical to this trade's own portfolio-return fraction (an all-in, fully-reinvested trade means the ticker's own price return *is* the portfolio's return for that leg), so there's no separate "portfolio return" to compute. Negative for a loss leg -- today's optimizer never produces one, but this isn't assumed here. Computed via trade-math.ts's computeTradeReturn, the same helper TradeRow.tsx uses. */
   returnFraction: number;
-  /** returnFraction >= 0 -- matches TradeRow.tsx's own established "flat counts as a gain" convention, reused here rather than re-derived, so the two don't drift apart on what counts as good/bad. */
+  /** returnFraction >= 0 -- matches TradeRow.tsx's own established "flat counts as a gain" convention via the shared computeTradeReturn helper, so the two can't drift apart on what counts as good/bad. */
   isGain: boolean;
 }
 
@@ -74,6 +81,13 @@ function leadInFor(index: number, total: number): string {
  * contract still expects a non-empty sequence (ResultsPanel owns the
  * empty-state copy), but this function itself stays defensive so it
  * can't crash if that contract is ever violated by a future caller.
+ *
+ * @throws {InvalidTradePriceError} (from trade-math.ts) if any trade's
+ * buyPrice/sellPrice is non-finite or <= 0 -- deliberately not swallowed
+ * here, since a corrupted price would otherwise silently narrate as a
+ * plausible-looking (and possibly wrongly "green") sentence. Caught by
+ * this app's render-time error boundaries (app/error.tsx,
+ * app/global-error.tsx -- issue #46) the same as any other render throw.
  */
 export function narrateTrades(
   trades: readonly NarratableTrade[],
@@ -82,8 +96,8 @@ export function narrateTrades(
   let runningBalance = startingCapital;
   return trades.map((trade, index) => {
     const startBalance = runningBalance;
-    const returnFraction = trade.sellPrice / trade.buyPrice - 1;
-    runningBalance = startBalance * (trade.sellPrice / trade.buyPrice);
+    const { returnFraction, isGain } = computeTradeReturn(trade.buyPrice, trade.sellPrice);
+    runningBalance = compoundBalance(startBalance, trade.buyPrice, trade.sellPrice);
     return {
       key: `${trade.ticker}-${trade.buyLabel}-${index}`,
       leadIn: leadInFor(index, trades.length),
@@ -95,7 +109,7 @@ export function narrateTrades(
       startBalance,
       endBalance: runningBalance,
       returnFraction,
-      isGain: returnFraction >= 0,
+      isGain,
     };
   });
 }

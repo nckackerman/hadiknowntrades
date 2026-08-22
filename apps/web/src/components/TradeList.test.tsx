@@ -17,19 +17,44 @@ function trade(overrides: Partial<Trade> = {}): Trade {
 }
 
 /**
- * The prose is one <p> whose sentences are split across several sibling
- * <span>s (see TradeList.tsx) -- Testing Library's getByText only
- * matches an element's *own* direct-child text nodes, not a recursive
- * textContent, so it can't reliably hand back "the whole sentence" when
- * a ticker name or colored percent sits in a nested span partway
- * through it. Reading the container's <p>.textContent directly (a
- * native, always-recursive DOM property) sidesteps that entirely.
+ * The prose is one <ol> whose per-trade <li>s (styled `display: inline`
+ * so they flow as one visual paragraph, see globals.css's
+ * `.trade-narration-item`) hold several sibling <span>s each (see
+ * TradeList.tsx) -- Testing Library's getByText only matches an
+ * element's *own* direct-child text nodes, not a recursive textContent,
+ * so it can't reliably hand back "the whole sentence" when a ticker name
+ * or colored percent sits in a nested span partway through it. Reading
+ * the container's <ol>.textContent directly (a native, always-recursive
+ * DOM property) sidesteps that entirely.
  */
 function proseText(container: HTMLElement): string {
-  return container.querySelector("p")?.textContent ?? "";
+  return container.querySelector("ol")?.textContent ?? "";
 }
 
 describe("TradeList", () => {
+  it("renders a brief fallback instead of a silently blank box for an empty trades array (defensive -- ResultsPanel owns the primary empty-state copy today)", () => {
+    render(<TradeList trades={[]} startingCapital={20} />);
+
+    expect(screen.getByText("No trades to show.")).toBeInTheDocument();
+    expect(screen.queryByRole("list")).not.toBeInTheDocument();
+  });
+
+  it("renders as a real <ol>/<li> list -- one listitem per trade -- so assistive tech gets list semantics and per-item navigation, not just visually-flowing spans", () => {
+    render(
+      <TradeList
+        trades={[
+          trade({ ticker: "AAPL" }),
+          trade({ ticker: "MSFT", buyPrice: 50, sellPrice: 55 }),
+          trade({ ticker: "TSLA", buyPrice: 200, sellPrice: 180 }),
+        ]}
+        startingCapital={20}
+      />,
+    );
+
+    expect(screen.getByRole("list")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+  });
+
   it("narrates a single trade as one prose sentence with the 'Had you known' opener", () => {
     const { container } = render(<TradeList trades={[trade()]} startingCapital={20} />);
 

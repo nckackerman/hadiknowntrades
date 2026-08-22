@@ -28,6 +28,8 @@
 
 import type { IntradayTrade, Trade } from "@hadiknowntrades/core";
 
+import { compoundBalance } from "./trade-math";
+
 export type PortfolioEvent =
   { type: "buy"; ticker: string; price: number } | { type: "sell"; ticker: string; price: number };
 
@@ -74,7 +76,7 @@ function appendTradeSteps(
 
     points.push({ date: sellLabel, value, event: null });
 
-    value = value * (trade.sellPrice / trade.buyPrice);
+    value = compoundBalance(value, trade.buyPrice, trade.sellPrice);
     points.push({
       date: sellLabel,
       value,

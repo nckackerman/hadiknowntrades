@@ -238,8 +238,9 @@ ladder if so" shape applies.
   `HeroStat`/`PortfolioChart` are reused as-is per selected day;
   `IntradayTradeList` (not `TradeList` -- different field shape,
   `buyTime`/`sellTime` instead of `buyDate`/`sellDate`) renders that
-  day's trades. Both trade-list components share row markup via
-  `TradeRow.tsx`.
+  day's trades. Only `IntradayTradeList` still shares row markup via
+  `TradeRow.tsx` -- `TradeList` moved to its own prose rendering (issue
+  #32), see "Prose trade narration" below for the full story.
 
 `PortfolioChart.tsx` and `format-date.ts` are now datetime-aware, not
 date-only: `PortfolioPoint.date` is either a plain calendar date (window
@@ -357,18 +358,33 @@ scrolls out of view.
 
 `TradeList.tsx` (the window model's whole-window trade list, 5Y/MAX --
 see "Two result models" above) **replaces** its previous TradeRow-based
-row list with a single flowing prose `<p>`, rather than showing prose
-alongside the old rows. Reasoning: the app's whole hook _is_ the "had I
-known" framing (it's the product's name), the window model has at most 3
-trades so there's nothing a table adds over a few sentences that a
-table's structure earns its own screen space for, and keeping both would
-just show the same handful of numbers twice. `TradeRow.tsx` itself is
+row list with flowing prose, rather than showing prose alongside the old
+rows. Reasoning: the app's whole hook _is_ the "had I known" framing
+(it's the product's name), the window model has at most 3 trades so
+there's nothing a table adds over a few sentences that a table's
+structure earns its own screen space for, and keeping both would just
+show the same handful of numbers twice. `TradeRow.tsx` itself is
 untouched -- it still backs `IntradayTradeList` (issue #28's per-day,
 time-labeled trades), which **keeps its row-list rendering for now**:
 that list can run up to `maxTradesPerDay` same-day trades (not capped at
 3 the way the window model is), and per-day intraday narration wasn't
 this issue's acceptance criteria -- worth a consistency pass later using
 the same building blocks below, not a reason to block this issue.
+
+**Real list semantics underneath the prose styling (`high` code review
+finding, fixed):** the prose is rendered as an `<ol>` of per-trade
+`<li>`s, not a bare `<p>` of sibling `<span>`s -- a screen reader still
+gets "list, 3 items" and per-item navigation, exactly like the old
+TradeRow-based rendering gave for free, even though it visually reads as
+one flowing paragraph. The trick is `display: inline` on the `<li>`
+(`globals.css`'s `.trade-narration-item`) -- Tailwind's own preflight
+already strips `list-style`/margin/padding from `ol`/`li` (checked
+directly in `node_modules/tailwindcss/preflight.css`, not assumed), so
+the only default left to override is `<li>`'s own `display: list-item`,
+which would otherwise force each trade onto its own line. Verified both
+that the visual result is unchanged (screenshot) and that the semantics
+are real (`TradeList.test.tsx` asserts `getByRole("list")` and
+`getAllByRole("listitem")` returns one entry per trade).
 
 The narration logic lives in `lib/narrate-trades.ts`, deliberately
 decoupled from React and from _which_ date/time formatter produced a
@@ -391,13 +407,27 @@ sentence template, with zero changes to this module.
   `TradeList` prop -- `ResultsPanel.tsx`'s window-model branch now
   passes `data.startingCapital` alongside `data.trades`) rather than
   read from anywhere in the schema -- no pipeline/schema change needed,
-  since it's exactly the same multiplicative chain
-  (`balance * sellPrice/buyPrice` per trade) `optimizer.ts` itself uses
-  to derive `endingBalance`, so the last trade's narrated ending balance
-  matches the result's own `endingBalance` (modulo float noise). This is
-  deliberately _not_ asserted equal in a test to the fetched
+  since it's exactly the same multiplicative chain `optimizer.ts` itself
+  uses to derive `endingBalance`, so the last trade's narrated ending
+  balance matches the result's own `endingBalance` (modulo float noise).
+  This is deliberately _not_ asserted equal in a test to the fetched
   `endingBalance` -- narrate-trades.ts is unit-tested purely against its
-  own inputs, no fixture-level cross-check exists today.
+  own inputs, no fixture-level cross-check to the pipeline's own
+  optimizer exists today.
+
+  **Shared compounding helper (`high` code review finding, fixed):** this
+  running-balance loop and `portfolio-series.ts`'s `appendTradeSteps` (the
+  chart's step-function series) used to be two independent copies of the
+  same `balance * sellPrice/buyPrice` compounding chain -- a real drift
+  risk despite a comment claiming reuse. Both now call
+  `lib/trade-math.ts`'s `compoundBalance(startBalance, buyPrice,
+sellPrice)`, one implementation instead of two. `trade-math.test.ts`
+  adds the fixture-level cross-check the paragraph above says doesn't
+  exist elsewhere: it runs the same trade sequence through both
+  `narrateTrades` and `derivePortfolioSeries` and asserts they agree on
+  every post-trade balance -- a regression guard against exactly this
+  drift, not just a test of `compoundBalance` in isolation.
+
 - This is also where the Max-range astronomical-number quirk (see
   `packages/core/CLAUDE.md`'s "Fun/expected product quirk" note) shows
   up _inside_ the trade list itself, not just in HeroStat -- a running
@@ -411,23 +441,72 @@ sentence template, with zero changes to this module.
   sensibly at that scale, consistent with how the multiplier badge
   didn't need one either; the always-visible `AboutSection` disclaimer
   covers the "this is hypothetical" framing app-wide already.
+
+  **`formatCurrency`'s own sub-$1,000 rounding-overflow bug, fixed
+  (found in a straggler code-review pass on this PR):** issue #45's
+  `format-currency.ts` note used to say this exact bug (a value in
+  roughly `[999.5, 1000)` rounds *up* to a bare "$1,000"/"$1,000.00"
+  instead of stepping to the compact ladder's "$1K") was confirmed live
+  in `formatCurrency` too but left unfixed as out of scope for #45,
+  which only touched `formatMultiplier`. This trade list's own
+  per-trade `endBalance` is a genuinely new value with no prior UI
+  surface that can land in that range mid-sequence, so the
+  previously-theoretical case became reachable in prose users read
+  closely -- `formatCurrency` now carries the identical
+  `Number(abs.toFixed(digits)) >= 1000` overflow guard
+  `formatMultiplier` already had, with a regression test in
+  `format-currency.test.ts` for both `formatHeroCurrency` (cents) and
+  `formatAxisCurrency` (no cents).
+
 - A trade's own per-leg return (`sellPrice / buyPrice - 1`) and the
   running-balance growth ratio for that same leg are always identical
   (an all-in, fully-reinvested trade means the portfolio's return for a
   leg _is_ the ticker's own price return for that leg) -- so there's
   only one percent computed per trade, colored via the same
   `isGain = returnFraction >= 0` (flat counts as a gain) convention
-  `TradeRow.tsx` already established, reused rather than re-derived.
-  Generic for a loss leg (`sellPrice < buyPrice`) without any special
-  wording or branching -- relevant once #31 (worst-case contrast, still
-  backlog as of this issue) ships, since today's optimizer never
-  actually produces one.
+  `TradeRow.tsx` already established. **Actually shared now, not just
+  claimed as reused (`high` code review finding, fixed):** both
+  `TradeRow.tsx` and this module call `lib/trade-math.ts`'s
+  `computeTradeReturn(buyPrice, sellPrice)` instead of each computing
+  `sellPrice / buyPrice - 1` and `returnFraction >= 0` independently --
+  a prior comment here claimed this was "reused rather than re-derived"
+  when it was in fact copy-pasted between the two files; see
+  `trade-math.ts`'s own doc comment for the full history. Generic for a
+  loss leg (`sellPrice < buyPrice`) without any special wording or
+  branching -- relevant once #31 (worst-case contrast, still backlog as
+  of this issue) ships, since today's optimizer never actually produces
+  one.
 - Verified live via the same throwaway-debug-route technique issue #45
   documented above (no local `RESULTS_BUCKET`/AWS creds): rendered 1/2/3
   trade sequences, a sequence with a synthetic losing leg, and a
   Max-range-scale sequence (a few 100-400x legs compounding $20 to
   ~$248M) on one page, screenshotted in both light and dark, then
   deleted the route before committing.
+- **Defensive guard against a corrupted stored price (found in a
+  straggler code-review pass on this PR):** unlike `packages/core`'s
+  `optimizer.ts` (validates `endingBalance` is finite before returning)
+  and the pipeline's write-time `validatePrecomputedResult` (issue #47),
+  `results-api.ts`'s read path only checks `schemaVersion`/`model` on a
+  stored result -- it never re-validates field-level values like an
+  individual trade's `buyPrice`/`sellPrice`. `trade-math.ts`'s
+  `computeTradeReturn`/`compoundBalance` (used by `narrateTrades` here,
+  and by `TradeRow.tsx`/`portfolio-series.ts` too) now throw
+  `InvalidTradePriceError` for a non-finite or non-positive price rather
+  than silently computing `Infinity`/`NaN` -- notably dangerous for
+  `isGain`, since `Infinity >= 0` is `true`, which would otherwise
+  render a corrupted leg in "gain" green with garbage figures. This
+  throws during render, caught by the same `app/error.tsx`/
+  `app/global-error.tsx` boundaries issue #46 already added for any
+  other render-time throw -- a visible, caught failure instead of a
+  silently-wrong number.
+- **Empty-`trades` fallback (found in the same pass):** `TradeList`'s
+  primary empty state ("No trade would have beaten holding cash over
+  ...") still lives in `ResultsPanel.tsx`, which owns the range-specific
+  copy -- but `TradeList` itself now also renders a brief generic "No
+  trades to show." fallback if `narrateTrades` ever returns `[]`,
+  instead of a silently blank bordered box, in case a future caller
+  (e.g. `IntradayTradeList` reusing this narration path, per the note
+  above) doesn't carry `ResultsPanel`'s own empty-array guard.
 
 ## Importing `@hadiknowntrades/core`
 
