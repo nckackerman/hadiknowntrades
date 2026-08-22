@@ -67,21 +67,27 @@
 // comment.
 
 import {
+  anchorMonthToDate,
   BlockedError,
   optimizeIntradayDays,
   optimizeAllVariants,
   PRESET_RANGES,
   presetRangeStartDate,
   resultKey,
+  customResultKey,
   RESULTS_SCHEMA_VERSION,
   toDateString,
   UnexpectedResponseError,
   validatePrecomputedResult,
+  validateCustomWindowResult,
+  type AnchorMonth,
   type BenchmarkResult,
+  type CustomWindowResult,
   type DailyClose,
   type IntradayBar,
   type IntradayDayResult,
   type IntradayResult,
+  type OptimizationResult,
   type PrecomputedResult,
   type PresetRange,
   type WindowResult,
@@ -100,6 +106,19 @@ const DEFAULT_MAX_TRADES_PER_DAY = 3;
 // range, so this just means "give me everything you have."
 const DEFAULT_EARLIEST_DATE = new Date("1970-01-01T00:00:00Z");
 const DEFAULT_FETCH_CONCURRENCY = 10;
+// Caps how many S3 putObject calls (issue #47's write loop) run at once
+// -- same value/spirit as DEFAULT_FETCH_CONCURRENCY, mirrored rather
+// than reused outright since fetch concurrency and write concurrency are
+// conceptually independent knobs (Yahoo's own request-volume tolerance
+// vs. S3's), even though they happen to default to the same number today
+// (code review finding, issue #11): before this, the write loop fired
+// every job's putObject via one unbounded Promise.allSettled, unlike
+// every fetch pool's own bounded worker count -- up to 257 concurrent
+// S3 writes (5 preset ranges + up to 252 custom anchors) with no cap,
+// never exercised against real S3 (this PR's own live verification
+// explicitly excluded S3 writes -- see packages/core/CLAUDE.md's
+// "Custom date-range anchors" section).
+const DEFAULT_WRITE_CONCURRENCY = 10;
 // How far back to fetch 5-minute bars for (issue #30, upgrading 3M's
 // most recent days -- see packages/core/CLAUDE.md's "5-minute intraday
 // bars" section). Yahoo's real retention wall for interval=5m is
@@ -143,6 +162,8 @@ export interface ResultStore {
 
 export interface PipelineRunSummary {
   results: PrecomputedResult[];
+  /** One entry per successfully-written custom-range anchor (issue #11) -- kept separate from `results` (which stays exactly the 5 preset ranges, matching every prior release's shape) rather than merged into it. Empty whenever RunPipelineOptions.customRangeAnchors was omitted or empty (the default). */
+  customResults: CustomWindowResult[];
   /** Union of tickers skipped by any fetch path -- window, intraday, or any granularity override (issue #30 added the first override, #29 a second) -- a ticker can be skipped from one path's fetch but not another's, but this summary doesn't distinguish which. */
   skippedTickers: string[];
 }
@@ -165,6 +186,27 @@ export interface RunPipelineOptions {
   maxTradesPerDay?: number;
   earliestDate?: Date;
   fetchConcurrency?: number;
+  /** Caps concurrent S3 putObject calls in the final write loop -- see DEFAULT_WRITE_CONCURRENCY's own comment for why this is a separate knob from fetchConcurrency despite sharing its default value. */
+  writeConcurrency?: number;
+  /**
+   * Custom start-date anchor points (issue #11's coarsened design -- see
+   * docs/plans/issue-11-plan.md) to compute+write a CustomWindowResult
+   * for, alongside the 5 preset ranges -- reuses the exact same
+   * already-fetched window-path history (windowFetch.history below), no
+   * separate fetch. Defaults to empty (no custom anchors computed at
+   * all) -- deliberately, unlike every other RunPipelineOptions default
+   * above (which are sourced inside this file): src/run.ts (the real
+   * nightly entry point) is the one place that opts in for real, passing
+   * customRangeAnchors(asOf) (packages/core). This keeps every existing
+   * test of this file that doesn't care about this feature completely
+   * unaffected by its introduction -- retrofitting ~250 extra anchor
+   * results' worth of assertions into every unrelated existing test
+   * would have been pure test-maintenance churn with no correctness
+   * value; see apps/pipeline/CLAUDE.md's "Custom date-range anchors"
+   * section for the full reasoning and the real nightly-cost numbers
+   * behind CUSTOM_RANGE_ANCHOR_YEARS_BACK.
+   */
+  customRangeAnchors?: readonly AnchorMonth[];
 }
 
 interface UniverseFetchResult<TBar> {
@@ -176,30 +218,73 @@ interface UniverseFetchResult<TBar> {
 }
 
 /**
- * Fetches full history (from..to) for every ticker, with bounded
- * concurrency. A ticker that fails with TickerNotFoundError or
- * TransientFetchError is skipped (logged, doesn't fail the run) -- those
- * are per-ticker problems. Generic over the bar shape so the same
- * concurrency/abort/skip logic backs both the daily-close fetch and the
- * intraday-bar fetch (issue #28) instead of a second copy-pasted worker
- * pool.
+ * The one bounded-worker-pool shape every concurrency-capped loop in
+ * this file builds on: at most `concurrency` workers, each repeatedly
+ * pulling the next index off one shared cursor (`[0, itemCount)`) and
+ * awaiting `perItem(index)` for it, until either every index has been
+ * claimed or `perItem` signals to stop dispatching new work by
+ * returning `true`.
  *
- * BlockedError or UnexpectedResponseError set `abortError` rather than
- * throwing: a block means we shouldn't keep firing off hundreds more
- * requests, and an unexpected-response is documented (see
- * yahoo-client.ts) as "likely permanent regardless of symbol" -- i.e. a
- * systemic problem, not a per-ticker one, so treating it as an ordinary
- * skip would risk masking a total data-fetch failure as a handful of
- * unlucky tickers. Once any worker hits one of these, a shared flag
- * stops every worker from starting a *new* fetch (an in-flight request
- * already underway still completes/rejects on its own -- there's no
- * cheap way to cancel it without threading an AbortSignal through the
- * fetch client -- but no further tickers get queued once the flag is
- * set). Returning `abortError` instead of throwing preserves whatever
- * `skipped` had already been accumulated from tickers that failed
- * individually *before* the abort -- a caller that discards `history` on
- * abort (see fetchPathHistory) can still keep that real per-ticker
- * bookkeeping instead of losing it along with the untrusted partial data.
+ * **Factored out so there's exactly one implementation of this pattern
+ * in this file (issue #11 code review finding, second round)**:
+ * `fetchUniverseHistory` (every fetch pool, issue #28) and
+ * `mapWithConcurrency` (the S3 write loop, issue #11) used to each hand-
+ * roll their own copy of this exact "N workers pulling the next index
+ * off a shared cursor" loop -- a previous fix round asked for
+ * `mapWithConcurrency` to "mirror" `fetchUniverseHistory`'s own shape,
+ * which produced a second, independently-written copy instead of true
+ * reuse. Both now call this one function; only what each does *per
+ * item* differs.
+ *
+ * A worker checks `stopped` *before* claiming its next index, the same
+ * place `fetchUniverseHistory`'s original abort check lived -- an
+ * in-flight `perItem` call already underway when another worker signals
+ * stop still runs to completion (there's no cheap way to cancel it
+ * without threading an AbortSignal through the caller's own async work),
+ * but no further indices get claimed once the flag is set.
+ */
+async function runWorkerPool(
+  itemCount: number,
+  concurrency: number,
+  perItem: (index: number) => Promise<boolean | void>,
+): Promise<void> {
+  let nextIndex = 0;
+  let stopped = false;
+
+  async function worker(): Promise<void> {
+    for (;;) {
+      if (stopped) return;
+      const i = nextIndex++;
+      if (i >= itemCount) return;
+      if (await perItem(i)) stopped = true;
+    }
+  }
+
+  const workerCount = Math.min(concurrency, itemCount);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+}
+
+/**
+ * Fetches full history (from..to) for every ticker, with bounded
+ * concurrency (via runWorkerPool above). A ticker that fails with
+ * TickerNotFoundError or TransientFetchError is skipped (logged,
+ * doesn't fail the run) -- those are per-ticker problems. Generic over
+ * the bar shape so the same concurrency/abort/skip logic backs both the
+ * daily-close fetch and the intraday-bar fetch (issue #28) instead of a
+ * second copy-pasted worker pool.
+ *
+ * BlockedError or UnexpectedResponseError set `abortError` and signal
+ * runWorkerPool to stop (by returning `true`) rather than throwing: a
+ * block means we shouldn't keep firing off hundreds more requests, and
+ * an unexpected-response is documented (see yahoo-client.ts) as "likely
+ * permanent regardless of symbol" -- i.e. a systemic problem, not a
+ * per-ticker one, so treating it as an ordinary skip would risk masking
+ * a total data-fetch failure as a handful of unlucky tickers. Returning
+ * `abortError` instead of throwing preserves whatever `skipped` had
+ * already been accumulated from tickers that failed individually
+ * *before* the abort -- a caller that discards `history` on abort (see
+ * fetchPathHistory) can still keep that real per-ticker bookkeeping
+ * instead of losing it along with the untrusted partial data.
  */
 async function fetchUniverseHistory<TBar>(
   tickers: readonly string[],
@@ -210,35 +295,67 @@ async function fetchUniverseHistory<TBar>(
 ): Promise<UniverseFetchResult<TBar>> {
   const history = new Map<string, TBar[]>();
   const skipped: string[] = [];
-  let nextIndex = 0;
   let abortError: BlockedError | UnexpectedResponseError | null = null;
 
-  async function worker(): Promise<void> {
-    for (;;) {
-      if (abortError) return;
-      const i = nextIndex++;
-      if (i >= tickers.length) return;
-      const ticker = tickers[i]!;
-      try {
-        const series = await fetchFn(ticker, from, to);
-        history.set(ticker, series);
-      } catch (error) {
-        if (error instanceof BlockedError || error instanceof UnexpectedResponseError) {
-          abortError = error;
-          return;
-        }
-        skipped.push(ticker);
-        console.warn(
-          `[pipeline] skipping ${ticker}: ${error instanceof Error ? error.message : error}`,
-        );
+  await runWorkerPool(tickers.length, concurrency, async (i) => {
+    const ticker = tickers[i]!;
+    try {
+      const series = await fetchFn(ticker, from, to);
+      history.set(ticker, series);
+    } catch (error) {
+      if (error instanceof BlockedError || error instanceof UnexpectedResponseError) {
+        abortError = error;
+        return true;
       }
+      skipped.push(ticker);
+      console.warn(
+        `[pipeline] skipping ${ticker}: ${error instanceof Error ? error.message : error}`,
+      );
     }
-  }
-
-  const workerCount = Math.min(concurrency, tickers.length);
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    return false;
+  });
 
   return { history, skipped, abortError };
+}
+
+/**
+ * Runs `worker` over `items` with at most `concurrency` running at once
+ * (via runWorkerPool above), collecting every outcome (success or
+ * failure) as a Promise.allSettled-shaped result array, in original item
+ * order -- backs the pipeline's own S3 write loop (issue #11 code review
+ * finding): before this existed, the write loop fired every WriteJob's
+ * putObject via one unbounded `Promise.allSettled`, the only place in
+ * this file with no concurrency cap at all, unlike every fetch pool's
+ * own DEFAULT_FETCH_CONCURRENCY.
+ *
+ * A generic, item-order-preserving instantiation of runWorkerPool rather
+ * than a call into fetchUniverseHistory itself: that function's own
+ * return shape (BlockedError/UnexpectedResponseError abort
+ * classification, a `history` Map<string, TBar[]>) is daily-close/
+ * intraday-bar-fetch-specific in a way that doesn't generalize to "run
+ * an arbitrary async job over an arbitrary item list, never aborting
+ * early," which is all the write loop actually needs -- this function
+ * never returns `true` from its own runWorkerPool callback, so every
+ * item always gets a chance to run regardless of an earlier item's
+ * outcome.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+
+  await runWorkerPool(items.length, concurrency, async (i) => {
+    try {
+      const value = await worker(items[i]!, i);
+      results[i] = { status: "fulfilled", value };
+    } catch (reason) {
+      results[i] = { status: "rejected", reason };
+    }
+  });
+
+  return results;
 }
 
 /**
@@ -580,13 +697,23 @@ async function fetchBenchmarkHistory(
 
 /**
  * Computes the whole-window SPY buy-and-hold comparison (issue #12) for
- * one range from the single shared SPY `closes` array -- called once per
- * range from both buildWindowResults and buildIntradayResults, not
- * re-derived per model.
+ * one range or custom anchor from the single shared SPY `closes` array --
+ * called once per range from both buildWindowResults and
+ * buildIntradayResults, and once per custom anchor from
+ * buildCustomWindowResults (issue #11), not re-derived per model.
+ *
+ * Takes `rangeStartString` directly (a plain YYYY-MM-DD string or null
+ * for "unbounded") rather than a `PresetRange` + `asOf` pair to derive it
+ * from internally -- generalized (issue #11) so the exact same function
+ * serves both a preset range's own `presetRangeStartDate` output and a
+ * custom anchor's month-start date, with no PresetRange-specific
+ * branching inside this function at all. Every caller computes its own
+ * `rangeStartString` the same way `presetRangeStartDate` already did
+ * internally here before this generalization.
  *
  * Returns `null` only when there's no usable SPY data at all inside this
- * range's window (either the fetch failed entirely -- `closes` is empty
- * -- or, hypothetically, SPY simply has no bars overlapping this specific
+ * window (either the fetch failed entirely -- `closes` is empty -- or,
+ * hypothetically, SPY simply has no bars overlapping this specific
  * window). This is deliberately distinct from the MAX/1993 case below,
  * where a real, honest (if truncated) comparison is still returned.
  *
@@ -596,44 +723,43 @@ async function fetchBenchmarkHistory(
  * is still non-empty here (it has all of SPY's real history up to
  * `endDateString`), so this returns a real comparison, just one whose
  * `startDate`/`startPrice` reflect SPY's own actual earliest available
- * close rather than the range's nominal (nonexistent, for MAX) start.
+ * close rather than the range's nominal (nonexistent, for MAX) start. A
+ * custom anchor's `rangeStartString` is never null (see custom-range-
+ * anchors.ts), so this null-start case is MAX-only in practice today.
  *
  * `truncated` is true whenever SPY's history genuinely doesn't reach
- * back to the range's own requested start -- for MAX this is
- * unconditionally true (`rangeStartString` is always `null` for an
- * unbounded window, and SPY's real, finite inception is always "later"
- * than "as far back as anything has data"). For every other bounded
- * range, this is deliberately checked against SPY's *overall* earliest
- * fetched date (`earliestOverall`, across the whole `closes` array), not
- * against `start.date` (the actual first bar found *inside* the
- * window). Those two differ in a real, non-hypothetical way: a range's
- * nominal `rangeStartString` is a plain calendar date with no guarantee
- * of being a real trading day -- weekends/holidays land there routinely
- * (empirically, ~28% of days across a 2-year sample for every bounded
- * range, checked live rather than assumed), so `start.date` (the
- * nearest actual trading day at-or-after it) is *routinely* a few days
- * later than `rangeStartString` even when SPY's history reaches back
- * decades further -- exactly the same "use whichever data is actually
- * available inside the window" behavior buildWindowResults' own
- * optimizer input already relies on with no "truncated" concept at all.
- * Comparing `start.date` directly against `rangeStartString` (an earlier
- * draft of this function did exactly that) would flag `truncated: true`
- * on a large fraction of days for every bounded range, not just MAX --
- * defeating the whole point of a flag meant to catch a genuine
- * historical-depth gap. `earliestOverall` isolates that real case
- * instead: it only exceeds `rangeStartString` when SPY's data doesn't
- * reach back that far *at all*, regardless of which specific day inside
- * the window happened to have the first trading-day bar.
+ * back to the window's own requested start -- for a null start
+ * (MAX) this is unconditionally true (SPY's real, finite inception is
+ * always "later" than "as far back as anything has data"). For every
+ * other bounded window, this is deliberately checked against SPY's
+ * *overall* earliest fetched date (`earliestOverall`, across the whole
+ * `closes` array), not against `start.date` (the actual first bar found
+ * *inside* the window). Those two differ in a real, non-hypothetical
+ * way: a nominal `rangeStartString` is a plain calendar date with no
+ * guarantee of being a real trading day -- weekends/holidays land there
+ * routinely (empirically, ~28% of days across a 2-year sample for every
+ * bounded preset range, checked live rather than assumed), so
+ * `start.date` (the nearest actual trading day at-or-after it) is
+ * *routinely* a few days later than `rangeStartString` even when SPY's
+ * history reaches back decades further -- exactly the same "use
+ * whichever data is actually available inside the window" behavior
+ * computeWindowOptimization's own slicing filter already relies on with
+ * no "truncated" concept at all. Comparing `start.date` directly against
+ * `rangeStartString` (an earlier draft of this function did exactly
+ * that) would flag `truncated: true` on a large fraction of days for
+ * every bounded window, not just MAX -- defeating the whole point of a
+ * flag meant to catch a genuine historical-depth gap. `earliestOverall`
+ * isolates that real case instead: it only exceeds `rangeStartString`
+ * when SPY's data doesn't reach back that far *at all*, regardless of
+ * which specific day inside the window happened to have the first
+ * trading-day bar.
  */
 function computeBenchmark(
   closes: readonly DailyClose[],
-  range: PresetRange,
-  asOf: Date,
+  rangeStartString: string | null,
   endDateString: string,
   startingCapital: number,
 ): BenchmarkResult | null {
-  const rangeStart = presetRangeStartDate(range, asOf);
-  const rangeStartString = rangeStart ? toDateString(rangeStart) : null;
   const inWindow = closes.filter(
     (c) => (!rangeStartString || c.date >= rangeStartString) && c.date <= endDateString,
   );
@@ -670,6 +796,146 @@ function computeBenchmark(
   };
 }
 
+// computeWindowOptimization's own binary-search slicing (issue #11 code
+// review finding) -- see sortedHistory's own doc comment for the full
+// reasoning; these two are its plain array-index helpers.
+
+/**
+ * The first index in a date-ascending-sorted DailyClose[] whose `date` is
+ * >= `startDateString` (i.e. `series.length` if every entry is before
+ * it). Assumes `series` is already sorted ascending by date -- see
+ * sortedHistory, which is what guarantees that here.
+ */
+function lowerBoundByDate(series: readonly DailyClose[], startDateString: string): number {
+  let lo = 0;
+  let hi = series.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (series[mid]!.date < startDateString) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
+/**
+ * The exclusive upper bound (first index whose `date` is > `endDateString`,
+ * i.e. `series.length` if every entry qualifies) in a date-ascending-
+ * sorted DailyClose[] -- the `<=` counterpart to lowerBoundByDate above.
+ */
+function upperBoundByDate(series: readonly DailyClose[], endDateString: string): number {
+  let lo = 0;
+  let hi = series.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (series[mid]!.date <= endDateString) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
+// computeWindowOptimization is called once per preset window range (2x,
+// buildWindowResults) and up to 252 times against the *exact same*
+// `history` Map reference (buildCustomWindowResults, issue #11's custom
+// anchors -- see runPipeline, which builds windowFetch.history once and
+// passes it to both callers unmodified). A WeakMap keyed by that Map's
+// own object identity means the one-time cost of sorting every ticker's
+// series is paid at most once per pipeline run, however many times
+// computeWindowOptimization runs against it -- and a WeakMap (not a
+// plain Map) so this never holds a history Map alive past whatever the
+// caller itself keeps referenced.
+const sortedHistoryCache = new WeakMap<Map<string, DailyClose[]>, Map<string, DailyClose[]>>();
+
+/**
+ * Returns `history` with every ticker's DailyClose[] sorted ascending by
+ * date, cached by `history`'s own object identity (see
+ * sortedHistoryCache above) so the sort only ever runs once per distinct
+ * history Map.
+ *
+ * **Why sort explicitly rather than trust the fetch client's own return
+ * order (issue #11 code review finding)**: computeWindowOptimization
+ * used to slice each ticker's window via a plain `Array.prototype.filter`
+ * scan -- correct regardless of array order, but O(days) per call, which
+ * buildCustomWindowResults pays up to 252 times per ticker per run.
+ * Replacing that with a binary search (lowerBoundByDate/upperBoundByDate
+ * above) cuts each call to O(log days), but a binary search is only
+ * correct over a genuinely sorted array -- and this codebase deliberately
+ * does NOT treat fetchDailyCloses's return order as a trusted contract
+ * elsewhere (computeBenchmark's own explicit min/max scan, findMaxDate
+ * above; see apps/pipeline/CLAUDE.md's own note that Yahoo's order is
+ * "date-ascending in practice," not documented). Sorting once here (an
+ * O(tickers x days log days) cost paid at most once per run, not per
+ * call) guarantees the property lowerBoundByDate/upperBoundByDate need,
+ * rather than assuming it.
+ */
+function sortedHistory(history: Map<string, DailyClose[]>): Map<string, DailyClose[]> {
+  const cached = sortedHistoryCache.get(history);
+  if (cached) return cached;
+  const sorted = new Map<string, DailyClose[]>();
+  for (const [ticker, series] of history) {
+    sorted.set(
+      ticker,
+      [...series].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
+    );
+  }
+  sortedHistoryCache.set(history, sorted);
+  return sorted;
+}
+
+/**
+ * The windowed-slice + optimizeAllVariants computation shared by every
+ * whole-window result -- both the 5Y/MAX preset ranges (buildWindowResults)
+ * and every custom start-date anchor (buildCustomWindowResults, issue
+ * #11). Factored out so the two call sites can't drift on how a window's
+ * long-only/long+short, best/worst-case trade sequences are derived from
+ * the shared, already-fetched history -- there is exactly one place this
+ * slicing + DP call happens for the whole-window model.
+ *
+ * **Uses optimizeAllVariants, not optimizeBothDirections (issue #13/#11
+ * integration)**: issue #11 originally wired this to the long-only-only
+ * optimizeBothDirections (issue #31's best/worst sharing), since it
+ * predates issue #13's short-selling mode; issue #13 itself only reached
+ * buildWindowResults directly (bypassing this shared helper, which didn't
+ * exist yet on that branch). Merging the two features means every
+ * whole-window result -- preset range or custom anchor -- gets the same
+ * long+short `longShort` sibling, computed off the same one shared
+ * OptimizerState per window (see optimizeAllVariants' own doc comment for
+ * why running all 4 direction x instrument-set combinations together is
+ * cheaper than four separate calls).
+ */
+function computeWindowOptimization(
+  history: Map<string, DailyClose[]>,
+  startDateString: string | null,
+  endDateString: string,
+  startingCapital: number,
+  maxTrades: number,
+): {
+  windowed: Map<string, DailyClose[]>;
+  longOnly: { best: OptimizationResult; worst: OptimizationResult };
+  longShort: { best: OptimizationResult; worst: OptimizationResult };
+} {
+  const sorted = sortedHistory(history);
+  const windowed = new Map<string, DailyClose[]>();
+  for (const [ticker, series] of sorted) {
+    const startIndex = startDateString ? lowerBoundByDate(series, startDateString) : 0;
+    const endIndex = upperBoundByDate(series, endDateString);
+    if (endIndex > startIndex) windowed.set(ticker, series.slice(startIndex, endIndex));
+  }
+
+  // Same windowed history, same startingCapital/maxTrades for all 4
+  // direction x instrument-set combinations, so optimizeAllVariants
+  // builds this window's calendar/ticker-sort once and reuses it for all
+  // 4 runs instead of four separate optimizeTrades/optimizeWorstTrades-
+  // style calls.
+  const { longOnly, longShort } = optimizeAllVariants(windowed, { startingCapital, maxTrades });
+  return { windowed, longOnly, longShort };
+}
+
 interface BuildWindowResultsOptions {
   history: Map<string, DailyClose[]>;
   dataAsOf: string;
@@ -704,9 +970,12 @@ interface BuildWindowResultsOutcome {
  * Number.MAX_VALUE and trip optimizeAllVariants' own finite-endingBalance
  * guard (OptimizerInputError) -- which, before this fix, would have
  * thrown synchronously out of this `.map()` and taken down 5Y *and* MAX
- * (and, if issue #11's custom-anchor results have merged by the time
- * this runs, every custom-anchor window too) in one go, instead of just
- * the one affected range.
+ * in one go, instead of just the one affected range. (Issue #11's
+ * custom-anchor windows are computed by a sibling function,
+ * buildCustomWindowResults, with its own identical per-anchor try/catch
+ * -- see CustomWindowResultsBuild.failures' own doc comment -- rather
+ * than sharing this one, since a custom anchor's own failure shouldn't
+ * take down a preset range's already-computable result or vice versa.)
  *
  * A range that fails this way is dropped from `results` -- exactly as if
  * its own fetch had failed -- but, unlike a granularity override's
@@ -742,24 +1011,22 @@ function buildWindowResults({
       const startDate = presetRangeStartDate(range, asOf);
       const startDateString = startDate ? toDateString(startDate) : null;
 
-      const windowed = new Map<string, DailyClose[]>();
-      for (const [ticker, series] of history) {
-        const sliced = series.filter(
-          (p) => (!startDateString || p.date >= startDateString) && p.date <= endDateString,
-        );
-        if (sliced.length > 0) windowed.set(ticker, sliced);
-      }
-
       // Same windowed history, same startingCapital/maxTrades for all 4
-      // direction x instrument-set combinations, so optimizeAllVariants
-      // builds this range's calendar/ticker-sort once and reuses it for
-      // all 4 runs instead of separate calls (issue #13 extends issue
-      // #31's original best/worst sharing to also cover long-only vs.
-      // long+short).
-      const { longOnly, longShort } = optimizeAllVariants(windowed, {
+      // direction x instrument-set combinations, so computeWindowOptimization
+      // (via optimizeAllVariants) builds this range's calendar/ticker-sort
+      // once and reuses it for all 4 runs instead of separate calls
+      // (issue #13 extends issue #31's original best/worst sharing to
+      // also cover long-only vs. long+short) -- and, since this is the
+      // same computeWindowOptimization every custom-range anchor below
+      // also calls (issue #11/#13 integration), the two families of
+      // whole-window results can't drift on how that's done.
+      const { windowed, longOnly, longShort } = computeWindowOptimization(
+        history,
+        startDateString,
+        endDateString,
         startingCapital,
         maxTrades,
-      });
+      );
 
       results.push({
         schemaVersion: RESULTS_SCHEMA_VERSION,
@@ -794,6 +1061,182 @@ function buildWindowResults({
   }
 
   return { results, failures };
+}
+
+interface BuildCustomWindowResultsOptions {
+  /** Reuses the window path's own already-fetched history (issue #11) -- no separate fetch for this feature at all. */
+  history: Map<string, DailyClose[]>;
+  dataAsOf: string;
+  endDateString: string;
+  generatedAt: string;
+  startingCapital: number;
+  maxTrades: number;
+  skipped: readonly string[];
+  /** SPY's raw fetched closes (issue #12) -- computeBenchmark is called once per anchor here, mirroring buildWindowResults/buildIntradayResults's per-range calls, since a custom anchor's own start date isn't one of the 5 PRESET_RANGES benchmarksByRange is keyed by. */
+  benchmarkCloses: readonly DailyClose[];
+  /** The anchor points to compute a result for -- see RunPipelineOptions.customRangeAnchors's own doc comment for why this defaults to empty at the runPipeline level. */
+  anchors: readonly AnchorMonth[];
+}
+
+/**
+ * buildCustomWindowResults's return value: the actual computed results,
+ * plus a count of how many requested anchors were validly skipped
+ * (duplicate, malformed, or future-dated -- see the loop below) rather
+ * than genuinely failing. runPipeline's own `expectedResultCount` (the
+ * denominator in its aggregated-failure message) subtracts this count so
+ * the "wrote N of M" ratio doesn't overstate the real gap for a future
+ * caller whose anchor list isn't as clean as customRangeAnchors's own
+ * (which never produces a duplicate/malformed/future-dated entry today).
+ */
+interface CustomWindowResultsBuild {
+  results: CustomWindowResult[];
+  /** Requested anchors skipped for a legitimate reason (not a failure) -- see the loop below for the three cases. */
+  validlySkippedCount: number;
+  /**
+   * One entry per anchor whose own computeWindowOptimization call threw
+   * (issue #13/#11 integration, mirroring BuildWindowResultsOutcome.failures'
+   * own reasoning above) -- now that this function calls the same
+   * optimizeAllVariants-backed computeWindowOptimization buildWindowResults
+   * does, a custom anchor's window is exposed to the exact same short-
+   * payoff-overflow risk a preset range's window is (see that doc comment
+   * for the mechanism), and with up to ~252 anchors computed per run,
+   * containing a failure to just the one affected anchor -- rather than
+   * letting it propagate out of this whole loop and abort every other
+   * already-computable anchor too -- matters even more here than it does
+   * for the 2 window ranges. Folded by runPipeline into the same
+   * aggregated `computeFailures` list buildWindowResults'/
+   * buildIntradayResults' own failures already feed, so a custom anchor's
+   * compute failure gets the identical "must still fail the run" alerting
+   * treatment.
+   */
+  failures: string[];
+}
+
+/**
+ * Computes one CustomWindowResult per requested anchor (issue #11's
+ * coarsened design) -- structurally the same per-window computation as
+ * buildWindowResults above (same computeWindowOptimization call, same
+ * DailyClose history, same long-only + long+short variants via issue
+ * #13's optimizeAllVariants), just keyed by AnchorMonth instead of
+ * PresetRange and with no "MAX-style unbounded start" case (every
+ * anchor's start is always a real, bounded calendar month -- see
+ * custom-range-anchors.ts).
+ */
+function buildCustomWindowResults({
+  history,
+  dataAsOf,
+  endDateString,
+  generatedAt,
+  startingCapital,
+  maxTrades,
+  skipped,
+  benchmarkCloses,
+  anchors,
+}: BuildCustomWindowResultsOptions): CustomWindowResultsBuild {
+  const results: CustomWindowResult[] = [];
+  let validlySkippedCount = 0;
+  const failures: string[] = [];
+  // Defensive de-dup guard (code review finding, issue #11): customResultKey
+  // is a pure function of anchorMonth alone, so two anchors list entries
+  // sharing the same anchorMonth would otherwise silently collide on the
+  // same S3 key with no error surfaced -- not reachable via the one real
+  // caller today (customRangeAnchors, packages/core, which never
+  // produces a duplicate -- see that function's own "has no duplicates"
+  // test), but nothing stops a future/test caller from passing a
+  // caller-supplied `anchors` list that does.
+  const seenAnchors = new Set<AnchorMonth>();
+
+  for (const anchorMonth of anchors) {
+    if (seenAnchors.has(anchorMonth)) {
+      console.warn(
+        `[pipeline] skipping duplicate custom-range anchor "${anchorMonth}" (already computed a result for it this run)`,
+      );
+      validlySkippedCount++;
+      continue;
+    }
+    seenAnchors.add(anchorMonth);
+
+    const anchorDate = anchorMonthToDate(anchorMonth);
+    if (!anchorDate) {
+      // Defensive only -- customRangeAnchors (packages/core) never
+      // produces a malformed anchor itself, but a caller could in
+      // principle pass an arbitrary list (e.g. a test). Skip rather than
+      // crash the whole nightly run over one bad string.
+      console.warn(`[pipeline] skipping malformed custom-range anchor "${anchorMonth}"`);
+      validlySkippedCount++;
+      continue;
+    }
+    const startDateString = toDateString(anchorDate);
+    // Defensive only, not expected in practice: customRangeAnchors's
+    // newest anchor is always "the current month," which can never be
+    // later than endDateString (today) -- but a caller-supplied anchor
+    // list (tests, or a future asOf/anchor-list mismatch) could in
+    // principle include one. A future-dated anchor has literally nothing
+    // to compute (there's no data past endDateString), so skip it rather
+    // than writing a degenerate always-empty CustomWindowResult.
+    if (startDateString > endDateString) {
+      console.warn(
+        `[pipeline] skipping future-dated custom-range anchor "${anchorMonth}" (starts ${startDateString}, after endDate ${endDateString})`,
+      );
+      validlySkippedCount++;
+      continue;
+    }
+
+    // Contained per-anchor (issue #13/#11 integration) -- see
+    // CustomWindowResultsBuild.failures' own doc comment for why this
+    // needs the same try/catch buildWindowResults already has, not a
+    // bare loop body that lets one anchor's overflow take down every
+    // other already-computable anchor too.
+    try {
+      const { windowed, longOnly, longShort } = computeWindowOptimization(
+        history,
+        startDateString,
+        endDateString,
+        startingCapital,
+        maxTrades,
+      );
+
+      results.push({
+        schemaVersion: RESULTS_SCHEMA_VERSION,
+        model: "custom-window",
+        anchorMonth,
+        generatedAt,
+        dataAsOf,
+        startDate: startDateString,
+        endDate: endDateString,
+        maxTrades,
+        startingCapital,
+        endingBalance: longOnly.best.endingBalance,
+        trades: longOnly.best.trades,
+        worstCase: {
+          endingBalance: longOnly.worst.endingBalance,
+          trades: longOnly.worst.trades,
+        },
+        longShort: {
+          endingBalance: longShort.best.endingBalance,
+          trades: longShort.best.trades,
+          worstCase: {
+            endingBalance: longShort.worst.endingBalance,
+            trades: longShort.worst.trades,
+          },
+        },
+        universeSize: windowed.size,
+        skippedTickers: [...skipped],
+        benchmark: computeBenchmark(
+          benchmarkCloses,
+          startDateString,
+          endDateString,
+          startingCapital,
+        ),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[pipeline] skipping custom-range anchor "${anchorMonth}": ${message}`);
+      failures.push(`custom:${anchorMonth}: ${message}`);
+    }
+  }
+
+  return { results, validlySkippedCount, failures };
 }
 
 /**
@@ -1118,6 +1561,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   const maxTradesPerDay = options.maxTradesPerDay ?? DEFAULT_MAX_TRADES_PER_DAY;
   const earliestDate = options.earliestDate ?? DEFAULT_EARLIEST_DATE;
   const fetchConcurrency = options.fetchConcurrency ?? DEFAULT_FETCH_CONCURRENCY;
+  const writeConcurrency = options.writeConcurrency ?? DEFAULT_WRITE_CONCURRENCY;
   const endDateString = toDateString(asOf);
   // The intraday fetch covers exactly the widest intraday range (1Y),
   // then gets sliced locally for 3M/1M below -- same "fetch once, slice
@@ -1202,10 +1646,14 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // regardless of which trading model (window vs. intraday-daily) a
   // given range uses.
   const benchmarksByRange = new Map<PresetRange, BenchmarkResult | null>(
-    PRESET_RANGES.map((range) => [
-      range,
-      computeBenchmark(benchmarkFetch.closes, range, asOf, endDateString, startingCapital),
-    ]),
+    PRESET_RANGES.map((range) => {
+      const rangeStart = presetRangeStartDate(range, asOf);
+      const rangeStartString = rangeStart ? toDateString(rangeStart) : null;
+      return [
+        range,
+        computeBenchmark(benchmarkFetch.closes, rangeStartString, endDateString, startingCapital),
+      ];
+    }),
   );
 
   // Compute everything before writing anything, so a failure in the
@@ -1265,7 +1713,41 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         benchmarksByRange,
       });
   const intradayResults = intradayBuild.results;
-  const computeFailures = [...windowBuild.failures, ...intradayBuild.failures];
+
+  // Custom start-date anchors (issue #11's coarsened design) -- purely
+  // derived compute over the window path's *already-fetched* history, no
+  // separate fetch, so this is gated behind windowFetch.failureReason the
+  // exact same way windowResults itself is above: if the window path has
+  // no usable history, there's nothing to slice for any anchor either.
+  // Defaults to zero anchors unless the caller opts in (see
+  // RunPipelineOptions.customRangeAnchors's own doc comment) -- src/run.ts
+  // is the one real caller that does, for the actual nightly run.
+  const customBuild: CustomWindowResultsBuild = windowFetch.failureReason
+    ? { results: [], validlySkippedCount: 0, failures: [] }
+    : buildCustomWindowResults({
+        history: windowFetch.history,
+        dataAsOf: windowFetch.dataAsOf!,
+        endDateString,
+        generatedAt,
+        startingCapital,
+        maxTrades,
+        skipped: windowFetch.skipped,
+        benchmarkCloses: benchmarkFetch.closes,
+        anchors: options.customRangeAnchors ?? [],
+      });
+  const customResults = customBuild.results;
+  // Folded into the same aggregated compute-failures list as the window/
+  // intraday paths' own (code review follow-up to issue #13, extended at
+  // merge time to also cover issue #11's custom anchors -- see
+  // CustomWindowResultsBuild.failures' own doc comment for why a custom
+  // anchor's compute failure needs the identical per-anchor containment
+  // buildWindowResults already has, not just for the 2 preset window
+  // ranges).
+  const computeFailures = [
+    ...windowBuild.failures,
+    ...intradayBuild.failures,
+    ...customBuild.failures,
+  ];
 
   if (windowResults.length === 0 && intradayResults.length === 0) {
     // Refuse to overwrite S3's existing (presumably good) results with
@@ -1293,17 +1775,19 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // network latency for them. Each result is self-validated (issue #47)
   // immediately before its own putObject call, so a malformed result
   // (e.g. a refactor bug producing a NaN endingBalance) fails loudly
-  // instead of shipping silently to S3. The callback must stay `async`
-  // -- a synchronous throw from validatePrecomputedResult inside a
-  // non-async .map() callback would propagate out of .map() itself and
-  // abort the whole loop before later, still-valid results ever get a
-  // chance to write; wrapping in `async` turns that throw into this one
-  // result's own rejected promise instead, so every other result's write
-  // still gets a chance to start -- see apps/pipeline/CLAUDE.md's "write
-  // whatever succeeded, then still throw" guarantee, which this must
-  // not break.
+  // instead of shipping silently to S3. Each job's own validate-then-
+  // putObject callback must stay `async` -- a synchronous throw from
+  // validatePrecomputedResult inside a non-async callback would
+  // propagate out of mapWithConcurrency's own `worker(...)` call
+  // (outside its try/catch) and abort that worker's whole loop instead
+  // of becoming this one job's own recorded rejection; wrapping in
+  // `async` turns that throw into an ordinary rejected promise `await`
+  // catches, so every other job's write still gets a chance to start --
+  // see apps/pipeline/CLAUDE.md's "write whatever succeeded, then still
+  // throw" guarantee, which this must not break.
   //
-  // Promise.allSettled, not Promise.all: validation is synchronous and
+  // mapWithConcurrency (Promise.allSettled semantics under a bounded
+  // worker pool), not a bare Promise.all: validation is synchronous and
   // effectively instant, but putObject is real S3 I/O taking real time.
   // With Promise.all, one range's validation failure rejects almost
   // immediately, and Promise.all rejects the whole thing as soon as ANY
@@ -1316,33 +1800,73 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // guarantee this comment claims to preserve (the in-memory test store
   // can't catch this: it has no real I/O delay, so every write there
   // resolves before the rejection even has a chance to race it).
-  // allSettled waits for every write to finish, succeed or fail, before
-  // this function decides anything -- see failedWrites below for how a
-  // rejection is turned into part of the aggregated error instead.
-  const writeOutcomes = await Promise.allSettled(
-    results.map(async (result) => {
-      validatePrecomputedResult(result);
-      await options.store.putObject(resultKey(result.range), JSON.stringify(result, null, 2));
-      return result.range;
-    }),
-  );
+  // mapWithConcurrency waits for every write to finish, succeed or fail,
+  // before this function decides anything -- see failedWrites below for
+  // how a rejection is turned into part of the aggregated error instead.
+  //
+  // Bounded by writeConcurrency (issue #11 code review finding) rather
+  // than firing all writeJobs.length (up to 257: 5 preset + up to 252
+  // custom anchors) putObject calls at once -- this had never been
+  // tested against real S3 (this feature's own live verification
+  // explicitly excluded S3 writes, see packages/core/CLAUDE.md's "Custom
+  // date-range anchors" section), and every other network-bound loop in
+  // this file (every fetch pool) already bounds its own concurrency the
+  // same way.
+  //
+  // Custom-range anchor results (issue #11) are folded into this exact
+  // same write loop/aggregation rather than getting a separate lifecycle
+  // -- a WriteJob abstracts over "which validator, which key" so both
+  // families share one mapWithConcurrency call and one failedWrites
+  // list. This is deliberate, not incidental: an anchor result is
+  // derived from the *same already-required-to-succeed*
+  // windowFetch.history as the 5Y/MAX ranges, so there's no reason to
+  // hold it to a looser standard the way a granularity override's own
+  // best-effort failure is (see that section's own comment above) -- a
+  // write failure for a custom anchor gets exactly the same "fail the
+  // whole run, this is the only alerting mechanism" treatment as a
+  // preset range's write failure.
+  interface WriteJob {
+    key: string;
+    label: string;
+    validate: () => void;
+    body: string;
+  }
+  const presetWriteJobs: WriteJob[] = results.map((result) => ({
+    key: resultKey(result.range),
+    label: result.range,
+    validate: () => validatePrecomputedResult(result),
+    body: JSON.stringify(result, null, 2),
+  }));
+  const customWriteJobs: WriteJob[] = customResults.map((result) => ({
+    key: customResultKey(result.anchorMonth),
+    label: `custom:${result.anchorMonth}`,
+    validate: () => validateCustomWindowResult(result),
+    body: JSON.stringify(result, null, 2),
+  }));
+  const writeJobs = [...presetWriteJobs, ...customWriteJobs];
+
+  const writeOutcomes = await mapWithConcurrency(writeJobs, writeConcurrency, async (job) => {
+    job.validate();
+    await options.store.putObject(job.key, job.body);
+    return job.label;
+  });
   // Every rejection, not just the first -- plain Promise.all (and a
   // naive "throw on the first rejected settlement" loop) would only
-  // ever surface one range's problem even when multiple ranges are
-  // independently broken in the same run, hiding real information from
-  // whoever reads the thrown error. Paired with the range it belongs to
-  // (rather than just the bare error message) since a putObject failure
-  // -- unlike a ResultValidationError, which already names its own range
-  // -- has no other way to say which range it was.
+  // ever surface one job's problem even when multiple are independently
+  // broken in the same run, hiding real information from whoever reads
+  // the thrown error. Paired with the job's own label (rather than just
+  // the bare error message) since a putObject failure -- unlike a
+  // ResultValidationError, which already names its own range/anchor --
+  // has no other way to say which one it was.
   const failedWrites = writeOutcomes
-    .map((outcome, i) => ({ outcome, range: results[i]!.range }))
+    .map((outcome, i) => ({ outcome, label: writeJobs[i]!.label }))
     .filter(
       (entry): entry is typeof entry & { outcome: PromiseRejectedResult } =>
         entry.outcome.status === "rejected",
     )
-    .map(({ outcome, range }) => {
+    .map(({ outcome, label }) => {
       const reason = outcome.reason;
-      return `${range}: ${reason instanceof Error ? reason.message : String(reason)}`;
+      return `${label}: ${reason instanceof Error ? reason.message : String(reason)}`;
     });
   const writtenCount = writeOutcomes.filter((outcome) => outcome.status === "fulfilled").length;
 
@@ -1409,16 +1933,37 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     const benchmarkStatusLine = `Benchmark (${BENCHMARK_TICKER}, non-fatal): ${benchmarkFetch.error ?? "ok"}.`;
     const writeFailureLines =
       failedWrites.length > 0
-        ? ` Write failures (${failedWrites.length} of ${results.length} computed result(s)):\n` +
+        ? ` Write failures (${failedWrites.length} of ${writeJobs.length} computed result(s)):\n` +
           failedWrites.map((message) => `  - ${message}`).join("\n")
         : "";
     const computeFailureLines =
       computeFailures.length > 0
-        ? ` Compute failures (${computeFailures.length} range(s)/day(s) that could not be solved at all):\n` +
+        ? ` Compute failures (${computeFailures.length} range(s)/day(s)/anchor(s) that could not be solved at all):\n` +
           computeFailures.map((message) => `  - ${message}`).join("\n")
         : "";
+    // The denominator here is the *ideal* total for a fully-healthy run
+    // (every preset range, plus every requested custom anchor) -- not
+    // just writeJobs.length (how many results were actually built and
+    // attempted), which would understate the gap whenever a whole path
+    // failed before any of its results were even built (e.g. "wrote 2 of
+    // 2" reads as a clean 100%, hiding that a failed path meant only 2
+    // were ever attempted out of an expected 5). Preserves this
+    // message's original "wrote N of 5 ranges" framing (pre-issue #11)
+    // while generalizing to also count custom anchors.
+    //
+    // Subtracts customBuild.validlySkippedCount (a duplicate, malformed,
+    // or future-dated anchor buildCustomWindowResults itself chose to
+    // skip, not a failure) so this ratio doesn't overstate the real gap
+    // for a future caller whose anchor list isn't as clean as
+    // customRangeAnchors's own (which never produces one of these today
+    // -- see that function's own tests). Zero for the one real production
+    // caller in practice, so this is a no-op there.
+    const expectedResultCount =
+      PRESET_RANGES.length +
+      (options.customRangeAnchors?.length ?? 0) -
+      customBuild.validlySkippedCount;
     throw new Error(
-      `pipeline: wrote ${writtenCount} of ${PRESET_RANGES.length} ranges, but at least one path or write failed -- ` +
+      `pipeline: wrote ${writtenCount} of ${expectedResultCount} expected result(s) (${PRESET_RANGES.length} preset range(s), ${options.customRangeAnchors?.length ?? 0} custom anchor(s) requested; ${writeJobs.length} actually computed), but at least one path or write failed -- ` +
         `failing this run so it doesn't silently succeed while that path goes stale. ` +
         `Window (5Y/MAX) path: ${windowFetch.failureReason ?? "ok"}. ` +
         `Intraday (1M/3M/1Y) path: ${intradayFetch.failureReason ?? "ok"}. ` +
@@ -1432,5 +1977,5 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
 
   // Every write succeeded -- if any had failed, the block above would
   // already have thrown before reaching here.
-  return { results, skippedTickers };
+  return { results, customResults, skippedTickers };
 }

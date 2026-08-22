@@ -1,5 +1,6 @@
 import {
   RESULTS_SCHEMA_VERSION,
+  type CustomWindowResult,
   type IntradayResult,
   type WindowResult,
 } from "@hadiknowntrades/core";
@@ -249,6 +250,83 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
   };
 }
 
+function fixtureCustomWindowResult(
+  overrides: Partial<CustomWindowResult> = {},
+): CustomWindowResult {
+  return {
+    schemaVersion: RESULTS_SCHEMA_VERSION,
+    model: "custom-window",
+    anchorMonth: "2019-03",
+    generatedAt: "2026-08-21T19:50:21.468Z",
+    dataAsOf: "2026-08-21",
+    startDate: "2019-03-01",
+    endDate: "2026-08-21",
+    maxTrades: 3,
+    startingCapital: 20,
+    endingBalance: 6876.860256895814,
+    trades: [
+      {
+        ticker: "SNDK",
+        direction: "long",
+        openDate: "2019-03-01",
+        openPrice: 45.5,
+        closeDate: "2026-06-25",
+        closePrice: 2335,
+      },
+    ],
+    worstCase: {
+      endingBalance: 4.2,
+      trades: [
+        {
+          ticker: "ZBRA",
+          direction: "long",
+          openDate: "2019-03-01",
+          openPrice: 300,
+          closeDate: "2026-08-21",
+          closePrice: 63,
+        },
+      ],
+    },
+    // The long+short counterpart (issue #13/#11 integration) --
+    // apps/pipeline's buildCustomWindowResults now calls the same
+    // optimizeAllVariants every WindowResult already does, so every
+    // CustomWindowResult carries a real longShort field too. A genuine
+    // short trade (COIN, direction "short") in `best.trades` so a test
+    // that switches to mode="long-short" under a custom anchor can assert
+    // on it the same way the window/intraday fixtures below do.
+    longShort: {
+      endingBalance: 9000,
+      trades: [
+        {
+          ticker: "COIN",
+          direction: "short",
+          openDate: "2019-03-01",
+          openPrice: 200,
+          closeDate: "2026-06-25",
+          closePrice: 10,
+        },
+      ],
+      worstCase: {
+        endingBalance: 2,
+        trades: [
+          {
+            ticker: "ZBRA",
+            direction: "long",
+            openDate: "2019-03-01",
+            openPrice: 300,
+            closeDate: "2026-08-21",
+            closePrice: 63,
+          },
+        ],
+      },
+    },
+    universeSize: 503,
+    skippedTickers: [],
+    benchmark: null,
+    ...overrides,
+  };
+}
+
 describe("ResultsPanel", () => {
   it("shows a loading state while the request is in flight", () => {
     render(<ResultsPanel range="1Y" state={{ status: "loading" }} />);
@@ -266,6 +344,18 @@ describe("ResultsPanel", () => {
     render(<ResultsPanel range="1Y" state={state} />);
 
     expect(screen.getByRole("alert")).toHaveTextContent(/not published yet/i);
+  });
+
+  it("shows an unsupported-start-date message for a 400 invalid_anchor", () => {
+    const state: ResultsState = {
+      status: "error",
+      httpStatus: 400,
+      error: "invalid_anchor",
+      message: 'Unsupported or missing "anchor" query parameter. Received: bogus.',
+    };
+    render(<ResultsPanel range="1Y" state={state} />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/unsupported start date/i);
   });
 
   it("shows a server-misconfigured message for a 500", () => {
@@ -817,6 +907,124 @@ describe("ResultsPanel", () => {
 
       rerender(<ResultsPanel range="1M" state={state} mode="long-short" />);
       expect(screen.getByRole("button", { name: /reveal/i })).toBeInTheDocument();
+    });
+  });
+
+  describe("custom-window model (issue #11)", () => {
+    // The `range` prop is a harmless placeholder in this mode (see
+    // ResultsPanelProps' own doc comment) -- never read by the
+    // custom-window render path, which derives its own copy from the
+    // anchor's own startDate instead of RANGE_COPY[range].
+
+    it("shows an empty state when a successful response has zero trades", () => {
+      const state: ResultsState<CustomWindowResult> = {
+        status: "success",
+        data: fixtureCustomWindowResult({ trades: [], endingBalance: 20 }),
+      };
+      render(<ResultsPanel range="1Y" state={state} />);
+
+      expect(
+        screen.getByText(/no trade would have beaten holding cash since mar 1, 2019/i),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("renders the hero stat, chart, and trade list for a full success response, with 'since <date>' copy instead of a preset range label", () => {
+      const state: ResultsState<CustomWindowResult> = {
+        status: "success",
+        data: fixtureCustomWindowResult(),
+      };
+      render(<ResultsPanel range="1Y" state={state} />);
+
+      expect(screen.getAllByText("$20.00").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("$6.9K").length).toBeGreaterThan(0);
+      expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+      expect(screen.getAllByText(/SNDK/).length).toBeGreaterThan(0);
+      expect(screen.getByText(/best possible outcome since mar 1, 2019/i)).toBeInTheDocument();
+      // The worst-case contrast stat (issue #31) renders alongside HeroStat here too.
+      expect(screen.getByText("$4.20")).toBeInTheDocument();
+    });
+
+    it("mentions maxTrades from the data, not a hardcoded literal", () => {
+      const state: ResultsState<CustomWindowResult> = {
+        status: "success",
+        data: fixtureCustomWindowResult({ maxTrades: 5 }),
+      };
+      render(<ResultsPanel range="1Y" state={state} />);
+
+      expect(screen.getByText(/at most 5 sequential/i)).toBeInTheDocument();
+    });
+
+    it("renders the BenchmarkStat comparison line when the result has a benchmark", () => {
+      const state: ResultsState<CustomWindowResult> = {
+        status: "success",
+        data: fixtureCustomWindowResult({
+          benchmark: {
+            ticker: "SPY",
+            startDate: "2019-03-01",
+            startPrice: 280,
+            endDate: "2026-08-21",
+            endPrice: 540,
+            endingBalance: 38.57,
+            truncated: false,
+          },
+        }),
+      };
+      render(<ResultsPanel range="1Y" state={state} />);
+
+      expect(screen.getByText(/Buying and holding SPY instead/)).toBeInTheDocument();
+    });
+
+    it("passes the user's rescaled starting capital into TradeList, not the raw precomputed startingCapital", () => {
+      const state: ResultsState<CustomWindowResult> = {
+        status: "success",
+        data: fixtureCustomWindowResult(),
+      };
+      render(<ResultsPanel range="1Y" state={state} startingCapital={500} />);
+
+      expect(screen.getAllByText("$500.00").length).toBeGreaterThan(0);
+      expect(screen.queryByText(/turning your \$20\.00/i)).not.toBeInTheDocument();
+      expect(screen.getByText(/turning your \$500\.00/i)).toBeInTheDocument();
+    });
+
+    // Regression tests for the issue #11/#13 integration -- a
+    // CustomWindowResult now carries the same longShort sibling field
+    // WindowResult already had, and WindowResultBody selects a variant
+    // for it exactly the same way it does for a preset range.
+    it("defaults to the long-only variant when mode is omitted", () => {
+      const state: ResultsState<CustomWindowResult> = {
+        status: "success",
+        data: fixtureCustomWindowResult(),
+      };
+      render(<ResultsPanel range="1Y" state={state} />);
+
+      expect(screen.getAllByText("$6.9K").length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/SNDK/).length).toBeGreaterThan(0);
+      expect(screen.queryByText(/COIN/)).not.toBeInTheDocument();
+    });
+
+    it("renders the long+short variant's HeroStat/trade list when mode='long-short'", () => {
+      const state: ResultsState<CustomWindowResult> = {
+        status: "success",
+        data: fixtureCustomWindowResult(),
+      };
+      render(<ResultsPanel range="1Y" state={state} mode="long-short" />);
+
+      expect(screen.getAllByText("$9K").length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/COIN/).length).toBeGreaterThan(0);
+      expect(screen.queryByText(/SNDK/)).not.toBeInTheDocument();
+    });
+
+    it("renders the long+short variant's WorstCaseStat when mode='long-short'", () => {
+      const state: ResultsState<CustomWindowResult> = {
+        status: "success",
+        data: fixtureCustomWindowResult(),
+      };
+      render(<ResultsPanel range="1Y" state={state} mode="long-short" />);
+
+      // longShort.worstCase.endingBalance is 2 (vs. the long-only 4.2).
+      expect(screen.getByText("$2.00")).toBeInTheDocument();
+      expect(screen.queryByText("$4.20")).not.toBeInTheDocument();
     });
   });
 });

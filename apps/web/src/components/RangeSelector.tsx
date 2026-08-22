@@ -11,7 +11,14 @@ const RANGE_LABELS: Record<PresetRange, string> = {
 };
 
 interface RangeSelectorProps {
-  selected: PresetRange;
+  /**
+   * The currently-selected preset range, or null when no preset is
+   * active -- e.g. a custom start-date anchor (issue #11's
+   * CustomRangeSelector) is selected instead, a mutually-exclusive
+   * alternate view mode (see ResultsPage.tsx). null renders every pill
+   * unpressed rather than defaulting to any particular one.
+   */
+  selected: PresetRange | null;
   onSelect: (range: PresetRange) => void;
 }
 

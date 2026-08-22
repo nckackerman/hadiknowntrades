@@ -362,42 +362,87 @@ of shipping silently to S3. This is this system's only alerting
 mechanism (see the top of this file) -- a thrown error here plugs into
 existing behavior with no new plumbing needed.
 
-- **The `results.map(...)` callback around the write loop must stay
-  `async`, not a bare arrow returning `store.putObject(...)` directly --
-  a real, easy-to-get-wrong subtlety, not a style choice.** `.map()`
-  invokes its callback _synchronously_ for every element before
-  `Promise.allSettled` ever starts awaiting; if `validatePrecomputedResult`
+- **The write loop's per-job callback must stay `async`, not a bare
+  arrow returning `store.putObject(...)` directly -- a real,
+  easy-to-get-wrong subtlety, not a style choice.** As of issue #11
+  (custom-range anchors), the write loop is `mapWithConcurrency(writeJobs,
+writeConcurrency, async (job) => { job.validate(); await
+options.store.putObject(job.key, job.body); return job.label; })` --
+  `writeJobs` concatenates `presetWriteJobs` (5 preset ranges) and
+  `customWriteJobs` (up to 252 custom anchors, issue #11), and
+  `mapWithConcurrency` is a bounded-concurrency worker pool (see below)
+  that `await`s this callback per job inside a `try`/`catch`, not a bare
+  `.map()` anymore (an earlier version of this section described a
+  `results.map(...)`/`Promise.allSettled` shape that issue #11's
+  concurrency-cap fix replaced -- see the next bullet). The `async`
+  requirement itself is unchanged from before that refactor: if
+  `job.validate()` (which calls `validatePrecomputedResult` or
+  `validateCustomWindowResult`, `packages/core/src/results-schema.ts`)
   threw synchronously inside a _non_-`async` callback, that throw would
-  propagate straight out of `.map()` itself and abort the whole loop
-  before later elements' `putObject` calls ever got a chance to start --
-  silently breaking the "write whatever succeeded, then still throw if
-  either path failed" guarantee (see "Two independent paths" below) for
-  every range after the first invalid one in iteration order, not just
-  the invalid one. Making the callback `async` fixes this: a synchronous
-  throw inside an `async` function body is caught by the function's own
-  machinery and turned into that one element's rejected promise instead
-  of a synchronous exception out of `.map()`, so every other element's
-  `async` callback still runs (and its `putObject` still starts)
-  independently. If this callback is ever refactored back to a bare
-  arrow function around `store.putObject(...)`, re-add `async` (or
-  otherwise ensure the validation call can't throw synchronously out of
-  `.map()`).
-- **The write loop uses `Promise.allSettled`, not `Promise.all` -- an
-  early version of this used `Promise.all`, and that was a real, subtle
-  bug caught in code review, not a style preference.** `validatePrecomputedResult`
-  is synchronous and effectively instantaneous; a sibling range's
-  `store.putObject(...)` call is real network I/O (a real S3 `PUT` in
-  production) taking real time. With `Promise.all`, one range's
-  validation failure rejects almost immediately -- well before other
-  ranges' in-flight `putObject` calls have finished -- and `Promise.all`
-  settles (rejected) as soon as **any** input promise rejects; it does
-  not wait for the others. That rejection propagates out of `runPipeline`
-  to the Lambda handler, and AWS can freeze/recycle the execution
-  environment as soon as the handler's returned promise settles --
-  potentially cutting off other, valid ranges' still-in-flight S3 writes
-  before they land. That directly undermines the "write whatever
-  succeeded, then still throw if something failed" guarantee this
-  section (and this file's tests) claims to preserve -- the earlier
+  propagate straight out of `mapWithConcurrency`'s own `worker(...)` call
+  -- outside its `try`/`catch` -- and abort that whole worker's loop
+  instead of becoming just this one job's own recorded rejection, risking
+  the same "later jobs never get a chance to write" failure mode the
+  original `.map()`-era bug had. Making the callback `async` turns a
+  synchronous throw into an ordinary rejected promise the `try`/`catch`
+  already handles, so every other job's write still gets a chance to
+  start independently. If this callback is ever refactored again, keep
+  it `async` (or otherwise ensure `job.validate()` can't throw
+  synchronously out of the worker loop).
+- **The write loop is bounded by `writeConcurrency`
+  (`DEFAULT_WRITE_CONCURRENCY = 10`), via `mapWithConcurrency`, not an
+  unbounded `Promise.allSettled(writeJobs.map(...))` (issue #11 code
+  review finding, fixed).** Before this, every `WriteJob`'s `putObject`
+  fired at once with no cap -- unlike every fetch pool in this file
+  (`fetchConcurrency`, default 10), which was never tested against real
+  S3 write volume at the custom-anchor feature's own scale (up to 257
+  write jobs: 5 preset + up to 252 custom anchors -- this feature's own
+  live verification explicitly excluded S3 writes, see
+  `packages/core/CLAUDE.md`'s "Custom date-range anchors" section).
+  `mapWithConcurrency` (this file) and `fetchUniverseHistory` both build
+  on one shared `runWorkerPool(itemCount, concurrency, perItem)` helper
+  (this file) -- **not two independent copies of the "N workers pulling
+  the next index off a shared cursor" loop that merely look alike, which
+  is what an earlier fix round actually produced despite claiming to
+  "mirror" the shape (a real, code-review-caught gap, second round --
+  asking for one function to "mirror" another's shape is not the same
+  instruction as asking it to reuse that shape, and got interpreted as
+  the weaker one).** `runWorkerPool` doesn't know about tickers, S3, or
+  abort classification at all -- it just calls `perItem(index)` per
+  claimed index and stops dispatching new work once some call returns
+  `true`. `fetchUniverseHistory` uses that `true` return for its
+  BlockedError/UnexpectedResponseError abort signal;
+  `mapWithConcurrency` never returns `true` (every job always gets a
+  chance to run) and instead uses `runWorkerPool` purely for the
+  concurrency cap, turning each outcome into a `PromiseSettledResult<R>`
+  itself. The two callers still return genuinely different shapes
+  (`{ history, skipped, abortError }` vs. `PromiseSettledResult<R>[]`,
+  in original item order) since their semantics differ (abort-on-
+  systemic-failure vs. "run every job to completion regardless") -- only
+  the worker-pool mechanics underneath are now actually shared, not just
+  described as such. `writeConcurrency` defaults to the same value as
+  `fetchConcurrency` but is its own `RunPipelineOptions` field --
+  deliberately not reusing `fetchConcurrency` directly, since Yahoo's
+  own request-volume tolerance and S3's are independent concerns that
+  could reasonably need different caps later even though they happen to
+  agree today.
+- **The write loop uses `Promise.allSettled`-equivalent semantics (every
+  job settles, success or failure, before the loop decides anything),
+  not `Promise.all` -- an early version of this used `Promise.all`, and
+  that was a real, subtle bug caught in code review, not a style
+  preference.** `job.validate()` is synchronous and effectively
+  instantaneous; a sibling job's `store.putObject(...)` call is real
+  network I/O (a real S3 `PUT` in production) taking real time. With
+  `Promise.all`, one job's validation failure rejects almost immediately
+  -- well before other jobs' in-flight `putObject` calls have finished --
+  and `Promise.all` settles (rejected) as soon as **any** input promise
+  rejects; it does not wait for the others. That rejection propagates
+  out of `runPipeline` to the Lambda handler, and AWS can freeze/recycle
+  the execution environment as soon as the handler's returned promise
+  settles -- potentially cutting off other, valid jobs' still-in-flight
+  S3 writes before they land. That directly undermines the "write
+  whatever succeeded, then still throw if something failed" guarantee
+  this section (and this file's tests) claims to preserve -- the earlier
   "the other, still-valid writes aren't prevented from completing in
   the background" claim this bullet used to make was true only in a
   same-process, no-real-I/O sense, not once a real Lambda freeze after
@@ -406,15 +451,16 @@ existing behavior with no new plumbing needed.
   resolves before a rejection ever has a chance to race it; the fix
   (`src/pipeline.write-validation.test.ts`) added a configurable
   per-key write delay to the test store specifically so a slower,
-  valid write can be shown to still land even though a sibling range's
-  validation rejects first. Fixed by switching to `Promise.allSettled`:
-  every write is given the chance to finish, succeed or fail, before
-  `runPipeline` decides anything. A related finding from the same
-  review: plain `Promise.all` (or a naive "throw on the first rejected
-  settlement" loop) only ever surfaces the **first** validation/write
-  failure even when multiple ranges are independently broken in the
-  same run -- `runPipeline` now collects every `rejected` outcome and
-  folds all of them, one line per failed range, into the same
+  valid write can be shown to still land even though a sibling job's
+  validation rejects first. `mapWithConcurrency` preserves this property
+  under a bounded worker pool: every job is given the chance to finish,
+  succeed or fail, before `runPipeline` decides anything -- it never
+  short-circuits the way `Promise.all` does. A related finding from the
+  same review: plain `Promise.all` (or a naive "throw on the first
+  rejected settlement" loop) only ever surfaces the **first**
+  validation/write failure even when multiple jobs are independently
+  broken in the same run -- `runPipeline` now collects every `rejected`
+  outcome and folds all of them, one line per failed job, into the same
   aggregated error the "at least one path failed" check below already
   builds (see "Two independent paths" below), rather than throwing a
   second, separate error for write-time problems.
@@ -679,3 +725,184 @@ every range this run if SPY's fetch fails outright.
   (`AAPL`+`MSFT`) produced a valid, schema-passing `benchmark` for every
   one of the 5 written ranges, with MAX correctly `truncated: true` at
   `startDate: "1993-01-29"` and every bounded range `truncated: false`.
+- **`computeBenchmark` was generalized (issue #11) to take
+  `rangeStartString: string | null` directly instead of a
+  `range: PresetRange` + `asOf` pair it derived one from internally** --
+  every existing call site (the `benchmarksByRange` construction loop)
+  now computes its own `rangeStartString` via `presetRangeStartDate`
+  first, the same computation that used to live inside `computeBenchmark`
+  itself. This is what lets the exact same function also serve
+  `buildCustomWindowResults`'s per-anchor benchmark (see below) with no
+  PresetRange-specific branching anywhere in the function.
+
+## Custom date-range anchors (issue #11)
+
+`buildCustomWindowResults` computes one `CustomWindowResult` per
+requested anchor (`packages/core`'s `AnchorMonth`, see that package's own
+CLAUDE.md for the full anchor-scheme design), reusing a new
+`computeWindowOptimization` helper factored out of `buildWindowResults`
+specifically so the 5Y/MAX preset path and the custom-anchor path share
+one windowed-slice-plus-DP implementation instead of two that could
+drift. **Post-merge with issue #13 (short-selling mode)**:
+`computeWindowOptimization` calls `optimizeAllVariants`, not the
+long-only-only `optimizeBothDirections` this section originally described
+-- see "Merged with issue #13's short-selling mode" below for the full
+integration story. See `docs/plans/issue-11-plan.md`'s section 1 for the
+full design writeup (predates that merge; its own `optimizeBothDirections`
+references are historical, not current).
+
+- **Reuses the window path's own already-fetched `windowFetch.history`
+  -- zero new Yahoo requests, zero new fetch pool.** `buildCustomWindowResults`
+  is gated behind `windowFetch.failureReason` the exact same way
+  `windowResults` itself is: if the window path has no usable history,
+  there's nothing to slice for any anchor either.
+- **`computeWindowOptimization` binary-searches each ticker's window
+  boundaries instead of a linear `Array.prototype.filter` scan (code
+  review finding, fixed)** -- `buildCustomWindowResults` calls it once
+  per anchor (up to 252x per run), and a full O(days) re-scan of each
+  ticker's entire multi-decade history on every single call was real,
+  needless cost at that scale. Fixed via `lowerBoundByDate`/
+  `upperBoundByDate` (`pipeline.ts`), which need a genuinely
+  date-ascending-sorted array to be correct -- rather than trust
+  `fetchDailyCloses`'s return order (documented elsewhere as "ascending
+  in practice," not a guaranteed contract -- see
+  `packages/core/CLAUDE.md`), `sortedHistory` explicitly sorts each
+  ticker's series once and caches the result in a `WeakMap` keyed by the
+  `history` Map's own object identity, so the O(tickers x days log days)
+  sort cost is paid at most once per pipeline run regardless of how many
+  times `computeWindowOptimization` is called against the same
+  `windowFetch.history` reference. If a future caller ever passes a
+  _fresh_ history Map per call (rather than the one shared reference
+  `runPipeline` builds today), this cache buys nothing -- worth revisiting
+  if that assumption ever changes.
+- **`buildCustomWindowResults` de-dups its `anchors` input by
+  `anchorMonth` before building any result (code review finding, fixed)**
+  -- `customResultKey` is a pure function of `anchorMonth` alone, so two
+  anchors sharing the same month would otherwise silently collide on the
+  same S3 key with no error surfaced. Not reachable via the one real
+  caller (`customRangeAnchors`, `packages/core`, which is tested to never
+  produce a duplicate), but a caller-supplied `anchors` list (a test, or
+  a future second caller) could in principle include one -- a repeat is
+  now skipped with a `console.warn`, not silently computed-and-overwritten.
+- **`RunPipelineOptions.customRangeAnchors` defaults to empty (`[]`), not
+  `customRangeAnchors(asOf)` computed internally** -- deliberately unlike
+  every other option this file defaults itself. `src/run.ts` (the real
+  nightly entry point) is the one place that explicitly passes
+  `customRangeAnchors(asOf)` (`packages/core`) to turn this on for the
+  real deployed pipeline. This was a pragmatic call, not an oversight: it
+  keeps every pre-existing test in `pipeline.test.ts` (which never passes
+  this option) completely unaffected by this feature's introduction --
+  retrofitting ~250 extra anchor-result assertions into every unrelated
+  existing test would have been pure test-maintenance churn with zero
+  correctness value. `pipeline.custom-range.test.ts` is a small, dedicated
+  file (mirroring `pipeline.write-validation.test.ts`'s own precedent for
+  a focused fixture set) covering the feature itself.
+- **A custom-anchor write failure is held to the exact same "must fail
+  the run" standard a preset range's write failure already gets, not the
+  looser best-effort standard a granularity override's failure gets.**
+  Both preset and custom-anchor results now flow through one combined
+  `WriteJob` list / one bounded-concurrency write loop (`mapWithConcurrency`,
+  see the "Write-time result self-validation" section above -- previously
+  just `results.map(...)` over a single `Promise.allSettled`, before this
+  same issue's own code review added the concurrency cap) -- a failure in
+  either family aggregates into the same thrown error, this pipeline's
+  only alerting mechanism. Reasoning:
+  unlike a granularity override (a genuinely different, independently-
+  fetched data source that gracefully degrades to already-correct
+  60-minute bars on failure), a custom anchor is derived from the _same_
+  already-required-to-succeed window-path history, so there's no lesser
+  standard that makes sense for it. The final aggregated error message's
+  denominator (`wrote N of M expected result(s)`) is the _ideal_ total
+  for a fully-healthy run (`PRESET_RANGES.length` + every requested
+  anchor), not just how many results were actually built and attempted --
+  a real, deliberate choice (found while updating this file's own
+  pre-existing tests that asserted on the old message text): using the
+  smaller "actually attempted" denominator would understate the gap
+  whenever a whole path failed before any of its results were even built
+  (e.g. "wrote 2 of 2" reads as a clean 100%, hiding that a failed path
+  meant only 2 were ever attempted out of an expected 5).
+  - **That denominator also subtracts anchors `buildCustomWindowResults`
+    itself validly skips (duplicate, malformed, or future-dated -- see
+    its own loop), not just anchors lost to a whole failed path (second-
+    round code review finding, fixed).** Before this, `expectedResultCount`
+    used the raw `options.customRangeAnchors.length` unconditionally, so
+    a caller-supplied anchor list containing e.g. a duplicate would count
+    it toward the "expected" total even though `buildCustomWindowResults`
+    never intended to write a result for it -- overstating the real gap
+    in the "wrote N of M" ratio for any future caller whose anchor list
+    isn't as clean as `customRangeAnchors`'s own (which never produces a
+    duplicate/malformed/future-dated entry today, per that function's own
+    tests -- so this is a no-op for the one real production caller,
+    purely a correctness fix for a less-clean future or test caller).
+    `buildCustomWindowResults` now returns `{ results, validlySkippedCount }`
+    instead of a bare array; `runPipeline` subtracts that count from
+    `expectedResultCount`. The future-dated-anchor skip branch also
+    gained a `console.warn` here, matching its two sibling skip branches
+    (duplicate, malformed), which both already logged -- it used to be
+    the only one of the three that skipped silently.
+- **This is the answer to the cache/invalidation-gap an independent
+  reviewer flagged on the original plan**: there is no separate
+  "permanent cache" for custom-anchor results, and therefore no separate
+  invalidation logic anywhere. Every one of the 252 anchors is recomputed
+  from scratch every nightly run, exactly like the 5 preset ranges
+  already are -- a bug fix or schema change to the optimizer fixes every
+  stored anchor automatically on the next nightly run.
+- **Live-verified, real numbers, no S3 write** (full 503-ticker universe,
+  real Yahoo network calls, all 252 real anchors via a throwaway Vitest
+  file, deleted before commit): full run (every fetch pool + solving all
+  5 preset ranges + all 252 custom anchors) completed in **154.0s (~2.6
+  minutes)**, 0 of 503 tickers skipped, 257 total result objects (5
+  preset + 252 custom-anchor), **431.5KB** total across all 252
+  custom-anchor result objects' serialized JSON -- comfortably inside the
+  15-minute Lambda timeout (over 12 minutes of headroom) and negligible
+  new S3 storage. See `docs/plans/issue-11-plan.md` section 1.6 for the
+  full writeup; this run's total includes real network fetch time (not
+  isolated from pure compute), so it's an upper bound on the
+  custom-anchor compute addition specifically, not a clean marginal
+  delta.
+
+### Merged with issue #13's short-selling mode
+
+Issues #11 and #13 were developed in parallel and merged after both had
+independently landed -- `buildCustomWindowResults` originally called the
+long-only-only `optimizeBothDirections` (predating issue #13), and
+`buildWindowResults` (on issue #13's own branch) called
+`optimizeAllVariants` directly rather than through this file's shared
+`computeWindowOptimization` helper (which didn't exist yet on that
+branch -- issue #13 was built before issue #11's refactor landed).
+Integrated at merge time:
+
+- **`computeWindowOptimization` now calls `optimizeAllVariants`**,
+  returning `{ windowed, longOnly, longShort }` instead of `{ windowed,
+best, worst }` -- both `buildWindowResults` and `buildCustomWindowResults`
+  updated to read the new shape and populate their own result's
+  `longShort` field from it. Every whole-window result -- preset range or
+  custom anchor -- now gets computed off the same one shared
+  `OptimizerState` per window, all 4 direction x instrument-set
+  combinations at once.
+- **`buildCustomWindowResults` gained the same per-anchor try/catch
+  containment `buildWindowResults` already has** (see "Code review
+  follow-up: issue #13 short-selling PR" above) -- a real, new gap this
+  merge surfaced: once a custom anchor's window is solved via
+  `optimizeAllVariants`, it's exposed to the same short-payoff-overflow
+  risk documented there, and with up to ~252 anchors per run, one
+  anchor's overflow could otherwise abort every other already-computable
+  anchor. `CustomWindowResultsBuild` gained a `failures: string[]` field
+  (mirroring `BuildWindowResultsOutcome.failures`), folded by
+  `runPipeline` into the same `computeFailures` list that already
+  fails the run for a window/intraday compute failure.
+- `results-schema.ts`'s `CustomWindowResult` gained the same
+  `longShort: LongShortResult` sibling field `WindowResult` already had,
+  and `validateCustomWindowResult` gained the same long+short
+  cross-checks -- see `packages/core/CLAUDE.md`'s own "Merged with issue
+  #13's short-selling mode" section for the schema/validator side of this
+  integration.
+- **Live-verified via a regression test, not just typechecked**:
+  `pipeline.custom-range.test.ts`'s "computes a real longShort field with
+  a genuine short trade for a custom anchor" test uses a two-bar,
+  pure-price-decline fixture (no long trade can be profitable) to confirm
+  the long-only search correctly makes zero trades while the long+short
+  search finds and reports a real short trade with a materially higher
+  `endingBalance` -- round-tripped through the actual written+parsed S3
+  JSON, confirming `validateCustomWindowResult`'s own longShort
+  cross-checks pass at write time, not just an in-memory shape.

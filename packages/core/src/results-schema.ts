@@ -20,6 +20,7 @@ import { PRESET_RANGES, type PresetRange } from "./preset-ranges";
 import type { Trade } from "./optimizer";
 import type { IntradayDayResult, IntradayLongShortResult } from "./intraday-optimizer";
 import { isValidPrice } from "./is-valid-price";
+import { anchorMonthToDate, type AnchorMonth } from "./custom-range-anchors";
 
 /** Bumped whenever the shape of PrecomputedResult changes in a way a reader needs to know about. */
 export const RESULTS_SCHEMA_VERSION = 5;
@@ -33,6 +34,19 @@ export const RESULTS_SCHEMA_VERSION = 5;
  */
 export function resultKey(range: PresetRange): string {
   return `results/${range}.json`;
+}
+
+/**
+ * The S3 key a custom-range anchor's precomputed result (issue #11) is
+ * stored/read under -- same single-source-of-truth role as resultKey
+ * above, just for CustomWindowResult instead of PrecomputedResult.
+ * Namespaced under `results/custom/` (not flat alongside the 5 preset
+ * keys) so the two families are trivially distinguishable by key prefix
+ * alone, and so an S3 listing of one family never accidentally includes
+ * the other.
+ */
+export function customResultKey(anchorMonth: AnchorMonth): string {
+  return `results/custom/${anchorMonth}.json`;
 }
 
 /** Which trading model produced a given PrecomputedResult -- see the module header comment. */
@@ -104,23 +118,25 @@ export interface WorstCaseResult {
 }
 
 /**
- * The long+short counterpart to a WindowResult's own long-only
- * endingBalance/trades/worstCase (issue #13) -- searched over the same
- * window, but with short trades (reciprocal-price payoff, see
- * optimizer.ts's own header comment) also available alongside longs.
- * Deliberately an additive sibling field, not a restructure of the
+ * The long+short counterpart to a WindowResult's (or CustomWindowResult's,
+ * issue #11) own long-only endingBalance/trades/worstCase (issue #13) --
+ * searched over the same window, but with short trades (reciprocal-price
+ * payoff, see optimizer.ts's own header comment) also available alongside
+ * longs. Deliberately an additive sibling field, not a restructure of the
  * existing flat fields -- mirrors WorstCaseResult's own precedent
  * (issue #31) for "a second, alternative computation over the same
  * window," and keeps every existing long-only consumer untouched. No
  * redundant startingCapital here either, same reasoning as
- * WorstCaseResult: identical to the sibling WindowResult.startingCapital.
+ * WorstCaseResult: identical to the sibling window's own startingCapital.
  *
- * Always true by construction (checked in validatePrecomputedResult
- * below): `endingBalance >= ` the sibling long-only `endingBalance` (the
- * long+short max-search explores a strict superset of the long-only
- * candidate set), and `worstCase.endingBalance <= ` the sibling
- * `worstCase.endingBalance` (same superset argument, inverted for a min
- * search).
+ * Always true by construction (checked in validateWindowLikeFields below,
+ * shared by validatePrecomputedResult's "window" branch and
+ * validateCustomWindowResult -- and by validateIntradayDay for
+ * IntradayLongShortResult's identical shape): `endingBalance >= ` the
+ * sibling long-only `endingBalance` (the long+short max-search explores a
+ * strict superset of the long-only candidate set), and
+ * `worstCase.endingBalance <= ` the sibling `worstCase.endingBalance`
+ * (same superset argument, inverted for a min search).
  */
 export interface LongShortResult {
   endingBalance: number;
@@ -167,6 +183,77 @@ export interface IntradayResult extends PrecomputedResultBase {
 }
 
 export type PrecomputedResult = WindowResult | IntradayResult;
+
+/**
+ * A custom-range anchor's precomputed result (issue #11's coarsened
+ * design -- see docs/plans/issue-11-plan.md): the same whole-window,
+ * daily-close, up-to-`maxTrades` model as WindowResult (same optimizer,
+ * same machinery -- see apps/pipeline/src/pipeline.ts's
+ * computeWindowOptimization, shared by both), just keyed by a
+ * month-granularity `anchorMonth` (packages/core/src/custom-range-
+ * anchors.ts) instead of a `PresetRange`.
+ *
+ * Deliberately a type *separate from* the PrecomputedResult union above,
+ * not a third member of it -- PresetRange is a closed, exhaustively-
+ * iterated 5-member union throughout this codebase (PRESET_RANGES itself,
+ * apps/pipeline's WINDOW_RANGES/INTRADAY_RANGES split, apps/web's
+ * isCanonicalRange/parseRange), and folding a ~252-member anchor set into
+ * that same `range` field would mean loosening PresetRange everywhere it
+ * appears, not just here. A sibling type with its own `anchorMonth`
+ * identifying field avoids that blast radius entirely while still
+ * sharing every other field/shape/validation convention below.
+ *
+ * **Still gated by the same RESULTS_SCHEMA_VERSION as PrecomputedResult**
+ * (see `schemaVersion` below) -- unlike the live-compute design this
+ * issue's plan originally sketched (whose own CustomWindowResult
+ * judgment call exempted it from this version check, reasoning that a
+ * live-compute result has no separate writer to drift from the reader).
+ * That reasoning doesn't apply here: this result *is* written by a
+ * separate process (apps/pipeline, nightly) from the one that reads it
+ * (apps/web's API route), the exact same writer/reader-drift risk every
+ * other PrecomputedResult already guards against via this same constant
+ * -- so it reuses the identical protection rather than inventing a
+ * parallel one.
+ *
+ * **Gains its own `longShort` sibling field (issue #13/#11 integration)**,
+ * the same additive-sibling pattern `WindowResult`/`IntradayDayResult`
+ * already carry -- `apps/pipeline`'s `buildCustomWindowResults` computes
+ * both variants via the same `computeWindowOptimization` helper
+ * `buildWindowResults` uses (itself now backed by `optimizeAllVariants`,
+ * not the long-only-only `optimizeBothDirections` #11 originally wired
+ * it to), so a custom anchor's result is never missing the long+short
+ * counterpart every preset window range already has.
+ */
+export interface CustomWindowResult {
+  schemaVersion: number;
+  model: "custom-window";
+  /** The anchor identifying this result -- see custom-range-anchors.ts. */
+  anchorMonth: AnchorMonth;
+  generatedAt: string;
+  /** Same meaning as PrecomputedResultBase.dataAsOf. */
+  dataAsOf: string;
+  /**
+   * Always a real, non-null date string (the anchor month's 1st, or
+   * later once forward-snapped to a real trading day by the same slicing
+   * filter every preset range's own startDate already goes through --
+   * see custom-range-anchors.ts's own doc comment) -- unlike
+   * WindowResult.startDate, which can be null for the unbounded MAX
+   * range. A custom anchor is never unbounded.
+   */
+  startDate: string;
+  /** The requested "as of" boundary for this run -- always "today," same as every preset range's own endDate. */
+  endDate: string;
+  maxTrades: number;
+  startingCapital: number;
+  universeSize: number;
+  skippedTickers: string[];
+  benchmark: BenchmarkResult | null;
+  endingBalance: number;
+  trades: Trade[];
+  worstCase: WorstCaseResult;
+  /** The long+short counterpart to this anchor's own long-only fields (issue #13) -- see LongShortResult, and this interface's own doc comment for why it's here at all. */
+  longShort: LongShortResult;
+}
 
 // --- Write-time self-validation (issue #47) ---------------------------
 //
@@ -585,16 +672,30 @@ function validateBenchmark(value: unknown, problems: string[]): void {
     problems.push(`benchmark.truncated must be a boolean, got ${describe(b.truncated)}`);
 }
 
-/** Validates the fields every PrecomputedResult shares, regardless of `model`. */
-function validateBase(result: Record<string, unknown>, problems: string[]): void {
+/**
+ * Validates the fields shared by *every* whole-result shape this file
+ * validates, regardless of whether it's identified by `range`
+ * (PrecomputedResult) or `anchorMonth` (CustomWindowResult, issue #11) --
+ * schemaVersion, generatedAt, dataAsOf, startingCapital, universeSize,
+ * skippedTickers, benchmark. Called by both validateBase (below, which
+ * additionally validates `range`) and validateCustomWindowResult (which
+ * additionally validates `anchorMonth`) so the two can't independently
+ * drift on what these shared fields require.
+ *
+ * **Extracted from what used to be two ~50-line-overlapping copies of
+ * these same checks (code review finding, issue #11)**: validateBase
+ * originally did all of this plus the `range` check inline, and
+ * validateCustomWindowResult had re-typed an equivalent block by hand --
+ * a future rule change to one of these checks made only in validateBase
+ * (e.g. a stricter dataAsOf format) would have silently left
+ * validateCustomWindowResult's copy unprotected, defeating the whole
+ * point of a write-time validation safety net (issue #47) that's
+ * supposed to cover every result family.
+ */
+function validateSharedResultFields(result: Record<string, unknown>, problems: string[]): void {
   if (result.schemaVersion !== RESULTS_SCHEMA_VERSION) {
     problems.push(
       `schemaVersion must be exactly ${RESULTS_SCHEMA_VERSION}, got ${describe(result.schemaVersion)}`,
-    );
-  }
-  if (!(PRESET_RANGES as readonly string[]).includes(result.range as string)) {
-    problems.push(
-      `range must be one of ${PRESET_RANGES.join(", ")}, got ${describe(result.range)}`,
     );
   }
   if (!isNonEmptyString(result.generatedAt)) {
@@ -626,6 +727,82 @@ function validateBase(result: Record<string, unknown>, problems: string[]): void
 }
 
 /**
+ * Validates the fields every whole-window *trades-and-worst-case*-shaped
+ * result shares -- WindowResult's own fields beyond PrecomputedResultBase
+ * (endDate, maxTrades, endingBalance, trades, worstCase, longShort) and
+ * CustomWindowResult's identical sibling set (issue #11). Shared for the
+ * exact same "can't independently drift" reason validateSharedResultFields
+ * above is -- see that function's own doc comment.
+ *
+ * **Also covers the long+short cross-checks (issue #13), not just the
+ * long-only fields** -- merged here (rather than left duplicated between
+ * validatePrecomputedResult's own "window" branch and
+ * validateCustomWindowResult) so CustomWindowResult gets the exact same
+ * `longShort.endingBalance >= endingBalance` /
+ * `longShort.worstCase.endingBalance <= worstCase.endingBalance`
+ * guarantees WindowResult already has, for free, the moment it grows its
+ * own `longShort` sibling field -- see CustomWindowResult's own doc
+ * comment for why that field exists at all (issue #13/#11 integration).
+ */
+function validateWindowLikeFields(r: Record<string, unknown>, problems: string[]): void {
+  if (!isNonEmptyString(r.endDate)) {
+    problems.push(`endDate must be a non-empty string, got ${describe(r.endDate)}`);
+  }
+  if (!isNonNegativeInteger(r.maxTrades)) {
+    problems.push(`maxTrades must be a non-negative integer, got ${describe(r.maxTrades)}`);
+  }
+  if (!isPositiveFiniteNumber(r.endingBalance)) {
+    problems.push(
+      `endingBalance must be a positive finite number, got ${describe(r.endingBalance)}`,
+    );
+  }
+  if (!Array.isArray(r.trades)) {
+    problems.push(`trades must be an array, got ${describe(r.trades)}`);
+  } else {
+    r.trades.forEach((trade, i) => validateTrade(trade, `trades[${i}]`, problems));
+    validateAllTradesAreLong(r.trades, "trades", problems);
+  }
+  validateWorstCaseResultWith(r.worstCase, "worstCase", problems, validateTrade);
+  validateWorstNotExceedingOptimal(
+    (r.worstCase as Record<string, unknown> | undefined)?.endingBalance,
+    r.endingBalance,
+    "worstCase.endingBalance",
+    problems,
+  );
+  const worstCaseTrades = (r.worstCase as Record<string, unknown> | undefined)?.trades;
+  if (worstCaseTrades !== undefined) {
+    validateAllTradesAreLong(worstCaseTrades, "worstCase.trades", problems);
+  }
+
+  // Long+short counterpart to this window's own long-only fields (issue
+  // #13).
+  validateLongShortResultWith(r.longShort, "longShort", problems, validateTrade);
+  const longShort = r.longShort as Record<string, unknown> | undefined;
+  validateLongShortNotBelowLongOnly(
+    longShort?.endingBalance,
+    r.endingBalance,
+    "longShort.endingBalance",
+    problems,
+  );
+  validateLongShortWorstNotAboveLongOnlyWorst(
+    (longShort?.worstCase as Record<string, unknown> | undefined)?.endingBalance,
+    (r.worstCase as Record<string, unknown> | undefined)?.endingBalance,
+    "longShort.worstCase.endingBalance",
+    problems,
+  );
+}
+
+/** Validates the fields every PrecomputedResult shares, regardless of `model`: everything validateSharedResultFields covers, plus `range` (the one field CustomWindowResult doesn't have -- it has `anchorMonth` instead, validated separately by validateCustomWindowResult). */
+function validateBase(result: Record<string, unknown>, problems: string[]): void {
+  validateSharedResultFields(result, problems);
+  if (!(PRESET_RANGES as readonly string[]).includes(result.range as string)) {
+    problems.push(
+      `range must be one of ${PRESET_RANGES.join(", ")}, got ${describe(result.range)}`,
+    );
+  }
+}
+
+/**
  * Validates that `result` actually satisfies its own declared shape
  * (`WindowResult` or `IntradayResult`, per its `model` discriminant) at
  * runtime -- required fields present, prices/balances finite numbers,
@@ -650,51 +827,7 @@ export function validatePrecomputedResult(result: PrecomputedResult): void {
     if (r.startDate !== null && !isNonEmptyString(r.startDate)) {
       problems.push(`startDate must be a non-empty string or null, got ${describe(r.startDate)}`);
     }
-    if (!isNonEmptyString(r.endDate)) {
-      problems.push(`endDate must be a non-empty string, got ${describe(r.endDate)}`);
-    }
-    if (!isNonNegativeInteger(r.maxTrades)) {
-      problems.push(`maxTrades must be a non-negative integer, got ${describe(r.maxTrades)}`);
-    }
-    if (!isPositiveFiniteNumber(r.endingBalance)) {
-      problems.push(
-        `endingBalance must be a positive finite number, got ${describe(r.endingBalance)}`,
-      );
-    }
-    if (!Array.isArray(r.trades)) {
-      problems.push(`trades must be an array, got ${describe(r.trades)}`);
-    } else {
-      r.trades.forEach((trade, i) => validateTrade(trade, `trades[${i}]`, problems));
-      validateAllTradesAreLong(r.trades, "trades", problems);
-    }
-    validateWorstCaseResultWith(r.worstCase, "worstCase", problems, validateTrade);
-    validateWorstNotExceedingOptimal(
-      (r.worstCase as Record<string, unknown> | undefined)?.endingBalance,
-      r.endingBalance,
-      "worstCase.endingBalance",
-      problems,
-    );
-    const worstCaseTrades = (r.worstCase as Record<string, unknown> | undefined)?.trades;
-    if (worstCaseTrades !== undefined) {
-      validateAllTradesAreLong(worstCaseTrades, "worstCase.trades", problems);
-    }
-
-    // Long+short counterpart to this window's own long-only fields
-    // (issue #13).
-    validateLongShortResultWith(r.longShort, "longShort", problems, validateTrade);
-    const longShort = r.longShort as Record<string, unknown> | undefined;
-    validateLongShortNotBelowLongOnly(
-      longShort?.endingBalance,
-      r.endingBalance,
-      "longShort.endingBalance",
-      problems,
-    );
-    validateLongShortWorstNotAboveLongOnlyWorst(
-      (longShort?.worstCase as Record<string, unknown> | undefined)?.endingBalance,
-      (r.worstCase as Record<string, unknown> | undefined)?.endingBalance,
-      "longShort.worstCase.endingBalance",
-      problems,
-    );
+    validateWindowLikeFields(r, problems);
   } else if (r.model === "intraday-daily") {
     if (!isNonEmptyString(r.endDate)) {
       problems.push(`endDate must be a non-empty string, got ${describe(r.endDate)}`);
@@ -716,6 +849,53 @@ export function validatePrecomputedResult(result: PrecomputedResult): void {
   if (problems.length > 0) {
     throw new ResultValidationError(
       `PrecomputedResult for range ${describe(r.range)} failed schema self-validation (${problems.length} problem${problems.length === 1 ? "" : "s"}):\n` +
+        problems.map((p) => `  - ${p}`).join("\n"),
+    );
+  }
+}
+
+/**
+ * Validates that `result` actually satisfies CustomWindowResult's own
+ * declared shape (issue #11) -- the same runtime-self-check discipline
+ * validatePrecomputedResult already gives every PrecomputedResult, kept
+ * as a separate function (rather than folded into
+ * validatePrecomputedResult itself) since CustomWindowResult is a
+ * deliberately separate type, not a third PrecomputedResult union member
+ * (see that type's own doc comment for why). Shares
+ * validateSharedResultFields and validateWindowLikeFields with
+ * validatePrecomputedResult's own "window" branch (a code-review-driven
+ * refactor -- see each of those functions' own doc comments for why this
+ * used to be ~50 lines of independently hand-typed, drift-prone
+ * duplication), and reuses every one of the same private field-level
+ * validators (isPositiveFiniteNumber, validateTrade,
+ * validateWorstCaseResultWith, validateBenchmark, ...) underneath those,
+ * so the two validators can't quietly drift on what counts as e.g. "a
+ * valid Trade."
+ */
+export function validateCustomWindowResult(result: CustomWindowResult): void {
+  const problems: string[] = [];
+  if (result === null || typeof result !== "object") {
+    throw new ResultValidationError(`result must be an object, got ${describe(result)}`);
+  }
+  const r = result as unknown as Record<string, unknown>;
+
+  validateSharedResultFields(r, problems);
+  if (r.model !== "custom-window") {
+    problems.push(`model must be "custom-window", got ${describe(r.model)}`);
+  }
+  if (!isNonEmptyString(r.anchorMonth) || anchorMonthToDate(r.anchorMonth) === null) {
+    problems.push(
+      `anchorMonth must be a well-formed YYYY-MM string, got ${describe(r.anchorMonth)}`,
+    );
+  }
+  if (!isNonEmptyString(r.startDate)) {
+    problems.push(`startDate must be a non-empty string, got ${describe(r.startDate)}`);
+  }
+  validateWindowLikeFields(r, problems);
+
+  if (problems.length > 0) {
+    throw new ResultValidationError(
+      `CustomWindowResult for anchor ${describe(r.anchorMonth)} failed schema self-validation (${problems.length} problem${problems.length === 1 ? "" : "s"}):\n` +
         problems.map((p) => `  - ${p}`).join("\n"),
     );
   }

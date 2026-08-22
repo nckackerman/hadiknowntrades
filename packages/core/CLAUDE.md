@@ -727,3 +727,156 @@ by calendar day (the date-part of each bar's `date`), then call
   `OptimizeIntradayResult` (`{days, skippedDays}`), not a bare
   `IntradayDayResult[]` -- see that section for the full reasoning and
   what apps/pipeline does with `skippedDays`.
+
+## Custom date-range anchors (issue #11)
+
+`src/custom-range-anchors.ts` is the coarsened answer to "arbitrary
+date-range picker" -- see `docs/plans/issue-11-plan.md`'s section 1 for
+the full design writeup and section 3 (of the deferred original
+research) for why the issue's _literal_ ask (day-granularity, both
+endpoints free) isn't nightly-recomputable at any real scale (~14
+million pairs). `customRangeAnchors(asOf)` returns the 1st of every
+calendar month for `CUSTOM_RANGE_ANCHOR_YEARS_BACK` (21) years back from
+`asOf`, newest first -- 252 `AnchorMonth` (`YYYY-MM`) strings, the single
+source of truth both `apps/pipeline` (computes+writes a result for every
+one, nightly) and `apps/web` (the date-picker only ever offers this exact
+list) import.
+
+- **21 years, not MAX's own true unbounded reach** -- deliberately chosen
+  to match the depth this package's own optimizer benchmark already uses
+  ("Optimizer algorithm" section above, ~330ms for a 21-year window), a
+  concretely cost-modeled number rather than an attempt to match every
+  individual ticker's real (sometimes much deeper) Yahoo history. Bump
+  the constant later if a deeper reach is ever wanted -- nothing else
+  hardcodes 252 or 21 a second time.
+- **No missing/holiday-date snapping logic needed here at all** -- a real
+  surprise relative to how much design effort the deferred live-compute
+  research (section 2 of the plan) spent working this out. Each anchor's
+  start is always a _calendar_ month boundary (the 1st), and the ordinary
+  `p.date >= startDateString` slicing filter every preset range's own
+  `startDate` already goes through (`apps/pipeline/src/pipeline.ts`'s
+  `computeWindowOptimization`) already forward-snaps to the nearest real
+  trading day on or after it, with zero new code. The end date is always
+  "today," handled identically to how every preset range already handles
+  it. Live-verified end to end (a real fixture with a gap right at an
+  anchor's own boundary correctly snaps forward to the next real bar --
+  see `apps/pipeline/src/pipeline.custom-range.test.ts`).
+- `anchorMonthToDate`/`toAnchorMonth` round-trip an `AnchorMonth` string
+  to/from a UTC `Date` at the 1st of that month. **`customRangeAnchors`
+  itself now actually calls `toAnchorMonth` to format each generated
+  anchor, instead of hand-rolling the identical zero-pad formatting a
+  second time inline (second-round code review finding, fixed)** --
+  `toAnchorMonth` was exported through this package's public API
+  (`index.ts`) specifically for this, but had zero real callers anywhere
+  in the codebase until this fix; `customRangeAnchors` is the one real
+  producer of `AnchorMonth` strings, so it's the one place this should
+  have been calling it all along. No behavior change -- same output for
+  every anchor, just one implementation of the formatting instead of two
+  that could silently drift.
+  The regex
+  (`^\d{4}-(0[1-9]|1[0-2])$`) is what rejects an out-of-range month like
+  `"2019-13"`, but is **NOT** sufficient on its own for the year (a real
+  bug, found in code review, fixed): a syntactically well-formed 4-digit
+  year like `"0099"` still triggers JS's legacy `Date.UTC`/`new
+Date(year, ...)` two-digit-year reinterpretation rule (years 0-99
+  silently become 1900-1999), so `anchorMonthToDate("0099-06")` used to
+  silently return a `Date` for 1999-06, not year 99 -- `GET
+/api/results?anchor=0099-06` would have passed both the regex and
+  `apps/web`'s `parseAnchorMonth` (`results-api.ts`) unrejected.
+  `anchorMonthToDate` now also rejects a year outside a generous sane
+  range (`MIN_ANCHOR_YEAR = 1970` through "next calendar year") -- see
+  that constant's own doc comment. `CustomRangeSelector.tsx`
+  (`apps/web`) had independently re-implemented this same
+  slice+`Date.UTC` parse (its `formatAnchorLabel`) and was exposed to
+  the identical bug; fixed to call `anchorMonthToDate` instead of
+  re-deriving the parse a second time.
+- **`results-schema.ts`'s `CustomWindowResult`** is a sibling of
+  `PrecomputedResult`, not a third union member -- see that type's own
+  doc comment for why (folding a 252-member anchor set into `PresetRange`
+  would mean loosening that closed 5-member union everywhere it's
+  exhaustively iterated). Still gated by the same `RESULTS_SCHEMA_VERSION`
+  as every `PrecomputedResult`, unlike the live-compute design's own
+  original judgment call to exempt an on-demand result from that check --
+  a `CustomWindowResult` here _is_ written by a separate process
+  (`apps/pipeline`, nightly) from the one that reads it (`apps/web`), the
+  same writer/reader-drift risk that constant exists to catch everywhere
+  else, so it reuses the same protection.
+- `customResultKey(anchorMonth)` -> `results/custom/{anchorMonth}.json`,
+  namespaced under its own prefix so the two result families (5 presets,
+  252 custom anchors) are trivially distinguishable by key prefix alone.
+- `validateCustomWindowResult` reuses every one of
+  `validatePrecomputedResult`'s own private field-level validators
+  (`isPositiveFiniteNumber`, `validateTrade`, `validateWorstCaseResultWith`,
+  `validateBenchmark`) rather than re-deriving a second copy -- the two
+  validators can't drift on what counts as e.g. a valid `Trade`.
+  **This used to stop at just those low-level validators, leaving the
+  higher-level field lists (schemaVersion, generatedAt, dataAsOf,
+  startingCapital, universeSize, skippedTickers, benchmark, endDate,
+  maxTrades, endingBalance, trades, worstCase) independently hand-typed
+  in both functions -- a real, code-review-caught duplication (~50
+  overlapping lines) since fixed**: `validateBase` (the `range`-bearing
+  half) and `validateCustomWindowResult` now both call two extracted
+  helpers, `validateSharedResultFields` (everything but `range`/
+  `anchorMonth`) and `validateWindowLikeFields` (endDate/maxTrades/
+  endingBalance/trades/worstCase, also shared with
+  `validatePrecomputedResult`'s own "window" branch) -- so a future rule
+  change to any of these shared checks can no longer land in one
+  validator's copy and silently miss the other, which is exactly the
+  risk this write-time safety net (issue #47) exists to close.
+- **Live-verified, real numbers, no S3 write** (full 503-ticker S&P 500
+  universe, real Yahoo network calls, all 252 real anchors, throwaway
+  Vitest file deleted before commit -- same technique issue #31's own
+  live verification used): full run (every fetch pool + solving all 5
+  preset ranges + all 252 custom anchors) completed in **154.0s (~2.6
+  minutes)**, 0 of 503 tickers skipped, **431.5KB** total across all 252
+  custom-anchor result objects' serialized JSON -- comfortably inside the
+  pipeline Lambda's 15-minute timeout, and S3 storage growth is
+  negligible against the $20/month budget. See
+  `docs/plans/issue-11-plan.md` section 1.6 for the full run's numbers.
+
+### Merged with issue #13's short-selling mode
+
+Issues #11 and #13 were developed in parallel branches and merged after
+both had independently landed on `main`/this branch -- `CustomWindowResult`
+originally had no `longShort` field, and `apps/pipeline`'s
+`buildCustomWindowResults` originally called the long-only-only
+`optimizeBothDirections` (issue #31's own best/worst sharing) rather than
+issue #13's `optimizeAllVariants`. Integrated at merge time, not left as
+two features sitting side by side:
+
+- **`CustomWindowResult` gained the same `longShort: LongShortResult`
+  sibling field `WindowResult`/`IntradayDayResult` already carry** (see
+  that field's own doc comment in `results-schema.ts`) -- the same
+  additive-sibling pattern issue #13 already established, applied to this
+  third whole-window-shaped result type.
+- **`validateWindowLikeFields` (the shared validator both
+  `validatePrecomputedResult`'s "window" branch and
+  `validateCustomWindowResult` call) now also owns the long+short
+  cross-checks and the `validateAllTradesAreLong` guard**, not just the
+  long-only fields it validated before this merge -- so `CustomWindowResult`
+  gets `longShort.endingBalance >= endingBalance` /
+  `longShort.worstCase.endingBalance <= worstCase.endingBalance` checked
+  for free the moment it grows a `longShort` field, with no separate
+  custom-anchor-specific validation code to keep in sync.
+- **`apps/pipeline`'s `computeWindowOptimization`** (the shared
+  windowed-slice + DP helper `buildWindowResults` and
+  `buildCustomWindowResults` both call -- see `apps/pipeline/CLAUDE.md`)
+  **now calls `optimizeAllVariants` instead of `optimizeBothDirections`**,
+  so every whole-window result -- preset range or custom anchor -- gets
+  computed off the same one shared `OptimizerState` per window, all 4
+  direction x instrument-set combinations at once, exactly like issue
+  #13's own `buildWindowResults` already did before this merge (which,
+  before the merge, called `optimizeAllVariants` directly rather than
+  going through this shared helper at all -- issue #11's
+  `computeWindowOptimization` didn't exist yet on issue #13's own branch).
+- **`buildCustomWindowResults` also gained the same per-anchor try/catch
+  containment `buildWindowResults` already has** (see
+  `apps/pipeline/CLAUDE.md`'s "Code review follow-up: issue #13
+  short-selling PR" section) -- a genuinely new correctness need this
+  merge surfaced, not carried over from either branch alone: once a
+  custom anchor's window is solved via the same `optimizeAllVariants` a
+  preset range's is, it's exposed to the identical short-payoff-overflow
+  risk (see "Short-selling mode" above), and with up to ~252 anchors
+  computed per run, letting one anchor's overflow abort every other
+  already-computable anchor would have been a much larger regression than
+  it would be for just the 2 window ranges.

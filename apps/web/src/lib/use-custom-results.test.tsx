@@ -1,21 +1,17 @@
-import {
-  RESULTS_SCHEMA_VERSION,
-  type PrecomputedResult,
-  type PresetRange,
-} from "@hadiknowntrades/core";
+import { RESULTS_SCHEMA_VERSION, type CustomWindowResult } from "@hadiknowntrades/core";
 import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { useResults } from "./use-results";
+import { useCustomResults } from "./use-custom-results";
 
-function fixtureResult(): PrecomputedResult {
+function fixtureResult(): CustomWindowResult {
   return {
     schemaVersion: RESULTS_SCHEMA_VERSION,
-    model: "window",
-    range: "1Y",
+    model: "custom-window",
+    anchorMonth: "2019-03",
     generatedAt: "2026-08-21T19:50:21.468Z",
     dataAsOf: "2026-08-21",
-    startDate: "2025-08-21",
+    startDate: "2019-03-01",
     endDate: "2026-08-21",
     maxTrades: 3,
     startingCapital: 20,
@@ -29,7 +25,7 @@ function fixtureResult(): PrecomputedResult {
   };
 }
 
-describe("useResults", () => {
+describe("useCustomResults", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
   });
@@ -38,9 +34,16 @@ describe("useResults", () => {
     vi.unstubAllGlobals();
   });
 
-  it("starts in the loading state", () => {
+  it("returns null (no fetch) when anchor is null", () => {
+    const { result } = renderHook(() => useCustomResults(null));
+
+    expect(result.current).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("starts in the loading state when anchor is non-null", () => {
     vi.mocked(fetch).mockReturnValue(new Promise(() => {})); // never resolves
-    const { result } = renderHook(() => useResults("1Y"));
+    const { result } = renderHook(() => useCustomResults("2019-03"));
 
     expect(result.current).toEqual({ status: "loading" });
   });
@@ -49,7 +52,7 @@ describe("useResults", () => {
     const data = fixtureResult();
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(data), { status: 200 }));
 
-    const { result } = renderHook(() => useResults("1Y"));
+    const { result } = renderHook(() => useCustomResults("2019-03"));
 
     await waitFor(() => expect(result.current?.status).toBe("success"));
     expect(result.current).toEqual({ status: "success", data });
@@ -58,11 +61,11 @@ describe("useResults", () => {
   it("transitions to error with the API's error/message shape on a non-2xx response", async () => {
     const body = {
       error: "not_found",
-      message: 'No precomputed results are available yet for range "1Y".',
+      message: 'No precomputed results are available for the custom start date "2019-03".',
     };
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(body), { status: 404 }));
 
-    const { result } = renderHook(() => useResults("1Y"));
+    const { result } = renderHook(() => useCustomResults("2019-03"));
 
     await waitFor(() => expect(result.current?.status).toBe("error"));
     expect(result.current).toEqual({ status: "error", httpStatus: 404, ...body });
@@ -71,38 +74,51 @@ describe("useResults", () => {
   it("transitions to a network_error when the fetch itself rejects", async () => {
     vi.mocked(fetch).mockRejectedValue(new Error("Failed to fetch"));
 
-    const { result } = renderHook(() => useResults("1Y"));
+    const { result } = renderHook(() => useCustomResults("2019-03"));
 
     await waitFor(() => expect(result.current?.status).toBe("error"));
     expect(result.current).toMatchObject({ status: "error", error: "network_error" });
   });
 
-  it("requests the range-specific endpoint", async () => {
+  it("requests the anchor-specific endpoint", async () => {
     vi.mocked(fetch).mockResolvedValue(
       new Response(JSON.stringify(fixtureResult()), { status: 200 }),
     );
 
-    renderHook(() => useResults("MAX"));
+    renderHook(() => useCustomResults("2019-03"));
 
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/results?range=MAX"));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/results?anchor=2019-03"));
   });
 
-  it("re-fetches and resets to loading when the range changes", async () => {
+  it("re-fetches and resets to loading when the anchor changes", async () => {
     vi.mocked(fetch).mockResolvedValue(
       new Response(JSON.stringify(fixtureResult()), { status: 200 }),
     );
 
     const { result, rerender } = renderHook(
-      ({ range }: { range: PresetRange }) => useResults(range),
-      {
-        initialProps: { range: "1Y" },
-      },
+      ({ anchor }: { anchor: string | null }) => useCustomResults(anchor),
+      { initialProps: { anchor: "2019-03" } },
     );
     await waitFor(() => expect(result.current?.status).toBe("success"));
 
-    rerender({ range: "5Y" as const });
+    rerender({ anchor: "2020-01" });
     expect(result.current).toEqual({ status: "loading" });
 
-    await waitFor(() => expect(fetch).toHaveBeenLastCalledWith("/api/results?range=5Y"));
+    await waitFor(() => expect(fetch).toHaveBeenLastCalledWith("/api/results?anchor=2020-01"));
+  });
+
+  it("resets to null (stops fetching) when the anchor becomes null", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify(fixtureResult()), { status: 200 }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ anchor }: { anchor: string | null }) => useCustomResults(anchor),
+      { initialProps: { anchor: "2019-03" } as { anchor: string | null } },
+    );
+    await waitFor(() => expect(result.current?.status).toBe("success"));
+
+    rerender({ anchor: null });
+    expect(result.current).toBeNull();
   });
 });
