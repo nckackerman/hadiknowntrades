@@ -13,8 +13,16 @@ import { getDailyGuess, saveDailyGuess } from "./daily-guess-storage";
 interface UseDailyGuessResult {
   /** The user's stored guess for `date` under `range`, or `null` if they haven't guessed it yet. */
   guess: number | null;
-  /** Records `value` as the guess for `date` under `range` and reflects it immediately, without waiting for a re-read from storage. */
-  submitGuess: (value: number) => void;
+  /**
+   * The starting capital that was in effect when `guess` was submitted
+   * (issue #15's effectiveStartingCapital at that moment), or `null`
+   * alongside `guess` when nothing's been guessed yet. Lets a caller
+   * rescale the guess to whatever starting capital is in effect *now* if
+   * it's since changed -- see ResultsPanel.tsx's "You guessed" line.
+   */
+  guessStartingCapital: number | null;
+  /** Records `value` (made while the prompt showed `startingCapital`) as the guess for `date` under `range` and reflects it immediately, without waiting for a re-read from storage. */
+  submitGuess: (value: number, startingCapital: number) => void;
 }
 
 /**
@@ -42,17 +50,21 @@ interface UseDailyGuessResult {
  */
 export function useDailyGuess(range: PresetRange, date: string): UseDailyGuessResult {
   const [tracked, setTracked] = useState({ range, date });
-  const [guess, setGuess] = useState<number | null>(() => getDailyGuess(range, date));
+  const [stored, setStored] = useState(() => getDailyGuess(range, date));
 
   if (range !== tracked.range || date !== tracked.date) {
     setTracked({ range, date });
-    setGuess(getDailyGuess(range, date));
+    setStored(getDailyGuess(range, date));
   }
 
-  function submitGuess(value: number) {
-    saveDailyGuess(range, date, value);
-    setGuess(value);
+  function submitGuess(value: number, startingCapital: number) {
+    saveDailyGuess(range, date, value, startingCapital);
+    setStored({ guess: value, startingCapital });
   }
 
-  return { guess, submitGuess };
+  return {
+    guess: stored?.guess ?? null,
+    guessStartingCapital: stored?.startingCapital ?? null,
+    submitGuess,
+  };
 }
