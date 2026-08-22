@@ -252,6 +252,73 @@ separator check), the single shared place this detection happens.
 check -- a real duplication caught in code review before this note was
 written; don't reintroduce a second copy of the check.
 
+## Render-crash boundaries: `app/error.tsx` + `app/global-error.tsx` (issue #46)
+
+Two files, two tiers, together giving full-tree coverage -- neither one
+alone catches everything:
+
+- **`app/error.tsx`** catches render-time throws that `useResults`'s
+  fetch-only state machine never sees (see the "Two result models" note
+  above and `use-results.ts`) -- it wraps `page.tsx` (and everything
+  under it) in a React error boundary Next installs automatically, per
+  the App Router `error.js` file convention.
+- **`app/global-error.tsx`** exists because `error.js` explicitly does
+  **not** wrap the `layout.js`/`template.js` in its own segment (see
+  `node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/error.md`'s
+  own "It does not wrap the layout.js ... To handle errors in the root
+  layout, use global-error.js"). A throw inside `layout.tsx` itself (its
+  `next/font/google` calls, its own JSX) would fall through `error.tsx`
+  entirely and hit Next's default unstyled overlay -- `global-error.tsx`
+  is the dedicated catch for exactly that gap, one directory, sibling to
+  `error.tsx` and `layout.tsx`.
+
+A few things worth knowing before touching either:
+
+- **`error.js`'s fallback component receives both `reset` and `retry`**,
+  not just `reset` (confirmed straight from
+  `node_modules/next/dist/client/components/error-boundary.d.ts`'s
+  `ErrorInfo` type, not the docs prose alone -- `retry` only stabilized
+  in Next 16.3.0, so anything in training data or older blog posts that
+  only mentions `reset` predates it). The official guidance is to prefer
+  `retry()` "in most cases" since it re-fetches the segment before
+  re-rendering; both files here deliberately still use `reset()` instead,
+  since a render-time throw is a client-side bug in already-fetched
+  data, not a stale-fetch problem `retry`'s re-fetch would help with.
+  `global-error.tsx` gets the same `ErrorInfo` shape (`error`/`reset`/
+  `retry`) -- it's the same underlying boundary mechanism, just installed
+  one level higher, around the root layout instead of around `page.tsx`.
+- `global-error.tsx` **must render its own `<html>`/`<body>`** -- it
+  replaces the root layout entirely when it fires, so there's no outer
+  `layout.tsx` left to supply them. Per Next's own docs, it also doesn't
+  get the app's global styles/fonts for free ("global-error and the
+  built-in 500 page render their own document and do not include your
+  global styles"). This file's approach: no import of `./globals.css` or
+  `next/font` at all -- inline `style` props plus one small `<style>`
+  tag for the `prefers-color-scheme: dark` swap, with the actual color
+  values hand-copied from `globals.css`'s tokens rather than referenced
+  (there's no shared `:root` to reference into). If `globals.css`'s
+  `--status-critical`/`--background`/etc. values ever change, update the
+  copies in `global-error.tsx` too -- nothing enforces that they stay in
+  sync.
+- `next build`'s own type-checking pass is happy with `error.tsx` as-is,
+  but running `tsc --noEmit` directly (skipping `next typegen`) fails on
+  an unrelated pre-existing error in `layout.tsx` (`Cannot find name
+'LayoutProps'` -- a Next-generated ambient type). Always run the
+  package's own `pnpm run typecheck` script (which runs `next typegen`
+  first), not a bare `tsc --noEmit`, or this looks like a bug the new
+  code introduced when it isn't one.
+- `error.tsx` is tested by mounting a small test-local class component
+  that mirrors Next's real `ErrorBoundaryHandler` shape (catch a throw,
+  hand `error`/`reset` to the fallback) around a deliberately-throwing
+  child -- see `app/error.test.tsx`. Next's actual boundary isn't
+  practically testable under RTL/jsdom, so this mirrors its contract
+  instead of exercising the real one; if that ever changes, prefer
+  driving the real boundary. `global-error.test.tsx` skips that
+  indirection and just renders `<GlobalError>` directly with hand-built
+  `error`/`reset` props -- there's no render-time throw to catch here
+  (it's a plain fallback component, same as `error.tsx`'s own
+  `ErrorPage`), so there's nothing the fake boundary would add.
+
 ## Chart pointer interaction: tap support (issue #44)
 
 `PortfolioChart`'s hover tooltip/crosshair used to only be reachable by
