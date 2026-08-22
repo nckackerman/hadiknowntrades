@@ -534,6 +534,78 @@ describe("runPipeline", () => {
       expect(threeMonth.skippedTickers).toEqual(["AAPL"]);
       expect(oneMonth.skippedTickers).toEqual([]);
     });
+
+    it("keeps whichever granularity's day result is actually better -- does NOT blindly prefer 5-minute data when it has worse ticker coverage than 60-minute for the same day (code review fix: a real bug in the original merge)", async () => {
+      // Ticker B's much better trade only appears in the 60-minute
+      // fixture for this day (simulating B's 5-minute fetch failing for
+      // just this ticker/day while its 60-minute fetch succeeded).
+      // Ticker A appears in both, with a smaller gain in each.
+      const intradayFixture = new Map<string, IntradayBar[]>([
+        ["A", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 20)]], // 2x
+        ["B", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 100)]], // 10x -- the best trade, 60-minute only
+      ]);
+      const fiveMinuteFixture = new Map<string, IntradayBar[]>([
+        // A's 5-minute number is even better than its own 60-minute one
+        // (2.5x vs 2x) -- but B is entirely missing from this fetch, so
+        // the 5-minute day's *best achievable* outcome (2.5x) is still
+        // far worse than the 60-minute day's (10x, via B).
+        ["A", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 25)]],
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["A", "B"],
+        fetchDailyCloses: noDailyData,
+        fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+        fetchFiveMinuteBars: async (symbol) => fiveMinuteFixture.get(symbol) ?? [],
+        store,
+        asOf,
+      }).catch(() => {});
+
+      const threeMonth = JSON.parse(store.objects.get("results/3M.json")!);
+      const day = threeMonth.days.find(
+        (d: { date: string }) => d.date === toDateString(daysBack(5)(asOf)),
+      );
+
+      // The 60-minute day (endingBalance 200, via ticker B) beats the
+      // 5-minute-only day (endingBalance 50, ticker A only) -- the merge
+      // must keep the 60-minute version despite 5-minute data existing
+      // for this exact date.
+      expect(day.barIntervalMinutes).toBe(60);
+      expect(day.trades[0].ticker).toBe("B");
+      expect(day.endingBalance / day.startingCapital).toBeCloseTo(10, 6);
+    });
+
+    it("3M's dataAsOf reflects the more recent of the 60-minute and 5-minute fetches, not just the 60-minute one (code review fix)", async () => {
+      const intradayFixture = new Map<string, IntradayBar[]>([
+        ["AAPL", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(3), "09:30:00", 20)]],
+      ]);
+      // The 5-minute fetch found data all the way up through "today"
+      // (daysBack(0)), more recent than the 60-minute fetch's most
+      // recent bar (daysBack(3)).
+      const fiveMinuteFixture = new Map<string, IntradayBar[]>([
+        ["AAPL", [bar(daysBack(0), "09:30:00", 10), bar(daysBack(0), "10:30:00", 15)]],
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: noDailyData,
+        fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+        fetchFiveMinuteBars: async (symbol) => fiveMinuteFixture.get(symbol) ?? [],
+        store,
+        asOf,
+      }).catch(() => {});
+
+      const threeMonth = JSON.parse(store.objects.get("results/3M.json")!);
+      const oneMonth = JSON.parse(store.objects.get("results/1M.json")!);
+
+      // 3M folds in the 5-minute fetch's freshness...
+      expect(threeMonth.dataAsOf).toBe(toDateString(daysBack(0)(asOf)));
+      // ...but 1M never reads 5-minute data, so it stays anchored to the
+      // 60-minute fetch's own (older) most-recent date.
+      expect(oneMonth.dataAsOf).toBe(toDateString(daysBack(3)(asOf)));
+    });
   });
 
   it("skips a ticker on TickerNotFoundError and continues, recording it as skipped", async () => {

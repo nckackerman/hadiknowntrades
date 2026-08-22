@@ -246,16 +246,55 @@ function daysBeforeUtc(date: Date, days: number): Date {
 }
 
 /**
+ * Drops any bar past `endDateString` (same "don't trust data past what
+ * was requested" reasoning as findMaxDate above) and any ticker left
+ * with zero bars afterward. Shared between the 60-minute and 5-minute
+ * histories in buildIntradayResults (issue #30 -- factored out of what
+ * was originally two copy-pasted copies of this loop, one per
+ * granularity, caught in code review).
+ */
+function capHistoryToEndDate(
+  history: Map<string, IntradayBar[]>,
+  endDateString: string,
+): Map<string, IntradayBar[]> {
+  const capped = new Map<string, IntradayBar[]>();
+  for (const [ticker, series] of history) {
+    const sliced = series.filter((bar) => localDatePart(bar.date) <= endDateString);
+    if (sliced.length > 0) capped.set(ticker, sliced);
+  }
+  return capped;
+}
+
+/**
+ * The later (or equal) of two YYYY-MM-DD date strings, treating `null`
+ * as "no value" -- used to fold a granularity override's own data
+ * freshness into a range's `dataAsOf` (issue #30). Plain string
+ * comparison is safe here since both operands are already
+ * zero-padded ISO date strings.
+ */
+function maxDateString(a: string, b: string | null): string {
+  return b !== null && b > a ? b : a;
+}
+
+/**
  * Merges two IntradayDayResult arrays produced by separate
  * optimizeIntradayDays calls over different bar granularities (issue
  * #30, used only for the 3M range -- see "Mixed-granularity 3M
- * assembly" in packages/core/CLAUDE.md): `overrideDays` (5-minute) wins
- * for any date it covers, falling back to `primaryDays` (60-minute) for
- * every other date. No explicit date-boundary check is needed here --
- * `overrideDays` can only ever contain a date within the 5-minute
- * fetch's lookback window by construction (there's no 5-minute data
- * further back to have produced a day for), so whichever dates show up
- * in it are, by definition, the ones that should win.
+ * assembly" in packages/core/CLAUDE.md). For a date only one array
+ * covers, that array's day wins by default. For a date **both** cover,
+ * this does NOT unconditionally prefer the finer (5-minute) granularity
+ * -- a real bug caught in code review: the two granularities can see
+ * different ticker universes for the same day (e.g. a ticker's
+ * 5-minute fetch failed while its 60-minute fetch succeeded), so the
+ * 5-minute day can legitimately have *worse* coverage, and therefore a
+ * worse achievable outcome, than the 60-minute day for that same date
+ * -- silently taking the 5-minute version regardless would make 3M's
+ * result strictly worse than what pre-#30 (60-minute-only) would have
+ * shown for that day, undermining this app's whole "best possible
+ * outcome" premise. Instead: when both cover a date, keep whichever
+ * day's `endingBalance` is actually higher (both were run with the
+ * same `startingCapital`, so ending balance is directly comparable as
+ * "the better outcome").
  */
 function mergeDaysByGranularity(
   primaryDays: IntradayDayResult[],
@@ -263,7 +302,12 @@ function mergeDaysByGranularity(
 ): IntradayDayResult[] {
   const byDate = new Map<string, IntradayDayResult>();
   for (const day of primaryDays) byDate.set(day.date, day);
-  for (const day of overrideDays) byDate.set(day.date, day);
+  for (const day of overrideDays) {
+    const existing = byDate.get(day.date);
+    if (!existing || day.endingBalance > existing.endingBalance) {
+      byDate.set(day.date, day);
+    }
+  }
   return [...byDate.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
@@ -378,6 +422,28 @@ function buildWindowResults({
   });
 }
 
+/**
+ * A per-range override of the pure 60-minute day results, keyed by
+ * PresetRange (issue #30 -- 3M is the first entry; see the comment on
+ * `granularityOverrides` in buildIntradayResults for why this is a
+ * lookup rather than a hardcoded `range === "3M"` check). Everything a
+ * range needs beyond the base 60-minute data lives together here so
+ * adding another range's override later (e.g. issue #29's 1-minute
+ * bars for 1M, landing concurrently with this PR -- check for a
+ * conflict in this exact area if both exist) means adding one map
+ * entry, not a third bespoke branch alongside this one.
+ */
+interface GranularityOverride {
+  /** This range's actual per-day results, replacing the pure 60-minute array wholesale (not merged per-range further -- mergeDaysByGranularity already resolved day-by-day which granularity's result is better). */
+  days: IntradayDayResult[];
+  /** Additional history map(s), alongside the base 60-minute one, whose tickers should count toward this range's universeSize. */
+  extraHistories: Map<string, IntradayBar[]>[];
+  /** Additional per-ticker skips, alongside the base intraday fetch's, that should count toward this range's skippedTickers. */
+  extraSkipped: readonly string[];
+  /** The most recent date found in the extra data source(s), if any -- folded into this range's dataAsOf via maxDateString so a day sourced only from the override data can't make dataAsOf understate this range's actual freshness. */
+  extraDataAsOf: string | null;
+}
+
 interface BuildIntradayResultsOptions {
   history: Map<string, IntradayBar[]>;
   /**
@@ -391,6 +457,8 @@ interface BuildIntradayResultsOptions {
    */
   fiveMinuteHistory: Map<string, IntradayBar[]>;
   dataAsOf: string;
+  /** The most recent date found in the 5-minute history specifically, or null -- see GranularityOverride.extraDataAsOf. */
+  fiveMinuteDataAsOf: string | null;
   asOf: Date;
   endDateString: string;
   generatedAt: string;
@@ -405,6 +473,7 @@ function buildIntradayResults({
   history,
   fiveMinuteHistory,
   dataAsOf,
+  fiveMinuteDataAsOf,
   asOf,
   endDateString,
   generatedAt,
@@ -422,11 +491,7 @@ function buildIntradayResults({
   // running the DP separately per range (as an earlier version of this
   // function did) redundantly re-solved the same day up to 3 times,
   // since each range is a strict subset of the next.
-  const cappedHistory = new Map<string, IntradayBar[]>();
-  for (const [ticker, series] of history) {
-    const sliced = series.filter((bar) => localDatePart(bar.date) <= endDateString);
-    if (sliced.length > 0) cappedHistory.set(ticker, sliced);
-  }
+  const cappedHistory = capHistoryToEndDate(history, endDateString);
   const sixtyMinuteDays = optimizeIntradayDays(cappedHistory, {
     startingCapital,
     maxTradesPerDay,
@@ -434,23 +499,37 @@ function buildIntradayResults({
   });
 
   // 5-minute bars (issue #30) only ever inform the 3M range -- 1M/1Y
-  // always read sixtyMinuteDays directly, below. Capped the same way as
-  // the 60-minute history, for the same reason.
-  const cappedFiveMinuteHistory = new Map<string, IntradayBar[]>();
-  for (const [ticker, series] of fiveMinuteHistory) {
-    const sliced = series.filter((bar) => localDatePart(bar.date) <= endDateString);
-    if (sliced.length > 0) cappedFiveMinuteHistory.set(ticker, sliced);
-  }
+  // always read sixtyMinuteDays directly, via the default (no override)
+  // case below. Capped the same way as the 60-minute history.
+  const cappedFiveMinuteHistory = capHistoryToEndDate(fiveMinuteHistory, endDateString);
   const fiveMinuteDays = optimizeIntradayDays(cappedFiveMinuteHistory, {
     startingCapital,
     maxTradesPerDay,
     barIntervalMinutes: 5,
   });
-  // 3M's actual per-day results: 5-minute bars for whichever recent days
-  // have them, 60-minute bars for every older day in the window. If
-  // fiveMinuteDays is empty (fetch failure or no data), this is just
-  // sixtyMinuteDays unchanged -- the graceful-degradation path.
+  // 3M's actual per-day results: whichever of the two granularities
+  // produced the better outcome for each day (see mergeDaysByGranularity
+  // -- NOT an unconditional "5-minute always wins"). If fiveMinuteDays is
+  // empty (fetch failure or no data), this is just sixtyMinuteDays
+  // unchanged -- the graceful-degradation path.
   const threeMonthDays = mergeDaysByGranularity(sixtyMinuteDays, fiveMinuteDays);
+
+  // Centralizes every range's deviation from the base 60-minute data in
+  // one lookup instead of repeated `range === "3M"` branches (code
+  // review feedback on issue #30) -- a future granularity override
+  // (e.g. 1-minute bars for 1M, issue #29) adds one entry here rather
+  // than a third bespoke branch.
+  const granularityOverrides = new Map<PresetRange, GranularityOverride>([
+    [
+      "3M",
+      {
+        days: threeMonthDays,
+        extraHistories: [cappedFiveMinuteHistory],
+        extraSkipped: fiveMinuteSkipped,
+        extraDataAsOf: fiveMinuteDataAsOf,
+      },
+    ],
+  ]);
 
   return INTRADAY_RANGES.map((range) => {
     // Never null: presetRangeStartDate only returns null for "MAX",
@@ -458,9 +537,8 @@ function buildIntradayResults({
     const startDate = presetRangeStartDate(range, asOf)!;
     const startDateString = toDateString(startDate);
 
-    // Only 3M ever reads the mixed-granularity array; 1M/1Y are
-    // unaffected by issue #30 and always read the pure 60-minute one.
-    const sourceDays = range === "3M" ? threeMonthDays : sixtyMinuteDays;
+    const override = granularityOverrides.get(range);
+    const sourceDays = override?.days ?? sixtyMinuteDays;
     const days = sourceDays.filter(
       (day) => day.date >= startDateString && day.date <= endDateString,
     );
@@ -468,13 +546,12 @@ function buildIntradayResults({
     // universeSize for this specific range: tickers with at least one
     // bar inside this range's window -- recomputed per range (cheap, no
     // DP) since it does legitimately vary by range even though `days`
-    // itself is now shared/sliced rather than recomputed. For 3M
-    // specifically, this is a union across both granularities' history:
-    // a ticker present in only one of the two datasets (e.g. it failed
-    // the 5-minute fetch but succeeded the 60-minute one) still
-    // legitimately contributed to some of 3M's days.
-    const historiesForRange =
-      range === "3M" ? [cappedHistory, cappedFiveMinuteHistory] : [cappedHistory];
+    // itself is now shared/sliced rather than recomputed. A range with
+    // an override unions across its extra history source(s) too: a
+    // ticker present in only one of the datasets (e.g. it failed the
+    // 5-minute fetch but succeeded the 60-minute one) still legitimately
+    // contributed to some of that range's days.
+    const historiesForRange = [cappedHistory, ...(override?.extraHistories ?? [])];
     const tickersInRange = new Set<string>();
     for (const source of historiesForRange) {
       for (const [ticker, series] of source) {
@@ -486,22 +563,29 @@ function buildIntradayResults({
       }
     }
 
-    // 5-minute-specific skips only count toward 3M's own skippedTickers
-    // -- a ticker missing only from the 5-minute fetch doesn't affect
-    // 1M/1Y (which never read 5-minute data) or 3M's older, 60-minute-
-    // sourced days, but it is genuinely absent from 3M's recent days
-    // (see the module-level comment on why the merge swaps in the
-    // 5-minute day's whole tickers-considered set, not a per-ticker
-    // splice), so it's worth surfacing there.
-    const rangeSkipped =
-      range === "3M" ? [...new Set([...skipped, ...fiveMinuteSkipped])] : [...skipped];
+    // An override's own skips only count toward that range's
+    // skippedTickers -- a ticker missing only from the 5-minute fetch
+    // doesn't affect 1M/1Y (which never read 5-minute data), but it is
+    // genuinely absent from 3M's recent (5-minute-sourced) days (see
+    // mergeDaysByGranularity's doc comment on why a day's whole
+    // tickers-considered set can shift, not a per-ticker splice), so
+    // it's worth surfacing there.
+    const rangeSkipped = [...new Set([...skipped, ...(override?.extraSkipped ?? [])])];
+
+    // dataAsOf for this range: the later of the base intraday fetch's
+    // freshness and this range's own override data source, if any --
+    // a real bug caught in code review: 3M's days can include one
+    // sourced only from the 5-minute fetch, so dataAsOf must reflect
+    // that fetch's freshness too, not just the 60-minute one's, or it
+    // can understate how fresh this range's own data actually is.
+    const rangeDataAsOf = maxDateString(dataAsOf, override?.extraDataAsOf ?? null);
 
     return {
       schemaVersion: RESULTS_SCHEMA_VERSION,
       model: "intraday-daily",
       range,
       generatedAt,
-      dataAsOf,
+      dataAsOf: rangeDataAsOf,
       endDate: endDateString,
       maxTradesPerDay,
       startingCapital,
@@ -613,6 +697,10 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         // special-casing needed here.
         fiveMinuteHistory: fiveMinuteFetch.history,
         dataAsOf: intradayFetch.dataAsOf!,
+        // Also passed through regardless of fiveMinuteFetch.failureReason
+        // -- on abort/no-data this is null, and maxDateString(dataAsOf,
+        // null) is just dataAsOf unchanged.
+        fiveMinuteDataAsOf: fiveMinuteFetch.dataAsOf,
         asOf,
         endDateString,
         generatedAt,

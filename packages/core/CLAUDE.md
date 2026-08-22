@@ -194,12 +194,21 @@ separate `optimizeIntradayDays` calls, merged**, not from a single
 mixed-granularity fetch or DP: one over the existing 60-minute-bar
 history (same fetch already used for 1M/1Y), one over a second
 5-minute-bar fetch scoped to the last 59 days. `apps/pipeline`'s
-`buildIntradayResults` merges the two day-result arrays keyed by date,
-letting the 5-minute version win wherever it exists (it can only exist
-for a day within the last 59 days, by construction of what was
-fetched) and falling back to the 60-minute version for every older day
-in the 3M window. 1M and 1Y are untouched -- they only ever read the
-60-minute day-result array, never the 5-minute one.
+`buildIntradayResults` merges the two day-result arrays keyed by date
+via `mergeDaysByGranularity`: for a date only one array covers, that
+one wins by default; for a date **both** cover, it's NOT an
+unconditional "5-minute wins" -- it keeps whichever day's
+`endingBalance` is actually higher (both solved with the same
+`startingCapital`, so directly comparable). This matters because the
+two granularities' fetches can see different ticker universes for the
+same day (a ticker's 5-minute fetch can fail for a day its 60-minute
+fetch succeeded on), so the 5-minute day can legitimately be the
+_worse_ one -- a real correctness bug caught in code review before this
+comparison existed: unconditionally preferring 5-minute regardless of
+outcome could make 3M's result strictly worse than what 60-minute-only
+data would have shown, which cuts against this app's whole "best
+possible outcome" premise. 1M and 1Y are untouched -- they only ever
+read the 60-minute day-result array, never the 5-minute one.
 
 - `IntradayDayResult.barIntervalMinutes` (stamped by
   `optimizeIntradayDays` from `OptimizeIntradayOptions.barIntervalMinutes`,
@@ -227,11 +236,28 @@ in the 3M window. 1M and 1Y are untouched -- they only ever read the
 - Per-ticker skips accumulated by the 5-minute fetch are still merged
   into 3M's own `skippedTickers` (and the pipeline-wide summary) even
   though a 5-minute-only failure doesn't fail the run -- a ticker that
-  fails only the 5-minute fetch but succeeds the 60-minute one doesn't
-  appear at all in 3M's recent (5-minute-sourced) days, since the merge
-  swaps in the 5-minute day's _entire_ tickers-considered-that-day set,
-  not a per-ticker splice within a day -- worth surfacing as a skip even
-  though that ticker's older 3M days and its 1M/1Y results are unaffected.
+  fails only the 5-minute fetch but succeeds the 60-minute one can still
+  be missing from a day it would otherwise have won on, since a day's
+  winning granularity is picked wholesale (see the merge-correctness
+  point above), not spliced per-ticker within a day -- worth surfacing
+  as a skip even though that ticker's older 3M days and its 1M/1Y
+  results are unaffected.
+- 3M's `dataAsOf` folds in the 5-minute fetch's own freshness via
+  `maxDateString`, not just the 60-minute fetch's -- another real bug
+  caught in the same code-review pass: since 3M's merged days can
+  include one sourced only from the 5-minute fetch, using only the
+  60-minute fetch's `dataAsOf` could understate how fresh 3M's data
+  actually is, contradicting that field's own documented meaning ("the
+  actual last trading date found in the fetched data" -- see
+  `apps/pipeline/CLAUDE.md`). 1M/1Y have no such override and are
+  unaffected.
+- The per-range override (which extra history/skips/dataAsOf a range
+  folds in beyond the base 60-minute data) is centralized in one
+  `granularityOverrides: Map<PresetRange, GranularityOverride>` lookup
+  in `buildIntradayResults`, not a hardcoded `range === "3M"` branch --
+  see `apps/pipeline/CLAUDE.md`'s "5-minute path" section for why (a
+  future override, e.g. issue #29's 1-minute bars for 1M, should add a
+  map entry there rather than a parallel branch).
 - `RESULTS_SCHEMA_VERSION` was **not** bumped for this issue --
   `barIntervalMinutes` is a purely additive field on an already-versioned
   shape (`IntradayDayResult`, introduced at schema version 2 by #28), and
