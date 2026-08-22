@@ -188,6 +188,19 @@ interface Level {
 
 const NEG_INFINITY = Number.NEGATIVE_INFINITY;
 const POS_INFINITY = Number.POSITIVE_INFINITY;
+
+// The long pass's g/ratio formulas -- module-level constants (not
+// closures allocated inside computeLevel's per-ticker loop) since
+// neither captures anything ticker- or level-specific; see
+// runCandidatePass's own doc comment for what these compute.
+const longG = (price: number, prevAtNext: number): number => price * prevAtNext;
+const longRatio = (price: number, bestSuffixG: number): number => bestSuffixG / price;
+// The short pass's own formulas (issue #13) -- the reciprocal-price
+// derivation from this file's header comment: "roles of divide and
+// multiply swapped" relative to the long pass above.
+const shortG = (price: number, prevAtNext: number): number => prevAtNext / price;
+const shortRatio = (price: number, bestSuffixG: number): number => price * bestSuffixG;
+
 // Well beyond any realistic product use (the app always requests 3) --
 // exists to reject an obviously-wrong caller value (e.g. a bug passing a
 // day count instead of a trade count) before it runs an unbounded number
@@ -263,6 +276,104 @@ type Direction = "max" | "min";
  *   All four are derived from `direction` below rather than hand-copied
  *   with operators flipped, so there's exactly one place each rule lives.
  */
+/**
+ * Runs one direction-of-trade's (long or short) candidate pass for a
+ * single ticker within one DP level, mutating value[]/choice[] in place
+ * wherever this ticker's best (long or short) candidate beats the
+ * current baseline at that day. Factored out (code review follow-up to
+ * issue #13) because the short pass computeLevel originally hand-rolled
+ * here was a near-verbatim structural duplicate of the long pass --
+ * identical suffix-best/running-best/sentinel/tie-break machinery,
+ * differing only in the g/ratio formula (see gAt/ratioAt below) and the
+ * emitted TradeChoice.direction -- a real drift risk (buyIdx/sellIdx vs.
+ * an earlier draft's openIdx/coverIdx for the same conceptual slot had
+ * already diverged once between the two hand-copied blocks). One
+ * parameterized implementation now backs both, so a future edit to the
+ * shared mechanics (the suffix-best scan, the tie-break comparisons)
+ * can't be applied to only one of the two directions by accident.
+ *
+ * @param gAt g[sellIdx] (or coverIdx, for a short) -- the payoff of
+ *   closing this ticker's position on day i, given the best (worst, for
+ *   a "min" direction) remaining path (k-1 trades) starting the day
+ *   after -- `price * prevValue[i+1]` for a long (longG), `prevValue[i+1]
+ *   / price` for a short (shortG); see this file's header comment for
+ *   the reciprocal-price derivation.
+ * @param ratioAt The candidate ratio for opening on day d, given that
+ *   day's price and the best suffix g-value starting the day after --
+ *   `bestSuffixG / price` for a long (longRatio), `price * bestSuffixG`
+ *   for a short (shortRatio) -- dividing vs. multiplying by the open
+ *   price is exactly the "roles of divide and multiply swapped" this
+ *   file's header comment describes.
+ */
+function runCandidatePass(
+  T: number,
+  prices: (number | null)[],
+  prevValue: number[],
+  value: number[],
+  choice: (TradeChoice | null)[],
+  ticker: string,
+  tradeDirection: TradeDirection,
+  worstSentinel: number,
+  isBetterOrEqual: (a: number, b: number) => boolean,
+  isStrictlyBetter: (a: number, b: number) => boolean,
+  gAt: (price: number, prevAtNext: number) => number,
+  ratioAt: (price: number, bestSuffixG: number) => number,
+): void {
+  // g[sellIdx] = value of closing this ticker on sellIdx -- see gAt's
+  // own doc comment above.
+  // All array accesses below are within statically-known loop bounds
+  // against arrays pre-sized to exactly T (or T+1) elements — genuinely
+  // safe, just not provable to noUncheckedIndexedAccess, hence the `!`.
+  const g = new Array<number>(T);
+  for (let i = 0; i < T; i++) {
+    const p = prices[i]!;
+    g[i] = p === null ? worstSentinel : gAt(p, prevValue[i + 1]!);
+  }
+
+  // suffixBestG[i] = best(g[i..T-1]) -- max for direction="max", min for
+  // "min" -- with the sellIdx that achieves it.
+  const suffixBestG = new Array<number>(T + 1).fill(worstSentinel);
+  const suffixBestSellIdx = new Array<number>(T + 1).fill(-1);
+  for (let i = T - 1; i >= 0; i--) {
+    if (isBetterOrEqual(g[i]!, suffixBestG[i + 1]!)) {
+      suffixBestG[i] = g[i]!;
+      suffixBestSellIdx[i] = i;
+    } else {
+      suffixBestG[i] = suffixBestG[i + 1]!;
+      suffixBestSellIdx[i] = suffixBestSellIdx[i + 1]!;
+    }
+  }
+
+  // runningBest[d] = best (max, or min for "min") over buyIdx >= d of
+  // (candidate ratio buying on buyIdx). candidateRatio for a given
+  // buyIdx is only ever needed once, right here, so it's computed
+  // inline rather than staged into its own array first.
+  let runningBestValue = worstSentinel;
+  let runningBestBuyIdx = -1;
+  let runningBestSellIdx = -1;
+  for (let d = T - 1; d >= 0; d--) {
+    const p = prices[d]!;
+    const bestSellValue = suffixBestG[d + 1]!;
+    if (p !== null && bestSellValue !== worstSentinel) {
+      const candidateRatio = ratioAt(p, bestSellValue);
+      if (isBetterOrEqual(candidateRatio, runningBestValue)) {
+        runningBestValue = candidateRatio;
+        runningBestBuyIdx = d;
+        runningBestSellIdx = suffixBestSellIdx[d + 1]!;
+      }
+    }
+    if (runningBestBuyIdx !== -1 && isStrictlyBetter(runningBestValue, value[d]!)) {
+      value[d] = runningBestValue;
+      choice[d] = {
+        ticker,
+        direction: tradeDirection,
+        buyIdx: runningBestBuyIdx,
+        sellIdx: runningBestSellIdx,
+      };
+    }
+  }
+}
+
 function computeLevel(
   T: number,
   sortedTickers: [string, (number | null)[]][],
@@ -288,130 +399,43 @@ function computeLevel(
   }
 
   for (const [ticker, prices] of sortedTickers) {
-    // g[sellIdx] = value of selling this ticker on sellIdx, given the
-    // best (worst, for direction="min") remaining path (k-1 trades)
-    // starting the day after.
-    // All array accesses below are within statically-known loop bounds
-    // against arrays pre-sized to exactly T (or T+1) elements — genuinely
-    // safe, just not provable to noUncheckedIndexedAccess, hence the `!`.
-    const g = new Array<number>(T);
-    for (let i = 0; i < T; i++) {
-      const p = prices[i]!;
-      g[i] = p === null ? worstSentinel : p * prevValue[i + 1]!;
-    }
-
-    // suffixBestG[i] = best(g[i..T-1]) -- max for direction="max", min for
-    // "min" -- with the sellIdx that achieves it.
-    const suffixBestG = new Array<number>(T + 1).fill(worstSentinel);
-    const suffixBestSellIdx = new Array<number>(T + 1).fill(-1);
-    for (let i = T - 1; i >= 0; i--) {
-      if (isBetterOrEqual(g[i]!, suffixBestG[i + 1]!)) {
-        suffixBestG[i] = g[i]!;
-        suffixBestSellIdx[i] = i;
-      } else {
-        suffixBestG[i] = suffixBestG[i + 1]!;
-        suffixBestSellIdx[i] = suffixBestSellIdx[i + 1]!;
-      }
-    }
-
-    // runningBest[d] = best (max, or min for "min") over buyIdx >= d of
-    // (candidate ratio buying on buyIdx). candidateRatio for a given
-    // buyIdx is only ever needed once, right here, so it's computed
-    // inline rather than staged into its own array first.
-    let runningBestValue = worstSentinel;
-    let runningBestBuyIdx = -1;
-    let runningBestSellIdx = -1;
-    for (let d = T - 1; d >= 0; d--) {
-      const p = prices[d]!;
-      const bestSellValue = suffixBestG[d + 1]!;
-      if (p !== null && bestSellValue !== worstSentinel) {
-        const candidateRatio = bestSellValue / p;
-        if (isBetterOrEqual(candidateRatio, runningBestValue)) {
-          runningBestValue = candidateRatio;
-          runningBestBuyIdx = d;
-          runningBestSellIdx = suffixBestSellIdx[d + 1]!;
-        }
-      }
-      if (runningBestBuyIdx !== -1 && isStrictlyBetter(runningBestValue, value[d]!)) {
-        value[d] = runningBestValue;
-        choice[d] = {
-          ticker,
-          direction: "long",
-          buyIdx: runningBestBuyIdx,
-          sellIdx: runningBestSellIdx,
-        };
-      }
-    }
+    runCandidatePass(
+      T,
+      prices,
+      prevValue,
+      value,
+      choice,
+      ticker,
+      "long",
+      worstSentinel,
+      isBetterOrEqual,
+      isStrictlyBetter,
+      longG,
+      longRatio,
+    );
 
     // Issue #13: a second, short-candidate pass for this same ticker,
-    // appended immediately after the long pass above and only run when
-    // includeShorts is set. Structurally identical to the long pass --
-    // same suffixBest-then-O(1)-lookup shape, same worstSentinel/
-    // isBetterOrEqual/isStrictlyBetter primitives -- just built from a
-    // second g array (gShort) using the reciprocal-price ratio
-    // P[open]/P[close] instead of P[close]/P[open] (see this file's own
-    // header comment for the derivation of why that's separable the same
-    // way). Because this runs strictly after the long pass has already
-    // updated value[d]/choice[d] for this ticker, an exact tie between a
-    // long and a short candidate resolves in the long's favor -- see
-    // includeShorts's own doc comment above.
+    // run immediately after the long pass above and only when
+    // includeShorts is set -- so this same ticker's value[]/choice[] is
+    // already fully updated by its own long pass before its short pass
+    // (if any) even starts, which is exactly what makes an exact tie
+    // between a long and a short candidate resolve in the long's favor
+    // (see includeShorts's own doc comment above).
     if (includeShorts) {
-      // gShort[i] = payoff of covering this ticker's short on day i,
-      // given the best (worst, for direction="min") remaining path (k-1
-      // trades) starting the day after -- mirrors g[] above, but as a
-      // multiplier applied to the *close* price's contribution rather
-      // than the open's (see the runningBestShort loop below for where
-      // the open price itself enters).
-      const gShort = new Array<number>(T);
-      for (let i = 0; i < T; i++) {
-        const p = prices[i]!;
-        gShort[i] = p === null ? worstSentinel : prevValue[i + 1]! / p;
-      }
-
-      // suffixBestGShort[i] = best(gShort[i..T-1]) -- same suffix-best
-      // machinery as suffixBestG above, over the short candidate array.
-      const suffixBestGShort = new Array<number>(T + 1).fill(worstSentinel);
-      const suffixBestCoverIdx = new Array<number>(T + 1).fill(-1);
-      for (let i = T - 1; i >= 0; i--) {
-        if (isBetterOrEqual(gShort[i]!, suffixBestGShort[i + 1]!)) {
-          suffixBestGShort[i] = gShort[i]!;
-          suffixBestCoverIdx[i] = i;
-        } else {
-          suffixBestGShort[i] = suffixBestGShort[i + 1]!;
-          suffixBestCoverIdx[i] = suffixBestCoverIdx[i + 1]!;
-        }
-      }
-
-      // runningBestShortValue[d] = best (max, or min for "min") over
-      // openIdx >= d of (P[openIdx] * suffixBestGShort[openIdx+1]) --
-      // note *multiply* by the open price here, mirroring the long
-      // pass's *divide*: opening a short plays the same structural role
-      // for the reciprocal-price ratio that buying (dividing by P[buy])
-      // plays for a long.
-      let runningBestShortValue = worstSentinel;
-      let runningBestOpenIdx = -1;
-      let runningBestCoverIdx = -1;
-      for (let d = T - 1; d >= 0; d--) {
-        const p = prices[d]!;
-        const bestCoverValue = suffixBestGShort[d + 1]!;
-        if (p !== null && bestCoverValue !== worstSentinel) {
-          const candidateShortRatio = p * bestCoverValue;
-          if (isBetterOrEqual(candidateShortRatio, runningBestShortValue)) {
-            runningBestShortValue = candidateShortRatio;
-            runningBestOpenIdx = d;
-            runningBestCoverIdx = suffixBestCoverIdx[d + 1]!;
-          }
-        }
-        if (runningBestOpenIdx !== -1 && isStrictlyBetter(runningBestShortValue, value[d]!)) {
-          value[d] = runningBestShortValue;
-          choice[d] = {
-            ticker,
-            direction: "short",
-            buyIdx: runningBestOpenIdx,
-            sellIdx: runningBestCoverIdx,
-          };
-        }
-      }
+      runCandidatePass(
+        T,
+        prices,
+        prevValue,
+        value,
+        choice,
+        ticker,
+        "short",
+        worstSentinel,
+        isBetterOrEqual,
+        isStrictlyBetter,
+        shortG,
+        shortRatio,
+      );
     }
   }
 
@@ -675,6 +699,33 @@ export function optimizeBothDirections(
  * only find an equal-or-lower minimum). See results-schema.ts's
  * validatePrecomputedResult, which checks exactly this invariant on
  * every stored result.
+ *
+ * **Known, documented, bounded inefficiency (code review follow-up, not
+ * fixed -- lower priority than this codebase's other reuse/efficiency
+ * findings, and judged not clean enough to be worth fixing): the k=1
+ * level's long-candidate-pass work is computed redundantly, twice per
+ * direction, here.** `runOptimizerForDirection`'s k=1 call always starts
+ * from the identical all-ones level0.value (see that function's own
+ * comment: "Level 0 ... is always multiplier 1 regardless of
+ * direction"), and the long pass itself has no dependency on
+ * `includeShorts` -- so the long-only run's k=1 level and the long+short
+ * run's k=1 level (same `state`, same `options`, same `direction`) do
+ * byte-for-byte identical long-pass work before the long+short run's k=1
+ * additionally runs its own short pass. This redundant work is paid on
+ * every call to this function (once per window range in apps/pipeline,
+ * up to ~251x per intraday-day run) but is bounded to k=1 specifically
+ * -- levels k=2..maxTrades genuinely diverge between the two runs (each
+ * level's own prevValue already reflects whether shorts contributed at
+ * the previous level), so there's no equivalent redundancy to reclaim
+ * there. Sharing just the k=1 long pass would need
+ * `computeLevel`/`runCandidatePass` to accept an already-computed
+ * baseline level instead of always initializing value/choice fresh from
+ * `prevValue` and running the long pass inline -- judged, on balance,
+ * not clean enough to be worth the added surface area on this function's
+ * otherwise-simple single-entry-point shape for a saving bounded to one
+ * of up to `maxTrades` levels per run. Revisit if `computeLevel` is ever
+ * restructured for an unrelated reason that would make exposing that
+ * seam cheap.
  */
 export function optimizeAllVariants(
   priceSeriesByTicker: Map<string, DailyClose[]>,

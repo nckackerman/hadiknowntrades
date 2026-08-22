@@ -261,6 +261,57 @@ model.
   history in memory, not by the optimizer's own additional short-search
   state.
 
+### Code review follow-up: `computeLevel`'s long/short duplication, and `optimizeIntradayDays`' overflow containment
+
+Two findings from a post-merge review of issue #13's PR:
+
+- **`computeLevel`'s short-candidate pass used to be a near-verbatim
+  structural duplicate of the long-candidate pass immediately above it**
+  -- identical suffix-best/running-best/sentinel/tie-break machinery,
+  differing only in the g/ratio formula and field names. Factored into
+  one shared `runCandidatePass` helper, parameterized by two small
+  formula functions (`gAt`/`ratioAt` -- `longG`/`longRatio` for the long
+  pass, `shortG`/`shortRatio` for the short pass, both module-level
+  constants since neither captures per-ticker state) and a
+  `TradeDirection` tag for the emitted `TradeChoice`. `computeLevel`
+  itself now just calls this helper twice per ticker (long
+  unconditionally, short when `includeShorts`) -- same call order as
+  before, so the existing "long wins an exact tie" behavior (see
+  `includeShorts`'s own doc comment above) is unchanged: the long pass
+  still fully updates `value[]`/`choice[]` for a ticker before that same
+  ticker's short pass even starts. Pure refactor, verified against the
+  full pre-existing `optimizer.test.ts` suite (974 tests, all still
+  passing byte-for-byte) rather than assumed safe from reading the diff.
+- **A known, documented, _not_-fixed inefficiency**: `optimizeAllVariants`'
+  k=1 level does byte-for-byte identical long-pass work twice per
+  direction (the long-only run's k=1 and the long+short run's k=1 both
+  start from the same all-ones level-0 baseline, and the long pass has
+  no dependency on `includeShorts`). Sharing it would need
+  `computeLevel`/`runCandidatePass` to accept an already-computed
+  baseline level instead of always initializing fresh from `prevValue` --
+  judged not clean enough to be worth the added surface area for a
+  saving bounded to one of up to `maxTrades` levels per run (levels
+  k=2+ genuinely diverge between the two runs and have no equivalent
+  redundancy). See `optimizeAllVariants`'s own doc comment for the full
+  reasoning; revisit only if `computeLevel` is restructured for an
+  unrelated reason that makes exposing that seam cheap.
+- **`optimizeIntradayDays` now catches and contains a per-day compute
+  failure** (most plausibly the same overflow issue: a short's
+  reciprocal-price payoff is unbounded above as the covering price
+  approaches zero) instead of letting it propagate and abort every other
+  day's already-computable result. Its return type changed from a bare
+  `IntradayDayResult[]` to `OptimizeIntradayResult` (`{days,
+skippedDays}`, mirroring `apps/pipeline`'s own `fetchUniverseHistory`
+  `{history, skipped, abortError}` shape for the identical "contain the
+  failure, but still report it" problem) -- **every caller of
+  `optimizeIntradayDays`, including every test, needed updating for this
+  shape change**, not just apps/pipeline's own call sites. See
+  `apps/pipeline/CLAUDE.md`'s "Code review follow-up: issue #13
+  short-selling PR" section for how apps/pipeline turns `skippedDays`
+  into a real, run-failing alert (for the base 60-minute pass) vs. a
+  non-fatal, already-logged degradation (for a granularity override's
+  own pass).
+
 ## 60-minute intraday bars (issue #28)
 
 `fetchIntradayBars` in `src/yahoo-client.ts` fetches `interval=60m` bars
@@ -658,3 +709,11 @@ by calendar day (the date-part of each bar's `date`), then call
   (`sixtyMinuteDays`, `mergeDaysByGranularity`, the final `days` array),
   so `worstCase` flows through every one of those call sites for free
   once `IntradayDayResult` itself carries it.
+- **No longer a bare `.map()` (code review follow-up to issue #13)**: the
+  per-day body is now a `for...of` loop with a try/catch around each
+  day's `optimizeAllVariants` call, so one day's compute failure (see
+  "Code review follow-up" above) doesn't propagate and abort every other
+  day's already-solved result. The return type changed to match --
+  `OptimizeIntradayResult` (`{days, skippedDays}`), not a bare
+  `IntradayDayResult[]` -- see that section for the full reasoning and
+  what apps/pipeline does with `skippedDays`.

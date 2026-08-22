@@ -13,7 +13,7 @@
 
 import type { TradeDirection } from "@hadiknowntrades/core";
 
-import { compoundBalance, computeTradeReturn } from "./trade-math";
+import { compoundBalance, computeTradeReturn, tradeVerbsPast } from "./trade-math";
 
 /**
  * The minimum a trade needs to carry to be narrated: a ticker, a
@@ -85,19 +85,6 @@ function leadInFor(index: number, total: number): string {
 }
 
 /**
- * "bought"/"sold" for a long, "shorted"/"covered" for a short (issue
- * #13, standard finance terminology) -- the verb pair that follows a
- * trade's leadIn phrase. leadInFor's own phrasing ("Had you known, you'd
- * have", etc.) is direction-agnostic and unchanged; only the verb needs
- * to branch.
- */
-function verbsFor(direction: TradeDirection): { openVerb: string; closeVerb: string } {
-  return direction === "long"
-    ? { openVerb: "bought", closeVerb: "sold" }
-    : { openVerb: "shorted", closeVerb: "covered" };
-}
-
-/**
  * Builds one TradeNarration per trade, in sequence order. Returns `[]`
  * for an empty `trades` array rather than throwing -- TradeList.tsx's own
  * contract still expects a non-empty sequence (ResultsPanel owns the
@@ -129,7 +116,7 @@ export function narrateTrades(
       trade.sellPrice,
       trade.direction,
     );
-    const { openVerb, closeVerb } = verbsFor(trade.direction);
+    const { openVerb, closeVerb } = tradeVerbsPast(trade.direction);
     return {
       key: `${trade.ticker}-${trade.buyLabel}-${index}`,
       leadIn: leadInFor(index, trades.length),

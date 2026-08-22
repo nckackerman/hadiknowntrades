@@ -34,7 +34,7 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, {
+    const { days } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 1,
       barIntervalMinutes: 60,
@@ -56,12 +56,12 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const sixtyMinute = optimizeIntradayDays(barsByTicker, {
+    const { days: sixtyMinute } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 1,
       barIntervalMinutes: 60,
     });
-    const fiveMinute = optimizeIntradayDays(barsByTicker, {
+    const { days: fiveMinute } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 1,
       barIntervalMinutes: 5,
@@ -88,7 +88,7 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, {
+    const { days } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 1,
       barIntervalMinutes: 60,
@@ -131,7 +131,7 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, {
+    const { days } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 1,
       barIntervalMinutes: 60,
@@ -178,12 +178,12 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const oneTrade = optimizeIntradayDays(barsByTicker, {
+    const { days: oneTrade } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 1,
       barIntervalMinutes: 60,
     });
-    const twoTrades = optimizeIntradayDays(barsByTicker, {
+    const { days: twoTrades } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 2,
       barIntervalMinutes: 60,
@@ -207,7 +207,7 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, {
+    const { days } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 3,
       barIntervalMinutes: 60,
@@ -236,7 +236,7 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, {
+    const { days } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 1,
       barIntervalMinutes: 60,
@@ -258,7 +258,7 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, {
+    const { days } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 3,
       barIntervalMinutes: 60,
@@ -289,7 +289,7 @@ describe("optimizeIntradayDays", () => {
         ],
       ]);
 
-      const days = optimizeIntradayDays(barsByTicker, {
+      const { days } = optimizeIntradayDays(barsByTicker, {
         startingCapital: 20,
         maxTradesPerDay: 1,
         barIntervalMinutes: 60,
@@ -330,7 +330,7 @@ describe("optimizeIntradayDays", () => {
         ],
       ]);
 
-      const days = optimizeIntradayDays(barsByTicker, {
+      const { days } = optimizeIntradayDays(barsByTicker, {
         startingCapital: 20,
         maxTradesPerDay: 2,
         barIntervalMinutes: 60,
@@ -354,7 +354,7 @@ describe("optimizeIntradayDays", () => {
         ],
       ]);
 
-      const days = optimizeIntradayDays(barsByTicker, {
+      const { days } = optimizeIntradayDays(barsByTicker, {
         startingCapital: 20,
         maxTradesPerDay: 3,
         barIntervalMinutes: 60,
@@ -380,7 +380,7 @@ describe("optimizeIntradayDays", () => {
         ],
       ]);
 
-      const days = optimizeIntradayDays(barsByTicker, {
+      const { days } = optimizeIntradayDays(barsByTicker, {
         startingCapital: 20,
         maxTradesPerDay: 1,
         barIntervalMinutes: 60,
@@ -422,7 +422,7 @@ describe("optimizeIntradayDays", () => {
         ],
       ]);
 
-      const days = optimizeIntradayDays(barsByTicker, {
+      const { days } = optimizeIntradayDays(barsByTicker, {
         startingCapital: 20,
         maxTradesPerDay: 2,
         barIntervalMinutes: 60,
@@ -451,7 +451,7 @@ describe("optimizeIntradayDays", () => {
         ],
       ]);
 
-      const days = optimizeIntradayDays(barsByTicker, {
+      const { days } = optimizeIntradayDays(barsByTicker, {
         startingCapital: 20,
         maxTradesPerDay: 1,
         barIntervalMinutes: 5,
@@ -459,6 +459,57 @@ describe("optimizeIntradayDays", () => {
 
       expect(days[0]!.barIntervalMinutes).toBe(5);
       expect(days[0]!.longShort.trades[0]!.direction).toBe("short");
+    });
+  });
+
+  describe("per-day containment (code review follow-up to issue #13)", () => {
+    it("skips just the day whose optimizeAllVariants call overflows, reporting it via skippedDays, without losing any other day's result", () => {
+      // Day 1 (01-02): a short's reciprocal-price payoff (open/close) is
+      // unbounded above as the covering price approaches zero -- a close
+      // this close to zero overflows the ratio past Number.MAX_VALUE to
+      // Infinity, which the optimizer's own finite-endingBalance guard
+      // (OptimizerInputError) throws on. Day 2 (01-03) is an ordinary,
+      // perfectly solvable day and must not be affected by day 1's
+      // failure.
+      const barsByTicker = new Map<string, IntradayBar[]>([
+        [
+          "A",
+          [
+            ...bars("2024-01-02", [
+              ["09:30:00", 1],
+              ["10:30:00", Number.MIN_VALUE],
+            ]),
+            ...bars("2024-01-03", [
+              ["09:30:00", 10],
+              ["10:30:00", 20],
+            ]),
+          ],
+        ],
+      ]);
+
+      const { days, skippedDays } = optimizeIntradayDays(barsByTicker, {
+        startingCapital: 20,
+        maxTradesPerDay: 1,
+        barIntervalMinutes: 60,
+      });
+
+      expect(days.map((d) => d.date)).toEqual(["2024-01-03"]);
+      expect(multiplier(20, days[0]!.endingBalance)).toBeCloseTo(2, 6);
+
+      expect(skippedDays).toHaveLength(1);
+      expect(skippedDays[0]).toContain("2024-01-02");
+      expect(skippedDays[0]).toContain("non-finite endingBalance");
+    });
+
+    it("returns empty days/skippedDays when there is nothing to solve at all", () => {
+      const { days, skippedDays } = optimizeIntradayDays(new Map(), {
+        startingCapital: 20,
+        maxTradesPerDay: 1,
+        barIntervalMinutes: 60,
+      });
+
+      expect(days).toEqual([]);
+      expect(skippedDays).toEqual([]);
     });
   });
 });

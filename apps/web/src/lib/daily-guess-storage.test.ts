@@ -109,6 +109,58 @@ describe("getDailyGuess / saveDailyGuess", () => {
     expect(getDailyGuess("1M", "2026-08-20", "long")).toEqual({ guess: 0, startingCapital: 20 });
   });
 
+  describe("legacy two-part key fallback (issue #13's mode toggle changed the key format)", () => {
+    it("falls back to the pre-issue-#13 two-part key for mode 'long' when the new three-part key has nothing", () => {
+      window.localStorage.setItem(
+        "hikt:daily-guess:1M:2026-08-20",
+        JSON.stringify({ guess: 15, startingCapital: 20 }),
+      );
+
+      expect(getDailyGuess("1M", "2026-08-20", "long")).toEqual({
+        guess: 15,
+        startingCapital: 20,
+      });
+    });
+
+    it("does not fall back to the legacy key for mode 'long-short' (that mode never had an old-format entry)", () => {
+      window.localStorage.setItem(
+        "hikt:daily-guess:1M:2026-08-20",
+        JSON.stringify({ guess: 15, startingCapital: 20 }),
+      );
+
+      expect(getDailyGuess("1M", "2026-08-20", "long-short")).toBeNull();
+    });
+
+    it("prefers a value at the new three-part key over the legacy key when both exist", () => {
+      window.localStorage.setItem(
+        "hikt:daily-guess:1M:2026-08-20",
+        JSON.stringify({ guess: 15, startingCapital: 20 }),
+      );
+      saveDailyGuess("1M", "2026-08-20", "long", 30, 20);
+
+      expect(getDailyGuess("1M", "2026-08-20", "long")).toEqual({
+        guess: 30,
+        startingCapital: 20,
+      });
+    });
+
+    it("treats a corrupted legacy-key value as 'never guessed' rather than throwing", () => {
+      window.localStorage.setItem("hikt:daily-guess:1M:2026-08-20", "not valid json{{{");
+
+      expect(() => getDailyGuess("1M", "2026-08-20", "long")).not.toThrow();
+      expect(getDailyGuess("1M", "2026-08-20", "long")).toBeNull();
+    });
+
+    it("does not treat a legacy-key entry under one range as satisfying the same date under another range", () => {
+      window.localStorage.setItem(
+        "hikt:daily-guess:1M:2026-08-20",
+        JSON.stringify({ guess: 15, startingCapital: 20 }),
+      );
+
+      expect(getDailyGuess("3M", "2026-08-20", "long")).toBeNull();
+    });
+  });
+
   it("degrades to a no-op read/write when localStorage itself throws, without crashing the caller", () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("QuotaExceededError");

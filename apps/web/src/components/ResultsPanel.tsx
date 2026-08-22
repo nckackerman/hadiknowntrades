@@ -46,6 +46,21 @@ interface Variant<T> {
  * apps/web/CLAUDE.md documents happening *twice* for
  * `effectiveStartingCapital` (issue #15) -- a component quietly reading
  * the un-rescaled/wrong-variant field instead of the thread-through value.
+ *
+ * **Every call site below passes a `WindowResult`/`IntradayDayResult`
+ * (or its own `longShort` field) straight through as `base`/`longShort`,
+ * with no intermediate `{endingBalance, trades, worstCase}` object
+ * construction (code review follow-up)** -- an earlier version of this
+ * file built that object independently at each of the four call sites
+ * below, exactly the duplication-drift risk this doc comment already
+ * warned about. That construction was always redundant: `WindowResult`/
+ * `IntradayDayResult`/`LongShortResult`/`IntradayLongShortResult` already
+ * have `endingBalance`/`trades`/`worstCase` as own top-level fields with
+ * these exact names and shapes, so passing the real result object
+ * satisfies `Variant<T>` structurally (TypeScript's excess-property
+ * check only applies to fresh object literals, not existing typed
+ * variables) with nothing to keep in sync -- one fewer place to drift,
+ * not just one shared helper to remember to call.
  */
 function selectVariant<T>(base: Variant<T>, longShort: Variant<T>, mode: Mode): Variant<T> {
   return mode === "long" ? base : longShort;
@@ -235,11 +250,7 @@ export function ResultsPanel({
     if (state.status !== "success") return [];
     const { data } = state;
     if (data.model === "window") {
-      const variant = selectVariant<Trade>(
-        { endingBalance: data.endingBalance, trades: data.trades, worstCase: data.worstCase },
-        data.longShort,
-        mode,
-      );
+      const variant = selectVariant<Trade>(data, data.longShort, mode);
       return derivePortfolioSeries(
         startingCapital ?? data.startingCapital,
         data.startDate,
@@ -248,15 +259,7 @@ export function ResultsPanel({
       );
     }
     if (!activeDay) return [];
-    const variant = selectVariant<IntradayTrade>(
-      {
-        endingBalance: activeDay.endingBalance,
-        trades: activeDay.trades,
-        worstCase: activeDay.worstCase,
-      },
-      activeDay.longShort,
-      mode,
-    );
+    const variant = selectVariant<IntradayTrade>(activeDay, activeDay.longShort, mode);
     return deriveIntradayPortfolioSeries(
       startingCapital ?? activeDay.startingCapital,
       activeDay.date,
@@ -310,15 +313,7 @@ export function ResultsPanel({
     // Which variant (long-only or long+short, issue #13) every dollar
     // figure/trade-list below reads -- see selectVariant's own doc
     // comment.
-    const dayVariant = selectVariant<IntradayTrade>(
-      {
-        endingBalance: activeDay.endingBalance,
-        trades: activeDay.trades,
-        worstCase: activeDay.worstCase,
-      },
-      activeDay.longShort,
-      mode,
-    );
+    const dayVariant = selectVariant<IntradayTrade>(activeDay, activeDay.longShort, mode);
     const isEmptyDay = dayVariant.trades.length === 0;
     const effectiveStartingCapital = startingCapital ?? activeDay.startingCapital;
 
@@ -452,11 +447,7 @@ export function ResultsPanel({
 
   // Which variant (long-only or long+short, issue #13) every dollar
   // figure/trade-list below reads -- see selectVariant's own doc comment.
-  const windowVariant = selectVariant<Trade>(
-    { endingBalance: data.endingBalance, trades: data.trades, worstCase: data.worstCase },
-    data.longShort,
-    mode,
-  );
+  const windowVariant = selectVariant<Trade>(data, data.longShort, mode);
   const isEmpty = windowVariant.trades.length === 0;
   const effectiveStartingCapital = startingCapital ?? data.startingCapital;
 

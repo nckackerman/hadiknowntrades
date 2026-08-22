@@ -196,6 +196,118 @@ bar type, not daily-close-specific):
   timing/memory measurements, since this is the largest single per-run
   DP cost increase this optimizer has taken).
 
+## Code review follow-up: issue #13 short-selling PR (mergeDaysByGranularity and per-range/day compute containment)
+
+Two real bugs found in a post-merge review of issue #13's own PR, both
+fixed in the same follow-up pass -- covered here rather than folded back
+into the "Short-selling mode"/"Two independent paths" sections above so
+the reasoning stays in one place instead of scattered across edits to
+older prose.
+
+### mergeDaysByGranularity and long+short
+
+**The bug**: `mergeDaysByGranularity` (see "Granularity overrides" above)
+picked a date's winning source day using only the long-only
+`endingBalance` comparison, silently ignoring the parallel `longShort`
+field this issue added. Whichever source won the long-only comparison
+also had its `longShort` field carried along wholesale, even on a day
+where the _other_ source's `longShort.endingBalance` was actually
+higher -- a realistic split, not a hypothetical one: `IntradayDayResult.
+longShort` is a genuinely independent search (see
+`intraday-optimizer.ts`), and different granularities can see different
+ticker universes for the same date, so nothing guarantees the same
+source wins both comparisons. This silently violated the function's own
+documented invariant ("keeps whichever day's outcome is actually
+higher") for the long+short mode specifically.
+
+**The fix, and why it's a full fix, not a documented partial one**: the
+long-only bundle (`endingBalance`/`trades`/`worstCase`) and the long+short
+bundle (the whole `longShort` field) are now picked _independently_, each
+via its own endingBalance comparison -- see `mergeDayVariants` in
+`pipeline.ts`. This is safe against "cherry-picking fields from two
+unrelated computations" because each bundle's own fields were always
+computed together, from the same source day's actual bars, by the same
+`optimizeAllVariants` call -- `trades` always matches its own sibling
+`endingBalance` regardless of which bundle's source day wins.
+
+The harder question -- worked through rather than assumed -- was whether
+this could violate `results-schema.ts`'s own write-time cross-checks
+(`longShort.endingBalance >= endingBalance`,
+`longShort.worstCase.endingBalance <= worstCase.endingBalance`) now that
+the two bundles can come from _different_ source days. **It provably
+cannot, and this isn't a coincidence of the fixture used to verify it --
+it follows from a structural property of this optimizer's reciprocal-price
+short model**: for any single source, flipping every leg of its own
+best (or worst) sequence's direction (long <-> short, identical slots)
+is always a _valid_ candidate for that same source's own opposite-mode
+search (both use `includeShorts: true`, same candidate pool, just
+opposite comparison direction) -- so a source's `longShort.best` and
+`longShort.worst` are always reciprocal-bounded against each other, and
+a source's plain `worst` is always reciprocal-bounded against its own
+`longShort.best`. Chaining those two facts across the long-only winner
+and the long+short winner (which can be two different sources) is enough
+to prove both cross-checks hold unconditionally -- see `mergeDayVariants`'s
+own doc comment in `pipeline.ts` for the full chain, and
+`pipeline.test.ts`'s "picks the long-only bundle and the long+short
+bundle independently..." test for a concrete fixture (hand-verified
+against the real optimizer, not just asserted) where the two
+granularities disagree on which is long-only-best vs. long-short-best.
+
+**One accepted, documented (not fixed) limitation**: `barIntervalMinutes`
+is a single scalar per day, so on the rare date where the two bundles'
+winners come from different granularities, it reflects only the
+long-only bundle's source -- there's no way to represent two
+granularities in one scalar field without a schema change. Same
+"documented tradeoff" posture as this file's own "neither override is
+held to the same alerting standard" precedent.
+
+### Per-range/per-day optimizer-overflow containment
+
+**The bug**: a short's reciprocal-price payoff (`P[open]/P[close]`) is
+unbounded above as the covering price approaches zero (see
+`packages/core/CLAUDE.md`'s "Short-selling mode" section), so a real
+ticker's price collapsing toward near-zero at some point within a
+range's window can overflow `endingBalance` past `Number.MAX_VALUE` and
+trip `optimizeAllVariants`' own finite-endingBalance guard
+(`OptimizerInputError`). Before this fix, that throw propagated
+synchronously out of `buildWindowResults`'/`buildIntradayResults`'
+plain `.map()`/loop calls, invoked before the write loop's own
+`Promise.allSettled` -- aborting the _entire_ run (every window range,
+every intraday day, for every range) instead of just the one affected
+range or day.
+
+**The fix**: `buildWindowResults` now wraps each range's own compute
+step in try/catch, and `packages/core`'s `optimizeIntradayDays` now
+wraps each _day's_ own compute step in try/catch (see its own
+`OptimizeIntradayResult` doc comment) -- a failure is logged
+(`console.error`) and that range/day is excluded from the successful
+output, matching this system's "write whatever succeeded" philosophy
+rather than aborting everything. The failure is not silently swallowed,
+though: `buildWindowResults`/`buildIntradayResults` both return a
+`{results, failures}` shape (mirroring `fetchUniverseHistory`'s own
+`{history, skipped, abortError}` precedent for "per-item failure
+shouldn't abort the batch, but must still be reported"), and
+`runPipeline` folds `failures` into the _same_ aggregated "at least one
+path or write failed" throw that issue #47's write-time validation
+failures already use -- a range/day that couldn't be computed at all is
+genuinely missing this run (or, on a later run, silently stuck stale),
+exactly the failure mode this system's must-fail-the-run alerting exists
+to catch, unlike a granularity override's non-fatal failure.
+
+**One deliberate asymmetry**: an _override_ granularity's own per-day
+failures (e.g. the 5-minute fetch's optimizer overflowing for one day)
+are logged but NOT folded into the fatal `failures` list -- unlike the
+_base_ 60-minute pass's failures, which always are. This mirrors the
+existing override-fetch-failure posture exactly:
+`mergeDaysByGranularity` already falls back to the base 60-minute day
+for any date an override doesn't cover, so an override-only day failure
+degrades gracefully to that range's pre-override behavior for that one
+day, not a loss of previously-working data. See `pipeline.test.ts`'s
+"per-range/per-day compute-failure containment" describe block for
+fixtures covering both the window-path and intraday-base-path cases
+(each uses a same-ticker pair with one price at `Number.MIN_VALUE` to
+trigger a real overflow, not a mocked throw).
+
 ## Write-time result self-validation (issue #47)
 
 Immediately before each range's `putObject` call, `runPipeline` now
@@ -342,7 +454,11 @@ GranularityOverride>` lookup that `buildIntradayResults`'s final
   actually higher when both granularities cover a date (both were
   solved with the same `startingCapital`, so ending balance is directly
   comparable); for a date only one granularity covers, that one wins by
-  default -- there's nothing to compare.
+  default -- there's nothing to compare. **Issue #13 code review follow-up:
+  this comparison only ever looked at the long-only `endingBalance`, never
+  at the parallel `longShort` field -- see "mergeDaysByGranularity and
+  long+short (issue #13 code review follow-up)" below for the real bug
+  this was and the fix.**
 - **Each override's `dataAsOf` folds in that override's own fetch
   freshness, not just the 60-minute fetch's** -- another real bug caught
   in #30's code review: since an override range's merged days can

@@ -761,6 +761,21 @@ its content would otherwise render.
   date on 3M/1Y too - skipping straight to a reveal the user never
   actually guessed against. Any future change to this feature must keep
   passing `range` through, not just `date`.
+- **A key-format change needs a migration or a fallback read, not just a
+  bump to `keyFor` (real bug, found in code review on issue #13's own
+  PR, fixed)**: issue #13 added `mode` as a third key segment
+  (`range:date:mode`, see "Long-only vs. long+short mode" below), but
+  the first version of that change had no fallback for the pre-#13
+  two-part key format -- a user who'd already guessed under the old
+  `range:date` key would get silently re-prompted forever after deploy,
+  since `getDailyGuess` only ever looked up the new three-part key and
+  the old entry was permanently orphaned. Fixed: `getDailyGuess` falls
+  back to the legacy two-part key specifically for `mode === "long"`
+  (the one mode that existed before this issue -- `"long-short"` never
+  had an old-format entry to fall back to) when the new-format key comes
+  up empty. Worth remembering as a general lesson for this module:
+  _any_ future key-format change here needs the same treatment, not just
+  a `keyFor` edit.
 - `DailyGuessForm` accepts any non-negative number, including exactly
   `0` (a plausible guess: "the trade went to zero") - validity is
   `draft.trim() !== "" && Number.isFinite(parsed) && parsed >= 0`, not
@@ -1113,7 +1128,20 @@ showing exactly what it showed before this toggle existed.
   that lesson, applied before the equivalent bug had a chance to ship
   once for this feature (render with `mode="long-short"` and assert the
   `longShort` variant's figures/tickers appear, the long-only ones
-  don't).
+  don't). **Code review follow-up, fixed**: this issue's own first draft
+  still built the `{endingBalance, trades, worstCase}` object passed into
+  `selectVariant` independently at all four call sites -- exactly the
+  duplication-drift risk this doc comment already names, reintroduced by
+  the very feature that documents it. Fixed by passing the real result
+  object (`data`/`activeDay`/their own `longShort` field) straight
+  through instead: `WindowResult`/`IntradayDayResult`/`LongShortResult`/
+  `IntradayLongShortResult` already have `endingBalance`/`trades`/
+  `worstCase` as own top-level fields with these exact names and shapes,
+  so they satisfy `selectVariant`'s `Variant<T>` parameter structurally
+  with no intermediate object to keep in sync at all (TypeScript's
+  excess-property check only applies to fresh object literals, not
+  existing typed variables) -- a stronger fix than "extract one shared
+  helper," since there's no construction step left to forget to call.
 - **`HeroStat`'s `heroKey` is keyed on mode too, not just range/day** --
   switching modes surfaces a genuinely different trade sequence (a new
   `endingBalance`, potentially a completely different set of tickers),
@@ -1155,6 +1183,18 @@ mode)`, not just `(range, date)`** -- the identical argument this
   for a long, "shorted"/"covered" or "Short"/"Cover" for a short --
   standard finance terminology. `TradeRow`'s `buyLabel`/`sellLabel` props
   renamed to `openLabel`/`closeLabel` to match the schema rename below.
+  **Code review follow-up, fixed**: this issue's own first draft
+  hand-rolled this exact verb-pair mapping independently in _four_
+  places -- `TradeRow.tsx`'s own `verbsFor`, `narrate-trades.ts`'s own
+  `verbsFor`, and `PortfolioChart.tsx`'s `eventLabelVerb`/
+  `eventTooltipVerb` -- two of which had already started commenting
+  "same wording" without actually sharing any code. Extracted into
+  `trade-math.ts`'s `tradeVerbs` (the capitalized "Buy"/"Sell" pair) and
+  `tradeVerbsPast` (the lowercase "bought"/"sold" pair) -- the same
+  module this codebase's own header comment already says fixed exactly
+  this class of drift once for the return/balance math
+  (`computeTradeReturn`/`compoundBalance`); all four call sites now call
+  one of these two instead of re-deriving the mapping.
 - **`lib/portfolio-series.ts`'s `PortfolioEvent.type` generalizes from
   `"buy" | "sell"` to `"open" | "close"`, plus a new `direction` field**
   -- a short's "open" event (no value jump, same as a long's "buy") and

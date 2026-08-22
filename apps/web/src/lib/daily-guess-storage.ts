@@ -37,6 +37,19 @@ function keyFor(range: PresetRange, date: string, mode: Mode): string {
 }
 
 /**
+ * The pre-issue-#13 two-part key format (`range:date`, no mode segment)
+ * -- every guess submitted before this PR's mode toggle shipped is
+ * sitting at this key, not the new three-part one. Only ever consulted
+ * as a fallback for `mode === "long"` (see getDailyGuess) -- "long" is
+ * the one mode that existed before this issue, so it's the only mode a
+ * pre-existing entry could possibly satisfy; "long-short" is entirely
+ * new with this issue and never had an old-format entry to fall back to.
+ */
+function legacyKeyFor(range: PresetRange, date: string): string {
+  return `${KEY_PREFIX}${range}:${date}`;
+}
+
+/**
  * `startingCapital` is the dollar amount the guess prompt was actually
  * showing at submission time (issue #15's effectiveStartingCapital, not
  * necessarily the raw precomputed one) -- stored alongside the guess
@@ -64,6 +77,17 @@ function isStoredGuess(value: unknown): value is StoredGuess {
   );
 }
 
+/** Shared JSON-parse-then-validate step behind both the new-key and legacy-key reads in getDailyGuess -- a parse failure or a wrong-shaped value reads as "nothing stored" either way (see getDailyGuess's own doc comment). */
+function parseStoredGuess(raw: string): StoredGuess | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  return isStoredGuess(parsed) ? parsed : null;
+}
+
 /**
  * The user's previously-submitted guess for `date` under `range` and
  * `mode` (and the starting capital it was made against), or `null` if
@@ -73,19 +97,30 @@ function isStoredGuess(value: unknown): value is StoredGuess {
  * or a non-positive startingCapital, neither of which any real form
  * submission could produce -- should read the same as "never guessed",
  * not throw or render nonsense).
+ *
+ * **Legacy-key fallback (issue #13's mode toggle changed `keyFor` from a
+ * two-part `range:date` key to a three-part `range:date:mode` key, with
+ * no migration).** A user who guessed before this PR deployed has their
+ * entry sitting at the old `hikt:daily-guess:{range}:{date}` key; without
+ * this fallback, a lookup at the new `hikt:daily-guess:{range}:{date}:long`
+ * key would find nothing and silently re-prompt them for a day they
+ * already answered, permanently orphaning the old entry (found in code
+ * review, real bug -- not hypothetical: this is exactly what happens to
+ * every existing guess on deploy day otherwise). Only applies for `mode
+ * === "long"` -- see legacyKeyFor's own doc comment for why that's the
+ * one mode an old-format entry could ever satisfy. A hit at the new key
+ * always wins outright (this fallback is never consulted once it does).
  */
 export function getDailyGuess(range: PresetRange, date: string, mode: Mode): StoredGuess | null {
   const raw = readLocalStorage(keyFor(range, date, mode));
-  if (raw === null) return null;
+  if (raw !== null) return parseStoredGuess(raw);
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
+  if (mode === "long") {
+    const legacyRaw = readLocalStorage(legacyKeyFor(range, date));
+    if (legacyRaw !== null) return parseStoredGuess(legacyRaw);
   }
 
-  return isStoredGuess(parsed) ? parsed : null;
+  return null;
 }
 
 /** Records `guess` (made while the prompt showed `startingCapital`) as the user's guess for `date` under `range`/`mode`, overwriting any previous guess for that same (range, date, mode) triple. */

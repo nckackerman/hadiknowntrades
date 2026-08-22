@@ -1,14 +1,7 @@
 import type { TradeDirection } from "@hadiknowntrades/core";
 
 import { formatHeroCurrency, formatPercent } from "@/lib/format-currency";
-import { computeTradeReturn } from "@/lib/trade-math";
-
-/** "Buy"/"Sell" for a long, "Short"/"Cover" for a short (issue #13, standard finance terminology). */
-function verbsFor(direction: TradeDirection): { openVerb: string; closeVerb: string } {
-  return direction === "long"
-    ? { openVerb: "Buy", closeVerb: "Sell" }
-    : { openVerb: "Short", closeVerb: "Cover" };
-}
+import { computeTradeReturn, tradeVerbs } from "@/lib/trade-math";
 
 interface TradeRowProps {
   index: number;
@@ -45,7 +38,7 @@ export function TradeRow({
   closePrice,
 }: TradeRowProps) {
   const { returnFraction, isGain } = computeTradeReturn(openPrice, closePrice, direction);
-  const { openVerb, closeVerb } = verbsFor(direction);
+  const { openVerb, closeVerb } = tradeVerbs(direction);
   return (
     <li className="flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-3 text-sm">
       <span className="font-medium text-[var(--text-muted)]">#{index + 1}</span>

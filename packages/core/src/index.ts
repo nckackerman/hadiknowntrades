@@ -49,6 +49,7 @@ export type {
   IntradayWorstCaseResult,
   IntradayLongShortResult,
   OptimizeIntradayOptions,
+  OptimizeIntradayResult,
 } from "./intraday-optimizer";
 
 export { PRESET_RANGES, presetRangeStartDate } from "./preset-ranges";

@@ -118,3 +118,40 @@ export function compoundBalance(
   assertValidPrice(closePrice, "closePrice");
   return startBalance * (direction === "long" ? closePrice / openPrice : openPrice / closePrice);
 }
+
+/** A direction's open/close verb pair, in one of two grammatical registers -- see `tradeVerbs`/`tradeVerbsPast`, which both build on this. */
+export interface TradeVerbs {
+  openVerb: string;
+  closeVerb: string;
+}
+
+/**
+ * "Buy"/"Sell" for a long, "Short"/"Cover" for a short (issue #13,
+ * standard finance terminology) -- the capitalized, present-tense verb
+ * pair for a "Buy TICKER ... Sell ..." style label. Extracted (code
+ * review follow-up to issue #13) because this exact pair was
+ * independently hand-rolled in three places that had started to
+ * comment, correctly, that they were "reusing the same wording" without
+ * actually sharing any code: TradeRow.tsx's own `verbsFor`, and
+ * PortfolioChart.tsx's `eventLabelVerb`. One implementation now backs
+ * both, the same reasoning this module's own header comment already
+ * gives for `computeTradeReturn`/`compoundBalance`.
+ */
+export function tradeVerbs(direction: TradeDirection): TradeVerbs {
+  return direction === "long"
+    ? { openVerb: "Buy", closeVerb: "Sell" }
+    : { openVerb: "Short", closeVerb: "Cover" };
+}
+
+/**
+ * "bought"/"sold" for a long, "shorted"/"covered" for a short -- the
+ * lowercase, past-tense verb pair for a completed-trade sentence ("...you
+ * bought TICKER..."). Same extraction reasoning as `tradeVerbs` above;
+ * this one replaces narrate-trades.ts's own `verbsFor` and
+ * PortfolioChart.tsx's `eventTooltipVerb`.
+ */
+export function tradeVerbsPast(direction: TradeDirection): TradeVerbs {
+  return direction === "long"
+    ? { openVerb: "bought", closeVerb: "sold" }
+    : { openVerb: "shorted", closeVerb: "covered" };
+}

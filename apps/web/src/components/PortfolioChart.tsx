@@ -20,22 +20,25 @@ import { formatAxisCurrency, formatHeroCurrency } from "@/lib/format-currency";
 import { formatDateTime, isPortfolioDatetime } from "@/lib/format-date";
 import { buildLogScale, buildTimeScale, niceLogTicks } from "@/lib/chart-scales";
 import type { PortfolioEvent, PortfolioPoint } from "@/lib/portfolio-series";
+import { tradeVerbs, tradeVerbsPast } from "@/lib/trade-math";
 
 /**
  * Capitalized verb for a marker's own label / the data-table's event
  * column (issue #13): "Buy"/"Short" for an open event, "Sell"/"Cover"
  * for a close event, depending on direction -- standard finance
- * terminology, same wording TradeRow.tsx's own verbsFor uses.
+ * terminology, shared with TradeRow.tsx via trade-math.ts's `tradeVerbs`
+ * (code review follow-up: this and TradeRow.tsx's own `verbsFor` used to
+ * be two independent copies of the identical wording).
  */
 function eventLabelVerb(event: PortfolioEvent): string {
-  if (event.type === "open") return event.direction === "long" ? "Buy" : "Short";
-  return event.direction === "long" ? "Sell" : "Cover";
+  const { openVerb, closeVerb } = tradeVerbs(event.direction);
+  return event.type === "open" ? openVerb : closeVerb;
 }
 
-/** Lowercase verb for the hover tooltip's prose ("...bought AAPL at..."). */
+/** Lowercase verb for the hover tooltip's prose ("...bought AAPL at...") -- shared with narrate-trades.ts via trade-math.ts's `tradeVerbsPast` (same code review follow-up as eventLabelVerb above). */
 function eventTooltipVerb(event: PortfolioEvent): string {
-  if (event.type === "open") return event.direction === "long" ? "bought" : "shorted";
-  return event.direction === "long" ? "sold" : "covered";
+  const { openVerb, closeVerb } = tradeVerbsPast(event.direction);
+  return event.type === "open" ? openVerb : closeVerb;
 }
 
 interface PortfolioChartProps {
