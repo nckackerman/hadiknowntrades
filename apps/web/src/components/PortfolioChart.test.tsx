@@ -96,4 +96,21 @@ describe("PortfolioChart", () => {
 
     expect(readout.getByText(PLACEHOLDER_TEXT)).toBeInTheDocument();
   });
+
+  it("clears the tooltip on pointercancel (e.g. the browser taking over a touch-scroll gesture)", () => {
+    const { container } = render(<PortfolioChart points={points} />);
+    const svg = getChartSvg();
+    stubChartRect(svg);
+    const readout = getReadout(container);
+
+    fireEvent.pointerDown(svg, { clientX: 860 });
+    expect(readout.getByText("Jan 2, 2024")).toBeInTheDocument();
+
+    // No pointerup, no pointerleave -- a real touch-scroll gesture fires
+    // pointercancel instead, and per the Pointer Events spec,
+    // pointerleave "may not be dispatched" following a cancel.
+    fireEvent.pointerCancel(svg);
+
+    expect(readout.getByText(PLACEHOLDER_TEXT)).toBeInTheDocument();
+  });
 });

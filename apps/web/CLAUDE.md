@@ -130,6 +130,17 @@ index). `PortfolioChart.test.tsx` stubs `getBoundingClientRect` on the
 constants so `scaleX` comes out to `1` -- do the same for any future
 test that fires pointer events at a specific coordinate on this chart.
 
+**`onPointerCancel` matters here, not just `onPointerLeave` (found in
+#44's `high` code review):** revealing the tooltip on `pointerdown`
+means a touch that starts a page-scroll gesture over the chart briefly
+shows the crosshair before the browser takes the touch over for native
+scrolling -- at which point it fires `pointercancel`, not `pointerup`,
+and per the Pointer Events spec `pointerout`/`pointerleave` "may not be
+dispatched" following a cancel. Without an `onPointerCancel` handler
+clearing `hoverIndex` the same way `onPointerLeave` does, the tooltip
+stays visibly pinned to wherever the touch landed even after the chart
+scrolls out of view.
+
 ## Importing `@hadiknowntrades/core`
 
 Import it by its normal package specifier

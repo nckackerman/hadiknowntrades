@@ -140,6 +140,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
         onPointerDown={revealNearestPoint}
         onPointerMove={revealNearestPoint}
         onPointerLeave={() => setHoverIndex(null)}
+        onPointerCancel={() => setHoverIndex(null)}
         onBlur={() => setHoverIndex(null)}
         onKeyDown={(keyboardEvent) => {
           if (keyboardEvent.key === "ArrowRight") {
