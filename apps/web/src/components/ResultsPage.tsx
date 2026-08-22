@@ -8,8 +8,10 @@ import { useResults } from "@/lib/use-results";
 import { useCustomResults } from "@/lib/use-custom-results";
 import { useStartingCapital } from "@/lib/use-starting-capital";
 import { parseAnchorMonth, parseRange } from "@/lib/results-api";
+import { DEFAULT_MODE, parseMode, type Mode } from "@/lib/mode";
 import { AboutSection } from "@/components/AboutSection";
 import { CustomRangeSelector } from "@/components/CustomRangeSelector";
+import { ModeToggle } from "@/components/ModeToggle";
 import { RangeSelector } from "@/components/RangeSelector";
 import { ResultsPanel } from "@/components/ResultsPanel";
 
@@ -52,6 +54,14 @@ export function ResultsPage() {
   // meaningful in custom-range mode (that model is never intraday-daily)
   // but harmless to keep passing through.
   const selectedDay = searchParams.get("day");
+  // Long-only vs. long+short (issue #13) -- URL state (?mode=), not a
+  // localStorage preference (unlike use-starting-capital.ts): "which
+  // trade set is being shown" is core, shareable content state, the same
+  // category ?range=/?day= already occupy, not a personal display
+  // preference. A missing/unrecognized param defaults to "long" (the
+  // pre-#13 behavior), so an existing shared link with no mode param
+  // keeps showing exactly what it shows today.
+  const mode = parseMode(searchParams.get("mode")) ?? DEFAULT_MODE;
   // The user's chosen starting dollar amount (issue #15) -- a
   // page-level preference, not URL/range/day state: it should survive a
   // range or day switch (unlike selectedDay, which is deliberately
@@ -88,6 +98,12 @@ export function ResultsPage() {
     router.replace(`/?${params.toString()}`, { scroll: false });
   }
 
+  function selectMode(next: Mode) {
+    const params = new URLSearchParams(searchParams);
+    params.set("mode", next);
+    router.replace(`/?${params.toString()}`, { scroll: false });
+  }
+
   return (
     <div className="flex w-full max-w-3xl flex-col gap-8 px-6 py-16 sm:px-8">
       <header className="flex flex-col gap-4">
@@ -102,6 +118,7 @@ export function ResultsPage() {
           <RangeSelector selected={range} onSelect={selectRange} />
           <span className="text-sm text-[var(--text-muted)]">or</span>
           <CustomRangeSelector selected={anchor} onSelect={selectAnchor} />
+          <ModeToggle selected={mode} onSelect={selectMode} />
         </div>
       </header>
 
@@ -110,6 +127,7 @@ export function ResultsPage() {
         state={state}
         selectedDay={selectedDay}
         onSelectDay={selectDay}
+        mode={mode}
         startingCapital={startingCapital}
         onStartingCapitalChange={setStartingCapital}
       />

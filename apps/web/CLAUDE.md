@@ -761,6 +761,21 @@ its content would otherwise render.
   date on 3M/1Y too - skipping straight to a reveal the user never
   actually guessed against. Any future change to this feature must keep
   passing `range` through, not just `date`.
+- **A key-format change needs a migration or a fallback read, not just a
+  bump to `keyFor` (real bug, found in code review on issue #13's own
+  PR, fixed)**: issue #13 added `mode` as a third key segment
+  (`range:date:mode`, see "Long-only vs. long+short mode" below), but
+  the first version of that change had no fallback for the pre-#13
+  two-part key format -- a user who'd already guessed under the old
+  `range:date` key would get silently re-prompted forever after deploy,
+  since `getDailyGuess` only ever looked up the new three-part key and
+  the old entry was permanently orphaned. Fixed: `getDailyGuess` falls
+  back to the legacy two-part key specifically for `mode === "long"`
+  (the one mode that existed before this issue -- `"long-short"` never
+  had an old-format entry to fall back to) when the new-format key comes
+  up empty. Worth remembering as a general lesson for this module:
+  _any_ future key-format change here needs the same treatment, not just
+  a `keyFor` edit.
 - `DailyGuessForm` accepts any non-negative number, including exactly
   `0` (a plausible guess: "the trade went to zero") - validity is
   `draft.trim() !== "" && Number.isFinite(parsed) && parsed >= 0`, not
@@ -1077,6 +1092,149 @@ secondary context rather than competing with the hero figures.
   this is a comparison figure, not itself a "did the optimizer win"
   signal.
 
+## Long-only vs. long+short mode (issue #13)
+
+`lib/mode.ts` owns `Mode` (`"long" | "long-short"`) and `parseMode` --
+same shape as `results-api.ts`'s own `parseRange`, but deliberately its
+own module rather than folded into that file, since mode is a pure
+frontend display concept with no schema/API meaning of its own (the
+pipeline always computes and stores both variants; the frontend just
+picks which one to show). `ResultsPage.tsx` owns the selected mode as URL
+state (`?mode=long|long-short`, case-insensitive on read, same pattern
+`?range=`/`?day=` already use there) via `ModeToggle.tsx` (a second pill
+toggle next to `RangeSelector`, same controlled-component shape) --
+**not** a localStorage-persisted preference like
+`use-starting-capital.ts` -- confirmed by the human user as a genuine
+product decision, not left to guesswork: "which trade set is being
+shown" is core, shareable content state (the same category `?range=`/
+`?day=` occupy), not a personal display preference like starting
+capital. A missing/unrecognized `?mode=` falls back to `"long"`
+(`DEFAULT_MODE`), so an existing shared link with no `mode` param keeps
+showing exactly what it showed before this toggle existed.
+
+- **`ResultsPanel.tsx`'s `selectVariant` is the single place "which
+  variant to read" gets decided** -- every dollar-figure/trade-list
+  consumer (`HeroAndWorstCase`, `PortfolioChart` via
+  `derivePortfolioSeries`/`deriveIntradayPortfolioSeries`,
+  `TradeList`/`IntradayTradeList`) is threaded its result instead of
+  reading the raw top-level `endingBalance`/`trades`/`worstCase` fields
+  directly. This mirrors the exact shape of mistake this file's own
+  "Configurable starting capital" section already documents happening
+  _twice_ for `effectiveStartingCapital` (issue #15) -- a component
+  quietly reading the un-threaded/wrong-variant field instead of the
+  selected one, caught only in code review rather than by a test that
+  didn't exist yet at the time. `ResultsPanel.test.tsx`'s own "mode
+  (issue #13)" describe block is the regression-test-up-front version of
+  that lesson, applied before the equivalent bug had a chance to ship
+  once for this feature (render with `mode="long-short"` and assert the
+  `longShort` variant's figures/tickers appear, the long-only ones
+  don't). **Code review follow-up, fixed**: this issue's own first draft
+  still built the `{endingBalance, trades, worstCase}` object passed into
+  `selectVariant` independently at all four call sites -- exactly the
+  duplication-drift risk this doc comment already names, reintroduced by
+  the very feature that documents it. Fixed by passing the real result
+  object (`data`/`activeDay`/their own `longShort` field) straight
+  through instead: `WindowResult`/`IntradayDayResult`/`LongShortResult`/
+  `IntradayLongShortResult` already have `endingBalance`/`trades`/
+  `worstCase` as own top-level fields with these exact names and shapes,
+  so they satisfy `selectVariant`'s `Variant<T>` parameter structurally
+  with no intermediate object to keep in sync at all (TypeScript's
+  excess-property check only applies to fresh object literals, not
+  existing typed variables) -- a stronger fix than "extract one shared
+  helper," since there's no construction step left to forget to call.
+- **`HeroStat`'s `heroKey` is keyed on mode too, not just range/day** --
+  switching modes surfaces a genuinely different trade sequence (a new
+  `endingBalance`, potentially a completely different set of tickers),
+  much closer to a range/day switch than to a `startingCapital` edit (an
+  instant rescale of the _same_ trades, deliberately _not_ keyed, per
+  this file's own "Configurable starting capital" section) -- so a mode
+  switch remounts `HeroStat` and replays its reveal animation, the same
+  as switching range or day does.
+- **`daily-guess-storage.ts`'s guess key extends to `(range, date,
+mode)`, not just `(range, date)`** -- the identical argument this
+  file's own "Daily guessing game" section already makes for why `range`
+  alone wasn't enough (the same calendar date can carry a genuinely
+  different result depending on range) applies one axis further: the
+  same `(range, date)` can now carry a genuinely different
+  `endingBalance` depending on mode. Without this, a guess submitted
+  under `mode=long` would incorrectly satisfy the guess-gate for the same
+  `(range, date)` under `mode=long-short` too, skipping straight to a
+  reveal the user never actually guessed against. `useDailyGuess` gained
+  a required third `mode` parameter (not optional/defaulted, same
+  "no silent fallback by omission" reasoning `trade-math.ts`'s own
+  `direction` parameter uses below) and re-checks storage fresh whenever
+  any of `range`/`date`/`mode` changes, via the same "adjust state during
+  render when a prop changes" idiom this hook already used for
+  range/date.
+- **`lib/trade-math.ts`'s `computeTradeReturn`/`compoundBalance` both
+  gained a required `direction` parameter** (not optional/defaulted --
+  same reasoning `InvalidTradePriceError` already established for bad
+  prices: a silent long-only fallback by omission would be exactly the
+  kind of correctness bug this file's own error-throwing convention
+  guards against). A short's math mirrors `optimizer.ts`'s own
+  reciprocal-price payoff exactly (`openPrice/closePrice` instead of
+  `closePrice/openPrice`), so a rendered trade's narrated return/balance
+  always matches what the optimizer itself used to compound
+  `endingBalance` -- no drift between two implementations of the same
+  math, the same property this module's own header comment already
+  documents as the reason it exists.
+- **`lib/narrate-trades.ts`/`TradeRow.tsx` both gained direction-aware
+  verb pairs**: "bought"/"sold" (narration) or "Buy"/"Sell" (`TradeRow`)
+  for a long, "shorted"/"covered" or "Short"/"Cover" for a short --
+  standard finance terminology. `TradeRow`'s `buyLabel`/`sellLabel` props
+  renamed to `openLabel`/`closeLabel` to match the schema rename below.
+  **Code review follow-up, fixed**: this issue's own first draft
+  hand-rolled this exact verb-pair mapping independently in _four_
+  places -- `TradeRow.tsx`'s own `verbsFor`, `narrate-trades.ts`'s own
+  `verbsFor`, and `PortfolioChart.tsx`'s `eventLabelVerb`/
+  `eventTooltipVerb` -- two of which had already started commenting
+  "same wording" without actually sharing any code. Extracted into
+  `trade-math.ts`'s `tradeVerbs` (the capitalized "Buy"/"Sell" pair) and
+  `tradeVerbsPast` (the lowercase "bought"/"sold" pair) -- the same
+  module this codebase's own header comment already says fixed exactly
+  this class of drift once for the return/balance math
+  (`computeTradeReturn`/`compoundBalance`); all four call sites now call
+  one of these two instead of re-deriving the mapping.
+- **`lib/portfolio-series.ts`'s `PortfolioEvent.type` generalizes from
+  `"buy" | "sell"` to `"open" | "close"`, plus a new `direction` field**
+  -- a short's "open" event (no value jump, same as a long's "buy") and
+  "close" event (the point value actually jumps, same as a long's
+  "sell") stay structurally analogous to the existing long annotations,
+  just relabeled and direction-tagged. `appendTradeSteps`'s
+  `compoundBalance` call threads `direction` through, same reasoning as
+  `trade-math.ts` above.
+- **`PortfolioChart.tsx` branches on the event type in _five_ places, not
+  four** (a real miscount corrected during this issue's implementation,
+  not just a rename pass): the marker's above/below positioning logic
+  (`event.type === "open"`), the marker `<g>` key (interpolates
+  `event.type`, now `"open"`/`"close"` instead of `"buy"`/`"sell"`), the
+  marker's own label text (now `eventLabelVerb(event)`, "Buy"/"Short" or
+  "Sell"/"Cover"), the hover tooltip's verb (`eventTooltipVerb(event)`,
+  "bought"/"shorted" or "sold"/"covered"), and the accessible data
+  table's row text (`eventLabelVerb` again). Any future audit of this
+  component's own direction-aware branches should expect five sites, not
+  four.
+- **OG share card (`/api/og/[range]`, issue #33) deliberately stays
+  long-only-only** -- `og-card.ts`/`OgCard.tsx` needed zero changes for
+  this issue (neither file touches `Trade`'s renamed fields or
+  `longShort` at all, only `endingBalance`/`startingCapital`/`dataAsOf`,
+  none of which changed meaning). A `mode`-aware share card would double
+  its own cached-variant matrix (5 ranges -> 10 range x mode combos) for
+  a feature this issue's own scope never asked for -- left as a possible
+  follow-up issue, not silently bundled in here.
+- **Live-verified** (real S&P 500 data, full 503-ticker universe, no S3
+  write): both the window path's 5 ranges and the intraday path's 251
+  real trading days produced 0 invariant violations, and real short
+  trades appeared in every one of the 5 window ranges' `longShort`
+  fields and in 218 of the 251 intraday days -- see
+  `packages/core/CLAUDE.md`'s "Short-selling mode" section for the full
+  numbers (this file's own consumers were verified via the full
+  `apps/web` test suite plus a manual read of the rendered fixtures in
+  `ResultsPanel.test.tsx`'s "mode" describe block, not a live pipeline
+  write -- the schema-5 rollout itself is a real-AWS action gated on the
+  user's go-ahead, same as every prior schema bump, and not yet
+  performed as of this issue's implementation).
+
 ## Custom start-date anchor picker (issue #11)
 
 `GET /api/results?anchor=YYYY-MM` is the same route as `?range=...`
@@ -1169,10 +1327,10 @@ left to justify a second route.
   sharing a new extracted `WindowResultBody` component with the
   `"window"` branch, rather than a second copy of that ~50-line JSX
   block -- the two models are the identical underlying computation (same
-  `optimizeBothDirections` over a daily-close window), differing only in
-  which field identifies the result (`range` vs. `anchorMonth`), so
-  `WindowResultBody` takes a structural `WindowLikeResult` (the fields it
-  actually reads -- neither `range` nor `anchorMonth`) plus a
+  `optimizeAllVariants` over a daily-close window, issue #13), differing
+  only in which field identifies the result (`range` vs. `anchorMonth`),
+  so `WindowResultBody` takes a structural `WindowLikeResult` (the fields
+  it actually reads -- neither `range` nor `anchorMonth`) plus a
   caller-supplied `descriptionPhrase`/`heroKey`/`emptyCopy`, derived
   differently by each of the two call sites (`RANGE_COPY[range]` for
   presets; `` `since ${formatDate(data.startDate)}` `` for a custom
@@ -1204,3 +1362,51 @@ left to justify a second route.
   feature at all, unlike what the deferred live-compute design's own
   section 2 had planned for. See `packages/core/CLAUDE.md`'s "Custom
   date-range anchors" section for the full reasoning.
+
+### Merged with issue #13's long-only vs. long+short mode
+
+Issues #11 and #13 were developed in parallel branches and merged after
+both had independently landed -- neither `?mode=` (issue #13's URL state)
+nor `?anchor=` (issue #11's) was designed with the other in mind. Worked
+out at merge time so `?anchor=2020-03&mode=long-short` is a valid,
+working URL, not a case one feature's own logic silently overrides:
+
+- **`ResultsPage.tsx`'s `selectRange`/`selectAnchor`/`selectMode` each
+  only touch the URL params their own feature owns.** `selectRange` and
+  `selectAnchor` stay mutually exclusive with each other (each clears the
+  other's param, per issue #11's own design above) but neither touches
+  `?mode=` -- a mode choice is an orthogonal axis, not something either
+  a range or an anchor selection should reset. `selectMode` only ever
+  sets `?mode=`, leaving whichever of `?range=`/`?anchor=` is currently
+  active untouched. The header row renders `RangeSelector`, "or",
+  `CustomRangeSelector`, then `ModeToggle` -- all three always visible
+  together, not conditionally hidden based on which of range/anchor mode
+  is active.
+- **`WindowResultBody` (issue #11's shared window/custom-window body)
+  gained a required `mode: Mode` prop** and now calls `selectVariant`
+  itself, once, instead of a caller pre-selecting the variant -- both the
+  `"window"` and `"custom-window"` branches in `ResultsPanel.tsx` thread
+  their own `mode` prop straight through, and both fold `mode` into their
+  own `heroKey` (`` `${data.range}-${data.dataAsOf}-${mode}` `` /
+  `` `custom-${data.anchorMonth}-${data.dataAsOf}-${mode}` ``) so a mode
+  switch remounts `HeroStat` and replays its reveal animation under a
+  custom anchor exactly the same way it already did for a preset range.
+  This only works because `CustomWindowResult` itself gained the same
+  `longShort` sibling field `WindowResult` already had -- see
+  `packages/core/CLAUDE.md`'s "Merged with issue #13's short-selling
+  mode" section for the schema/pipeline side of this integration.
+- **`useDailyGuess` combines both features' own signature changes**:
+  issue #11's nullable `range: PresetRange | null` (for custom-anchor
+  mode, where there's no `(range, date)` pair to key a guess under) and
+  issue #13's required `mode: Mode` parameter (for `(range, date, mode)`
+  keying) both apply to the same hook now -- `useDailyGuess(range: PresetRange
+| null, date: string, mode: Mode)`. In practice these two axes never
+  actually interact: the guessing game only ever renders inside the
+  `"intraday-daily"` branch (which requires a non-null `range`), and
+  `"custom-window"` results never reach that branch at all (see
+  `ResultsPanel.tsx`'s own model switch) -- so a custom anchor's `mode`
+  is always `useDailyGuess`'s unused second half of a call whose `range`
+  is `null`, the same "called unconditionally per Rules of Hooks but its
+  result is never actually consumed" situation issue #11's own `range
+=== null` handling already established, just with one more always-ignored
+  parameter alongside it.

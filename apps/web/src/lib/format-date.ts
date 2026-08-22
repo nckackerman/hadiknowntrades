@@ -17,7 +17,7 @@ export function formatDate(isoDate: string): string {
 
 /**
  * Formats a bare local time-of-day ("14:30:00", no date) as "2:30 PM" --
- * for IntradayTrade's buyTime/sellTime (issue #28), which don't carry a
+ * for IntradayTrade's openTime/closeTime (issue #28), which don't carry a
  * date of their own since the day is already known from context (the
  * selected day in the intraday view).
  */

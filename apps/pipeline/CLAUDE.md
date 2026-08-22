@@ -167,6 +167,284 @@ bar type, not daily-close-specific):
   above, same "needs the
   user's explicit go-ahead before/atomically with a real pipeline write"
   rule -- not yet performed as of this issue's implementation.
+- **Bumped again to 5 for issue #13** (short-selling mode): every
+  `WindowResult` and every `IntradayDayResult` gains a `longShort` field
+  (mirroring `worstCase`'s own sibling-field shape, plus its own nested
+  `worstCase`), computed in `buildWindowResults` here via one
+  `optimizeAllVariants` call per window range (replacing the previous
+  `optimizeBothDirections` call -- same one-shared-calendar-build
+  principle, now sharing across all 4 direction x instrument-set
+  combinations instead of 2) and in `packages/core`'s
+  `optimizeIntradayDays` itself for the intraday path (same "no other
+  change needed in this file" reasoning issue #31's own `worstCase`
+  bullet above already established -- see `packages/core/CLAUDE.md`'s
+  "Short-selling mode" section for the full design). `Trade`'s fields
+  are also renamed in this same bump (`buyDate`/`buyPrice`/`sellDate`/
+  `sellPrice` -> `openDate`/`openPrice`/`closeDate`/`closePrice`, plus a
+  new `direction` field) -- every test fixture in this file's own
+  `pipeline.test.ts` that builds a `Trade`/`IntradayTrade` literal, or
+  asserts on one, needed updating for the rename, not just for the new
+  field. Same rollout hazard as every prior schema bump -- needs the
+  user's explicit go-ahead before/atomically with a real pipeline write,
+  not yet performed as of this issue's implementation. **Live-verified**
+  (real S&P 500 data, full 503-ticker universe, no S3 write) that the two
+  new cross-checks (`longShort.endingBalance >= endingBalance`,
+  `longShort.worstCase.endingBalance <= worstCase.endingBalance`) hold
+  with 0 violations across all 5 window ranges and all 251 real trading
+  days of the 1Y intraday window -- see `packages/core/CLAUDE.md`'s
+  "Short-selling mode" section for the full numbers (including real
+  timing/memory measurements, since this is the largest single per-run
+  DP cost increase this optimizer has taken).
+
+## Code review follow-up: issue #13 short-selling PR (mergeDaysByGranularity and per-range/day compute containment)
+
+Two real bugs found in a post-merge review of issue #13's own PR, both
+fixed in the same follow-up pass -- covered here rather than folded back
+into the "Short-selling mode"/"Two independent paths" sections above so
+the reasoning stays in one place instead of scattered across edits to
+older prose.
+
+### mergeDaysByGranularity and long+short
+
+**The bug**: `mergeDaysByGranularity` (see "Granularity overrides" above)
+picked a date's winning source day using only the long-only
+`endingBalance` comparison, silently ignoring the parallel `longShort`
+field this issue added. Whichever source won the long-only comparison
+also had its `longShort` field carried along wholesale, even on a day
+where the _other_ source's `longShort.endingBalance` was actually
+higher -- a realistic split, not a hypothetical one: `IntradayDayResult.
+longShort` is a genuinely independent search (see
+`intraday-optimizer.ts`), and different granularities can see different
+ticker universes for the same date, so nothing guarantees the same
+source wins both comparisons. This silently violated the function's own
+documented invariant ("keeps whichever day's outcome is actually
+higher") for the long+short mode specifically.
+
+**The fix, and why it's a full fix, not a documented partial one**: the
+long-only bundle (`endingBalance`/`trades`/`worstCase`) and the long+short
+bundle (the whole `longShort` field) are now picked _independently_, each
+via its own endingBalance comparison -- see `mergeDayVariants` in
+`pipeline.ts`. This is safe against "cherry-picking fields from two
+unrelated computations" because each bundle's own fields were always
+computed together, from the same source day's actual bars, by the same
+`optimizeAllVariants` call -- `trades` always matches its own sibling
+`endingBalance` regardless of which bundle's source day wins.
+
+The harder question -- worked through rather than assumed -- was whether
+this could violate `results-schema.ts`'s own write-time cross-checks
+(`longShort.endingBalance >= endingBalance`,
+`longShort.worstCase.endingBalance <= worstCase.endingBalance`) now that
+the two bundles can come from _different_ source days. **It provably
+cannot, and this isn't a coincidence of the fixture used to verify it --
+it follows from a structural property of this optimizer's reciprocal-price
+short model**: for any single source, flipping every leg of its own
+best (or worst) sequence's direction (long <-> short, identical slots)
+is always a _valid_ candidate for that same source's own opposite-mode
+search (both use `includeShorts: true`, same candidate pool, just
+opposite comparison direction) -- so a source's `longShort.best` and
+`longShort.worst` are always reciprocal-bounded against each other, and
+a source's plain `worst` is always reciprocal-bounded against its own
+`longShort.best`. Chaining those two facts across the long-only winner
+and the long+short winner (which can be two different sources) is enough
+to prove both cross-checks hold unconditionally -- see `mergeDayVariants`'s
+own doc comment in `pipeline.ts` for the full chain, and
+`pipeline.test.ts`'s "picks the long-only bundle and the long+short
+bundle independently..." test for a concrete fixture (hand-verified
+against the real optimizer, not just asserted) where the two
+granularities disagree on which is long-only-best vs. long-short-best.
+
+**One accepted, documented (not fixed) limitation**: `barIntervalMinutes`
+is a single scalar per day, so on the rare date where the two bundles'
+winners come from different granularities, it reflects only the
+long-only bundle's source -- there's no way to represent two
+granularities in one scalar field without a schema change. Same
+"documented tradeoff" posture as this file's own "neither override is
+held to the same alerting standard" precedent.
+
+### mergeDayVariants' assertion: real crash risk found (second review
+
+### round), but the underlying proof turned out to be fixable, not wrong
+
+A later review round found the paragraph above's proof had a real flaw,
+with a concrete counterexample (`X.worstCase=50`, `Y.longShort.best=200`,
+`Y.worstCase=65`, `Y.longShort.worst=60` -- every value individually
+valid per each source's own _checked_ invariants, yet `60 > 50` trips the
+"impossible by construction" throw) -- and, independently and more
+urgently, that the throw itself had **no try/catch anywhere between
+`mergeDayVariants` and `buildIntradayResults`**, unlike every other risky
+computation this PR added (the per-range/per-day overflow containment
+below already wraps its own risky calls). If this assertion ever fired on
+real data, it would crash the _entire_ `runPipeline` invocation --
+discarding every other already-computed window/custom-anchor/intraday
+result too, not just the one affected day. Both findings were addressed,
+but they resolved differently, and it's worth being precise about which
+is which:
+
+- **The crash risk was real and is fixed**: `mergeDayVariants` no longer
+  throws. A violation now falls back to the long-only winner's own day
+  wholesale for _both_ bundles (trivially safe -- a single day from one
+  `optimizeAllVariants` call always satisfies both cross-checks
+  internally, by construction) and reports it through
+  `mergeDaysByGranularity`'s own return value, which `buildIntradayResults`
+  folds into its `failures` -- fatal, reaching `computeFailures` and this
+  system's only alerting mechanism, exactly like an override solve
+  failure (see the section below) -- rather than a bare throw. Contained,
+  but not silent: the same "contained but not silent" principle the
+  overflow-containment fix below already established, now applied here
+  too.
+- **The counterexample itself does NOT reflect data the real optimizer
+  can produce -- re-derived and empirically confirmed, not just
+  re-asserted.** The counterexample's own numbers silently violate a
+  _deeper_ structural invariant of the reciprocal-price short model that
+  isn't explicitly checked anywhere in code but _is_ mathematically
+  guaranteed for any real `optimizeAllVariants` output: for a single
+  source's own longShort search, flipping every leg of its best sequence
+  (long <-> short, same slots) is always a valid candidate for that same
+  source's own _worst_ search (both use `includeShorts: true`), so
+  `longShort.worst * longShort.best <= startingCapital^2` always holds.
+  The counterexample's `Y.longShort.worst=60` and `Y.longShort.best=200`
+  give a product of 12,000 -- way past `startingCapital^2 = 400` at this
+  app's real `$20` starting capital -- so those two numbers together
+  could never come out of a real optimizer call in the first place, only
+  out of hand-picked test values that individually pass the _shallower_
+  checked invariant (`longShort.worst <= worst`) while silently breaking
+  this unchecked deeper one.
+- **The original proof's stated _conclusion_ for this exact inequality
+  was correct; its stated _derivation_ had a real, independent algebra
+  error, since fixed.** The original text said "flipping `Y`'s own
+  longShort-_worst_ sequence is a valid candidate for `Y`'s own
+  longShort-_best_ search, giving `Y.longShort.worst <=
+startingCapital^2 / Y.longShort.best`" -- but flipping a sequence into
+  a _max_ search only ever yields a _lower_ bound on that search's
+  result (a max can't be beaten by one specific candidate), so that
+  pairing actually derives `Y.longShort.worst >= startingCapital^2 /
+Y.longShort.best` -- the opposite direction from both the text's own
+  stated conclusion and from what the overall proof needs. The fix pairs
+  each flip with the search it actually bounds: flipping `X`'s long-only
+  _worst_ sequence into `X`'s own longShort-_best_ search (a max search)
+  gives a lower bound, `X.worst >= startingCapital^2 / X.longShort.best`;
+  flipping `Y`'s longShort-_best_ sequence into `Y`'s own longShort-
+  _worst_ search (a min search) gives an upper bound,
+  `Y.longShort.worst <= startingCapital^2 / Y.longShort.best`. Chaining
+  those two facts with `Y.longShort.best > X.longShort.best` (true
+  whenever `Y` wins the longShort slot) proves
+  `Y.longShort.worst <= X.worst` unconditionally -- see `mergeDayVariants`'s
+  own doc comment in `pipeline.ts` for the full corrected chain.
+- **Verified two ways, not just re-derived on paper**: (1) the corrected
+  hand proof above, and (2) a throwaway 20,000-trial randomized
+  brute-force check directly against the real `optimizeAllVariants`
+  (varied ticker counts, trade counts 1-3, and price ranges down to
+  `0.0001` specifically to stress the reciprocal-price short's near-zero
+  overflow regime) -- **0 violations**, with 2,087 of those trials
+  genuinely exercising the `X !== Y` disagreeing-winners case (one source
+  wins long-only, the other wins longShort) the proof depends on, not
+  just the trivial `X === Y` same-source case. Script deleted before
+  commit, same technique this file's other "live-verified, no S3 write"
+  entries use.
+- **Net effect**: the containment fix (no more bare throw) is real,
+  necessary, and applies regardless of whether the proof is fixable --
+  "provably safe" is still worth containing rather than trusted blindly
+  at runtime, especially given this exact proof was already wrong once
+  (its derivation, not its conclusion). But the fallback path itself is
+  expected to be **dead code on every real run**, the same
+  "defense-in-depth for something that shouldn't be reachable" posture as
+  `results-schema.ts`'s own write-time cross-checks. `pipeline.merge-
+fallback.test.ts` exercises it anyway, via a mocked `optimizeIntradayDays`
+  injecting the same style of counterexample values directly (the only
+  way to reach this path at all, since real optimizer output can't) --
+  confirming the fallback produces a valid, safe result and the run still
+  fails loudly via `computeFailures`, instead of trusting the containment
+  logic never gets exercised by any test.
+
+### Per-range/per-day optimizer-overflow containment
+
+**The bug**: a short's reciprocal-price payoff (`P[open]/P[close]`) is
+unbounded above as the covering price approaches zero (see
+`packages/core/CLAUDE.md`'s "Short-selling mode" section), so a real
+ticker's price collapsing toward near-zero at some point within a
+range's window can overflow `endingBalance` past `Number.MAX_VALUE` and
+trip `optimizeAllVariants`' own finite-endingBalance guard
+(`OptimizerInputError`). Before this fix, that throw propagated
+synchronously out of `buildWindowResults`'/`buildIntradayResults`'
+plain `.map()`/loop calls, invoked before the write loop's own
+`Promise.allSettled` -- aborting the _entire_ run (every window range,
+every intraday day, for every range) instead of just the one affected
+range or day.
+
+**The fix**: `buildWindowResults` now wraps each range's own compute
+step in try/catch, and `packages/core`'s `optimizeIntradayDays` now
+wraps each _day's_ own compute step in try/catch (see its own
+`OptimizeIntradayResult` doc comment) -- a failure is logged
+(`console.error`) and that range/day is excluded from the successful
+output, matching this system's "write whatever succeeded" philosophy
+rather than aborting everything. The failure is not silently swallowed,
+though: `buildWindowResults`/`buildIntradayResults` both return a
+`{results, failures}` shape (mirroring `fetchUniverseHistory`'s own
+`{history, skipped, abortError}` precedent for "per-item failure
+shouldn't abort the batch, but must still be reported"), and
+`runPipeline` folds `failures` into the _same_ aggregated "at least one
+path or write failed" throw that issue #47's write-time validation
+failures already use -- a range/day that couldn't be computed at all is
+genuinely missing this run (or, on a later run, silently stuck stale),
+exactly the failure mode this system's must-fail-the-run alerting exists
+to catch. See `pipeline.test.ts`'s "per-range/per-day compute-failure
+containment" describe block for fixtures covering both the window-path
+and intraday-base-path cases (each uses a same-ticker pair with one
+price at `Number.MIN_VALUE` to trigger a real overflow, not a mocked
+throw).
+
+**A third code-review round found the original "one deliberate
+asymmetry" here (an _override_ granularity's per-day solve failures were
+logged but NOT folded into the fatal `failures` list, unlike the _base_
+60-minute pass's) was itself a real, if narrower, instance of the same
+bug class -- "contained but not silent" had quietly slipped into
+"contained, and therefore silent."** The original reasoning leaned on an
+analogy to override _fetch_ failures (a per-ticker data-availability
+gap): since `mergeDaysByGranularity` already falls back to the base
+60-minute day for any date an override doesn't cover, an override-only
+day failure was treated as "gracefully degrading," the same as a fetch
+failure. **That analogy doesn't actually hold once you separate two
+different questions -- "does this range's stored _output_ degrade
+gracefully" (yes, for both fetch and solve failures, via the same merge
+fallback) from "does this failure deserve this system's only alerting
+mechanism" (no for a fetch failure, yes for a solve failure).** A fetch
+failure means the finer-grained data was never available -- there is
+nothing to alert on, the range's data is exactly as correct as its
+pre-override self. A solve failure means the data _was_ fetched
+successfully and something broke while `optimizeIntradayDays` computed
+over it -- e.g. the documented short-payoff overflow, but just as
+plausibly a genuinely new defect this codebase hasn't seen yet. Silently
+downgrading the latter to "non-fatal, logged only via console.error
+buried in CloudWatch" because its _symptom_ happens to be paperable-over
+is exactly what this system's "no custom retry/alerting" design (see the
+top of this file) exists to prevent -- see the guarantee's own framing
+elsewhere in this file: "nothing beyond a console.warn buried in
+CloudWatch to notice." **Fixed**: `buildIntradayResults` now folds
+_every_ override's own `skippedDays` (prefixed `"<label> override
+(<range>): "` for context) into its `failures` return value alongside
+the base pass's, so a solve failure on either pass reaches
+`computeFailures` and fails the run the same way -- while the per-day
+try/catch inside `optimizeIntradayDays` still _contains_ it (that
+override's other days, and every other range/path, still compute and
+write normally). Containment and fatality are independent axes, not the
+same lever: this fix keeps the former (one bad day still can't crash the
+whole run before other results get a chance to write) while restoring
+the latter for a case where it genuinely belongs. The override
+_fetch_-failure posture (`GranularityOverrideInput.outcome.failureReason`,
+surfaced only via `overrideStatusLines` for visibility) is unchanged and
+correctly still non-fatal -- that distinction was never the bug; only
+the solve-failure side had been folded into the same non-fatal bucket by
+mistake. See `pipeline.override-solve-failure.test.ts` for a regression
+test (kept in its own file, like `pipeline.write-validation.test.ts`,
+since it needs to mock `optimizeIntradayDays` for just the override
+call) using a genuinely _non-overflow_ forced failure specifically to
+prove the fix isn't narrowed to the overflow case -- and
+`intraday-optimizer.test.ts`'s own "reports a genuinely different
+(non-overflow) exception the same way" test, which locks in that
+`optimizeIntradayDays`'s own `catch` block was never actually the bug
+(it already unconditionally folded every exception into `skippedDays`
+regardless of type) -- the gap was entirely in how `buildIntradayResults`
+consumed an override call's returned `skippedDays`, one level up.
 
 ## Write-time result self-validation (issue #47)
 
@@ -360,7 +638,11 @@ GranularityOverride>` lookup that `buildIntradayResults`'s final
   actually higher when both granularities cover a date (both were
   solved with the same `startingCapital`, so ending balance is directly
   comparable); for a date only one granularity covers, that one wins by
-  default -- there's nothing to compare.
+  default -- there's nothing to compare. **Issue #13 code review follow-up:
+  this comparison only ever looked at the long-only `endingBalance`, never
+  at the parallel `longShort` field -- see "mergeDaysByGranularity and
+  long+short (issue #13 code review follow-up)" below for the real bug
+  this was and the fix.**
 - **Each override's `dataAsOf` folds in that override's own fetch
   freshness, not just the 60-minute fetch's** -- another real bug caught
   in #30's code review: since an override range's merged days can
@@ -371,17 +653,29 @@ GranularityOverride>` lookup that `buildIntradayResults`'s final
   see the top of this file). Fixed via `maxDateString(dataAsOf,
 override?.extraDataAsOf ?? null)`; a range with no override (1Y) has its
   `dataAsOf` untouched.
-- **Neither override is held to the window/intraday split's "must still
-  fail the run" standard** (see the section above): an override's abort
-  or empty-data outcome does not get added to the `if
+- **An override's own _fetch_ failure (abort or empty-data outcome) is
+  NOT held to the window/intraday split's "must still fail the run"
+  standard** (see the section above): it does not get added to the `if
 (windowFetch.failureReason || intradayFetch.failureReason)` throw
-  condition in `runPipeline` -- each override's status is only reported
-  in that error's message for visibility, alongside the two required
-  paths' statuses. The reasoning is qualitatively different from why
+  condition in `runPipeline` -- each override's fetch status is only
+  reported in that error's message for visibility, alongside the two
+  required paths' statuses. **This is deliberately narrower than it used
+  to read**: an earlier version of this bullet said "neither override is
+  held to that standard" at all, covering an override's own _solve_
+  failures too (`optimizeIntradayDays` throwing while solving data the
+  override's fetch _did_ return) -- a third code-review round on issue
+  #13's PR found that was itself a real gap, not a deliberate design
+  choice that happened to also cover solve failures: see "Per-range/
+  per-day optimizer-overflow containment" (under "Code review follow-up:
+  issue #13 short-selling PR") above for the full reasoning and the fix
+  (override solve failures now DO fold into `computeFailures` and fail
+  the run, exactly like a base-pass solve failure). The reasoning below
+  is about fetch failures specifically. The reasoning is qualitatively
+  different from why
   window/intraday _are_ held to that standard: their failure means a
   whole range silently serves frozen/stale JSON forever, which is
-  exactly what that alerting exists to catch. An override's failure
-  instead means its range's affected days silently fall back to
+  exactly what that alerting exists to catch. An override's _fetch_
+  failure instead means its range's affected days silently fall back to
   already-shipped, fully-correct (just coarser) 60-minute bars --
   functionally identical to that range's pre-override behavior, not a
   loss of previously-working data. Revisit this distinction if
@@ -543,9 +837,14 @@ requested anchor (`packages/core`'s `AnchorMonth`, see that package's own
 CLAUDE.md for the full anchor-scheme design), reusing a new
 `computeWindowOptimization` helper factored out of `buildWindowResults`
 specifically so the 5Y/MAX preset path and the custom-anchor path share
-one windowed-slice-plus-`optimizeBothDirections` implementation instead
-of two that could drift. See `docs/plans/issue-11-plan.md`'s section 1
-for the full design writeup.
+one windowed-slice-plus-DP implementation instead of two that could
+drift. **Post-merge with issue #13 (short-selling mode)**:
+`computeWindowOptimization` calls `optimizeAllVariants`, not the
+long-only-only `optimizeBothDirections` this section originally described
+-- see "Merged with issue #13's short-selling mode" below for the full
+integration story. See `docs/plans/issue-11-plan.md`'s section 1 for the
+full design writeup (predates that merge; its own `optimizeBothDirections`
+references are historical, not current).
 
 - **Reuses the window path's own already-fetched `windowFetch.history`
   -- zero new Yahoo requests, zero new fetch pool.** `buildCustomWindowResults`
@@ -656,3 +955,49 @@ for the full design writeup.
   isolated from pure compute), so it's an upper bound on the
   custom-anchor compute addition specifically, not a clean marginal
   delta.
+
+### Merged with issue #13's short-selling mode
+
+Issues #11 and #13 were developed in parallel and merged after both had
+independently landed -- `buildCustomWindowResults` originally called the
+long-only-only `optimizeBothDirections` (predating issue #13), and
+`buildWindowResults` (on issue #13's own branch) called
+`optimizeAllVariants` directly rather than through this file's shared
+`computeWindowOptimization` helper (which didn't exist yet on that
+branch -- issue #13 was built before issue #11's refactor landed).
+Integrated at merge time:
+
+- **`computeWindowOptimization` now calls `optimizeAllVariants`**,
+  returning `{ windowed, longOnly, longShort }` instead of `{ windowed,
+best, worst }` -- both `buildWindowResults` and `buildCustomWindowResults`
+  updated to read the new shape and populate their own result's
+  `longShort` field from it. Every whole-window result -- preset range or
+  custom anchor -- now gets computed off the same one shared
+  `OptimizerState` per window, all 4 direction x instrument-set
+  combinations at once.
+- **`buildCustomWindowResults` gained the same per-anchor try/catch
+  containment `buildWindowResults` already has** (see "Code review
+  follow-up: issue #13 short-selling PR" above) -- a real, new gap this
+  merge surfaced: once a custom anchor's window is solved via
+  `optimizeAllVariants`, it's exposed to the same short-payoff-overflow
+  risk documented there, and with up to ~252 anchors per run, one
+  anchor's overflow could otherwise abort every other already-computable
+  anchor. `CustomWindowResultsBuild` gained a `failures: string[]` field
+  (mirroring `BuildWindowResultsOutcome.failures`), folded by
+  `runPipeline` into the same `computeFailures` list that already
+  fails the run for a window/intraday compute failure.
+- `results-schema.ts`'s `CustomWindowResult` gained the same
+  `longShort: LongShortResult` sibling field `WindowResult` already had,
+  and `validateCustomWindowResult` gained the same long+short
+  cross-checks -- see `packages/core/CLAUDE.md`'s own "Merged with issue
+  #13's short-selling mode" section for the schema/validator side of this
+  integration.
+- **Live-verified via a regression test, not just typechecked**:
+  `pipeline.custom-range.test.ts`'s "computes a real longShort field with
+  a genuine short trade for a custom anchor" test uses a two-bar,
+  pure-price-decline fixture (no long trade can be profitable) to confirm
+  the long-only search correctly makes zero trades while the long+short
+  search finds and reports a real short trade with a materially higher
+  `endingBalance` -- round-tripped through the actual written+parsed S3
+  JSON, confirming `validateCustomWindowResult`'s own longShort
+  cross-checks pass at write time, not just an in-memory shape.

@@ -27,20 +27,29 @@
 // OptimizerState doc comment): each day's IntradayDayResult carries a
 // worstCase field alongside its own optimal-case endingBalance/trades,
 // solved over the exact same day's bars.
+//
+// Issue #13 folds in a third axis, long+short, the same way: swaps
+// optimizeBothDirections() for optimizeAllVariants() (4 runs instead of
+// 2, still sharing one built calendar/ticker-sort per day), and each
+// day's IntradayDayResult additionally carries a longShort field
+// alongside its long-only endingBalance/trades/worstCase, mirroring how
+// WindowResult's own longShort field (results-schema.ts) sits alongside
+// its long-only fields.
 
-import { optimizeBothDirections, type Trade } from "./optimizer";
+import { optimizeAllVariants, type Trade, type TradeDirection } from "./optimizer";
 import type { IntradayBar } from "./yahoo-client";
 
 export interface IntradayTrade {
   ticker: string;
-  /** Calendar date this trade happened on, YYYY-MM-DD -- the same for buy and sell, since intraday trades never cross a day boundary by construction (see toIntradayTrade). */
+  direction: TradeDirection;
+  /** Calendar date this trade happened on, YYYY-MM-DD -- the same for open and close, since intraday trades never cross a day boundary by construction (see toIntradayTrade). */
   date: string;
   /** Local time of day the position was opened, HH:MM:SS. */
-  buyTime: string;
-  buyPrice: number;
+  openTime: string;
+  openPrice: number;
   /** Local time of day the position was closed, HH:MM:SS. */
-  sellTime: string;
-  sellPrice: number;
+  closeTime: string;
+  closePrice: number;
 }
 
 export interface IntradayDayResult {
@@ -78,6 +87,15 @@ export interface IntradayDayResult {
    * max-search does).
    */
   worstCase: IntradayWorstCaseResult;
+  /**
+   * The long+short counterpart to this day's own long-only endingBalance/
+   * trades/worstCase (issue #13) -- same shape as this day's own fields,
+   * solved over the same day's bars but with short trades also available
+   * to the search. See results-schema.ts's LongShortResult (the window
+   * model's own sibling field) for the full reasoning; this is its
+   * per-day equivalent.
+   */
+  longShort: IntradayLongShortResult;
 }
 
 /**
@@ -93,6 +111,21 @@ export interface IntradayDayResult {
 export interface IntradayWorstCaseResult {
   endingBalance: number;
   trades: IntradayTrade[];
+}
+
+/**
+ * Per-day long+short counterpart to IntradayDayResult's own long-only
+ * endingBalance/trades/worstCase (issue #13) -- mirrors
+ * IntradayWorstCaseResult's own flattening convention, plus a nested
+ * worstCase since the long+short variant has both a best and worst case
+ * of its own, same as the top-level long-only fields do. No
+ * startingCapital here either, for the same reason IntradayWorstCaseResult
+ * has none: identical to the sibling IntradayDayResult.startingCapital.
+ */
+export interface IntradayLongShortResult {
+  endingBalance: number;
+  trades: IntradayTrade[];
+  worstCase: IntradayWorstCaseResult;
 }
 
 export interface OptimizeIntradayOptions {
@@ -151,35 +184,75 @@ function groupByDate(
 }
 
 /**
- * Converts one optimizeTrades()-shaped Trade (whose buyDate/sellDate
+ * Converts one optimizeTrades()-shaped Trade (whose openDate/closeDate
  * literally contain the full local-datetime strings we fed it, since it
  * just echoes back whatever date string the caller supplied) into the
  * public IntradayTrade shape, with date and time split apart explicitly
- * -- deliberately not reusing Trade's buyDate/sellDate fields as-is for
+ * -- deliberately not reusing Trade's openDate/closeDate fields as-is for
  * intraday output, since apps/web's existing consumers of Trade
- * (TradeList, PortfolioChart, format-date.ts) all assume buyDate/sellDate
+ * (TradeList, PortfolioChart, format-date.ts) all assume openDate/closeDate
  * are plain calendar dates and would silently mis-render a full
- * datetime string passed through unmodified.
+ * datetime string passed through unmodified. `direction` passes straight
+ * through unchanged (issue #13) -- splitting date from time-of-day
+ * doesn't depend on which direction the trade was.
  */
 function toIntradayTrade(trade: Trade): IntradayTrade {
-  const buy = splitLocalDateTime(trade.buyDate);
-  const sell = splitLocalDateTime(trade.sellDate);
-  if (buy.date !== sell.date) {
+  const open = splitLocalDateTime(trade.openDate);
+  const close = splitLocalDateTime(trade.closeDate);
+  if (open.date !== close.date) {
     // Should be unreachable: optimizeTrades is only ever called here
     // (see optimizeIntradayDays) with a single day's bars, so every
-    // trade it returns must buy and sell within that same day.
+    // trade it returns must open and close within that same day.
     throw new Error(
-      `internal error: intraday trade for ${trade.ticker} spans buy date ${buy.date} and sell date ${sell.date}`,
+      `internal error: intraday trade for ${trade.ticker} spans open date ${open.date} and close date ${close.date}`,
     );
   }
   return {
     ticker: trade.ticker,
-    date: buy.date,
-    buyTime: buy.time,
-    buyPrice: trade.buyPrice,
-    sellTime: sell.time,
-    sellPrice: trade.sellPrice,
+    direction: trade.direction,
+    date: open.date,
+    openTime: open.time,
+    openPrice: trade.openPrice,
+    closeTime: close.time,
+    closePrice: trade.closePrice,
   };
+}
+
+/**
+ * optimizeIntradayDays' own return shape (issue #13 code review follow-up)
+ * -- `days` alone used to be the whole return value, but a single day's
+ * optimizeAllVariants call can throw (most plausibly OptimizerInputError's
+ * non-finite-endingBalance overflow guard, reachable here since a short's
+ * reciprocal-price payoff is unbounded above as the covering price
+ * approaches zero -- see optimizer.ts's own header comment). Without a
+ * side channel to report it, the only options were "let it propagate and
+ * abort every other day's already-computable result too" (the original
+ * bug) or "swallow it silently" (defeats this system's only alerting
+ * mechanism -- see apps/pipeline/CLAUDE.md's "Two independent paths"
+ * section). `skippedDays` is that side channel, mirroring the
+ * `{history, skipped, ...}` sibling-array shape apps/pipeline's own
+ * `fetchUniverseHistory` already established for the identical
+ * "per-item failure shouldn't abort the whole batch, but must still be
+ * reported" problem.
+ */
+export interface OptimizeIntradayResult {
+  /** Every day that solved successfully, ascending by date -- see optimizeIntradayDays' own doc comment. */
+  days: IntradayDayResult[];
+  /**
+   * One entry per day that failed to solve at all this call, formatted
+   * `"YYYY-MM-DD: <error message>"` (mirroring apps/pipeline's own
+   * "range: message"/"date: message" failure-reporting convention) --
+   * empty in the overwhelmingly common case where every day solves.
+   * apps/pipeline's buildIntradayResults folds a *base* (60-minute)
+   * call's skippedDays into its own must-fail-the-run aggregated error
+   * (the same day is then genuinely missing for every range covering
+   * it); a *granularity override*'s (5-minute/1-minute) skippedDays are
+   * treated as non-fatal instead, since mergeDaysByGranularity already
+   * gracefully falls back to the base 60-minute day for any date the
+   * override doesn't cover -- see apps/pipeline/CLAUDE.md for the full
+   * reasoning.
+   */
+  skippedDays: string[];
 }
 
 /**
@@ -189,41 +262,75 @@ function toIntradayTrade(trade: Trade): IntradayTrade {
  * optimizeTrades(), starting fresh from `startingCapital` every day (no
  * compounding across days).
  *
- * Days are returned in ascending date order. A day with no bars for any
- * ticker (a market holiday, or a data gap) simply doesn't appear in the
- * result -- there's nothing to solve for it.
+ * Days are returned (in `days`, ascending date order) for every date that
+ * solved successfully; a day with no bars for any ticker (a market
+ * holiday, or a data gap) simply doesn't appear -- there's nothing to
+ * solve for it. A day whose own optimizeAllVariants call throws is
+ * caught, logged, and excluded from `days` too, but -- unlike the
+ * "nothing to solve" case -- is reported via `skippedDays` (see
+ * OptimizeIntradayResult's own doc comment): that day's data existed and
+ * genuinely couldn't be solved, which is a real, alert-worthy problem for
+ * apps/pipeline to surface, not a benign absence. Containing the failure
+ * per-day here (rather than letting it propagate out of this whole call)
+ * is what stops one outlier day's overflow from taking down every other
+ * day's already-computable result -- see apps/pipeline/CLAUDE.md's "Two
+ * independent paths" section for why the pipeline still needs to *know*
+ * about it, just not have it abort everything.
  */
 export function optimizeIntradayDays(
   barsByTicker: Map<string, IntradayBar[]>,
   options: OptimizeIntradayOptions,
-): IntradayDayResult[] {
+): OptimizeIntradayResult {
   const { startingCapital, maxTradesPerDay, barIntervalMinutes } = options;
   const byDate = groupByDate(barsByTicker);
   const dates = [...byDate.keys()].sort();
 
-  return dates.map((date) => {
+  const days: IntradayDayResult[] = [];
+  const skippedDays: string[] = [];
+  for (const date of dates) {
     const dayBars = byDate.get(date)!;
-    // Same day's bars, same startingCapital/maxTrades for both the best-
-    // and worst-case (min-direction, issue #31) searches, so
-    // optimizeBothDirections builds this day's calendar/ticker-sort once
-    // and reuses it for both instead of the two separate optimizeTrades/
-    // optimizeWorstTrades calls this used to be -- a real saving here
-    // specifically, since this runs once per trading day (up to ~252
-    // times for 1Y) rather than once per range.
-    const { best: optimized, worst } = optimizeBothDirections(dayBars, {
-      startingCapital,
-      maxTrades: maxTradesPerDay,
-    });
-    return {
-      date,
-      startingCapital,
-      endingBalance: optimized.endingBalance,
-      barIntervalMinutes,
-      trades: optimized.trades.map(toIntradayTrade),
-      worstCase: {
-        endingBalance: worst.endingBalance,
-        trades: worst.trades.map(toIntradayTrade),
-      },
-    };
-  });
+    try {
+      // Same day's bars, same startingCapital/maxTrades for all 4
+      // direction x instrument-set combinations, so optimizeAllVariants
+      // builds this day's calendar/ticker-sort once and reuses it for
+      // all 4 runs instead of separate calls -- a real saving here
+      // specifically, since this runs once per trading day (up to ~252
+      // times for 1Y) rather than once per range.
+      const { longOnly, longShort } = optimizeAllVariants(dayBars, {
+        startingCapital,
+        maxTrades: maxTradesPerDay,
+      });
+      days.push({
+        date,
+        startingCapital,
+        endingBalance: longOnly.best.endingBalance,
+        barIntervalMinutes,
+        trades: longOnly.best.trades.map(toIntradayTrade),
+        worstCase: {
+          endingBalance: longOnly.worst.endingBalance,
+          trades: longOnly.worst.trades.map(toIntradayTrade),
+        },
+        longShort: {
+          endingBalance: longShort.best.endingBalance,
+          trades: longShort.best.trades.map(toIntradayTrade),
+          worstCase: {
+            endingBalance: longShort.worst.endingBalance,
+            trades: longShort.worst.trades.map(toIntradayTrade),
+          },
+        },
+      });
+    } catch (error) {
+      // console.error, not .warn: unlike a routine per-ticker skip (a
+      // single ticker's data being unavailable is expected and benign),
+      // a day that can't be solved at all is a genuine data/correctness
+      // problem for that day -- see this function's own doc comment for
+      // why apps/pipeline still needs to be able to fail the run over
+      // this, not just log it.
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[intraday-optimizer] skipping ${date}: ${message}`);
+      skippedDays.push(`${date}: ${message}`);
+    }
+  }
+
+  return { days, skippedDays };
 }

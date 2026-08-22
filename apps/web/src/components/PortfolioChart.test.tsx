@@ -113,4 +113,81 @@ describe("PortfolioChart", () => {
 
     expect(readout.getByText(PLACEHOLDER_TEXT)).toBeInTheDocument();
   });
+
+  describe("trade markers (issue #13: long/short direction labels)", () => {
+    const eventPoints: PortfolioPoint[] = [
+      { date: "2024-01-01", value: 20, event: null },
+      {
+        date: "2024-01-02",
+        value: 20,
+        event: { type: "open", direction: "long", ticker: "AAPL", price: 10 },
+      },
+      {
+        date: "2024-01-03",
+        value: 40,
+        event: { type: "close", direction: "long", ticker: "AAPL", price: 20 },
+      },
+      {
+        date: "2024-01-04",
+        value: 40,
+        event: { type: "open", direction: "short", ticker: "MSFT", price: 100 },
+      },
+      {
+        date: "2024-01-05",
+        value: 80,
+        event: { type: "close", direction: "short", ticker: "MSFT", price: 50 },
+      },
+    ];
+
+    it("labels a long's open/close markers 'Buy'/'Sell'", () => {
+      render(<PortfolioChart points={eventPoints} />);
+      const svg = within(getChartSvg());
+
+      expect(svg.getByText(/Buy AAPL/)).toBeInTheDocument();
+      expect(svg.getByText(/Sell AAPL/)).toBeInTheDocument();
+    });
+
+    it("labels a short's open/close markers 'Short'/'Cover', not 'Buy'/'Sell'", () => {
+      render(<PortfolioChart points={eventPoints} />);
+      const svg = within(getChartSvg());
+
+      expect(svg.getByText(/Short MSFT/)).toBeInTheDocument();
+      expect(svg.getByText(/Cover MSFT/)).toBeInTheDocument();
+      expect(svg.queryByText(/Buy MSFT/)).not.toBeInTheDocument();
+      expect(svg.queryByText(/Sell MSFT/)).not.toBeInTheDocument();
+    });
+
+    it("uses 'shorted'/'covered' verbs in the hover tooltip for a short event, not 'bought'/'sold'", () => {
+      const { container } = render(<PortfolioChart points={eventPoints} />);
+      const svg = getChartSvg();
+      stubChartRect(svg);
+
+      // eventPoints[3] (index 3) is MSFT's short-open point, at x fraction
+      // 3/4 of the plot width.
+      fireEvent.pointerMove(svg, { clientX: 660 });
+      expect(getReadout(container).getByText(/shorted MSFT/)).toBeInTheDocument();
+
+      // eventPoints[4] is MSFT's short-close (cover) point.
+      fireEvent.pointerMove(svg, { clientX: 860 });
+      expect(getReadout(container).getByText(/covered MSFT/)).toBeInTheDocument();
+    });
+
+    it("uses 'bought'/'sold' verbs in the hover tooltip for a long event", () => {
+      const { container } = render(<PortfolioChart points={eventPoints} />);
+      const svg = getChartSvg();
+      stubChartRect(svg);
+
+      fireEvent.pointerMove(svg, { clientX: 220 }); // AAPL's open point
+      expect(getReadout(container).getByText(/bought AAPL/)).toBeInTheDocument();
+    });
+
+    it("labels the accessible data table's short rows 'Short'/'Cover', not 'Buy'/'Sell'", () => {
+      render(<PortfolioChart points={eventPoints} />);
+
+      const table = screen.getByRole("table");
+      expect(within(table).getByText(/Short MSFT @/)).toBeInTheDocument();
+      expect(within(table).getByText(/Cover MSFT @/)).toBeInTheDocument();
+      expect(within(table).queryByText(/Buy MSFT/)).not.toBeInTheDocument();
+    });
+  });
 });

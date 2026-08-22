@@ -21,14 +21,15 @@ export function IntradayTradeList({ trades }: IntradayTradeListProps) {
     <ol className="flex flex-col gap-3">
       {trades.map((trade, index) => (
         <TradeRow
-          key={`${trade.ticker}-${trade.buyTime}`}
+          key={`${trade.ticker}-${trade.openTime}`}
           index={index}
           ticker={trade.ticker}
+          direction={trade.direction}
           preposition="at"
-          buyLabel={formatTime(trade.buyTime)}
-          buyPrice={trade.buyPrice}
-          sellLabel={formatTime(trade.sellTime)}
-          sellPrice={trade.sellPrice}
+          openLabel={formatTime(trade.openTime)}
+          openPrice={trade.openPrice}
+          closeLabel={formatTime(trade.closeTime)}
+          closePrice={trade.closePrice}
         />
       ))}
     </ol>

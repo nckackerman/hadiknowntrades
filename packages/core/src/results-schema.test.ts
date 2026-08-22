@@ -36,7 +36,7 @@ describe("resultKey", () => {
 /** A well-formed WindowResult, cloned and mutated by individual tests below rather than shared by reference. */
 function validWindowResult(): WindowResult {
   return {
-    schemaVersion: 4,
+    schemaVersion: RESULTS_SCHEMA_VERSION,
     range: "5Y",
     generatedAt: "2024-06-15T00:00:00.000Z",
     dataAsOf: "2024-06-14",
@@ -52,10 +52,11 @@ function validWindowResult(): WindowResult {
     trades: [
       {
         ticker: "AAPL",
-        buyDate: "2019-06-15",
-        buyPrice: 10,
-        sellDate: "2024-06-14",
-        sellPrice: 30,
+        direction: "long",
+        openDate: "2019-06-15",
+        openPrice: 10,
+        closeDate: "2024-06-14",
+        closePrice: 30,
       },
     ],
     worstCase: {
@@ -63,12 +64,39 @@ function validWindowResult(): WindowResult {
       trades: [
         {
           ticker: "MSFT",
-          buyDate: "2019-06-15",
-          buyPrice: 30,
-          sellDate: "2024-06-14",
-          sellPrice: 15,
+          direction: "long",
+          openDate: "2019-06-15",
+          openPrice: 30,
+          closeDate: "2024-06-14",
+          closePrice: 15,
         },
       ],
+    },
+    longShort: {
+      endingBalance: 70,
+      trades: [
+        {
+          ticker: "AAPL",
+          direction: "short",
+          openDate: "2019-06-15",
+          openPrice: 30,
+          closeDate: "2024-06-14",
+          closePrice: 10,
+        },
+      ],
+      worstCase: {
+        endingBalance: 5,
+        trades: [
+          {
+            ticker: "MSFT",
+            direction: "long",
+            openDate: "2019-06-15",
+            openPrice: 30,
+            closeDate: "2024-06-14",
+            closePrice: 10,
+          },
+        ],
+      },
     },
   };
 }
@@ -76,7 +104,7 @@ function validWindowResult(): WindowResult {
 /** A well-formed IntradayResult, cloned and mutated by individual tests below rather than shared by reference. */
 function validIntradayResult(): IntradayResult {
   return {
-    schemaVersion: 4,
+    schemaVersion: RESULTS_SCHEMA_VERSION,
     range: "1M",
     generatedAt: "2024-06-15T00:00:00.000Z",
     dataAsOf: "2024-06-14",
@@ -96,11 +124,12 @@ function validIntradayResult(): IntradayResult {
         trades: [
           {
             ticker: "AAPL",
+            direction: "long",
             date: "2024-06-14",
-            buyTime: "09:30:00",
-            buyPrice: 10,
-            sellTime: "10:30:00",
-            sellPrice: 20,
+            openTime: "09:30:00",
+            openPrice: 10,
+            closeTime: "10:30:00",
+            closePrice: 20,
           },
         ],
         worstCase: {
@@ -108,13 +137,42 @@ function validIntradayResult(): IntradayResult {
           trades: [
             {
               ticker: "AAPL",
+              direction: "long",
               date: "2024-06-14",
-              buyTime: "09:30:00",
-              buyPrice: 20,
-              sellTime: "10:30:00",
-              sellPrice: 15,
+              openTime: "09:30:00",
+              openPrice: 20,
+              closeTime: "10:30:00",
+              closePrice: 15,
             },
           ],
+        },
+        longShort: {
+          endingBalance: 45,
+          trades: [
+            {
+              ticker: "AAPL",
+              direction: "short",
+              date: "2024-06-14",
+              openTime: "09:30:00",
+              openPrice: 20,
+              closeTime: "10:30:00",
+              closePrice: 10,
+            },
+          ],
+          worstCase: {
+            endingBalance: 10,
+            trades: [
+              {
+                ticker: "AAPL",
+                direction: "long",
+                date: "2024-06-14",
+                openTime: "09:30:00",
+                openPrice: 20,
+                closeTime: "10:30:00",
+                closePrice: 15,
+              },
+            ],
+          },
         },
       },
     ],
@@ -185,10 +243,16 @@ describe("validatePrecomputedResult", () => {
     expect(() => validatePrecomputedResult(result)).toThrow(/trades\[0\]\.ticker/);
   });
 
-  it("rejects a WindowResult with a malformed trade (non-finite buyPrice)", () => {
+  it("rejects a WindowResult with a malformed trade (non-finite openPrice)", () => {
     const result = validWindowResult();
-    result.trades = [{ ...result.trades[0]!, buyPrice: NaN }];
-    expect(() => validatePrecomputedResult(result)).toThrow(/trades\[0\]\.buyPrice/);
+    result.trades = [{ ...result.trades[0]!, openPrice: NaN }];
+    expect(() => validatePrecomputedResult(result)).toThrow(/trades\[0\]\.openPrice/);
+  });
+
+  it("rejects a WindowResult with a malformed trade (invalid direction)", () => {
+    const result = validWindowResult();
+    result.trades = [{ ...result.trades[0]!, direction: "sideways" as never }];
+    expect(() => validatePrecomputedResult(result)).toThrow(/trades\[0\]\.direction/);
   });
 
   it("rejects a WindowResult whose trades field isn't an array", () => {
@@ -207,10 +271,10 @@ describe("validatePrecomputedResult", () => {
     );
   });
 
-  it("rejects an IntradayResult with a malformed intraday trade (missing buyTime)", () => {
+  it("rejects an IntradayResult with a malformed intraday trade (missing openTime)", () => {
     const result = validIntradayResult();
-    result.days[0]!.trades = [{ ...result.days[0]!.trades[0]!, buyTime: "" }];
-    expect(() => validatePrecomputedResult(result)).toThrow(/days\[0\]\.trades\[0\]\.buyTime/);
+    result.days[0]!.trades = [{ ...result.days[0]!.trades[0]!, openTime: "" }];
+    expect(() => validatePrecomputedResult(result)).toThrow(/days\[0\]\.trades\[0\]\.openTime/);
   });
 
   it("rejects a result with an unrecognized model discriminant", () => {
@@ -244,10 +308,10 @@ describe("validatePrecomputedResult", () => {
     );
   });
 
-  it("rejects a WindowResult with a malformed worstCase trade (non-finite sellPrice)", () => {
+  it("rejects a WindowResult with a malformed worstCase trade (non-finite closePrice)", () => {
     const result = validWindowResult();
-    result.worstCase.trades = [{ ...result.worstCase.trades[0]!, sellPrice: NaN }];
-    expect(() => validatePrecomputedResult(result)).toThrow(/worstCase\.trades\[0\]\.sellPrice/);
+    result.worstCase.trades = [{ ...result.worstCase.trades[0]!, closePrice: NaN }];
+    expect(() => validatePrecomputedResult(result)).toThrow(/worstCase\.trades\[0\]\.closePrice/);
   });
 
   it("rejects a WindowResult whose worstCase.endingBalance exceeds the optimal-case endingBalance (issue #31 -- catches a max/min inversion bug)", () => {
@@ -275,11 +339,11 @@ describe("validatePrecomputedResult", () => {
     );
   });
 
-  it("rejects an IntradayResult with a malformed day worstCase trade (missing buyTime)", () => {
+  it("rejects an IntradayResult with a malformed day worstCase trade (missing openTime)", () => {
     const result = validIntradayResult();
-    result.days[0]!.worstCase.trades = [{ ...result.days[0]!.worstCase.trades[0]!, buyTime: "" }];
+    result.days[0]!.worstCase.trades = [{ ...result.days[0]!.worstCase.trades[0]!, openTime: "" }];
     expect(() => validatePrecomputedResult(result)).toThrow(
-      /days\[0\]\.worstCase\.trades\[0\]\.buyTime/,
+      /days\[0\]\.worstCase\.trades\[0\]\.openTime/,
     );
   });
 
@@ -295,7 +359,7 @@ describe("validatePrecomputedResult", () => {
   it("reports every problem found, not just the first", () => {
     const result = validWindowResult();
     result.endingBalance = NaN;
-    result.trades = [{ ...result.trades[0]!, sellPrice: -5 }];
+    result.trades = [{ ...result.trades[0]!, closePrice: -5 }];
     try {
       validatePrecomputedResult(result);
       throw new Error("expected validatePrecomputedResult to throw");
@@ -303,8 +367,100 @@ describe("validatePrecomputedResult", () => {
       expect(error).toBeInstanceOf(ResultValidationError);
       const message = (error as Error).message;
       expect(message).toMatch(/endingBalance/);
-      expect(message).toMatch(/trades\[0\]\.sellPrice/);
+      expect(message).toMatch(/trades\[0\]\.closePrice/);
     }
+  });
+
+  describe("long+short (issue #13)", () => {
+    it("rejects a WindowResult missing longShort entirely", () => {
+      const result = validWindowResult() as unknown as Record<string, unknown>;
+      delete result.longShort;
+      expect(() => validatePrecomputedResult(result as unknown as WindowResult)).toThrow(
+        /longShort must be an object/,
+      );
+    });
+
+    it("rejects a WindowResult whose longShort.endingBalance is below its long-only counterpart", () => {
+      const result = validWindowResult();
+      result.endingBalance = 60;
+      result.longShort.endingBalance = 59;
+      expect(() => validatePrecomputedResult(result)).toThrow(
+        /longShort\.endingBalance \(59\) must be >= its long-only counterpart \(60\)/,
+      );
+    });
+
+    it("passes a WindowResult whose longShort.endingBalance exactly equals its long-only counterpart", () => {
+      const result = validWindowResult();
+      result.endingBalance = 60;
+      result.longShort.endingBalance = 60;
+      expect(() => validatePrecomputedResult(result)).not.toThrow();
+    });
+
+    it("rejects a WindowResult whose longShort.worstCase.endingBalance exceeds its long-only worstCase counterpart", () => {
+      const result = validWindowResult();
+      result.worstCase.endingBalance = 10;
+      result.longShort.worstCase.endingBalance = 11;
+      expect(() => validatePrecomputedResult(result)).toThrow(
+        /longShort\.worstCase\.endingBalance \(11\) must be <= its long-only counterpart \(10\)/,
+      );
+    });
+
+    it("rejects a WindowResult with a malformed longShort trade (invalid direction)", () => {
+      const result = validWindowResult();
+      result.longShort.trades = [{ ...result.longShort.trades[0]!, direction: "up" as never }];
+      expect(() => validatePrecomputedResult(result)).toThrow(/longShort\.trades\[0\]\.direction/);
+    });
+
+    it("rejects a WindowResult whose top-level trades array contains a short trade (long-only guard)", () => {
+      const result = validWindowResult();
+      result.trades = [{ ...result.trades[0]!, direction: "short" }];
+      expect(() => validatePrecomputedResult(result)).toThrow(
+        /trades\[0\]\.direction must be "long" in a long-only trades array/,
+      );
+    });
+
+    it("rejects a WindowResult whose worstCase.trades array contains a short trade (long-only guard)", () => {
+      const result = validWindowResult();
+      result.worstCase.trades = [{ ...result.worstCase.trades[0]!, direction: "short" }];
+      expect(() => validatePrecomputedResult(result)).toThrow(
+        /worstCase\.trades\[0\]\.direction must be "long" in a long-only trades array/,
+      );
+    });
+
+    it("rejects an IntradayResult missing a day's longShort entirely", () => {
+      const result = validIntradayResult() as unknown as Record<string, unknown>;
+      const day = (result.days as unknown[])[0] as Record<string, unknown>;
+      delete day.longShort;
+      expect(() => validatePrecomputedResult(result as unknown as IntradayResult)).toThrow(
+        /days\[0\]\.longShort must be an object/,
+      );
+    });
+
+    it("rejects an IntradayResult whose day longShort.endingBalance is below its long-only counterpart", () => {
+      const result = validIntradayResult();
+      result.days[0]!.endingBalance = 40;
+      result.days[0]!.longShort.endingBalance = 39;
+      expect(() => validatePrecomputedResult(result)).toThrow(
+        /days\[0\]\.longShort\.endingBalance \(39\) must be >= its long-only counterpart \(40\)/,
+      );
+    });
+
+    it("rejects an IntradayResult whose day longShort.worstCase.endingBalance exceeds its long-only worstCase counterpart", () => {
+      const result = validIntradayResult();
+      result.days[0]!.worstCase.endingBalance = 15;
+      result.days[0]!.longShort.worstCase.endingBalance = 16;
+      expect(() => validatePrecomputedResult(result)).toThrow(
+        /days\[0\]\.longShort\.worstCase\.endingBalance \(16\) must be <= its long-only counterpart \(15\)/,
+      );
+    });
+
+    it("rejects an IntradayResult whose day trades array contains a short trade (long-only guard)", () => {
+      const result = validIntradayResult();
+      result.days[0]!.trades = [{ ...result.days[0]!.trades[0]!, direction: "short" }];
+      expect(() => validatePrecomputedResult(result)).toThrow(
+        /days\[0\]\.trades\[0\]\.direction must be "long" in a long-only trades array/,
+      );
+    });
   });
 
   describe("benchmark (issue #12)", () => {
@@ -394,7 +550,15 @@ describe("customResultKey", () => {
   });
 });
 
-/** A well-formed CustomWindowResult (issue #11), cloned and mutated by individual tests below rather than shared by reference. */
+/**
+ * A well-formed CustomWindowResult (issue #11), cloned and mutated by
+ * individual tests below rather than shared by reference. Same
+ * long-only/long+short shape as validWindowResult above (issue #13/#11
+ * integration -- CustomWindowResult gained the identical `longShort`
+ * sibling field once buildCustomWindowResults started calling the same
+ * optimizeAllVariants-backed computeWindowOptimization, see
+ * results-schema.ts's own doc comment on CustomWindowResult).
+ */
 function validCustomWindowResult(): CustomWindowResult {
   return {
     schemaVersion: RESULTS_SCHEMA_VERSION,
@@ -410,10 +574,11 @@ function validCustomWindowResult(): CustomWindowResult {
     trades: [
       {
         ticker: "AAPL",
-        buyDate: "2019-03-01",
-        buyPrice: 10,
-        sellDate: "2024-06-14",
-        sellPrice: 30,
+        direction: "long",
+        openDate: "2019-03-01",
+        openPrice: 10,
+        closeDate: "2024-06-14",
+        closePrice: 30,
       },
     ],
     worstCase: {
@@ -421,12 +586,39 @@ function validCustomWindowResult(): CustomWindowResult {
       trades: [
         {
           ticker: "AAPL",
-          buyDate: "2019-03-04",
-          buyPrice: 30,
-          sellDate: "2024-06-14",
-          sellPrice: 15,
+          direction: "long",
+          openDate: "2019-03-04",
+          openPrice: 30,
+          closeDate: "2024-06-14",
+          closePrice: 15,
         },
       ],
+    },
+    longShort: {
+      endingBalance: 70,
+      trades: [
+        {
+          ticker: "AAPL",
+          direction: "short",
+          openDate: "2019-03-01",
+          openPrice: 30,
+          closeDate: "2024-06-14",
+          closePrice: 10,
+        },
+      ],
+      worstCase: {
+        endingBalance: 5,
+        trades: [
+          {
+            ticker: "AAPL",
+            direction: "long",
+            openDate: "2019-03-01",
+            openPrice: 30,
+            closeDate: "2024-06-14",
+            closePrice: 10,
+          },
+        ],
+      },
     },
     universeSize: 1,
     skippedTickers: [],
@@ -494,8 +686,8 @@ describe("validateCustomWindowResult", () => {
 
   it("rejects a result with a malformed trade", () => {
     const result = validCustomWindowResult();
-    result.trades = [{ ...result.trades[0]!, buyPrice: NaN }];
-    expect(() => validateCustomWindowResult(result)).toThrow(/trades\[0\]\.buyPrice/);
+    result.trades = [{ ...result.trades[0]!, openPrice: NaN }];
+    expect(() => validateCustomWindowResult(result)).toThrow(/trades\[0\]\.openPrice/);
   });
 
   it("rejects a result whose worstCase.endingBalance exceeds the optimal-case endingBalance", () => {
@@ -516,7 +708,7 @@ describe("validateCustomWindowResult", () => {
   it("reports every problem found, not just the first", () => {
     const result = validCustomWindowResult();
     result.endingBalance = NaN;
-    result.trades = [{ ...result.trades[0]!, sellPrice: -5 }];
+    result.trades = [{ ...result.trades[0]!, closePrice: -5 }];
     try {
       validateCustomWindowResult(result);
       throw new Error("expected validateCustomWindowResult to throw");
@@ -524,7 +716,52 @@ describe("validateCustomWindowResult", () => {
       expect(error).toBeInstanceOf(ResultValidationError);
       const message = (error as Error).message;
       expect(message).toMatch(/endingBalance/);
-      expect(message).toMatch(/trades\[0\]\.sellPrice/);
+      expect(message).toMatch(/trades\[0\]\.closePrice/);
     }
+  });
+
+  // Regression tests for the issue #11/#13 integration: CustomWindowResult
+  // gained the same longShort cross-checks WindowResult already had (see
+  // validateWindowLikeFields, shared by both validators) once it grew its
+  // own longShort field -- these mirror validatePrecomputedResult's own
+  // "WindowResult" longShort tests above, applied to CustomWindowResult.
+  it("rejects a CustomWindowResult missing longShort entirely", () => {
+    const result = validCustomWindowResult() as unknown as Record<string, unknown>;
+    delete result.longShort;
+    expect(() => validateCustomWindowResult(result as unknown as CustomWindowResult)).toThrow(
+      /longShort must be an object/,
+    );
+  });
+
+  it("rejects a CustomWindowResult whose longShort.endingBalance is below its long-only counterpart", () => {
+    const result = validCustomWindowResult();
+    result.endingBalance = 60;
+    result.longShort.endingBalance = 59;
+    expect(() => validateCustomWindowResult(result)).toThrow(
+      /longShort\.endingBalance \(59\) must be >= its long-only counterpart \(60\)/,
+    );
+  });
+
+  it("rejects a CustomWindowResult whose longShort.worstCase.endingBalance exceeds its long-only worstCase counterpart", () => {
+    const result = validCustomWindowResult();
+    result.worstCase.endingBalance = 10;
+    result.longShort.worstCase.endingBalance = 11;
+    expect(() => validateCustomWindowResult(result)).toThrow(
+      /longShort\.worstCase\.endingBalance \(11\) must be <= its long-only counterpart \(10\)/,
+    );
+  });
+
+  it("rejects a CustomWindowResult with a malformed longShort trade (invalid direction)", () => {
+    const result = validCustomWindowResult();
+    result.longShort.trades = [{ ...result.longShort.trades[0]!, direction: "up" as never }];
+    expect(() => validateCustomWindowResult(result)).toThrow(/longShort\.trades\[0\]\.direction/);
+  });
+
+  it("rejects a CustomWindowResult with a short trade in its long-only trades array", () => {
+    const result = validCustomWindowResult();
+    result.trades = [{ ...result.trades[0]!, direction: "short" }];
+    expect(() => validateCustomWindowResult(result)).toThrow(
+      /trades\[0\]\.direction must be "long"/,
+    );
   });
 });

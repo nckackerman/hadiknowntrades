@@ -3,6 +3,8 @@ import { useMemo } from "react";
 import type {
   BenchmarkResult,
   CustomWindowResult,
+  IntradayTrade,
+  LongShortResult,
   PrecomputedResult,
   PresetRange,
   Trade,
@@ -17,6 +19,7 @@ import {
 } from "@/lib/portfolio-series";
 import { formatDate } from "@/lib/format-date";
 import { formatHeroCurrency } from "@/lib/format-currency";
+import { DEFAULT_MODE, type Mode } from "@/lib/mode";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { useDailyGuess } from "@/lib/use-daily-guess";
 import { BenchmarkStat } from "@/components/BenchmarkStat";
@@ -36,6 +39,45 @@ const RANGE_COPY: Record<PresetRange, string> = {
   "5Y": "the past 5 years",
   MAX: "all available history",
 };
+
+/** The three fields every dollar-figure/trade-list consumer below actually reads, shared by the window model's WindowResult/LongShortResult and the intraday-daily model's IntradayDayResult/IntradayLongShortResult -- both pairs have this exact shape. */
+interface Variant<T> {
+  endingBalance: number;
+  trades: T[];
+  worstCase: { endingBalance: number; trades: T[] };
+}
+
+/**
+ * Picks which of a result's two computed variants (issue #13) every
+ * dollar-figure/trade-list consumer below should read: the long-only
+ * fields (unchanged since before this issue) or the sibling `longShort`
+ * fields, both always present on a real pipeline-written result. This is
+ * the single place that decision is made -- every consumer downstream
+ * (HeroAndWorstCase, PortfolioChart via portfolio-series.ts,
+ * TradeList/IntradayTradeList) is threaded this function's result instead
+ * of reading the raw top-level fields directly, the same class of mistake
+ * apps/web/CLAUDE.md documents happening *twice* for
+ * `effectiveStartingCapital` (issue #15) -- a component quietly reading
+ * the un-rescaled/wrong-variant field instead of the thread-through value.
+ *
+ * **Every call site below passes a `WindowResult`/`IntradayDayResult`
+ * (or its own `longShort` field) straight through as `base`/`longShort`,
+ * with no intermediate `{endingBalance, trades, worstCase}` object
+ * construction (code review follow-up)** -- an earlier version of this
+ * file built that object independently at each of the four call sites
+ * below, exactly the duplication-drift risk this doc comment already
+ * warned about. That construction was always redundant: `WindowResult`/
+ * `IntradayDayResult`/`LongShortResult`/`IntradayLongShortResult` already
+ * have `endingBalance`/`trades`/`worstCase` as own top-level fields with
+ * these exact names and shapes, so passing the real result object
+ * satisfies `Variant<T>` structurally (TypeScript's excess-property
+ * check only applies to fresh object literals, not existing typed
+ * variables) with nothing to keep in sync -- one fewer place to drift,
+ * not just one shared helper to remember to call.
+ */
+function selectVariant<T>(base: Variant<T>, longShort: Variant<T>, mode: Mode): Variant<T> {
+  return mode === "long" ? base : longShort;
+}
 
 /** A human error message per API error code (see ../app/api/results/route.ts's errorResponse calls) -- the API's own `message` is logged/available too, but these read better as UI copy for each specific, known failure shape. */
 function errorCopy(error: ClientErrorCode, apiMessage: string): { title: string; body: string } {
@@ -162,6 +204,15 @@ function HeroAndWorstCase({
  * `anchorMonth` is read here at all -- the caller derives its own
  * `rangeLabel`/`heroKey`/`emptyCopy` from whichever identifying field it
  * has, so this component never needs to know which one it got.
+ *
+ * **Includes `longShort` (issue #13/#11 integration)**: CustomWindowResult
+ * gained the same long+short sibling field WindowResult already had, once
+ * apps/pipeline's buildCustomWindowResults started calling the same
+ * optimizeAllVariants-backed computeWindowOptimization buildWindowResults
+ * does (see packages/core/src/results-schema.ts's own doc comment on
+ * CustomWindowResult) -- so both models satisfy this shape unchanged, and
+ * WindowResultBody can select a variant (see selectVariant) the same way
+ * for either.
  */
 interface WindowLikeResult {
   dataAsOf: string;
@@ -170,6 +221,7 @@ interface WindowLikeResult {
   endingBalance: number;
   trades: Trade[];
   worstCase: WorstCaseResult;
+  longShort: LongShortResult;
   benchmark: BenchmarkResult | null;
 }
 
@@ -178,9 +230,21 @@ interface WindowResultBodyProps {
   points: PortfolioPoint[];
   /** The full phrase following "Best possible outcome " -- e.g. "over the past year" (a preset range) or "since Mar 1, 2019" (a custom anchor). Includes its own preposition since the two forms need different ones. */
   descriptionPhrase: string;
-  /** Passed straight through as HeroAndWorstCase's own heroKey -- see that component's prop doc comment for why this must change whenever the underlying result does. */
+  /** Passed straight through as HeroAndWorstCase's own heroKey -- see that component's prop doc comment for why this must change whenever the underlying result does. Callers must fold `mode` into this string themselves (see each call site) -- switching modes surfaces a genuinely different trade sequence, the same "remount, don't just update props" reasoning the intraday-daily branch's own heroKey comment gives. */
   heroKey: string;
   emptyCopy: string;
+  /**
+   * Long-only vs. long+short (issue #13) -- which of `data`'s two
+   * computed variants (see selectVariant's own doc comment) this body
+   * reads for its hero figures/trade list/empty check. Required, not
+   * optional/defaulted: both call sites below (the "window" and
+   * "custom-window" branches) always have a real mode from
+   * ResultsPanel's own prop by the time either renders, so there's no
+   * meaningful default to fall back to here the way ResultsPanel's own
+   * top-level `mode` prop falls back to "long" for a caller that predates
+   * this issue.
+   */
+  mode: Mode;
   startingCapital?: number;
   onStartingCapitalChange?: (value: number) => void;
 }
@@ -190,10 +254,14 @@ interface WindowResultBodyProps {
  * list) shared by both the "window" (5Y/MAX) and "custom-window" (issue
  * #11) branches of ResultsPanel's success render below -- the two models
  * are the exact same underlying computation (packages/core's
- * optimizeBothDirections over a daily-close window), so extracting this
- * once avoids the two branches' JSX silently drifting apart over time,
- * the same "shared, not copy-pasted" discipline this codebase applies
- * elsewhere (e.g. trade-math.ts's compoundBalance/computeTradeReturn).
+ * optimizeAllVariants over a daily-close window, issue #13), so
+ * extracting this once avoids the two branches' JSX silently drifting
+ * apart over time, the same "shared, not copy-pasted" discipline this
+ * codebase applies elsewhere (e.g. trade-math.ts's compoundBalance/
+ * computeTradeReturn). Long-only vs. long+short variant selection (see
+ * selectVariant) happens once, here, rather than being left to each
+ * caller -- the same "one place decides" reasoning selectVariant's own
+ * doc comment already argues for at the top of this file.
  */
 function WindowResultBody({
   data,
@@ -201,10 +269,12 @@ function WindowResultBody({
   descriptionPhrase,
   heroKey,
   emptyCopy,
+  mode,
   startingCapital,
   onStartingCapitalChange,
 }: WindowResultBodyProps) {
-  const isEmpty = data.trades.length === 0;
+  const variant = selectVariant<Trade>(data, data.longShort, mode);
+  const isEmpty = variant.trades.length === 0;
   const effectiveStartingCapital = startingCapital ?? data.startingCapital;
 
   return (
@@ -214,8 +284,8 @@ function WindowResultBody({
           <HeroAndWorstCase
             heroKey={heroKey}
             startingCapital={data.startingCapital}
-            endingBalance={data.endingBalance}
-            worstCaseEndingBalance={data.worstCase.endingBalance}
+            endingBalance={variant.endingBalance}
+            worstCaseEndingBalance={variant.worstCase.endingBalance}
             displayStartingCapital={effectiveStartingCapital}
           />
           {onStartingCapitalChange && (
@@ -245,7 +315,7 @@ function WindowResultBody({
             {emptyCopy}
           </div>
         ) : (
-          <TradeList trades={data.trades} startingCapital={effectiveStartingCapital} />
+          <TradeList trades={variant.trades} startingCapital={effectiveStartingCapital} />
         )}
       </div>
     </div>
@@ -279,6 +349,15 @@ interface ResultsPanelProps {
   /** Called when the user picks a different day from the DaySelector. Required whenever the data can be intraday-model; omit only where a caller (e.g. a window-only test) never needs it. */
   onSelectDay?: (day: string) => void;
   /**
+   * Long-only vs. long+short (issue #13) -- which of a result's two
+   * computed variants (see selectVariant above) every dollar-figure/
+   * trade-list consumer below reads. Defaults to "long" (the pre-#13
+   * behavior), keeping default rendering (and every existing caller/test
+   * that doesn't pass this) pixel-identical to before this prop existed --
+   * same convention startingCapital/onStartingCapitalChange already use.
+   */
+  mode?: Mode;
+  /**
    * The user's chosen starting dollar amount (issue #15) to rescale
    * every displayed dollar figure to -- omit (along with
    * onStartingCapitalChange) to fall back to whatever the precomputed
@@ -298,6 +377,7 @@ export function ResultsPanel({
   state,
   selectedDay = null,
   onSelectDay,
+  mode = DEFAULT_MODE,
   startingCapital,
   onStartingCapitalChange,
 }: ResultsPanelProps) {
@@ -332,32 +412,42 @@ export function ResultsPanel({
     // "window" (5Y/MAX) and "custom-window" (issue #11's custom
     // start-date anchors) share the exact same whole-window portfolio
     // series derivation -- both are the same underlying model
-    // (packages/core's optimizeBothDirections over a daily-close
-    // window), just keyed differently (range vs. anchorMonth). See
+    // (packages/core's optimizeAllVariants over a daily-close window,
+    // issue #13), just keyed differently (range vs. anchorMonth). See
     // WindowResultBody below for the same "shared rendering" reasoning
     // applied to the JSX, not just this derivation.
     if (data.model === "window" || data.model === "custom-window") {
+      const variant = selectVariant<Trade>(data, data.longShort, mode);
       return derivePortfolioSeries(
         startingCapital ?? data.startingCapital,
         data.startDate,
         data.endDate,
-        data.trades,
+        variant.trades,
       );
     }
     if (!activeDay) return [];
+    const variant = selectVariant<IntradayTrade>(activeDay, activeDay.longShort, mode);
     return deriveIntradayPortfolioSeries(
       startingCapital ?? activeDay.startingCapital,
       activeDay.date,
-      activeDay.trades,
+      variant.trades,
     );
-  }, [state, activeDay, startingCapital]);
+  }, [state, activeDay, startingCapital, mode]);
 
   // Called unconditionally (Rules of Hooks) even when there's no active
   // intraday day yet -- an empty-string date is never actually read from
   // storage in that case, since the guess UI below only ever renders once
   // `activeDay` exists. See use-daily-guess.ts for why reading storage
-  // directly here (rather than deferring to an effect) is safe.
-  const { guess, guessStartingCapital, submitGuess } = useDailyGuess(range, activeDay?.date ?? "");
+  // directly here (rather than deferring to an effect) is safe. `mode` is
+  // threaded through as part of the guess key (issue #13) -- the same
+  // (range, date) pair can carry a genuinely different result depending on
+  // mode, exactly the argument daily-guess-storage.ts's own doc comment
+  // already makes for why `range` alone wasn't enough either.
+  const { guess, guessStartingCapital, submitGuess } = useDailyGuess(
+    range,
+    activeDay?.date ?? "",
+    mode,
+  );
 
   if (state.status === "loading") {
     return <LoadingSkeleton />;
@@ -398,7 +488,11 @@ export function ResultsPanel({
       );
     }
 
-    const isEmptyDay = activeDay.trades.length === 0;
+    // Which variant (long-only or long+short, issue #13) every dollar
+    // figure/trade-list below reads -- see selectVariant's own doc
+    // comment.
+    const dayVariant = selectVariant<IntradayTrade>(activeDay, activeDay.longShort, mode);
+    const isEmptyDay = dayVariant.trades.length === 0;
     const effectiveStartingCapital = startingCapital ?? activeDay.startingCapital;
 
     return (
@@ -428,21 +522,22 @@ export function ResultsPanel({
               // WorstCaseStat's worst-case figure before the guess is
               // submitted would partially spoil "the real answer" the
               // guessing game is built around. `heroKey` is the active
-              // day's date so switching days (via DaySelector) remounts
-              // HeroStat instead of just updating its props in place --
-              // useCountUp's reveal animation only fires on mount (see
-              // HeroStat's own doc comment), so without this key the
-              // visible figure would stay frozen at the previous day's
-              // animated value while the sr-only figure (driven directly
-              // by the prop) correctly updated, silently disagreeing with
-              // each other. Deliberately not keyed on startingCapital too
-              // (issue #15) -- a capital edit should rescale the figures
-              // instantly, not replay the reveal/celebration.
+              // day's date plus mode (issue #13) so switching days (via
+              // DaySelector) or modes (via ModeToggle) remounts HeroStat
+              // instead of just updating its props in place -- useCountUp's
+              // reveal animation only fires on mount (see HeroStat's own
+              // doc comment), so without this key the visible figure would
+              // stay frozen at the previous day's/mode's animated value
+              // while the sr-only figure (driven directly by the prop)
+              // correctly updated, silently disagreeing with each other.
+              // Deliberately not keyed on startingCapital too (issue #15)
+              // -- a capital edit should rescale the figures instantly, not
+              // replay the reveal/celebration.
               <HeroAndWorstCase
-                heroKey={activeDay.date}
+                heroKey={`${activeDay.date}-${mode}`}
                 startingCapital={activeDay.startingCapital}
-                endingBalance={activeDay.endingBalance}
-                worstCaseEndingBalance={activeDay.worstCase.endingBalance}
+                endingBalance={dayVariant.endingBalance}
+                worstCaseEndingBalance={dayVariant.worstCase.endingBalance}
                 displayStartingCapital={effectiveStartingCapital}
               />
             )}
@@ -519,7 +614,7 @@ export function ResultsPanel({
                   No trade would have beaten holding cash on {formatDate(activeDay.date)}.
                 </div>
               ) : (
-                <IntradayTradeList trades={activeDay.trades} />
+                <IntradayTradeList trades={dayVariant.trades} />
               )}
             </div>
           </>
@@ -535,14 +630,19 @@ export function ResultsPanel({
     // rangeLabel/heroKey/emptyCopy are derived from the anchor's own
     // startDate rather than RANGE_COPY[range] (the `range` prop is a
     // harmless placeholder in this mode -- see ResultsPanelProps' own
-    // doc comment).
+    // doc comment). `mode` (issue #13) is threaded through and folded
+    // into heroKey exactly like the "window" branch below -- a custom
+    // anchor's long+short variant is just as real a different trade
+    // sequence as a preset range's, not something this mode is out of
+    // scope for.
     return (
       <WindowResultBody
         data={data}
         points={points}
         descriptionPhrase={`since ${formatDate(data.startDate)}`}
-        heroKey={`custom-${data.anchorMonth}-${data.dataAsOf}`}
+        heroKey={`custom-${data.anchorMonth}-${data.dataAsOf}-${mode}`}
         emptyCopy={`No trade would have beaten holding cash since ${formatDate(data.startDate)}.`}
+        mode={mode}
         startingCapital={startingCapital}
         onStartingCapitalChange={onStartingCapitalChange}
       />
@@ -564,20 +664,25 @@ export function ResultsPanel({
       data={data}
       points={points}
       descriptionPhrase={`over ${RANGE_COPY[range]}`}
-      // Keyed on range + dataAsOf for the same reason the intraday-daily
-      // branch above keys on activeDay.date: remount HeroStat (not just
-      // update its props) whenever the underlying result actually
-      // changes, so useCountUp's reveal animation fires fresh instead of
-      // leaving the visible figure frozen at a stale animated value.
-      // Today this is also accidentally covered by useResults always
-      // passing through a loading state between results (see
-      // use-results.ts), which unmounts HeroStat itself -- but that's an
-      // implementation detail of the current fetch state machine, not a
-      // guarantee; an explicit key here doesn't depend on it holding.
-      // Deliberately not keyed on startingCapital too (issue #15) -- see
-      // the intraday-daily branch's identical comment above.
-      heroKey={`${data.range}-${data.dataAsOf}`}
+      // Keyed on range + dataAsOf + mode for the same reason the
+      // intraday-daily branch above keys on activeDay.date + mode:
+      // remount HeroStat (not just update its props) whenever the
+      // underlying result actually changes, so useCountUp's reveal
+      // animation fires fresh instead of leaving the visible figure
+      // frozen at a stale animated value. Mode (issue #13) is keyed the
+      // same as range/dataAsOf here, not treated like startingCapital
+      // below -- switching to long+short surfaces a genuinely different
+      // trade sequence, not an instant rescale of the same one. Today
+      // this is also accidentally covered by useResults always passing
+      // through a loading state between results (see use-results.ts),
+      // which unmounts HeroStat itself -- but that's an implementation
+      // detail of the current fetch state machine, not a guarantee; an
+      // explicit key here doesn't depend on it holding. Deliberately not
+      // keyed on startingCapital too (issue #15) -- see the
+      // intraday-daily branch's identical comment above.
+      heroKey={`${data.range}-${data.dataAsOf}-${mode}`}
       emptyCopy={`No trade would have beaten holding cash over ${RANGE_COPY[range]}.`}
+      mode={mode}
       startingCapital={startingCapital}
       onStartingCapitalChange={onStartingCapitalChange}
     />

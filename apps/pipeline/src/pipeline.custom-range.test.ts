@@ -100,7 +100,7 @@ describe("runPipeline custom-range anchors (issue #11)", () => {
     // (2019-01-01 itself has no bar in the fixture) -- confirms the
     // slicing filter's forward-snap behavior end to end, not just as a
     // documented claim.
-    expect(jan2019.trades[0].buyDate).toBe("2019-01-02");
+    expect(jan2019.trades[0].openDate).toBe("2019-01-02");
 
     // 2017-01 predates AAPL's fixture history entirely -- the slicing
     // filter naturally includes every bar from the earliest one present
@@ -109,12 +109,63 @@ describe("runPipeline custom-range anchors (issue #11)", () => {
     // window (see buildWindowResults' own startDateString handling).
     const jan2017 = JSON.parse(store.objects.get("results/custom/2017-01.json")!);
     expect(jan2017.startDate).toBe("2017-01-01");
-    expect(jan2017.trades[0].buyDate).toBe("2018-01-02");
+    expect(jan2017.trades[0].openDate).toBe("2018-01-02");
 
     // The preset ranges (5) are unaffected/still written normally
     // alongside the 2 custom anchors.
     expect(summary.results).toHaveLength(5);
     expect(store.objects.size).toBe(7);
+  });
+
+  // Regression test for the issue #11/#13 integration: buildCustomWindowResults
+  // used to call the long-only-only optimizeBothDirections (issue #31's
+  // best/worst sharing), predating issue #13's short-selling mode --
+  // merging the two features means it now calls the same
+  // optimizeAllVariants-backed computeWindowOptimization buildWindowResults
+  // does, so every CustomWindowResult carries a real longShort field with
+  // its own genuine short trades, not just the long-only fields.
+  it("computes a real longShort field with a genuine short trade for a custom anchor (issue #11/#13 integration)", async () => {
+    const dailyFixture = new Map<string, DailyClose[]>([
+      // A pure price decline across the whole anchor window: no long
+      // trade here can ever be profitable (only two bars, price only
+      // falls), so the long-only search correctly makes zero trades
+      // (endingBalance stays at startingCapital) -- but shorting the
+      // same decline (open 100, close 10 -> payoff 100/10 = 10x) is
+      // exactly what the long+short search should find instead.
+      ["AAPL", [daily("2019-01-02", 100), daily("2024-06-14", 10)]],
+    ]);
+    const intradayFixture = validIntradayFixture();
+    const store = memoryStore();
+
+    const summary = await runPipeline({
+      tickers: ["AAPL"],
+      fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
+      fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+      fetchFiveMinuteBars: noIntradayData,
+      fetchIntraday1mBars: noIntradayData,
+      store,
+      asOf: ASOF,
+      customRangeAnchors: ["2019-01"],
+    });
+
+    const [custom] = summary.customResults;
+    expect(custom).toBeDefined();
+    // Long-only: no trade beats holding cash on a pure decline.
+    expect(custom!.trades).toEqual([]);
+    expect(custom!.endingBalance).toBe(20);
+    // Long+short: a real short trade, and it beats the long-only result.
+    expect(custom!.longShort.trades).toHaveLength(1);
+    expect(custom!.longShort.trades[0]!.direction).toBe("short");
+    expect(custom!.longShort.trades[0]!.ticker).toBe("AAPL");
+    expect(custom!.longShort.endingBalance).toBe(200); // 20 * (100/10)
+    expect(custom!.longShort.endingBalance).toBeGreaterThan(custom!.endingBalance);
+
+    // Round-trips through the actual written+parsed JSON too, confirming
+    // this passed validateCustomWindowResult's own longShort cross-checks
+    // (see results-schema.ts) at write time, not just an in-memory shape.
+    const stored = JSON.parse(store.objects.get("results/custom/2019-01.json")!);
+    expect(stored.longShort.endingBalance).toBe(200);
+    expect(stored.longShort.trades[0].direction).toBe("short");
   });
 
   it("defaults to zero custom anchors when customRangeAnchors is omitted", async () => {

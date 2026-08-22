@@ -63,6 +63,56 @@ describe("ResultsPage", () => {
     expect(replace).toHaveBeenCalledWith("/?range=5Y", { scroll: false });
   });
 
+  describe("mode (issue #13)", () => {
+    it("defaults to long-only when the URL has no mode param", () => {
+      render(<ResultsPage />);
+
+      expect(screen.getByRole("button", { name: "Long only" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    });
+
+    it("reads the initial mode from the URL, case-insensitively", () => {
+      search = "mode=LONG-SHORT";
+      render(<ResultsPage />);
+
+      expect(screen.getByRole("button", { name: "Long + short" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    });
+
+    it("falls back to the default mode for an unrecognized URL param", () => {
+      search = "mode=bogus";
+      render(<ResultsPage />);
+
+      expect(screen.getByRole("button", { name: "Long only" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    });
+
+    it("writes the selected mode to the URL via router.replace when the toggle is clicked", async () => {
+      const user = userEvent.setup();
+      render(<ResultsPage />);
+
+      await user.click(screen.getByRole("button", { name: "Long + short" }));
+
+      expect(replace).toHaveBeenCalledWith("/?mode=long-short", { scroll: false });
+    });
+
+    it("preserves the current range when only the mode changes", async () => {
+      search = "range=5Y";
+      const user = userEvent.setup();
+      render(<ResultsPage />);
+
+      await user.click(screen.getByRole("button", { name: "Long + short" }));
+
+      expect(replace).toHaveBeenCalledWith("/?range=5Y&mode=long-short", { scroll: false });
+    });
+  });
+
   describe("custom start-date anchor mode (issue #11)", () => {
     it("fetches the anchor-specific endpoint and marks no preset pill as selected when ?anchor= is present", () => {
       const anchor = customRangeAnchors(new Date())[0]!;
@@ -111,6 +161,46 @@ describe("ResultsPage", () => {
       await user.click(screen.getByRole("button", { name: "5Y" }));
 
       expect(replace).toHaveBeenCalledWith("/?range=5Y", { scroll: false });
+    });
+  });
+
+  describe("anchor and mode combined (issue #11/#13 integration)", () => {
+    it("fetches the anchor-specific endpoint and reads mode from the URL when both ?anchor= and ?mode= are set", () => {
+      const anchor = customRangeAnchors(new Date())[0]!;
+      search = `anchor=${anchor}&mode=long-short`;
+      render(<ResultsPage />);
+
+      expect(fetch).toHaveBeenCalledWith(`/api/results?anchor=${anchor}`);
+      expect(screen.getByRole("button", { name: "Long + short" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    });
+
+    it("preserves the current anchor when only the mode changes", async () => {
+      const anchor = customRangeAnchors(new Date())[0]!;
+      search = `anchor=${anchor}`;
+      const user = userEvent.setup();
+      render(<ResultsPage />);
+
+      await user.click(screen.getByRole("button", { name: "Long + short" }));
+
+      expect(replace).toHaveBeenCalledWith(`/?anchor=${anchor}&mode=long-short`, {
+        scroll: false,
+      });
+    });
+
+    it("preserves the current mode when the anchor changes", async () => {
+      const anchor = customRangeAnchors(new Date())[2]!;
+      search = "range=5Y&mode=long-short";
+      const user = userEvent.setup();
+      render(<ResultsPage />);
+
+      await user.selectOptions(screen.getByRole("combobox"), anchor);
+
+      expect(replace).toHaveBeenCalledWith(`/?mode=long-short&anchor=${anchor}`, {
+        scroll: false,
+      });
     });
   });
 });

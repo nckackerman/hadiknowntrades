@@ -1,11 +1,12 @@
 import type { IntradayResult, WindowResult } from "@hadiknowntrades/core";
+import { RESULTS_SCHEMA_VERSION } from "@hadiknowntrades/core";
 import { describe, expect, it } from "vitest";
 
 import { buildOgCardContent, rangeLabel } from "./og-card";
 
 function windowResult(overrides: Partial<WindowResult> = {}): WindowResult {
   return {
-    schemaVersion: 4,
+    schemaVersion: RESULTS_SCHEMA_VERSION,
     model: "window",
     range: "MAX",
     generatedAt: "2026-08-21T00:00:00.000Z",
@@ -17,6 +18,7 @@ function windowResult(overrides: Partial<WindowResult> = {}): WindowResult {
     endingBalance: 48_203,
     trades: [],
     worstCase: { endingBalance: 20, trades: [] },
+    longShort: { endingBalance: 48_203, trades: [], worstCase: { endingBalance: 20, trades: [] } },
     universeSize: 500,
     skippedTickers: [],
     benchmark: null,
@@ -26,7 +28,7 @@ function windowResult(overrides: Partial<WindowResult> = {}): WindowResult {
 
 function intradayResult(overrides: Partial<IntradayResult> = {}): IntradayResult {
   return {
-    schemaVersion: 4,
+    schemaVersion: RESULTS_SCHEMA_VERSION,
     model: "intraday-daily",
     range: "1M",
     generatedAt: "2026-08-21T00:00:00.000Z",

@@ -147,6 +147,180 @@ direction)` -- only `computeLevel`'s four comparison sites/sentinels are
   a calculation error — worth remembering when designing display/number
   formatting in `apps/web` (issue #8), since a naive `$` format will
   look absurd or broken to a first-time viewer without some framing.
+  **Issue #13's short-selling mode makes this even more astronomical**:
+  a short's reciprocal-price payoff (see below) is unbounded above as the
+  covering price approaches zero, so `longShort.endingBalance` can exceed
+  `endingBalance` by a wide margin on the MAX range -- live-verified
+  (real S&P 500 data, 2026-08-21): MAX's long-only best came back
+  ~$138.8B from $20, long+short's own best ~$215.1B over the _same_
+  window. Same "real perfect-hindsight compounding, not a bug" framing,
+  just a second axis it can come from now.
+
+## Short-selling mode (issue #13)
+
+`src/optimizer.ts` gains a second trade type alongside every existing
+long trade: a short, opened at `P[open]` and covered at `P[close]`,
+modeled as **reciprocal-price** (payoff `P[open]/P[close]`, i.e. exactly
+what running the existing long formula on the reciprocal price series
+`1/P(t)` would produce) rather than literal fixed-share-count short
+mechanics -- see `docs/plans/issue-13-plan.md` section 1.1 for the full
+derivation of why the literal model needs a fundamentally different (and
+much more expensive) algorithm, and why reciprocal-price stays separable
+the same way the existing long ratio is. This is a real, deliberate
+economic-modeling trade-off, not an oversight: **a short's payoff under
+this model is bounded below by 0 -- never negative -- unlike a real
+short's unbounded downside risk.** (The plan's own section 1.4(a)
+originally described this as "bounded to (0, +infinity)"; that phrasing
+is imprecise, since that interval is unbounded _above_ -- the actual,
+precise claim, and the one that matters for the safety argument below, is
+"bounded below by 0.") That's exactly why it was safe to extend
+`optimizeWorstTrades`'s min-direction search to include short candidates
+too (see that function's own doc comment): a min search over a
+candidate set that's bounded below by 0 can never produce an impossible
+negative balance the way it would under the literal, unbounded-downside
+model.
+
+- **Gated behind an internal `includeShorts` flag, not a public
+  `OptimizeOptions` field** -- `computeLevel` gains a second,
+  `includeShorts`-conditional pass per ticker (structurally identical to
+  the existing long pass: same suffix-best-then-`O(1)`-lookup shape, same
+  `worstSentinel`/comparison primitives, just a second `g` array and the
+  roles of "divide" and "multiply" swapped). `optimizeTrades`/
+  `optimizeWorstTrades`/`optimizeBothDirections` all still call
+  `runOptimizerForDirection` with a fixed `includeShorts: false` --
+  pinned, not merely defaulted -- so their own behavior is provably
+  unchanged by this issue (the long-only call path literally never
+  reaches the new code). The only way to reach `includeShorts: true` is
+  the new `optimizeAllVariants`, which runs all 4 direction x
+  instrument-set combinations off one shared `OptimizerState`, mirroring
+  `optimizeBothDirections`'s own calendar/ticker-sort sharing.
+- **A new, genuinely arbitrary-but-deterministic tie-break axis**: when a
+  long and a short candidate tie exactly for the same `value[d]` slot,
+  the long wins -- not because of any principled preference, but because
+  each ticker's long pass runs to completion (including its own
+  `value[]`/`choice[]` update) before that same ticker's short pass even
+  starts. Same character as the three pre-existing tie-break rules
+  (cross-ticker alphabetical, cross-day earliest-wins, trade-vs-carry-
+  forward strict inequality) -- about determinism given an otherwise-tied
+  objective, not about maximizing.
+- **The plan's own worked example for the same-ticker tie-break turned
+  out not to actually exercise it, found and corrected during
+  implementation (not just re-derived on paper -- checked empirically
+  against the real DP).** The plan's numbers ($100/$105/$95.2381, chosen
+  so `100/95.2381` ties the long's `105/100`) miss that a short opened on
+  the _second_ day and covered on the third (`105/95.2381 ~= 1.1025`)
+  strictly beats both intended candidates -- the DP correctly finds that
+  better trade instead of the claimed tie, which is itself a small
+  additional confirmation the implementation is doing the right thing,
+  not a bug. `optimizer.test.ts`'s own same-ticker tie-break test uses a
+  different, exhaustively-checked fixture (`[8, 10, 10, 8]`) instead of
+  reusing the plan's numbers as-is.
+- **`Trade`'s fields are renamed** to direction-neutral `openDate`/
+  `openPrice`/`closeDate`/`closePrice` (from `buyDate`/`buyPrice`/
+  `sellDate`/`sellPrice`), plus a new `direction: "long" | "short"`
+  field -- `openDate`/`openPrice` always come from the earlier of the two
+  indices and `closeDate`/`closePrice` from the later, regardless of
+  direction, so trade reconstruction needs no direction-based branching.
+  Same rename applies to `IntradayTrade` (`intraday-optimizer.ts`):
+  `buyTime`/`sellTime` -> `openTime`/`closeTime`, plus `direction`.
+- **`RESULTS_SCHEMA_VERSION` bumped 4 -> 5** (`results-schema.ts`) for
+  the field rename plus a new `longShort` sibling field on
+  `WindowResult`/`IntradayDayResult` (mirroring issue #31's `worstCase`
+  sibling-field precedent, not a restructure of the existing flat
+  fields). `validatePrecomputedResult` gained two new cross-checks, both
+  true by construction and both live-verified as never violated on real
+  data (see below): `longShort.endingBalance >= endingBalance` (a max
+  search over a superset -- every long candidate plus shorts -- can never
+  do worse) and `longShort.worstCase.endingBalance <= worstCase
+.endingBalance` (same argument, inverted for a min search). Also a
+  lower-priority optional guard: every trade in a long-only `trades`/
+  `worstCase.trades` array must have `direction === "long"`, catching
+  exactly the class of bug where `includeShorts` gets accidentally wired
+  to `true` for a call site that should be `false`.
+- **Live-verified** (real S&P 500 data, full 503-ticker universe,
+  2026-08-21, no S3 write): both cross-checks held with **0 violations**
+  across all 5 window ranges and all 251 real trading days of the 1Y
+  intraday path. Real short trades appeared routinely, not just as a
+  theoretical possibility -- every one of the 5 window ranges had at
+  least one short trade in `longShort.best.trades` or
+  `longShort.worst.trades`, and 218 of 251 real intraday days had a short
+  trade in that day's `longShort.best.trades`.
+- **Performance, live-measured (not just the plan's analytical estimate)**:
+  for the single most expensive case (MAX range, full S&P 500,
+  `maxTrades=3`), `optimizeAllVariants` took ~3.36s versus
+  `optimizeBothDirections`'s own ~1.48s over the same input -- a ~2.3x
+  ratio, in the ballpark of (a bit better than) the plan's own "roughly
+  doubles per direction" framing for this single-range, single-call
+  comparison. All 5 window ranges' `optimizeAllVariants` calls together
+  took ~4.0s. The intraday path is comfortably cheap in absolute terms:
+  ~1.08s total for all 251 real trading days' `optimizeIntradayDays`
+  calls (which now always compute all 4 variants), ~4.3ms/day on
+  average. Peak RSS during the window-path live-verification run (full
+  fetch + all 5 ranges' `optimizeAllVariants` calls) was ~1.28GB, driven
+  primarily by holding the full fetched 503-ticker/21-year daily-close
+  history in memory, not by the optimizer's own additional short-search
+  state.
+
+### Code review follow-up: `computeLevel`'s long/short duplication, and `optimizeIntradayDays`' overflow containment
+
+Two findings from a post-merge review of issue #13's PR:
+
+- **`computeLevel`'s short-candidate pass used to be a near-verbatim
+  structural duplicate of the long-candidate pass immediately above it**
+  -- identical suffix-best/running-best/sentinel/tie-break machinery,
+  differing only in the g/ratio formula and field names. Factored into
+  one shared `runCandidatePass` helper, parameterized by two small
+  formula functions (`gAt`/`ratioAt` -- `longG`/`longRatio` for the long
+  pass, `shortG`/`shortRatio` for the short pass, both module-level
+  constants since neither captures per-ticker state) and a
+  `TradeDirection` tag for the emitted `TradeChoice`. `computeLevel`
+  itself now just calls this helper twice per ticker (long
+  unconditionally, short when `includeShorts`) -- same call order as
+  before, so the existing "long wins an exact tie" behavior (see
+  `includeShorts`'s own doc comment above) is unchanged: the long pass
+  still fully updates `value[]`/`choice[]` for a ticker before that same
+  ticker's short pass even starts. Pure refactor, verified against the
+  full pre-existing `optimizer.test.ts` suite (974 tests, all still
+  passing byte-for-byte) rather than assumed safe from reading the diff.
+- **A known, documented, _not_-fixed inefficiency**: `optimizeAllVariants`'
+  k=1 level does byte-for-byte identical long-pass work twice per
+  direction (the long-only run's k=1 and the long+short run's k=1 both
+  start from the same all-ones level-0 baseline, and the long pass has
+  no dependency on `includeShorts`). Sharing it would need
+  `computeLevel`/`runCandidatePass` to accept an already-computed
+  baseline level instead of always initializing fresh from `prevValue` --
+  judged not clean enough to be worth the added surface area for a
+  saving bounded to one of up to `maxTrades` levels per run (levels
+  k=2+ genuinely diverge between the two runs and have no equivalent
+  redundancy). See `optimizeAllVariants`'s own doc comment for the full
+  reasoning; revisit only if `computeLevel` is restructured for an
+  unrelated reason that makes exposing that seam cheap.
+- **`optimizeIntradayDays` now catches and contains a per-day compute
+  failure** (most plausibly the same overflow issue: a short's
+  reciprocal-price payoff is unbounded above as the covering price
+  approaches zero) instead of letting it propagate and abort every other
+  day's already-computable result. Its return type changed from a bare
+  `IntradayDayResult[]` to `OptimizeIntradayResult` (`{days,
+skippedDays}`, mirroring `apps/pipeline`'s own `fetchUniverseHistory`
+  `{history, skipped, abortError}` shape for the identical "contain the
+  failure, but still report it" problem) -- **every caller of
+  `optimizeIntradayDays`, including every test, needed updating for this
+  shape change**, not just apps/pipeline's own call sites. `catch (error)`
+  here is deliberately broad -- any exception during a day's solve, not
+  narrowed by type -- but always folds into `skippedDays` regardless of
+  which exception fired; this function itself never distinguishes "the
+  documented overflow" from "some other bug" (and a third code-review
+  round on issue #13's PR confirmed that's correct: `catch`-and-report
+  here is genuinely fine, the real gap it found was one level up, in a
+  _caller_ silently discarding the `skippedDays` this function had
+  already correctly populated -- see the next sentence). See
+  `apps/pipeline/CLAUDE.md`'s "Code review follow-up: issue #13
+  short-selling PR" section for how apps/pipeline turns `skippedDays`
+  into a real, run-failing alert for _both_ the base 60-minute pass and
+  every granularity override's own pass (a third code-review round fixed
+  the override side, which had been wrongly treated as non-fatal by
+  analogy to an unrelated case -- an override _fetch_ failure, which
+  does stay non-fatal).
 
 ## 60-minute intraday bars (issue #28)
 
@@ -545,6 +719,14 @@ by calendar day (the date-part of each bar's `date`), then call
   (`sixtyMinuteDays`, `mergeDaysByGranularity`, the final `days` array),
   so `worstCase` flows through every one of those call sites for free
   once `IntradayDayResult` itself carries it.
+- **No longer a bare `.map()` (code review follow-up to issue #13)**: the
+  per-day body is now a `for...of` loop with a try/catch around each
+  day's `optimizeAllVariants` call, so one day's compute failure (see
+  "Code review follow-up" above) doesn't propagate and abort every other
+  day's already-solved result. The return type changed to match --
+  `OptimizeIntradayResult` (`{days, skippedDays}`), not a bare
+  `IntradayDayResult[]` -- see that section for the full reasoning and
+  what apps/pipeline does with `skippedDays`.
 
 ## Custom date-range anchors (issue #11)
 
@@ -651,3 +833,50 @@ Date(year, ...)` two-digit-year reinterpretation rule (years 0-99
   pipeline Lambda's 15-minute timeout, and S3 storage growth is
   negligible against the $20/month budget. See
   `docs/plans/issue-11-plan.md` section 1.6 for the full run's numbers.
+
+### Merged with issue #13's short-selling mode
+
+Issues #11 and #13 were developed in parallel branches and merged after
+both had independently landed on `main`/this branch -- `CustomWindowResult`
+originally had no `longShort` field, and `apps/pipeline`'s
+`buildCustomWindowResults` originally called the long-only-only
+`optimizeBothDirections` (issue #31's own best/worst sharing) rather than
+issue #13's `optimizeAllVariants`. Integrated at merge time, not left as
+two features sitting side by side:
+
+- **`CustomWindowResult` gained the same `longShort: LongShortResult`
+  sibling field `WindowResult`/`IntradayDayResult` already carry** (see
+  that field's own doc comment in `results-schema.ts`) -- the same
+  additive-sibling pattern issue #13 already established, applied to this
+  third whole-window-shaped result type.
+- **`validateWindowLikeFields` (the shared validator both
+  `validatePrecomputedResult`'s "window" branch and
+  `validateCustomWindowResult` call) now also owns the long+short
+  cross-checks and the `validateAllTradesAreLong` guard**, not just the
+  long-only fields it validated before this merge -- so `CustomWindowResult`
+  gets `longShort.endingBalance >= endingBalance` /
+  `longShort.worstCase.endingBalance <= worstCase.endingBalance` checked
+  for free the moment it grows a `longShort` field, with no separate
+  custom-anchor-specific validation code to keep in sync.
+- **`apps/pipeline`'s `computeWindowOptimization`** (the shared
+  windowed-slice + DP helper `buildWindowResults` and
+  `buildCustomWindowResults` both call -- see `apps/pipeline/CLAUDE.md`)
+  **now calls `optimizeAllVariants` instead of `optimizeBothDirections`**,
+  so every whole-window result -- preset range or custom anchor -- gets
+  computed off the same one shared `OptimizerState` per window, all 4
+  direction x instrument-set combinations at once, exactly like issue
+  #13's own `buildWindowResults` already did before this merge (which,
+  before the merge, called `optimizeAllVariants` directly rather than
+  going through this shared helper at all -- issue #11's
+  `computeWindowOptimization` didn't exist yet on issue #13's own branch).
+- **`buildCustomWindowResults` also gained the same per-anchor try/catch
+  containment `buildWindowResults` already has** (see
+  `apps/pipeline/CLAUDE.md`'s "Code review follow-up: issue #13
+  short-selling PR" section) -- a genuinely new correctness need this
+  merge surfaced, not carried over from either branch alone: once a
+  custom anchor's window is solved via the same `optimizeAllVariants` a
+  preset range's is, it's exposed to the identical short-payoff-overflow
+  risk (see "Short-selling mode" above), and with up to ~252 anchors
+  computed per run, letting one anchor's overflow abort every other
+  already-computable anchor would have been a much larger regression than
+  it would be for just the 2 window ranges.

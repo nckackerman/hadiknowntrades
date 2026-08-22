@@ -70,7 +70,7 @@ import {
   anchorMonthToDate,
   BlockedError,
   optimizeIntradayDays,
-  optimizeBothDirections,
+  optimizeAllVariants,
   PRESET_RANGES,
   presetRangeStartDate,
   resultKey,
@@ -449,24 +449,254 @@ function maxDateString(a: string, b: string | null): string {
  * 60-minute day for that same date -- silently taking the finer version
  * regardless would make the range's result strictly worse than what
  * 60-minute-only data would have shown, undermining this app's whole
- * "best possible outcome" premise. Instead: when both cover a date, keep
- * whichever day's `endingBalance` is actually higher (both were run
- * with the same `startingCapital`, so ending balance is directly
- * comparable as "the better outcome").
+ * "best possible outcome" premise.
+ *
+ * **Issue #13 fix: the long-only bundle (`endingBalance`/`trades`/
+ * `worstCase`) and the long+short bundle (the whole `longShort` field,
+ * itself best+worst) are picked *independently* of each other, each via
+ * its own endingBalance comparison** -- see mergeDayVariants below. The
+ * original version of this function (pre-#13-code-review) picked a
+ * date's whole IntradayDayResult wholesale based only on the long-only
+ * `endingBalance` comparison, silently ignoring the parallel `longShort`
+ * field entirely: whichever source won the long-only comparison also
+ * had its `longShort` field carried along for the ride, even when the
+ * *other* source's `longShort.endingBalance` was actually higher (a
+ * realistic split, since `IntradayDayResult.longShort` is a genuinely
+ * independent search per intraday-optimizer.ts, and different
+ * granularities can see different ticker universes) -- silently
+ * violating this function's own "keeps whichever day's outcome is
+ * actually higher" invariant for the long+short mode specifically.
+ *
+ * This is safe (not a "cherry-pick fields from two unrelated
+ * computations" hazard) precisely because each bundle's own fields were
+ * always computed together, from the same source day's actual bars, by
+ * the same optimizeAllVariants call: `trades` always matches its own
+ * sibling `endingBalance`, and `longShort.trades` always matches
+ * `longShort.endingBalance`, regardless of which of the two bundles'
+ * source day ends up winning independently.
  */
+interface MergeDaysByGranularityOutcome {
+  days: IntradayDayResult[];
+  /**
+   * One entry per date where mergeDayVariants had to fall back instead
+   * of combining the two sources' bundles (see that function's own doc
+   * comment) -- expected to be empty on every real run (the underlying
+   * cross-check is proven to never actually fire, see below), but
+   * plumbed through to buildIntradayResults' own `failures` return so a
+   * violation, if the "never" premise is ever wrong, still fails the run
+   * via computeFailures instead of only being visible as a console.error
+   * buried in CloudWatch.
+   */
+  failures: string[];
+}
+
 function mergeDaysByGranularity(
   primaryDays: IntradayDayResult[],
   overrideDays: IntradayDayResult[],
-): IntradayDayResult[] {
+): MergeDaysByGranularityOutcome {
   const byDate = new Map<string, IntradayDayResult>();
+  const failures: string[] = [];
   for (const day of primaryDays) byDate.set(day.date, day);
   for (const day of overrideDays) {
     const existing = byDate.get(day.date);
-    if (!existing || day.endingBalance > existing.endingBalance) {
+    if (!existing) {
       byDate.set(day.date, day);
+      continue;
     }
+    const { day: merged, fallback } = mergeDayVariants(existing, day);
+    if (fallback) failures.push(fallback);
+    byDate.set(day.date, merged);
   }
-  return [...byDate.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return {
+    days: [...byDate.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
+    failures,
+  };
+}
+
+/**
+ * Combines two IntradayDayResults for the *same* date, sourced from two
+ * different granularities -- see mergeDaysByGranularity's own doc
+ * comment for why this exists. Picks the long-only bundle
+ * (`endingBalance`/`trades`/`worstCase`) from whichever source has the
+ * higher `endingBalance`, and the long+short bundle (the whole
+ * `longShort` field) from whichever source has the higher
+ * `longShort.endingBalance` -- independently of each other. Ties (equal
+ * `endingBalance`) keep `a` (the primary/60-minute day) for each bundle,
+ * matching this function's pre-existing tie-break (the original
+ * `day.endingBalance > existing.endingBalance`, strict, only replacing
+ * `existing` on a real improvement).
+ *
+ * **Why this can never violate results-schema.ts's own write-time
+ * cross-checks** (`longShort.endingBalance >= endingBalance` and
+ * `longShort.worstCase.endingBalance <= worstCase.endingBalance`,
+ * checked on every stored day) **even though the two bundles can now
+ * come from different source days:**
+ *
+ * Write `X` = the long-only winner (`a` or `b`, whichever has the higher
+ * `endingBalance`) and `Y` = the long+short winner. `merged.endingBalance
+ * = X.endingBalance` and `merged.longShort = Y.longShort`.
+ *
+ * - `merged.longShort.endingBalance >= merged.endingBalance`: if `X ===
+ *   Y`, this is exactly the existing same-source invariant (always true
+ *   by construction, per optimizer.ts's own optimizeAllVariants doc
+ *   comment: a long+short max-search over a strict superset of the
+ *   long-only candidate set can never do worse). If `X !== Y`, then by
+ *   definition `Y.longShort.endingBalance > X.longShort.endingBalance`,
+ *   and `X.longShort.endingBalance >= X.endingBalance` holds for `X` on
+ *   its own (the same same-source invariant) -- chaining the two:
+ *   `merged.longShort.endingBalance = Y.longShort.endingBalance >
+ *   X.longShort.endingBalance >= X.endingBalance = merged.endingBalance`.
+ * - `merged.longShort.worstCase.endingBalance <=
+ *   merged.worstCase.endingBalance`: this is the one that needs real
+ *   care -- a same-source-only argument does NOT obviously carry over
+ *   once the two bundles can come from different sources. **A prior
+ *   version of this comment's proof for this bullet had a real
+ *   directional algebra error, caught in a later code-review round: it
+ *   described flipping `Y`'s own longShort-*worst* sequence into a
+ *   candidate for `Y`'s own longShort-*best* search, which actually
+ *   derives `Y.longShort.worstCase.endingBalance >= startingCapital^2 /
+ *   Y.longShort.endingBalance` (a *lower* bound on the product, the
+ *   opposite of what's needed) -- not the `<=` the old text claimed.
+ *   Both the corrected derivation below and a 20,000-trial randomized
+ *   brute-force check against the real `optimizeAllVariants` (varied
+ *   ticker counts, trade counts, and price ranges down to 0.0001,
+ *   specifically to stress the reciprocal-price short's near-zero
+ *   overflow regime; 2,087 of those trials genuinely exercised the
+ *   `X !== Y` disagreeing-winners case this proof depends on) found
+ *   **zero violations** -- the corrected proof's conclusion is the same
+ *   as the original's stated (if mis-derived) conclusion, it just needed
+ *   the right derivation to actually be trustworthy.**
+ *
+ *   The corrected derivation, by a structural property of this
+ *   optimizer's reciprocal-price short model (see optimizer.ts's header
+ *   comment): for *any* single source `S`, flipping every leg of a
+ *   candidate sequence (long <-> short, same slots, same day) turns a
+ *   sequence worth `v` into one worth `startingCapital^2 / v`, and the
+ *   flipped sequence is always a *valid* candidate wherever the original
+ *   was (same day, same candidate pool, includeShorts=true both ways).
+ *   Two flips are used, each pairing a sequence with the search *most
+ *   directly bounded* by its flip -- flipping into a *max* search only
+ *   ever yields a *lower* bound on that search's result (the max can't be
+ *   beaten by one specific candidate); flipping into a *min* search only
+ *   ever yields an *upper* bound (symmetric reasoning): (1) flipping `X`'s
+ *   own long-only-*worst* sequence is a valid candidate for `X`'s own
+ *   longShort-*best* search (a max search) -- giving a lower bound,
+ *   `X.longShort.endingBalance >= startingCapital^2 /
+ *   X.worstCase.endingBalance`, i.e. `X.worstCase.endingBalance >=
+ *   startingCapital^2 / X.longShort.endingBalance`. (2) flipping `Y`'s own
+ *   longShort-*best* sequence is a valid candidate for `Y`'s own
+ *   longShort-*worst* search (a min search) -- giving an upper bound,
+ *   `Y.longShort.worstCase.endingBalance <= startingCapital^2 /
+ *   Y.longShort.endingBalance` (this is the step the old text got
+ *   backwards: it must be *best* flipped into the *worst* search, not
+ *   *worst* into the *best* search, to land on a `<=` instead of a `>=`).
+ *   Since (by definition of `Y` winning) `Y.longShort.endingBalance >
+ *   X.longShort.endingBalance` (or `>=` on an exact tie, still enough
+ *   below), we get `startingCapital^2 / Y.longShort.endingBalance <=
+ *   startingCapital^2 / X.longShort.endingBalance <=
+ *   X.worstCase.endingBalance = merged.worstCase.endingBalance`. Chaining:
+ *   `merged.longShort.worstCase.endingBalance =
+ *   Y.longShort.worstCase.endingBalance <= startingCapital^2 /
+ *   Y.longShort.endingBalance <= merged.worstCase.endingBalance`. QED --
+ *   this holds unconditionally (no guard needed to make it *true*), and
+ *   is exercised directly in pipeline.test.ts with a fixture where the
+ *   two granularities disagree on which is long-only-best vs.
+ *   long-short-best.
+ *
+ * **Defense in depth regardless of the proof above (code review
+ * follow-up, second round)**: a *provably* safe invariant is still worth
+ * containing rather than trusted blindly at runtime, especially given
+ * this exact proof was already wrong once. Unlike the first cross-check
+ * review round's fix (a bare `throw` on violation -- correct in spirit,
+ * but with no try/catch anywhere between this function and
+ * `buildIntradayResults`, so a real violation would have crashed the
+ * *entire* `runPipeline` invocation, discarding every other already-
+ * computed range's and day's results too), a violation here now falls
+ * back to using the long-only winner's own day *wholesale* for both
+ * bundles (see the code below) -- trivially safe, since a single day
+ * from a single `optimizeAllVariants` call always satisfies both
+ * cross-checks internally by construction (the same guarantee
+ * `results-schema.ts`'s own validator already relies on) -- and reports
+ * it as a failure through `mergeDaysByGranularity`'s own return value,
+ * which `buildIntradayResults` folds into its `failures` (fatal, reaches
+ * `computeFailures`) exactly like an override solve failure. Contained
+ * (this one day, and only the merge that hit it, degrades instead of
+ * crashing every other range/day) but not silent (still fails the run --
+ * a violation, if it ever actually happens despite the proof above,
+ * means either this proof or one of its premises broke, which is exactly
+ * the kind of thing this system's only alerting mechanism exists to
+ * catch, not paper over).
+ *
+ * **Known, accepted limitation, documented rather than engineered
+ * around (same "neither override is held to the same alerting standard"
+ * class of documented tradeoff this codebase has already accepted
+ * elsewhere -- see "Granularity overrides" in this file's own module
+ * header)**: `barIntervalMinutes` is a single scalar per day, so on the
+ * (rare) date where the two bundles' winners come from different source
+ * granularities, the merged day's `barIntervalMinutes` reflects only the
+ * long-only bundle's source (`X`), not necessarily the granularity that
+ * actually produced the `longShort` bundle shown alongside it. There's no
+ * way to represent two different granularities in one scalar field
+ * without a schema change; the vastly more common case -- one
+ * granularity strictly better across both bundles, or only one
+ * granularity covering a date at all -- is unaffected and exact.
+ */
+function mergeDayVariants(
+  a: IntradayDayResult,
+  b: IntradayDayResult,
+): { day: IntradayDayResult; fallback: string | null } {
+  const longOnlyWinner = b.endingBalance > a.endingBalance ? b : a;
+  const longShortWinner = b.longShort.endingBalance > a.longShort.endingBalance ? b : a;
+  const merged: IntradayDayResult =
+    longOnlyWinner === longShortWinner
+      ? longOnlyWinner
+      : { ...longOnlyWinner, longShort: longShortWinner.longShort };
+
+  // Defense in depth for the proof in this function's own doc comment
+  // (code review follow-up, second round): the proof shows these two
+  // cross-checks (mirroring results-schema.ts's own write-time
+  // invariants) hold unconditionally by construction, but it rests on
+  // premises about the reciprocal-price short model and
+  // results-schema.ts's own threshold definitions -- premises a future
+  // change to either could silently invalidate without anything here
+  // noticing, and this exact proof was already once wrong in a way that
+  // still happened to reach the right conclusion (see the doc comment
+  // above) -- reason enough not to trust it blindly at runtime. Unlike
+  // the first review round's fix (a bare throw here), a violation is
+  // now *contained*: fall back to the long-only winner's own day
+  // wholesale for both bundles (trivially safe -- a single day from one
+  // optimizeAllVariants call always satisfies both cross-checks
+  // internally by construction) rather than propagate a throw out of
+  // mergeDaysByGranularity/buildIntradayResults and crash the entire
+  // runPipeline invocation, discarding every other already-computed
+  // range's and day's results too. The violation is still reported
+  // (`fallback`, non-null), not silently swallowed -- see
+  // mergeDaysByGranularity's own MergeDaysByGranularityOutcome doc
+  // comment for how that reaches buildIntradayResults' failures and, from
+  // there, computeFailures/this system's alerting.
+  const violations: string[] = [];
+  if (merged.longShort.endingBalance < merged.endingBalance) {
+    violations.push(
+      `longShort.endingBalance (${merged.longShort.endingBalance}) below its long-only counterpart (${merged.endingBalance})`,
+    );
+  }
+  if (merged.longShort.worstCase.endingBalance > merged.worstCase.endingBalance) {
+    violations.push(
+      `longShort.worstCase.endingBalance (${merged.longShort.worstCase.endingBalance}) above its long-only counterpart (${merged.worstCase.endingBalance})`,
+    );
+  }
+
+  if (violations.length === 0) {
+    return { day: merged, fallback: null };
+  }
+
+  return {
+    day: longOnlyWinner,
+    fallback:
+      `${merged.date}: cross-source merge would have violated ${violations.join("; ")} -- ` +
+      `should be impossible by construction, see mergeDayVariants' own doc comment; falling ` +
+      `back to the long-only winner's own day wholesale for both bundles instead of crashing`,
+  };
 }
 
 interface PathFetchOutcome<TBar> {
@@ -759,13 +989,25 @@ function sortedHistory(history: Map<string, DailyClose[]>): Map<string, DailyClo
 }
 
 /**
- * The windowed-slice + optimizeBothDirections computation shared by every
+ * The windowed-slice + optimizeAllVariants computation shared by every
  * whole-window result -- both the 5Y/MAX preset ranges (buildWindowResults)
  * and every custom start-date anchor (buildCustomWindowResults, issue
  * #11). Factored out so the two call sites can't drift on how a window's
- * best/worst-case trade sequence is derived from the shared, already-
- * fetched history -- there is exactly one place this slicing + DP call
- * happens for the whole-window model.
+ * long-only/long+short, best/worst-case trade sequences are derived from
+ * the shared, already-fetched history -- there is exactly one place this
+ * slicing + DP call happens for the whole-window model.
+ *
+ * **Uses optimizeAllVariants, not optimizeBothDirections (issue #13/#11
+ * integration)**: issue #11 originally wired this to the long-only-only
+ * optimizeBothDirections (issue #31's best/worst sharing), since it
+ * predates issue #13's short-selling mode; issue #13 itself only reached
+ * buildWindowResults directly (bypassing this shared helper, which didn't
+ * exist yet on that branch). Merging the two features means every
+ * whole-window result -- preset range or custom anchor -- gets the same
+ * long+short `longShort` sibling, computed off the same one shared
+ * OptimizerState per window (see optimizeAllVariants' own doc comment for
+ * why running all 4 direction x instrument-set combinations together is
+ * cheaper than four separate calls).
  */
 function computeWindowOptimization(
   history: Map<string, DailyClose[]>,
@@ -773,7 +1015,11 @@ function computeWindowOptimization(
   endDateString: string,
   startingCapital: number,
   maxTrades: number,
-): { windowed: Map<string, DailyClose[]>; best: OptimizationResult; worst: OptimizationResult } {
+): {
+  windowed: Map<string, DailyClose[]>;
+  longOnly: { best: OptimizationResult; worst: OptimizationResult };
+  longShort: { best: OptimizationResult; worst: OptimizationResult };
+} {
   const sorted = sortedHistory(history);
   const windowed = new Map<string, DailyClose[]>();
   for (const [ticker, series] of sorted) {
@@ -782,13 +1028,13 @@ function computeWindowOptimization(
     if (endIndex > startIndex) windowed.set(ticker, series.slice(startIndex, endIndex));
   }
 
-  // Same windowed history, same startingCapital/maxTrades for both the
-  // best- and worst-case (min-direction, issue #31) searches, so
-  // optimizeBothDirections builds this window's calendar/ticker-sort
-  // once and reuses it for both instead of the two separate
-  // optimizeTrades/optimizeWorstTrades calls this used to be.
-  const { best, worst } = optimizeBothDirections(windowed, { startingCapital, maxTrades });
-  return { windowed, best, worst };
+  // Same windowed history, same startingCapital/maxTrades for all 4
+  // direction x instrument-set combinations, so optimizeAllVariants
+  // builds this window's calendar/ticker-sort once and reuses it for all
+  // 4 runs instead of four separate optimizeTrades/optimizeWorstTrades-
+  // style calls.
+  const { longOnly, longShort } = optimizeAllVariants(windowed, { startingCapital, maxTrades });
+  return { windowed, longOnly, longShort };
 }
 
 interface BuildWindowResultsOptions {
@@ -804,6 +1050,49 @@ interface BuildWindowResultsOptions {
   benchmarksByRange: Map<PresetRange, BenchmarkResult | null>;
 }
 
+/** buildWindowResults' own return shape (code review follow-up to issue #13) -- see its own doc comment for why a per-range compute failure needs a side channel rather than either propagating (aborting every other range's already-computable result) or being silently swallowed. */
+interface BuildWindowResultsOutcome {
+  results: WindowResult[];
+  /** One entry per range whose own optimizeAllVariants call threw, formatted `"RANGE: <error message>"` -- empty in the overwhelmingly common case. */
+  failures: string[];
+}
+
+/**
+ * Builds every window-path range's result, containing a per-range
+ * compute failure to just that range (code review follow-up to issue
+ * #13) rather than letting it propagate out of the whole `.map()` and
+ * abort every other range's already-computable result too. This matters
+ * concretely for this issue specifically: a short's reciprocal-price
+ * payoff (P[open]/P[close]) is unbounded above as the covering price
+ * approaches zero (see optimizer.ts's own header comment), so a real
+ * S&P 500 constituent's price collapsing toward near-zero at some point
+ * within a range's window (plausible over 5Y/MAX, though not yet
+ * observed in practice) can overflow `endingBalance` past
+ * Number.MAX_VALUE and trip optimizeAllVariants' own finite-endingBalance
+ * guard (OptimizerInputError) -- which, before this fix, would have
+ * thrown synchronously out of this `.map()` and taken down 5Y *and* MAX
+ * in one go, instead of just the one affected range. (Issue #11's
+ * custom-anchor windows are computed by a sibling function,
+ * buildCustomWindowResults, with its own identical per-anchor try/catch
+ * -- see CustomWindowResultsBuild.failures' own doc comment -- rather
+ * than sharing this one, since a custom anchor's own failure shouldn't
+ * take down a preset range's already-computable result or vice versa.)
+ *
+ * A range that fails this way is dropped from `results` -- exactly as if
+ * its own fetch had failed -- but, unlike a granularity override's
+ * failure (see "Granularity overrides" in this file's own module header,
+ * and mergeDaysByGranularity's own doc comment), this is NOT treated as
+ * non-fatal: `failures` is folded by runPipeline into the same
+ * aggregated "at least one path or write failed" throw that issue #47's
+ * write-time validation failures already use (see the top of this file's
+ * own "Write-time result self-validation" note) -- a range that
+ * genuinely couldn't be computed at all means that range is either
+ * missing from this run's output or, on a later run, silently stuck
+ * serving whatever it last had, exactly the "silently stale forever"
+ * failure mode this system's must-fail-the-run alerting exists to catch
+ * (see "Two independent paths" above) -- a routine per-ticker skip is
+ * not.
+ */
 function buildWindowResults({
   history,
   dataAsOf,
@@ -814,41 +1103,65 @@ function buildWindowResults({
   maxTrades,
   skipped,
   benchmarksByRange,
-}: BuildWindowResultsOptions): WindowResult[] {
-  return WINDOW_RANGES.map((range) => {
-    const startDate = presetRangeStartDate(range, asOf);
-    const startDateString = startDate ? toDateString(startDate) : null;
+}: BuildWindowResultsOptions): BuildWindowResultsOutcome {
+  const results: WindowResult[] = [];
+  const failures: string[] = [];
 
-    const {
-      windowed,
-      best: optimized,
-      worst,
-    } = computeWindowOptimization(
-      history,
-      startDateString,
-      endDateString,
-      startingCapital,
-      maxTrades,
-    );
+  for (const range of WINDOW_RANGES) {
+    try {
+      const startDate = presetRangeStartDate(range, asOf);
+      const startDateString = startDate ? toDateString(startDate) : null;
 
-    return {
-      schemaVersion: RESULTS_SCHEMA_VERSION,
-      model: "window",
-      range,
-      generatedAt,
-      dataAsOf,
-      startDate: startDateString,
-      endDate: endDateString,
-      maxTrades,
-      startingCapital,
-      endingBalance: optimized.endingBalance,
-      trades: optimized.trades,
-      worstCase: { endingBalance: worst.endingBalance, trades: worst.trades },
-      universeSize: windowed.size,
-      skippedTickers: [...skipped],
-      benchmark: benchmarksByRange.get(range) ?? null,
-    };
-  });
+      // Same windowed history, same startingCapital/maxTrades for all 4
+      // direction x instrument-set combinations, so computeWindowOptimization
+      // (via optimizeAllVariants) builds this range's calendar/ticker-sort
+      // once and reuses it for all 4 runs instead of separate calls
+      // (issue #13 extends issue #31's original best/worst sharing to
+      // also cover long-only vs. long+short) -- and, since this is the
+      // same computeWindowOptimization every custom-range anchor below
+      // also calls (issue #11/#13 integration), the two families of
+      // whole-window results can't drift on how that's done.
+      const { windowed, longOnly, longShort } = computeWindowOptimization(
+        history,
+        startDateString,
+        endDateString,
+        startingCapital,
+        maxTrades,
+      );
+
+      results.push({
+        schemaVersion: RESULTS_SCHEMA_VERSION,
+        model: "window",
+        range,
+        generatedAt,
+        dataAsOf,
+        startDate: startDateString,
+        endDate: endDateString,
+        maxTrades,
+        startingCapital,
+        endingBalance: longOnly.best.endingBalance,
+        trades: longOnly.best.trades,
+        worstCase: { endingBalance: longOnly.worst.endingBalance, trades: longOnly.worst.trades },
+        longShort: {
+          endingBalance: longShort.best.endingBalance,
+          trades: longShort.best.trades,
+          worstCase: {
+            endingBalance: longShort.worst.endingBalance,
+            trades: longShort.worst.trades,
+          },
+        },
+        universeSize: windowed.size,
+        skippedTickers: [...skipped],
+        benchmark: benchmarksByRange.get(range) ?? null,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[pipeline] skipping ${range} (window path): ${message}`);
+      failures.push(`${range}: ${message}`);
+    }
+  }
+
+  return { results, failures };
 }
 
 interface BuildCustomWindowResultsOptions {
@@ -880,15 +1193,35 @@ interface CustomWindowResultsBuild {
   results: CustomWindowResult[];
   /** Requested anchors skipped for a legitimate reason (not a failure) -- see the loop below for the three cases. */
   validlySkippedCount: number;
+  /**
+   * One entry per anchor whose own computeWindowOptimization call threw
+   * (issue #13/#11 integration, mirroring BuildWindowResultsOutcome.failures'
+   * own reasoning above) -- now that this function calls the same
+   * optimizeAllVariants-backed computeWindowOptimization buildWindowResults
+   * does, a custom anchor's window is exposed to the exact same short-
+   * payoff-overflow risk a preset range's window is (see that doc comment
+   * for the mechanism), and with up to ~252 anchors computed per run,
+   * containing a failure to just the one affected anchor -- rather than
+   * letting it propagate out of this whole loop and abort every other
+   * already-computable anchor too -- matters even more here than it does
+   * for the 2 window ranges. Folded by runPipeline into the same
+   * aggregated `computeFailures` list buildWindowResults'/
+   * buildIntradayResults' own failures already feed, so a custom anchor's
+   * compute failure gets the identical "must still fail the run" alerting
+   * treatment.
+   */
+  failures: string[];
 }
 
 /**
  * Computes one CustomWindowResult per requested anchor (issue #11's
  * coarsened design) -- structurally the same per-window computation as
  * buildWindowResults above (same computeWindowOptimization call, same
- * DailyClose history), just keyed by AnchorMonth instead of PresetRange
- * and with no "MAX-style unbounded start" case (every anchor's start is
- * always a real, bounded calendar month -- see custom-range-anchors.ts).
+ * DailyClose history, same long-only + long+short variants via issue
+ * #13's optimizeAllVariants), just keyed by AnchorMonth instead of
+ * PresetRange and with no "MAX-style unbounded start" case (every
+ * anchor's start is always a real, bounded calendar month -- see
+ * custom-range-anchors.ts).
  */
 function buildCustomWindowResults({
   history,
@@ -903,6 +1236,7 @@ function buildCustomWindowResults({
 }: BuildCustomWindowResultsOptions): CustomWindowResultsBuild {
   const results: CustomWindowResult[] = [];
   let validlySkippedCount = 0;
+  const failures: string[] = [];
   // Defensive de-dup guard (code review finding, issue #11): customResultKey
   // is a pure function of anchorMonth alone, so two anchors list entries
   // sharing the same anchorMonth would otherwise silently collide on the
@@ -949,34 +1283,61 @@ function buildCustomWindowResults({
       continue;
     }
 
-    const { windowed, best, worst } = computeWindowOptimization(
-      history,
-      startDateString,
-      endDateString,
-      startingCapital,
-      maxTrades,
-    );
+    // Contained per-anchor (issue #13/#11 integration) -- see
+    // CustomWindowResultsBuild.failures' own doc comment for why this
+    // needs the same try/catch buildWindowResults already has, not a
+    // bare loop body that lets one anchor's overflow take down every
+    // other already-computable anchor too.
+    try {
+      const { windowed, longOnly, longShort } = computeWindowOptimization(
+        history,
+        startDateString,
+        endDateString,
+        startingCapital,
+        maxTrades,
+      );
 
-    results.push({
-      schemaVersion: RESULTS_SCHEMA_VERSION,
-      model: "custom-window",
-      anchorMonth,
-      generatedAt,
-      dataAsOf,
-      startDate: startDateString,
-      endDate: endDateString,
-      maxTrades,
-      startingCapital,
-      endingBalance: best.endingBalance,
-      trades: best.trades,
-      worstCase: { endingBalance: worst.endingBalance, trades: worst.trades },
-      universeSize: windowed.size,
-      skippedTickers: [...skipped],
-      benchmark: computeBenchmark(benchmarkCloses, startDateString, endDateString, startingCapital),
-    });
+      results.push({
+        schemaVersion: RESULTS_SCHEMA_VERSION,
+        model: "custom-window",
+        anchorMonth,
+        generatedAt,
+        dataAsOf,
+        startDate: startDateString,
+        endDate: endDateString,
+        maxTrades,
+        startingCapital,
+        endingBalance: longOnly.best.endingBalance,
+        trades: longOnly.best.trades,
+        worstCase: {
+          endingBalance: longOnly.worst.endingBalance,
+          trades: longOnly.worst.trades,
+        },
+        longShort: {
+          endingBalance: longShort.best.endingBalance,
+          trades: longShort.best.trades,
+          worstCase: {
+            endingBalance: longShort.worst.endingBalance,
+            trades: longShort.worst.trades,
+          },
+        },
+        universeSize: windowed.size,
+        skippedTickers: [...skipped],
+        benchmark: computeBenchmark(
+          benchmarkCloses,
+          startDateString,
+          endDateString,
+          startingCapital,
+        ),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[pipeline] skipping custom-range anchor "${anchorMonth}": ${message}`);
+      failures.push(`custom:${anchorMonth}: ${message}`);
+    }
   }
 
-  return { results, validlySkippedCount };
+  return { results, validlySkippedCount, failures };
 }
 
 /**
@@ -1109,6 +1470,52 @@ interface BuildIntradayResultsOptions {
   benchmarksByRange: Map<PresetRange, BenchmarkResult | null>;
 }
 
+/** buildIntradayResults' own return shape (code review follow-up to issue #13) -- mirrors BuildWindowResultsOutcome's own "results plus a side channel of failure strings" shape. */
+interface BuildIntradayResultsOutcome {
+  results: IntradayResult[];
+  /**
+   * One entry per day that failed to *solve* at all, formatted
+   * `"YYYY-MM-DD: <error message>"` for the base 60-minute pass or
+   * `"<label> override (<range>): YYYY-MM-DD: <error message>"` for a
+   * granularity override's own pass (see optimizeIntradayDays' own
+   * OptimizeIntradayResult.skippedDays doc comment for where each
+   * message string comes from). **Both are included here, and both are
+   * fatal** -- a third code-review round on issue #13's PR caught that an
+   * earlier version of this file deliberately excluded override-day solve
+   * failures, reasoning (by analogy to an override *fetch* failure) that
+   * mergeDaysByGranularity's fallback to the base 60-minute day makes an
+   * override-only day failure "graceful" the same way a missing override
+   * fetch is. That analogy doesn't actually hold: a fetch failure means
+   * the finer-grained data was never available in the first place (a
+   * data-availability gap, genuinely nothing to alert on); a solve
+   * failure means the data *was* fetched successfully and something
+   * broke while computing over it (a correctness bug, e.g. a future
+   * change re-triggering the reciprocal-price overflow guard, or a
+   * genuinely new defect) -- exactly the kind of problem this system's
+   * only alerting mechanism (see the top of this file) exists to catch,
+   * regardless of whether mergeDaysByGranularity happens to paper over
+   * the missing day for that one range. The per-day try/catch inside
+   * optimizeIntradayDays still *contains* the failure (one bad day can't
+   * crash the whole run before other days/ranges get a chance to write);
+   * this field is what keeps containment from also meaning invisibility.
+   * A per-ticker *fetch* failure on an override (a ticker's finer data
+   * just isn't available) stays non-fatal, unaffected by this -- see
+   * `overrideStatusLines` in runPipeline, which reports that case
+   * separately and still doesn't fold it in here.
+   *
+   * A third source feeds this same list (code review follow-up, second
+   * round): `mergeDaysByGranularity`'s own merge-fallback reports (see
+   * `MergeDaysByGranularityOutcome.failures`' own doc comment), formatted
+   * the same `"<label> override (<range>): <message>"` way as an override
+   * solve failure above. Expected to be empty on every real run (the
+   * cross-check it guards is proven safe by construction, see
+   * `mergeDayVariants`), but folded in here rather than only
+   * `console.error`-ed, for the identical "contained but not silent"
+   * reason as everything else in this field.
+   */
+  failures: string[];
+}
+
 function buildIntradayResults({
   history,
   dataAsOf,
@@ -1120,7 +1527,7 @@ function buildIntradayResults({
   skipped,
   overrides,
   benchmarksByRange,
-}: BuildIntradayResultsOptions): IntradayResult[] {
+}: BuildIntradayResultsOptions): BuildIntradayResultsOutcome {
   // Solve every trading day once, over the full fetched history (capped
   // only at endDateString, same "don't trust data past what was
   // requested" reasoning as findMaxDate above) -- a given day's own
@@ -1131,7 +1538,11 @@ function buildIntradayResults({
   // function did) redundantly re-solved the same day up to 3 times,
   // since each range is a strict subset of the next.
   const cappedHistory = capHistoryToEndDate(history, endDateString);
-  const sixtyMinuteDays = optimizeIntradayDays(cappedHistory, {
+  // skippedDays here are fatal -- see BuildIntradayResultsOutcome's own
+  // doc comment: every intraday range depends on this base 60-minute
+  // pass, so a day it can't solve is genuinely missing (or, on a later
+  // run, silently stale) for every range covering it.
+  const { days: sixtyMinuteDays, skippedDays: baseFailures } = optimizeIntradayDays(cappedHistory, {
     startingCapital,
     maxTradesPerDay,
     barIntervalMinutes: 60,
@@ -1144,28 +1555,58 @@ function buildIntradayResults({
   // (and no longer is) a real, code-review-flagged violation of "adding
   // an override should be localized."
   const granularityOverrides = new Map<PresetRange, GranularityOverride>();
+  const overrideSolveFailures: string[] = [];
   for (const { spec, outcome } of overrides) {
     const cappedOverrideHistory = capHistoryToEndDate(outcome.history, endDateString);
-    const overrideDays = optimizeIntradayDays(cappedOverrideHistory, {
-      startingCapital,
-      maxTradesPerDay,
-      barIntervalMinutes: spec.barIntervalMinutes,
-    });
+    // This override's own skippedDays ARE folded into this function's
+    // `failures` (a third code-review round's must-fix, see
+    // BuildIntradayResultsOutcome's own doc comment for the full
+    // reasoning) -- unlike an override *fetch* failure (a per-ticker
+    // data-availability gap, genuinely non-fatal), a solve failure here
+    // means real fetched data broke the optimizer, which is exactly what
+    // this system's alerting exists to catch. optimizeIntradayDays' own
+    // per-day try/catch still contains it (this override's other days,
+    // and every other range/path, still compute and write normally) --
+    // containment and fatality are independent axes here, not the same
+    // thing.
+    const { days: overrideDays, skippedDays: overrideSkippedDays } = optimizeIntradayDays(
+      cappedOverrideHistory,
+      {
+        startingCapital,
+        maxTradesPerDay,
+        barIntervalMinutes: spec.barIntervalMinutes,
+      },
+    );
+    for (const entry of overrideSkippedDays) {
+      overrideSolveFailures.push(`${spec.label} override (${spec.range}): ${entry}`);
+    }
     // This override's actual per-day results: whichever of the two
     // granularities produced the better outcome for each day (see
     // mergeDaysByGranularity -- NOT an unconditional "finer granularity
-    // always wins"). If overrideDays is empty (fetch failure or no
-    // data), this is just sixtyMinuteDays unchanged -- the graceful-
-    // degradation path.
+    // always wins"). If overrideDays is empty (fetch failure, solve
+    // failure, or no data), this is just sixtyMinuteDays unchanged -- the
+    // graceful-degradation path for *this range's stored output*, even
+    // though a solve failure specifically still fails the run above via
+    // overrideSolveFailures. mergeFailures (expected empty on every real
+    // run -- see mergeDayVariants' own doc comment) folds in the same way
+    // overrideSkippedDays does above, for the identical "contained but
+    // not silent" reason.
+    const { days: mergedDays, failures: mergeFailures } = mergeDaysByGranularity(
+      sixtyMinuteDays,
+      overrideDays,
+    );
+    for (const entry of mergeFailures) {
+      overrideSolveFailures.push(`${spec.label} override (${spec.range}): ${entry}`);
+    }
     granularityOverrides.set(spec.range, {
-      days: mergeDaysByGranularity(sixtyMinuteDays, overrideDays),
+      days: mergedDays,
       extraHistories: [cappedOverrideHistory],
       extraSkipped: outcome.skipped,
       extraDataAsOf: outcome.dataAsOf,
     });
   }
 
-  return INTRADAY_RANGES.map((range) => {
+  const results: IntradayResult[] = INTRADAY_RANGES.map((range) => {
     // Never null: presetRangeStartDate only returns null for "MAX",
     // which isn't one of INTRADAY_RANGES.
     const startDate = presetRangeStartDate(range, asOf)!;
@@ -1230,6 +1671,8 @@ function buildIntradayResults({
       benchmark: benchmarksByRange.get(range) ?? null,
     };
   });
+
+  return { results, failures: [...baseFailures, ...overrideSolveFailures] };
 }
 
 export async function runPipeline(options: RunPipelineOptions): Promise<PipelineRunSummary> {
@@ -1344,8 +1787,20 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // here.
   const generatedAt = new Date().toISOString();
 
-  const windowResults = windowFetch.failureReason
-    ? []
+  // Per-range (window) / per-day (intraday) compute failures -- e.g. a
+  // short's reciprocal-price payoff overflowing OptimizerInputError's
+  // finite-endingBalance guard for one range/day's data -- are contained
+  // by buildWindowResults/buildIntradayResults themselves (code review
+  // follow-up to issue #13) rather than thrown synchronously here, so
+  // one outlier range/day can't take down every other range's/day's
+  // already-computable result. `computeFailures` collects what they
+  // report and is folded into the same "at least one path or write
+  // failed" aggregated throw below as failedWrites already is -- see
+  // BuildWindowResultsOutcome/BuildIntradayResultsOutcome's own doc
+  // comments for why these specifically need to stay fatal (unlike a
+  // granularity override's own non-fatal failures).
+  const windowBuild = windowFetch.failureReason
+    ? { results: [], failures: [] }
     : buildWindowResults({
         history: windowFetch.history,
         dataAsOf: windowFetch.dataAsOf!,
@@ -1357,9 +1812,10 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         skipped: windowFetch.skipped,
         benchmarksByRange,
       });
+  const windowResults = windowBuild.results;
 
-  const intradayResults = intradayFetch.failureReason
-    ? []
+  const intradayBuild = intradayFetch.failureReason
+    ? { results: [], failures: [] }
     : buildIntradayResults({
         history: intradayFetch.history,
         dataAsOf: intradayFetch.dataAsOf!,
@@ -1377,6 +1833,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         overrides: overrideInputs,
         benchmarksByRange,
       });
+  const intradayResults = intradayBuild.results;
 
   // Custom start-date anchors (issue #11's coarsened design) -- purely
   // derived compute over the window path's *already-fetched* history, no
@@ -1387,7 +1844,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // RunPipelineOptions.customRangeAnchors's own doc comment) -- src/run.ts
   // is the one real caller that does, for the actual nightly run.
   const customBuild: CustomWindowResultsBuild = windowFetch.failureReason
-    ? { results: [], validlySkippedCount: 0 }
+    ? { results: [], validlySkippedCount: 0, failures: [] }
     : buildCustomWindowResults({
         history: windowFetch.history,
         dataAsOf: windowFetch.dataAsOf!,
@@ -1400,6 +1857,18 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         anchors: options.customRangeAnchors ?? [],
       });
   const customResults = customBuild.results;
+  // Folded into the same aggregated compute-failures list as the window/
+  // intraday paths' own (code review follow-up to issue #13, extended at
+  // merge time to also cover issue #11's custom anchors -- see
+  // CustomWindowResultsBuild.failures' own doc comment for why a custom
+  // anchor's compute failure needs the identical per-anchor containment
+  // buildWindowResults already has, not just for the 2 preset window
+  // ranges).
+  const computeFailures = [
+    ...windowBuild.failures,
+    ...intradayBuild.failures,
+    ...customBuild.failures,
+  ];
 
   if (windowResults.length === 0 && intradayResults.length === 0) {
     // Refuse to overwrite S3's existing (presumably good) results with
@@ -1530,7 +1999,12 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     ]),
   ];
 
-  if (windowFetch.failureReason || intradayFetch.failureReason || failedWrites.length > 0) {
+  if (
+    windowFetch.failureReason ||
+    intradayFetch.failureReason ||
+    failedWrites.length > 0 ||
+    computeFailures.length > 0
+  ) {
     // At least one path produced real, useful results and those have
     // already been written above -- but this run still needs to fail
     // the Lambda invocation, which is this system's *only* alerting
@@ -1545,15 +2019,32 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     // buried in CloudWatch to notice it. A write-time failure (issue #47
     // self-validation, or a real putObject error) is folded into this
     // same throw for the same reason -- one aggregated error per run,
-    // not a separate throw for fetch-time vs. write-time problems.
+    // not a separate throw for fetch-time vs. write-time problems. A
+    // per-range/per-day *compute* failure (code review follow-up to
+    // issue #13 -- see BuildWindowResultsOutcome/
+    // BuildIntradayResultsOutcome's own doc comments) is folded in the
+    // same way: it's contained so it doesn't take down every other
+    // range's/day's already-computable result, but the range/day it did
+    // take down is genuinely missing this run, which is exactly the
+    // "silently stale forever" failure mode this alerting exists to
+    // catch.
     //
     // Deliberately excludes every granularity override's failureReason
-    // (issues #30/#29): an override's failure never leaves anything
-    // silently stale -- it just means that override's range falls back
-    // to already-shipped, fully-correct 60-minute bars, the same as its
-    // pre-override behavior -- so overrides don't need to meet this same
-    // "must still fail the run" bar. Each override's status is still
-    // included in the message below purely for operational visibility.
+    // (issues #30/#29) -- i.e. that override's own *fetch* coming back
+    // empty or aborting: this never leaves anything silently stale, it
+    // just means that override's range falls back to already-shipped,
+    // fully-correct 60-minute bars, the same as its pre-override
+    // behavior, so a fetch failure alone doesn't need to meet this same
+    // "must still fail the run" bar. Each override's fetch status is
+    // still included in the message below purely for operational
+    // visibility. This is NOT the same as an override *solve* failure
+    // (optimizeIntradayDays throwing on data the override's fetch DID
+    // successfully return) -- that case IS folded into computeFailures
+    // above (a third code-review round's must-fix; see
+    // BuildIntradayResultsOutcome's own doc comment for why "the data
+    // just isn't available" and "the data broke the optimizer" need
+    // different fatality, even though both degrade the same way in the
+    // stored output via mergeDaysByGranularity's fallback).
     const overrideStatusLines = overrideInputs
       .map(
         ({ spec, outcome }) =>
@@ -1565,6 +2056,11 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
       failedWrites.length > 0
         ? ` Write failures (${failedWrites.length} of ${writeJobs.length} computed result(s)):\n` +
           failedWrites.map((message) => `  - ${message}`).join("\n")
+        : "";
+    const computeFailureLines =
+      computeFailures.length > 0
+        ? ` Compute failures (${computeFailures.length} range(s)/day(s)/anchor(s) that could not be solved at all):\n` +
+          computeFailures.map((message) => `  - ${message}`).join("\n")
         : "";
     // The denominator here is the *ideal* total for a fully-healthy run
     // (every preset range, plus every requested custom anchor) -- not
@@ -1595,7 +2091,8 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         `${overrideStatusLines} ` +
         `${benchmarkStatusLine} ` +
         `Skipped tickers: ${skippedTickers.length > 0 ? skippedTickers.join(", ") : "(none)"}.` +
-        writeFailureLines,
+        writeFailureLines +
+        computeFailureLines,
     );
   }
 

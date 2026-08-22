@@ -1,6 +1,7 @@
 import {
   BlockedError,
   PRESET_RANGES,
+  RESULTS_SCHEMA_VERSION,
   TickerNotFoundError,
   toDateString,
   TransientFetchError,
@@ -95,7 +96,7 @@ describe("runPipeline", () => {
       const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
       generatedAts.add(parsed.generatedAt);
       expect(parsed).toMatchObject({
-        schemaVersion: 4,
+        schemaVersion: RESULTS_SCHEMA_VERSION,
         model: "window",
         range,
         maxTrades: 3,
@@ -103,13 +104,22 @@ describe("runPipeline", () => {
         endDate: "2024-06-15",
       });
       expect(Array.isArray(parsed.trades)).toBe(true);
+      // Long+short (issue #13) is a populated sibling field, not merely
+      // present -- checked against the same superset invariant
+      // results-schema.ts's own write-time validation checks.
+      expect(parsed.longShort).toBeDefined();
+      expect(Array.isArray(parsed.longShort.trades)).toBe(true);
+      expect(parsed.longShort.endingBalance).toBeGreaterThanOrEqual(parsed.endingBalance);
+      expect(parsed.longShort.worstCase.endingBalance).toBeLessThanOrEqual(
+        parsed.worstCase.endingBalance,
+      );
     }
 
     for (const range of ["1M", "3M", "1Y"]) {
       const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
       generatedAts.add(parsed.generatedAt);
       expect(parsed).toMatchObject({
-        schemaVersion: 4,
+        schemaVersion: RESULTS_SCHEMA_VERSION,
         model: "intraday-daily",
         range,
         maxTradesPerDay: 3,
@@ -122,6 +132,13 @@ describe("runPipeline", () => {
         expect(typeof day.date).toBe("string");
         expect(day.startingCapital).toBe(20);
         expect(Array.isArray(day.trades)).toBe(true);
+        // Long+short (issue #13), per day.
+        expect(day.longShort).toBeDefined();
+        expect(Array.isArray(day.longShort.trades)).toBe(true);
+        expect(day.longShort.endingBalance).toBeGreaterThanOrEqual(day.endingBalance);
+        expect(day.longShort.worstCase.endingBalance).toBeLessThanOrEqual(
+          day.worstCase.endingBalance,
+        );
       }
     }
 
@@ -236,7 +253,9 @@ describe("runPipeline", () => {
 
       const max = JSON.parse(store.objects.get("results/MAX.json")!);
       expect(max.dataAsOf).toBe("2024-06-15"); // not 2024-06-16
-      expect(max.trades.every((t: { sellDate: string }) => t.sellDate <= "2024-06-15")).toBe(true);
+      expect(max.trades.every((t: { closeDate: string }) => t.closeDate <= "2024-06-15")).toBe(
+        true,
+      );
     });
 
     it("writes the intraday path's results even when the window path independently has no data, but still fails the run (for alerting)", async () => {
@@ -289,12 +308,12 @@ describe("runPipeline", () => {
       expect(max.worstCase.endingBalance).toBeLessThan(max.endingBalance);
       expect(max.worstCase.endingBalance).toBeLessThanOrEqual(max.startingCapital);
       expect(max.worstCase.trades).toEqual([
-        expect.objectContaining({ ticker: "DOWN", buyPrice: 200, sellPrice: 10 }),
+        expect.objectContaining({ ticker: "DOWN", openPrice: 200, closePrice: 10 }),
       ]);
       // The optimal-case picked the *other* ticker, so the two results'
       // trades genuinely differ, not just their endingBalance.
       expect(max.trades).toEqual([
-        expect.objectContaining({ ticker: "UP", buyPrice: 10, sellPrice: 200 }),
+        expect.objectContaining({ ticker: "UP", openPrice: 10, closePrice: 200 }),
       ]);
     });
   });
@@ -428,10 +447,10 @@ describe("runPipeline", () => {
       expect(day.worstCase).toBeDefined();
       expect(day.worstCase.endingBalance).toBeLessThan(day.endingBalance);
       expect(day.worstCase.trades).toEqual([
-        expect.objectContaining({ ticker: "DOWN", buyPrice: 100, sellPrice: 10 }),
+        expect.objectContaining({ ticker: "DOWN", openPrice: 100, closePrice: 10 }),
       ]);
       expect(day.trades).toEqual([
-        expect.objectContaining({ ticker: "UP", buyPrice: 10, sellPrice: 100 }),
+        expect.objectContaining({ ticker: "UP", openPrice: 10, closePrice: 100 }),
       ]);
     });
   });
@@ -495,11 +514,11 @@ describe("runPipeline", () => {
       );
 
       expect(recentDay.barIntervalMinutes).toBe(5);
-      expect(recentDay.trades[0].sellPrice).toBe(50); // from the 5-minute fixture, not the 60-minute one's 20
+      expect(recentDay.trades[0].closePrice).toBe(50); // from the 5-minute fixture, not the 60-minute one's 20
       expect(recentDay.endingBalance / recentDay.startingCapital).toBeCloseTo(5, 6);
 
       expect(olderDay.barIntervalMinutes).toBe(60);
-      expect(olderDay.trades[0].sellPrice).toBe(15);
+      expect(olderDay.trades[0].closePrice).toBe(15);
       expect(olderDay.endingBalance / olderDay.startingCapital).toBeCloseTo(1.5, 6);
     });
 
@@ -526,7 +545,7 @@ describe("runPipeline", () => {
         const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
         expect(parsed.days).toHaveLength(1);
         expect(parsed.days[0].barIntervalMinutes).toBe(60);
-        expect(parsed.days[0].trades[0].sellPrice).toBe(20); // the 60-minute price, not the 5-minute fixture's 50
+        expect(parsed.days[0].trades[0].closePrice).toBe(20); // the 60-minute price, not the 5-minute fixture's 50
         expect(parsed.days[0].endingBalance / parsed.days[0].startingCapital).toBeCloseTo(2, 6);
       }
     });
@@ -651,6 +670,76 @@ describe("runPipeline", () => {
       expect(day.endingBalance / day.startingCapital).toBeCloseTo(10, 6);
     });
 
+    it("picks the long-only bundle and the long+short bundle independently when the two granularities disagree on which is better for each (code review fix: the original merge ignored longShort entirely)", async () => {
+      // 60-minute (primary): ticker B, a clean 10x long (10 -> 100) --
+      // the long-only winner (endingBalance 200 > the 5-minute source's
+      // 20 below). No good short exists on this same data (its only
+      // short-equivalent, 10/100 = 0.1x, is a loss), so this source's
+      // own longShort.endingBalance stays tied to its long-only best
+      // (200) -- nothing here should win the longShort bundle.
+      const intradayFixture = new Map<string, IntradayBar[]>([
+        ["B", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 100)]],
+      ]);
+      // 5-minute (override): ticker C, a cascading decline (100 -> 50 ->
+      // 5) with maxTradesPerDay: 1 (a single trade slot can span any two
+      // bars, not just adjacent ones). Every long candidate here is a
+      // loss (worse than not trading), so this source's own long-only
+      // best stays at "no trade" (endingBalance 20, losing the long-only
+      // comparison to B's 200) -- but its best short (open at 100, cover
+      // at 5) pays 100/5 = 20x, making this source's longShort.endingBalance
+      // (400) strictly beat B's (200).
+      const fiveMinuteFixture = new Map<string, IntradayBar[]>([
+        [
+          "C",
+          [
+            bar(daysBack(5), "09:30:00", 100),
+            bar(daysBack(5), "10:30:00", 50),
+            bar(daysBack(5), "11:30:00", 5),
+          ],
+        ],
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["B", "C"],
+        fetchDailyCloses: noDailyData,
+        fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+        fetchFiveMinuteBars: async (symbol) => fiveMinuteFixture.get(symbol) ?? [],
+        fetchIntraday1mBars: noIntradayData,
+        store,
+        asOf,
+        maxTradesPerDay: 1,
+      }).catch(() => {});
+
+      const threeMonth = JSON.parse(store.objects.get("results/3M.json")!);
+      const day = threeMonth.days.find(
+        (d: { date: string }) => d.date === toDateString(daysBack(5)(asOf)),
+      );
+
+      // Long-only bundle: B's 10x, unchanged from the pre-#13 merge
+      // behavior -- the bug this test guards against is specifically
+      // about the longShort bundle below, not this one.
+      expect(day.barIntervalMinutes).toBe(60);
+      expect(day.trades[0].ticker).toBe("B");
+      expect(day.endingBalance / day.startingCapital).toBeCloseTo(10, 6);
+
+      // Long+short bundle: C's 20x short, which the buggy pre-fix merge
+      // would have silently discarded in favor of B's own (worse, 10x)
+      // longShort field just because B won the long-only comparison.
+      expect(day.longShort.trades[0].ticker).toBe("C");
+      expect(day.longShort.trades[0].direction).toBe("short");
+      expect(day.longShort.endingBalance / day.startingCapital).toBeCloseTo(20, 6);
+
+      // The two results-schema.ts cross-checks this merge must never
+      // violate, even though the two bundles now come from different
+      // source days -- see mergeDayVariants' own doc comment for why
+      // this holds unconditionally, not just in this fixture.
+      expect(day.longShort.endingBalance).toBeGreaterThanOrEqual(day.endingBalance);
+      expect(day.longShort.worstCase.endingBalance).toBeLessThanOrEqual(
+        day.worstCase.endingBalance,
+      );
+    });
+
     it("3M's dataAsOf reflects the more recent of the 60-minute and 5-minute fetches, not just the 60-minute one (code review fix)", async () => {
       const intradayFixture = new Map<string, IntradayBar[]>([
         ["AAPL", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(3), "09:30:00", 20)]],
@@ -746,11 +835,11 @@ describe("runPipeline", () => {
       );
 
       expect(recentDay.barIntervalMinutes).toBe(1);
-      expect(recentDay.trades[0].sellPrice).toBe(50); // from the 1-minute fixture, not the 60-minute one's 20
+      expect(recentDay.trades[0].closePrice).toBe(50); // from the 1-minute fixture, not the 60-minute one's 20
       expect(recentDay.endingBalance / recentDay.startingCapital).toBeCloseTo(5, 6);
 
       expect(olderDay.barIntervalMinutes).toBe(60);
-      expect(olderDay.trades[0].sellPrice).toBe(15);
+      expect(olderDay.trades[0].closePrice).toBe(15);
       expect(olderDay.endingBalance / olderDay.startingCapital).toBeCloseTo(1.5, 6);
     });
 
@@ -777,7 +866,7 @@ describe("runPipeline", () => {
         const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
         expect(parsed.days).toHaveLength(1);
         expect(parsed.days[0].barIntervalMinutes).toBe(60);
-        expect(parsed.days[0].trades[0].sellPrice).toBe(20); // the 60-minute price, not the 1-minute fixture's 50
+        expect(parsed.days[0].trades[0].closePrice).toBe(20); // the 60-minute price, not the 1-minute fixture's 50
         expect(parsed.days[0].endingBalance / parsed.days[0].startingCapital).toBeCloseTo(2, 6);
       }
     });
@@ -1336,5 +1425,80 @@ describe("runPipeline", () => {
     ).rejects.toThrow(/neither the daily-close nor intraday fetch/);
 
     expect(store.objects.size).toBe(0);
+  });
+
+  describe("per-range/per-day compute-failure containment (code review follow-up to issue #13)", () => {
+    it("contains a per-range compute failure (an overflowing short payoff) to just that range -- every other range still writes, but the run still fails for alerting", async () => {
+      // BAD's pair sits more than 5 years before asOf, so it's entirely
+      // outside 5Y's own window (5Y never even sees this ticker) but
+      // squarely inside MAX's unbounded one. MAX's own long+short search
+      // finds a short covering BAD's near-zero close, whose
+      // reciprocal-price payoff (open/close) overflows Number.MAX_VALUE
+      // and trips optimizeAllVariants' own finite-endingBalance guard
+      // (OptimizerInputError) -- see optimizer.ts's own header comment
+      // for why an unbounded-above short payoff is a real, not merely
+      // theoretical, consequence of this issue's reciprocal-price model.
+      const dailyFixture = new Map<string, DailyClose[]>([
+        ["BAD", [daily(daysBack(3000), 1), daily(daysBack(2999), Number.MIN_VALUE)]],
+        ["N", [daily(daysBack(10), 10), daily(daysBack(5), 20)]],
+      ]);
+      const store = memoryStore();
+
+      const error = await rejectionOf(
+        runPipeline({
+          tickers: ["BAD", "N"],
+          fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
+          fetchIntradayBars: noIntradayData,
+          fetchFiveMinuteBars: noIntradayData,
+          fetchIntraday1mBars: noIntradayData,
+          store,
+          asOf,
+        }),
+      );
+
+      // 5Y never saw BAD's data at all (it's outside 5Y's own window) --
+      // it still computes and writes normally, using only N's data.
+      expect(store.objects.has("results/5Y.json")).toBe(true);
+      const fiveYear = JSON.parse(store.objects.get("results/5Y.json")!);
+      expect(fiveYear.trades[0]?.ticker).toBe("N");
+
+      // MAX's own compute genuinely failed and is missing this run --
+      // exactly like a fetch-path failure, not silently swallowed or
+      // (the original bug) taking 5Y down with it.
+      expect(store.objects.has("results/MAX.json")).toBe(false);
+
+      expect(error.message).toContain("Compute failures");
+      expect(error.message).toMatch(/MAX: .*non-finite endingBalance/);
+    });
+
+    it("contains a per-day intraday compute failure (the same overflowing short payoff) to just that day -- every other day for every range covering it still writes, but the run still fails for alerting", async () => {
+      const intradayFixture = new Map<string, IntradayBar[]>([
+        ["BAD", [bar(daysBack(5), "09:30:00", 1), bar(daysBack(5), "10:30:00", Number.MIN_VALUE)]],
+        ["GOOD", [bar(daysBack(3), "09:30:00", 10), bar(daysBack(3), "10:30:00", 20)]],
+      ]);
+      const store = memoryStore();
+
+      const error = await rejectionOf(
+        runPipeline({
+          tickers: ["BAD", "GOOD"],
+          fetchDailyCloses: noDailyData,
+          fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+          fetchFiveMinuteBars: noIntradayData,
+          fetchIntraday1mBars: noIntradayData,
+          store,
+          asOf,
+        }),
+      );
+
+      const oneYear = JSON.parse(store.objects.get("results/1Y.json")!);
+      const dates = oneYear.days.map((d: { date: string }) => d.date);
+      expect(dates).toContain(toDateString(daysBack(3)(asOf)));
+      expect(dates).not.toContain(toDateString(daysBack(5)(asOf)));
+
+      expect(error.message).toContain("Compute failures");
+      expect(error.message).toMatch(
+        new RegExp(`${toDateString(daysBack(5)(asOf))}: .*non-finite endingBalance`),
+      );
+    });
   });
 });

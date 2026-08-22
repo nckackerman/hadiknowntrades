@@ -34,7 +34,7 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, {
+    const { days } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 1,
       barIntervalMinutes: 60,
@@ -56,12 +56,12 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const sixtyMinute = optimizeIntradayDays(barsByTicker, {
+    const { days: sixtyMinute } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 1,
       barIntervalMinutes: 60,
     });
-    const fiveMinute = optimizeIntradayDays(barsByTicker, {
+    const { days: fiveMinute } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 1,
       barIntervalMinutes: 5,
@@ -88,7 +88,7 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, {
+    const { days } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 1,
       barIntervalMinutes: 60,
@@ -131,7 +131,7 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, {
+    const { days } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 1,
       barIntervalMinutes: 60,
@@ -140,21 +140,23 @@ describe("optimizeIntradayDays", () => {
     expect(days[0]!.trades).toEqual([
       {
         ticker: "A",
+        direction: "long",
         date: "2024-01-02",
-        buyTime: "09:30:00",
-        buyPrice: 10,
-        sellTime: "10:30:00",
-        sellPrice: 30,
+        openTime: "09:30:00",
+        openPrice: 10,
+        closeTime: "10:30:00",
+        closePrice: 30,
       },
     ]);
     expect(days[1]!.trades).toEqual([
       {
         ticker: "B",
+        direction: "long",
         date: "2024-01-03",
-        buyTime: "09:30:00",
-        buyPrice: 10,
-        sellTime: "10:30:00",
-        sellPrice: 40,
+        openTime: "09:30:00",
+        openPrice: 10,
+        closeTime: "10:30:00",
+        closePrice: 40,
       },
     ]);
   });
@@ -176,12 +178,12 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const oneTrade = optimizeIntradayDays(barsByTicker, {
+    const { days: oneTrade } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 1,
       barIntervalMinutes: 60,
     });
-    const twoTrades = optimizeIntradayDays(barsByTicker, {
+    const { days: twoTrades } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 2,
       barIntervalMinutes: 60,
@@ -205,7 +207,7 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, {
+    const { days } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 3,
       barIntervalMinutes: 60,
@@ -234,7 +236,7 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, {
+    const { days } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 1,
       barIntervalMinutes: 60,
@@ -256,7 +258,7 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, {
+    const { days } = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 3,
       barIntervalMinutes: 60,
@@ -287,7 +289,7 @@ describe("optimizeIntradayDays", () => {
         ],
       ]);
 
-      const days = optimizeIntradayDays(barsByTicker, {
+      const { days } = optimizeIntradayDays(barsByTicker, {
         startingCapital: 20,
         maxTradesPerDay: 1,
         barIntervalMinutes: 60,
@@ -299,11 +301,12 @@ describe("optimizeIntradayDays", () => {
       expect(days[0]!.worstCase.trades).toEqual([
         {
           ticker: "B",
+          direction: "long",
           date: "2024-01-02",
-          buyTime: "09:30:00",
-          buyPrice: 20,
-          sellTime: "10:30:00",
-          sellPrice: 10,
+          openTime: "09:30:00",
+          openPrice: 20,
+          closeTime: "10:30:00",
+          closePrice: 10,
         },
       ]);
     });
@@ -327,7 +330,7 @@ describe("optimizeIntradayDays", () => {
         ],
       ]);
 
-      const days = optimizeIntradayDays(barsByTicker, {
+      const { days } = optimizeIntradayDays(barsByTicker, {
         startingCapital: 20,
         maxTradesPerDay: 2,
         barIntervalMinutes: 60,
@@ -351,7 +354,7 @@ describe("optimizeIntradayDays", () => {
         ],
       ]);
 
-      const days = optimizeIntradayDays(barsByTicker, {
+      const { days } = optimizeIntradayDays(barsByTicker, {
         startingCapital: 20,
         maxTradesPerDay: 3,
         barIntervalMinutes: 60,
@@ -362,6 +365,190 @@ describe("optimizeIntradayDays", () => {
       // "worst case" slot (see optimizeWorstTrades's own doc comment).
       expect(days[0]!.worstCase.endingBalance).toBe(20);
       expect(days[0]!.worstCase.trades).toEqual([]);
+    });
+  });
+
+  describe("longShort (issue #13)", () => {
+    it("captures a purely declining day's short profit, which the long-only fields miss entirely", () => {
+      const barsByTicker = new Map<string, IntradayBar[]>([
+        [
+          "A",
+          bars("2024-01-02", [
+            ["09:30:00", 100],
+            ["10:30:00", 50],
+          ]),
+        ],
+      ]);
+
+      const { days } = optimizeIntradayDays(barsByTicker, {
+        startingCapital: 20,
+        maxTradesPerDay: 1,
+        barIntervalMinutes: 60,
+      });
+
+      expect(days[0]!.trades).toEqual([]);
+      expect(days[0]!.endingBalance).toBe(20);
+
+      expect(days[0]!.longShort.trades).toEqual([
+        {
+          ticker: "A",
+          direction: "short",
+          date: "2024-01-02",
+          openTime: "09:30:00",
+          openPrice: 100,
+          closeTime: "10:30:00",
+          closePrice: 50,
+        },
+      ]);
+      expect(multiplier(20, days[0]!.longShort.endingBalance)).toBeCloseTo(2, 6);
+    });
+
+    it("never reports a longShort.endingBalance below that same day's long-only endingBalance, or a longShort.worstCase.endingBalance above the long-only worstCase, across every day it produces", () => {
+      const barsByTicker = new Map<string, IntradayBar[]>([
+        [
+          "A",
+          [
+            ...bars("2024-01-02", [
+              ["09:30:00", 10],
+              ["10:30:00", 20],
+              ["11:30:00", 5],
+            ]),
+            ...bars("2024-01-03", [
+              ["09:30:00", 15],
+              ["10:30:00", 10],
+              ["11:30:00", 30],
+            ]),
+          ],
+        ],
+      ]);
+
+      const { days } = optimizeIntradayDays(barsByTicker, {
+        startingCapital: 20,
+        maxTradesPerDay: 2,
+        barIntervalMinutes: 60,
+      });
+
+      expect(days.length).toBeGreaterThan(0);
+      for (const day of days) {
+        expect(day.longShort.endingBalance).toBeGreaterThanOrEqual(day.endingBalance);
+        expect(day.longShort.worstCase.endingBalance).toBeLessThanOrEqual(
+          day.worstCase.endingBalance,
+        );
+        expect(day.longShort.worstCase.endingBalance).toBeLessThanOrEqual(
+          day.longShort.endingBalance,
+        );
+      }
+    });
+
+    it("stamps barIntervalMinutes-consistent trades through the longShort field too", () => {
+      const barsByTicker = new Map<string, IntradayBar[]>([
+        [
+          "A",
+          bars("2024-01-02", [
+            ["09:30:00", 100],
+            ["10:30:00", 50],
+          ]),
+        ],
+      ]);
+
+      const { days } = optimizeIntradayDays(barsByTicker, {
+        startingCapital: 20,
+        maxTradesPerDay: 1,
+        barIntervalMinutes: 5,
+      });
+
+      expect(days[0]!.barIntervalMinutes).toBe(5);
+      expect(days[0]!.longShort.trades[0]!.direction).toBe("short");
+    });
+  });
+
+  describe("per-day containment (code review follow-up to issue #13)", () => {
+    it("skips just the day whose optimizeAllVariants call overflows, reporting it via skippedDays, without losing any other day's result", () => {
+      // Day 1 (01-02): a short's reciprocal-price payoff (open/close) is
+      // unbounded above as the covering price approaches zero -- a close
+      // this close to zero overflows the ratio past Number.MAX_VALUE to
+      // Infinity, which the optimizer's own finite-endingBalance guard
+      // (OptimizerInputError) throws on. Day 2 (01-03) is an ordinary,
+      // perfectly solvable day and must not be affected by day 1's
+      // failure.
+      const barsByTicker = new Map<string, IntradayBar[]>([
+        [
+          "A",
+          [
+            ...bars("2024-01-02", [
+              ["09:30:00", 1],
+              ["10:30:00", Number.MIN_VALUE],
+            ]),
+            ...bars("2024-01-03", [
+              ["09:30:00", 10],
+              ["10:30:00", 20],
+            ]),
+          ],
+        ],
+      ]);
+
+      const { days, skippedDays } = optimizeIntradayDays(barsByTicker, {
+        startingCapital: 20,
+        maxTradesPerDay: 1,
+        barIntervalMinutes: 60,
+      });
+
+      expect(days.map((d) => d.date)).toEqual(["2024-01-03"]);
+      expect(multiplier(20, days[0]!.endingBalance)).toBeCloseTo(2, 6);
+
+      expect(skippedDays).toHaveLength(1);
+      expect(skippedDays[0]).toContain("2024-01-02");
+      expect(skippedDays[0]).toContain("non-finite endingBalance");
+    });
+
+    it("reports a genuinely different (non-overflow) exception the same way, not narrowed to just the documented short-payoff overflow case", () => {
+      // maxTradesPerDay: -1 fails optimizeAllVariants' own input
+      // validation (OptimizerInputError: "maxTrades must be a
+      // non-negative integer") -- a completely different failure mode
+      // than the overflow case above, with a different message. This
+      // exercises that the try/catch here is a genuinely broad `catch
+      // (error)` that always folds into skippedDays regardless of which
+      // exception fired, not one narrowed to (or specially formatted
+      // for) just the short-payoff overflow it was originally added to
+      // contain -- a third code-review round's must-fix, see
+      // apps/pipeline/CLAUDE.md's "Code review follow-up: issue #13
+      // short-selling PR" section for the full reasoning (the actual
+      // gap this round found was one level up, in how apps/pipeline
+      // consumed a granularity override's own skippedDays -- see
+      // pipeline.override-solve-failure.test.ts -- but this function's
+      // own contract, that it never discriminates by exception type, is
+      // the guarantee that fix depends on).
+      const barsByTicker = new Map<string, IntradayBar[]>([
+        [
+          "A",
+          bars("2024-01-02", [
+            ["09:30:00", 10],
+            ["10:30:00", 20],
+          ]),
+        ],
+      ]);
+
+      const { days, skippedDays } = optimizeIntradayDays(barsByTicker, {
+        startingCapital: 20,
+        maxTradesPerDay: -1,
+        barIntervalMinutes: 60,
+      });
+
+      expect(days).toEqual([]);
+      expect(skippedDays).toHaveLength(1);
+      expect(skippedDays[0]).toContain("2024-01-02");
+      expect(skippedDays[0]).toContain("maxTrades must be a non-negative integer");
+    });
+
+    it("returns empty days/skippedDays when there is nothing to solve at all", () => {
+      const { days, skippedDays } = optimizeIntradayDays(new Map(), {
+        startingCapital: 20,
+        maxTradesPerDay: 1,
+        barIntervalMinutes: 60,
+      });
+
+      expect(days).toEqual([]);
+      expect(skippedDays).toEqual([]);
     });
   });
 });
