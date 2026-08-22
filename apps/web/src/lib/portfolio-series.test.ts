@@ -108,6 +108,28 @@ describe("derivePortfolioSeries", () => {
     });
   });
 
+  it("rescales every point proportionally when given a different startingCapital (issue #15) -- passing the user's chosen capital straight in is the whole rescaling strategy, no separate math needed", () => {
+    const trades = [
+      trade({ buyDate: "2025-01-02", sellDate: "2025-01-10", buyPrice: 10, sellPrice: 20 }),
+      trade({
+        ticker: "BBB",
+        buyDate: "2025-01-15",
+        sellDate: "2025-01-20",
+        buyPrice: 5,
+        sellPrice: 15,
+      }),
+    ];
+    const original = derivePortfolioSeries(20, "2025-01-01", "2025-02-01", trades);
+    const rescaled = derivePortfolioSeries(2000, "2025-01-01", "2025-02-01", trades);
+
+    // Same dates/events throughout, every value scaled by the same 100x
+    // ratio (2000 / 20) -- price ratios (and therefore every event) are
+    // entirely unaffected by which starting capital was used.
+    expect(rescaled.map((p) => p.date)).toEqual(original.map((p) => p.date));
+    expect(rescaled.map((p) => p.event)).toEqual(original.map((p) => p.event));
+    expect(rescaled.map((p) => p.value)).toEqual(original.map((p) => p.value * 100));
+  });
+
   it("handles back-to-back trades where one sell date equals the next buy date", () => {
     const trades = [
       trade({
@@ -174,5 +196,14 @@ describe("deriveIntradayPortfolioSeries", () => {
 
     const sellPoint = points.find((p) => p.event?.type === "sell");
     expect(sellPoint?.value).toBe(10);
+  });
+
+  it("rescales every point proportionally when given a different startingCapital (issue #15), same as derivePortfolioSeries above", () => {
+    const trades = [intradayTrade({ buyPrice: 10, sellPrice: 20 })];
+    const original = deriveIntradayPortfolioSeries(20, "2025-01-02", trades);
+    const rescaled = deriveIntradayPortfolioSeries(5, "2025-01-02", trades);
+
+    expect(rescaled.map((p) => p.date)).toEqual(original.map((p) => p.date));
+    expect(rescaled.map((p) => p.value)).toEqual(original.map((p) => p.value * 0.25));
   });
 });

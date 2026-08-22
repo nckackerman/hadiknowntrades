@@ -88,6 +88,16 @@ No live recomputation per request -- everything is precomputed nightly.
   a workflow file looks right — this caught two real bugs (a broken
   `setup-node` parse, and a typecheck ordering issue) that would have
   shipped otherwise; see `.github/workflows/CLAUDE.md`.
+- Before pushing, run **all four** of lint, typecheck, `pnpm build`, and
+  `pnpm test` locally — but CI's "Check results" step (see
+  `.github/workflows/CLAUDE.md`) actually gates on a fifth,
+  `pnpm format:check` (`prettier --check .`), which none of those four
+  catch. This has genuinely shipped a red CI run on an otherwise-clean
+  PR (issue #15's rebase fix pass): every other local check was green,
+  but two new/edited test files and a `CLAUDE.md` edit weren't
+  Prettier-formatted. Run `pnpm format:check` (or just `pnpm format`,
+  which is `prettier --write .`) as a fifth routine step before
+  committing, not just when CI already flags it.
 - Run `/code-review` before merging, **default effort `high`, not
   `xhigh`** — this is a simple learning project, not high-stakes
   production work. `xhigh`'s ~10-agent fan-out costs roughly 7x a `high`

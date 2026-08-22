@@ -217,6 +217,17 @@ describe("ResultsPanel", () => {
     expect(screen.getByText(/at most 5 sequential/i)).toBeInTheDocument();
   });
 
+  it("passes the user's rescaled starting capital into TradeList, not the raw precomputed startingCapital -- regression test for a real bug found in code review: a merge auto-resolved this call with no conflict and silently left TradeList's dollar figures unrescaled (hero stat showing a rescaled figure while the trade narration below still said 'turning your $20.00 into ...')", () => {
+    const state: ResultsState = { status: "success", data: fixtureResult() };
+    render(<ResultsPanel range="1Y" state={state} startingCapital={500} />);
+
+    // The hero stat and the first trade's narrated starting figure must
+    // agree: both rescaled to $500.00, not the raw precomputed $20.00.
+    expect(screen.getAllByText("$500.00").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/turning your \$20\.00/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/turning your \$500\.00/i)).toBeInTheDocument();
+  });
+
   it("renders fewer than 3 trades gracefully", () => {
     const state: ResultsState = {
       status: "success",
@@ -405,6 +416,16 @@ describe("ResultsPanel", () => {
         expect(screen.queryByText(/MSFT/)).not.toBeInTheDocument();
         expect(
           screen.queryByRole("img", { name: /portfolio value over time/i }),
+        ).not.toBeInTheDocument();
+      });
+
+      it("prompts against the user's rescaled starting capital, not the raw per-day precomputed one -- regression test for a real bug found in code review: DailyGuessForm's prompt used to read activeDay.startingCapital directly, so the guess prompt disagreed with the rest of the page's rescaled dollar figures whenever a non-default starting capital was set", () => {
+        const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+        render(<ResultsPanel range="1M" state={state} startingCapital={500} />);
+
+        expect(screen.getByText(/what do you think \$500\.00 turned into/i)).toBeInTheDocument();
+        expect(
+          screen.queryByText(/what do you think \$20\.00 turned into/i),
         ).not.toBeInTheDocument();
       });
 

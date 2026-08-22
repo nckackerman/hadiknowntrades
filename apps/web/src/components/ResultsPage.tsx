@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import type { PresetRange } from "@hadiknowntrades/core";
 
 import { useResults } from "@/lib/use-results";
+import { useStartingCapital } from "@/lib/use-starting-capital";
 import { parseRange } from "@/lib/results-api";
 import { AboutSection } from "@/components/AboutSection";
 import { RangeSelector } from "@/components/RangeSelector";
@@ -26,6 +27,12 @@ export function ResultsPage() {
   // means "none set," and ResultsPanel falls back to the most recent
   // day. Shareable/bookmarkable the same way ?range= already is.
   const selectedDay = searchParams.get("day");
+  // The user's chosen starting dollar amount (issue #15) -- a
+  // page-level preference, not URL/range/day state: it should survive a
+  // range or day switch (unlike selectedDay, which is deliberately
+  // cleared on range change) since "how much money to start with" isn't
+  // tied to which window of data is being viewed.
+  const [startingCapital, setStartingCapital] = useStartingCapital();
 
   function selectRange(next: PresetRange) {
     const params = new URLSearchParams(searchParams);
@@ -56,7 +63,14 @@ export function ResultsPage() {
         <RangeSelector selected={range} onSelect={selectRange} />
       </header>
 
-      <ResultsPanel range={range} state={state} selectedDay={selectedDay} onSelectDay={selectDay} />
+      <ResultsPanel
+        range={range}
+        state={state}
+        selectedDay={selectedDay}
+        onSelectDay={selectDay}
+        startingCapital={startingCapital}
+        onStartingCapitalChange={setStartingCapital}
+      />
 
       <AboutSection />
     </div>
