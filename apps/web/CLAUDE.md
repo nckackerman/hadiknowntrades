@@ -353,6 +353,82 @@ clearing `hoverIndex` the same way `onPointerLeave` does, the tooltip
 stays visibly pinned to wherever the touch landed even after the chart
 scrolls out of view.
 
+## Prose trade narration (issue #32)
+
+`TradeList.tsx` (the window model's whole-window trade list, 5Y/MAX --
+see "Two result models" above) **replaces** its previous TradeRow-based
+row list with a single flowing prose `<p>`, rather than showing prose
+alongside the old rows. Reasoning: the app's whole hook _is_ the "had I
+known" framing (it's the product's name), the window model has at most 3
+trades so there's nothing a table adds over a few sentences that a
+table's structure earns its own screen space for, and keeping both would
+just show the same handful of numbers twice. `TradeRow.tsx` itself is
+untouched -- it still backs `IntradayTradeList` (issue #28's per-day,
+time-labeled trades), which **keeps its row-list rendering for now**:
+that list can run up to `maxTradesPerDay` same-day trades (not capped at
+3 the way the window model is), and per-day intraday narration wasn't
+this issue's acceptance criteria -- worth a consistency pass later using
+the same building blocks below, not a reason to block this issue.
+
+The narration logic lives in `lib/narrate-trades.ts`, deliberately
+decoupled from React and from _which_ date/time formatter produced a
+trade's buy/sell label (`NarratableTrade` takes already-formatted
+`buyLabel`/`sellLabel` strings, not a `Trade` or `IntradayTrade`) --
+that's what would let `IntradayTradeList` reuse it later by formatting
+its own time-of-day labels and writing its own "at" (vs. "on")
+sentence template, with zero changes to this module.
+
+- Handles 1/2/3-trade sequences (and defensively, 0) via one rule with
+  no per-count branching: the first trade gets "Had you known, you'd
+  have", the _last_ trade gets "Finally, you'd have" (checked after the
+  first-trade case, so a 1-trade sequence reads as "Had you known", not
+  "Finally"), anything in between gets "Then you'd have". A 2-trade
+  sequence's second trade is both "not first" and "last" and gets
+  "Finally" -- reads fine as "lastly", not just "the final of >=3".
+- Narrates a running, fully-reinvested portfolio balance per trade
+  ("turning your $20.00 into $25.07 ... turning that into $32.51 ..."),
+  computed client-side from `trades[]` + `startingCapital` (a new
+  `TradeList` prop -- `ResultsPanel.tsx`'s window-model branch now
+  passes `data.startingCapital` alongside `data.trades`) rather than
+  read from anywhere in the schema -- no pipeline/schema change needed,
+  since it's exactly the same multiplicative chain
+  (`balance * sellPrice/buyPrice` per trade) `optimizer.ts` itself uses
+  to derive `endingBalance`, so the last trade's narrated ending balance
+  matches the result's own `endingBalance` (modulo float noise). This is
+  deliberately _not_ asserted equal in a test to the fetched
+  `endingBalance` -- narrate-trades.ts is unit-tested purely against its
+  own inputs, no fixture-level cross-check exists today.
+- This is also where the Max-range astronomical-number quirk (see
+  `packages/core/CLAUDE.md`'s "Fun/expected product quirk" note) shows
+  up _inside_ the trade list itself, not just in HeroStat -- a running
+  balance mid-sequence can already be in the millions before the final
+  trade. Handled the same way HeroStat's multiplier badge (issue #45)
+  handles it: every dollar figure in the prose goes through the
+  existing `formatHeroCurrency` compact/scientific ladder, never a bare
+  template-literal `$`, so it reads "$248M" rather than a wall of
+  digits. No separate disclaimer copy was added here -- verified live
+  (screenshot below) that correct number formatting alone reads
+  sensibly at that scale, consistent with how the multiplier badge
+  didn't need one either; the always-visible `AboutSection` disclaimer
+  covers the "this is hypothetical" framing app-wide already.
+- A trade's own per-leg return (`sellPrice / buyPrice - 1`) and the
+  running-balance growth ratio for that same leg are always identical
+  (an all-in, fully-reinvested trade means the portfolio's return for a
+  leg _is_ the ticker's own price return for that leg) -- so there's
+  only one percent computed per trade, colored via the same
+  `isGain = returnFraction >= 0` (flat counts as a gain) convention
+  `TradeRow.tsx` already established, reused rather than re-derived.
+  Generic for a loss leg (`sellPrice < buyPrice`) without any special
+  wording or branching -- relevant once #31 (worst-case contrast, still
+  backlog as of this issue) ships, since today's optimizer never
+  actually produces one.
+- Verified live via the same throwaway-debug-route technique issue #45
+  documented above (no local `RESULTS_BUCKET`/AWS creds): rendered 1/2/3
+  trade sequences, a sequence with a synthetic losing leg, and a
+  Max-range-scale sequence (a few 100-400x legs compounding $20 to
+  ~$248M) on one page, screenshotted in both light and dark, then
+  deleted the route before committing.
+
 ## Importing `@hadiknowntrades/core`
 
 Import it by its normal package specifier

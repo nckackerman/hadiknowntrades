@@ -227,7 +227,7 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
             No trade would have beaten holding cash over {RANGE_COPY[range]}.
           </div>
         ) : (
-          <TradeList trades={data.trades} />
+          <TradeList trades={data.trades} startingCapital={data.startingCapital} />
         )}
       </div>
     </div>
