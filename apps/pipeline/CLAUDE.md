@@ -169,9 +169,9 @@ existing behavior with no new plumbing needed.
 - **The `results.map(...)` callback around the write loop must stay
   `async`, not a bare arrow returning `store.putObject(...)` directly --
   a real, easy-to-get-wrong subtlety, not a style choice.** `.map()`
-  invokes its callback *synchronously* for every element before
+  invokes its callback _synchronously_ for every element before
   `Promise.all` ever starts awaiting; if `validatePrecomputedResult`
-  threw synchronously inside a *non*-`async` callback, that throw would
+  threw synchronously inside a _non_-`async` callback, that throw would
   propagate straight out of `.map()` itself and abort the whole loop
   before later elements' `putObject` calls ever got a chance to start --
   silently breaking the "write whatever succeeded, then still throw if
@@ -202,7 +202,7 @@ existing behavior with no new plumbing needed.
   read by the factory would hit the temporal dead zone.
   `results-schema.test.ts` (`packages/core`) already covers
   `validatePrecomputedResult`'s own pass/fail logic directly; this file
-  only checks the pipeline's *wiring* to it.
+  only checks the pipeline's _wiring_ to it.
 
 ## Granularity overrides: 3M's 5-minute and 1M's 1-minute bars (issues #30, #29)
 

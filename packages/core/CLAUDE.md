@@ -388,7 +388,7 @@ before each range's `putObject` (see `apps/pipeline/CLAUDE.md`).
   that produces a runtime value violating that type despite TypeScript
   (e.g. a `NaN` slipping through arithmetic, exactly optimizer.ts's own
   `OptimizerInputError` "computed a non-finite endingBalance" case, just
-  on the *output* side instead of input). Every field access inside the
+  on the _output_ side instead of input). Every field access inside the
   validator goes through an `unknown`/`Record<string, unknown>` cast and
   an explicit runtime check (`Number.isFinite`, `Array.isArray`, etc.) --
   never a bare property read trusted to have the declared type, which
@@ -396,8 +396,8 @@ before each range's `putObject` (see `apps/pipeline/CLAUDE.md`).
   catch.
 - Same "defense in depth" spirit as `optimizer.ts`'s own input
   validation (see above), just facing the opposite direction: that
-  validates the optimizer's *inputs* before use; this validates the
-  pipeline's *output* right before it becomes what `apps/web` reads --
+  validates the optimizer's _inputs_ before use; this validates the
+  pipeline's _output_ right before it becomes what `apps/web` reads --
   there's nothing further downstream to catch a bad value once this
   passes.
 
