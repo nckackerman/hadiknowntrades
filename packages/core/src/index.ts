@@ -41,7 +41,12 @@ export type { PresetRange } from "./preset-ranges";
 
 export { toDateString } from "./date-utils";
 
-export { resultKey, RESULTS_SCHEMA_VERSION } from "./results-schema";
+export {
+  resultKey,
+  RESULTS_SCHEMA_VERSION,
+  validatePrecomputedResult,
+  ResultValidationError,
+} from "./results-schema";
 export type {
   PrecomputedResult,
   WindowResult,
