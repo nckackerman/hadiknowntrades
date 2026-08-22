@@ -128,6 +128,27 @@ couple dozen absolutely-positioned `<span>`s, no canvas/library
   the numbers instead of the numbers themselves (caught by an actual
   screenshot, not by the unit tests, which only assert the burst
   renders somewhere).
+- **Known, accepted fragility (found in #36's `high` code review, not
+  fixed -- decorative feature, not worth a bigger refactor yet):**
+  `shouldCelebrate.ts`'s doc comment claims no one-shot latch is needed
+  because "the props that feed it don't change after the reveal lands,"
+  but `prefersReducedMotion()` is a live `window.matchMedia` read, not a
+  prop -- if the OS-level reduced-motion setting is toggled mid-tween or
+  mid-burst on a render that happens to re-run (HeroStat isn't
+  `React.memo`'d), `shouldCelebrate`'s result can genuinely flip after
+  the burst has already fired, either suppressing a celebration that
+  already landed on a real gain or unmounting an in-progress burst
+  mid-fall. Relatedly, `settled` (`HeroStat.tsx`) is derived via strict
+  `animatedEndingBalance === endingBalance` float equality against
+  `useCountUp`'s private "lands on the exact target" behavior rather
+  than an explicit flag the hook exposes -- fragile to a future tween
+  change, but not wired up to break today. If either of these actually
+  bites (flaky celebration reports, or `useCountUp`'s tick logic
+  changes), the real fix is `useCountUp` returning an explicit
+  `{ value, settled }` pair instead of a bare number, and
+  `shouldCelebrate` latching `prefersReducedMotion()` once at the
+  render where `isGain && settled` first goes true rather than
+  re-reading it every render.
 
 ## Two result models since issue #28: window vs. intraday-daily
 
