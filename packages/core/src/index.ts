@@ -49,15 +49,26 @@ export type { PresetRange } from "./preset-ranges";
 export { toDateString } from "./date-utils";
 
 export {
+  CUSTOM_RANGE_ANCHOR_YEARS_BACK,
+  anchorMonthToDate,
+  customRangeAnchors,
+  toAnchorMonth,
+} from "./custom-range-anchors";
+export type { AnchorMonth } from "./custom-range-anchors";
+
+export {
   resultKey,
+  customResultKey,
   RESULTS_SCHEMA_VERSION,
   validatePrecomputedResult,
+  validateCustomWindowResult,
   ResultValidationError,
 } from "./results-schema";
 export type {
   PrecomputedResult,
   WindowResult,
   IntradayResult,
+  CustomWindowResult,
   ResultModel,
   WorstCaseResult,
   BenchmarkResult,

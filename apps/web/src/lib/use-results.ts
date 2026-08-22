@@ -20,18 +20,31 @@ import type { ApiErrorCode } from "./results-api";
  */
 export type ClientErrorCode = ApiErrorCode | "unknown_error" | "network_error";
 
-/** The shape of every error response from /api/results -- see route.ts's errorResponse(). */
-interface ApiErrorBody {
+/**
+ * The shape of every error response from /api/results -- see route.ts's
+ * errorResponse(). Exported (along with isApiErrorBody below) so
+ * use-custom-results.ts's own fetch state machine can reuse the exact
+ * same error-body parsing instead of a second copy -- both hooks hit the
+ * same route, just with a different query param, and share this same
+ * response error shape.
+ */
+export interface ApiErrorBody {
   error: ApiErrorCode;
   message: string;
 }
 
-export type ResultsState =
+/**
+ * Generic over the success payload's type (defaults to PrecomputedResult
+ * for every existing caller of useResults, unchanged) so
+ * use-custom-results.ts's own hook can reuse this exact same state shape
+ * for CustomWindowResult instead of a parallel type.
+ */
+export type ResultsState<T = PrecomputedResult> =
   | { status: "loading" }
   | { status: "error"; httpStatus: number; error: ClientErrorCode; message: string }
-  | { status: "success"; data: PrecomputedResult };
+  | { status: "success"; data: T };
 
-function isApiErrorBody(value: unknown): value is ApiErrorBody {
+export function isApiErrorBody(value: unknown): value is ApiErrorBody {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -41,31 +54,45 @@ function isApiErrorBody(value: unknown): value is ApiErrorBody {
 }
 
 /**
- * Fetches the precomputed result for `range` and tracks it as a
- * loading/error/success state, re-fetching whenever `range` changes.
- * Ignores results from a stale in-flight request if `range` changes
- * again before it resolves (a fast double-click on the range selector
- * must not let an earlier response clobber a later one).
+ * The shared fetch/loading/error state machine backing both useResults
+ * (?range=) and useCustomResults (?anchor=, issue #11) -- parameterized
+ * over the success payload's type `T` and by an already-fully-built
+ * `url` rather than by a range or anchor directly, so the two hooks
+ * don't each maintain an independent copy of this same machinery (a
+ * real, near-line-for-line duplication caught in code review). Ignores
+ * results from a stale in-flight request if `url` changes again before
+ * it resolves (a fast double-click on a selector must not let an
+ * earlier response clobber a later one).
+ *
+ * `url === null` means "this hook isn't the active view mode right now"
+ * (e.g. issue #11's custom-range mode is active instead of a preset
+ * range, or vice versa -- see ResultsPage.tsx, which always has exactly
+ * one of useResults/useCustomResults actually selecting something at a
+ * time): no fetch is ever made, and this returns `null` rather than a
+ * `"loading"` state that would never resolve.
  */
-export function useResults(range: PresetRange): ResultsState {
-  const [trackedRange, setTrackedRange] = useState(range);
-  const [state, setState] = useState<ResultsState>({ status: "loading" });
+export function useFetchResultsState<T>(url: string | null): ResultsState<T> | null {
+  const [trackedUrl, setTrackedUrl] = useState(url);
+  const [state, setState] = useState<ResultsState<T> | null>(
+    url === null ? null : { status: "loading" },
+  );
 
-  // Reset to "loading" the moment `range` changes, during render rather
-  // than in the effect below -- React's own "adjusting state when a
-  // prop changes" pattern. Calling setState synchronously as the first
+  // Reset to "loading" (or null) the moment `url` changes, during render
+  // rather than in the effect below -- React's own "adjusting state when
+  // a prop changes" pattern. Calling setState synchronously as the first
   // thing an effect does triggers an avoidable extra render (and trips
   // the react-hooks/set-state-in-effect lint); this way the reset and
   // the render that shows it happen together.
-  if (range !== trackedRange) {
-    setTrackedRange(range);
-    setState({ status: "loading" });
+  if (url !== trackedUrl) {
+    setTrackedUrl(url);
+    setState(url === null ? null : { status: "loading" });
   }
 
   useEffect(() => {
+    if (url === null) return;
     let cancelled = false;
 
-    fetch(`/api/results?range=${range}`)
+    fetch(url)
       .then(async (response) => {
         if (cancelled) return;
 
@@ -89,7 +116,7 @@ export function useResults(range: PresetRange): ResultsState {
           return;
         }
 
-        const data = (await response.json()) as PrecomputedResult;
+        const data = (await response.json()) as T;
         if (!cancelled) {
           setState({ status: "success", data });
         }
@@ -107,7 +134,20 @@ export function useResults(range: PresetRange): ResultsState {
     return () => {
       cancelled = true;
     };
-  }, [range]);
+  }, [url]);
 
   return state;
+}
+
+/**
+ * Fetches the precomputed result for `range` and tracks it as a
+ * loading/error/success state, re-fetching whenever `range` changes --
+ * see useFetchResultsState above for the shared mechanics this
+ * instantiates, and its own `url === null` doc comment for what
+ * `range === null` means here.
+ */
+export function useResults(range: PresetRange | null): ResultsState | null {
+  return useFetchResultsState<PrecomputedResult>(
+    range === null ? null : `/api/results?range=${range}`,
+  );
 }

@@ -2,30 +2,55 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 
-import type { PresetRange } from "@hadiknowntrades/core";
+import type { AnchorMonth, PresetRange } from "@hadiknowntrades/core";
 
 import { useResults } from "@/lib/use-results";
+import { useCustomResults } from "@/lib/use-custom-results";
 import { useStartingCapital } from "@/lib/use-starting-capital";
-import { parseRange } from "@/lib/results-api";
+import { parseAnchorMonth, parseRange } from "@/lib/results-api";
 import { AboutSection } from "@/components/AboutSection";
+import { CustomRangeSelector } from "@/components/CustomRangeSelector";
 import { RangeSelector } from "@/components/RangeSelector";
 import { ResultsPanel } from "@/components/ResultsPanel";
 
 const DEFAULT_RANGE: PresetRange = "1Y";
 
 /**
- * Owns the selected range as URL state (?range=1Y, case-insensitive on
- * read) so a link to a specific range is shareable/bookmarkable, fetches
- * that range's results, and renders the loading/error/success states.
+ * Owns the selected range (?range=1Y, case-insensitive on read) or
+ * custom start-date anchor (?anchor=YYYY-MM, issue #11) as URL state --
+ * mutually exclusive view modes, not composable (see selectRange/
+ * selectAnchor below) -- so a link to either is shareable/bookmarkable,
+ * fetches whichever is active, and renders the loading/error/success
+ * states.
  */
 export function ResultsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const range = parseRange(searchParams.get("range")) ?? DEFAULT_RANGE;
-  const state = useResults(range);
+
+  // Custom-range mode (issue #11) wins when a well-formed ?anchor= is
+  // present; otherwise falls back to the ordinary ?range= (or its own
+  // default). The two are deliberately mutually exclusive -- see
+  // selectRange/selectAnchor, which each clear the other on selection.
+  const anchor: AnchorMonth | null = parseAnchorMonth(searchParams.get("anchor"));
+  const range: PresetRange | null = anchor
+    ? null
+    : (parseRange(searchParams.get("range")) ?? DEFAULT_RANGE);
+
+  // Exactly one of these two hooks is ever actually fetching at a time:
+  // useResults(null) and useCustomResults(null) both idle without
+  // firing a request (see each hook's own doc comment) for whichever
+  // mode isn't currently active.
+  const rangeState = useResults(range);
+  const customState = useCustomResults(anchor);
+  const state = anchor
+    ? (customState ?? { status: "loading" as const })
+    : (rangeState ?? { status: "loading" as const });
+
   // Which day is selected for the intraday model (issue #28) -- null
   // means "none set," and ResultsPanel falls back to the most recent
-  // day. Shareable/bookmarkable the same way ?range= already is.
+  // day. Shareable/bookmarkable the same way ?range= already is. Not
+  // meaningful in custom-range mode (that model is never intraday-daily)
+  // but harmless to keep passing through.
   const selectedDay = searchParams.get("day");
   // The user's chosen starting dollar amount (issue #15) -- a
   // page-level preference, not URL/range/day state: it should survive a
@@ -37,9 +62,22 @@ export function ResultsPage() {
   function selectRange(next: PresetRange) {
     const params = new URLSearchParams(searchParams);
     params.set("range", next);
+    // A custom anchor is a mutually-exclusive alternate view mode, not
+    // composable with a preset range -- clear it on selecting a range.
+    params.delete("anchor");
     // A day selected under the previous range's data isn't meaningful
     // for a different range's day list -- drop it, falling back to that
     // range's own most recent day.
+    params.delete("day");
+    router.replace(`/?${params.toString()}`, { scroll: false });
+  }
+
+  function selectAnchor(next: AnchorMonth) {
+    const params = new URLSearchParams(searchParams);
+    params.set("anchor", next);
+    // Mutually exclusive with a preset range -- see selectRange's
+    // identical reasoning in the other direction.
+    params.delete("range");
     params.delete("day");
     router.replace(`/?${params.toString()}`, { scroll: false });
   }
@@ -60,7 +98,11 @@ export function ResultsPage() {
             3 sequential trades, in hindsight.
           </p>
         </div>
-        <RangeSelector selected={range} onSelect={selectRange} />
+        <div className="flex flex-wrap items-center gap-3">
+          <RangeSelector selected={range} onSelect={selectRange} />
+          <span className="text-sm text-[var(--text-muted)]">or</span>
+          <CustomRangeSelector selected={anchor} onSelect={selectAnchor} />
+        </div>
       </header>
 
       <ResultsPanel

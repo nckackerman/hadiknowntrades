@@ -4,10 +4,19 @@
 // request time. See ../../../lib/results-api.ts for the response logic
 // (factored out there so it's unit-testable without a real S3Client or
 // NextRequest) and ../../../lib/s3-result-reader.ts for the S3 read.
+//
+// GET /api/results?anchor=YYYY-MM (issue #11's coarsened custom
+// date-range feature) is the same route, branching on which query param
+// is present -- both `range` and `anchor` share this one route/reader/
+// caching setup rather than needing a second route file, since (unlike
+// the live-compute design this issue's plan originally sketched) a
+// custom anchor's result is precomputed nightly exactly like a preset
+// range's, with the exact same S3-read-only backing logic and cache
+// semantics -- see results-api.ts's getCustomResultsResponse.
 
 import type { NextRequest } from "next/server";
 
-import { getResultsResponse } from "@/lib/results-api";
+import { getCustomResultsResponse, getResultsResponse } from "@/lib/results-api";
 import { S3ResultReader } from "@/lib/s3-result-reader";
 
 // Always runs at request time: it reads live from S3 (not through
@@ -25,5 +34,14 @@ const bucket = process.env.RESULTS_BUCKET;
 const reader = bucket ? new S3ResultReader(bucket) : null;
 
 export async function GET(request: NextRequest): Promise<Response> {
-  return getResultsResponse(request.nextUrl.searchParams.get("range"), reader);
+  const params = request.nextUrl.searchParams;
+  const anchor = params.get("anchor");
+  // `anchor`'s mere presence (not just a well-formed value) selects the
+  // custom-range branch -- an invalid/malformed anchor still routes to
+  // getCustomResultsResponse, which returns its own invalid_anchor 400,
+  // rather than silently falling through to the range-based response.
+  if (anchor !== null) {
+    return getCustomResultsResponse(anchor, reader);
+  }
+  return getResultsResponse(params.get("range"), reader);
 }

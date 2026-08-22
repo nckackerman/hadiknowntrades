@@ -1076,3 +1076,131 @@ secondary context rather than competing with the hero figures.
   badge or `TradeRow`'s per-trade return badge -- deliberate simplicity:
   this is a comparison figure, not itself a "did the optimizer win"
   signal.
+
+## Custom start-date anchor picker (issue #11)
+
+`GET /api/results?anchor=YYYY-MM` is the same route as `?range=...`
+(`app/api/results/route.ts` branches on which query param is present),
+not a second route file -- see `docs/plans/issue-11-plan.md`'s section
+1.5 for why this differs from the (deferred) live-compute design's own
+recommendation of a genuinely separate route: once a custom anchor is
+_also_ just a precomputed S3 read (the coarsened design this issue
+actually shipped), there's no backing-logic/cache-semantics difference
+left to justify a second route.
+
+- **`results-api.ts`'s `getCustomResultsResponse`** is a sibling of
+  `getResultsResponse`, not a branch merged into it -- deliberately kept
+  separate so this addition can't risk the existing, well-tested
+  `?range=` path's own logic. **Both are now thin config objects passed
+  to one shared `getPrecomputedResultResponse` (code review finding,
+  fixed)**: the two functions used to independently re-type the entire
+  reader-configured check / `getObject` try-catch / JSON.parse try-catch
+  / schemaVersion check / `model` check / `Cache-Control` response
+  skeleton, differing only in which identifier they parse, which S3 key
+  they build, and which `model` value(s) they accept -- now a single
+  generic function parameterized by a `ResultRouteConfig<TParsed>` (plus
+  a `TResult` type param on the call, not the config interface itself --
+  ESLint's `no-unused-vars` otherwise flags an unused type param on the
+  interface, since nothing in its fields actually mentions `TResult`).
+  `parseAnchorMonth` validates shape only
+  (via `packages/core`'s `anchorMonthToDate`) -- it does **not** also
+  check the parsed anchor against `customRangeAnchors(asOf)`'s current
+  252-month window, since this route's own server-side "now" and the
+  pipeline's last-run "now" can disagree by up to one anchor right around
+  a month boundary; an anchor outside the actually-published set just
+  falls through to the ordinary `not_found` 404 instead, same as any
+  preset range not yet computed on a first-ever pipeline run.
+- **`getPrecomputedResultResponse`'s JSON.parse try/catch alone wasn't
+  enough (second-round code review finding, fixed)**: a successfully-
+  parsed value can still be `null` or a non-object primitive (a
+  plausible shape for a partially-written S3 object -- see
+  `packages/core/CLAUDE.md`'s write-time validation notes), and the next
+  line used to read `.schemaVersion` straight off it -- a `null` parse
+  result throws an uncaught `TypeError` there, escaping this route as a
+  raw, undocumented 500 instead of the same 502 `corrupt_data` every
+  other malformed-data path here returns. Fixed with an explicit
+  `typeof parsed !== "object" || parsed === null` check folded into the
+  existing `corrupt_data` response, between the JSON.parse try/catch and
+  the schemaVersion check. Regression-tested for both `null` and a bare
+  number in `results-api.test.ts`.
+- **`ResultsPanel.tsx`'s `errorCopy()` switch had no case for
+  `"invalid_anchor"` (second-round code review finding, fixed)** -- a
+  real `ApiErrorCode` `getCustomResultsResponse` (above) returns for a
+  malformed `?anchor=` value, but the switch silently fell through to
+  the generic "Something went wrong" default instead of a tailored
+  message, unlike the symmetric `"invalid_range"` case ("Unsupported
+  range"). Added an `"invalid_anchor"` case ("Unsupported start date"),
+  with a regression test in `ResultsPanel.test.tsx` -- the original gap
+  was untested, which is how it shipped unnoticed.
+- **`CustomRangeSelector.tsx`** is a plain `<select>` next to
+  `RangeSelector`, same reasoning `DaySelector` already established (see
+  "Two result models" above): up to 252 anchor options is far too many
+  for pill buttons. Its leading, disabled placeholder option ("Choose a
+  start month...") is deliberate, not decorative -- it's what makes "you
+  can only pick from this fixed list, not any date" discoverable just by
+  opening the dropdown, rather than a silent limitation a user only
+  discovers after picking something that 404s. Calls
+  `customRangeAnchors(new Date())` fresh on every render (a cheap,
+  252-iteration pure function of calendar time) rather than memoizing --
+  the tiny SSR/hydration-mismatch risk (both sides call `new Date()`
+  independently, a few hundred ms apart) only matters if a render
+  straddles the exact millisecond a month boundary rolls over; accepted,
+  not engineered around further, for this low-stakes learning project.
+- **Range mode and custom-anchor mode are mutually exclusive URL state**
+  (`?range=` xor `?anchor=`, `ResultsPage.tsx`) -- selecting one clears
+  the other, mirroring how `?day=` is already cleared on a range switch.
+  A new `useCustomResults(anchor: AnchorMonth | null)` hook
+  (`lib/use-custom-results.ts`) mirrors `useResults`'s own fetch state
+  machine as a deliberate sibling, not a merge into it -- both return
+  `null` (no fetch at all) when their own selector is `null`, so exactly
+  one of the two is ever actually in flight, never both and never
+  neither. `useResults` itself grew a `range: PresetRange | null`
+  parameter for this (previously required, non-null) -- every _existing_
+  caller still passes a real range, so this is purely additive; only
+  `ResultsPage`'s own anchor-mode branch ever passes `null`. **The two
+  hooks' entire fetch/loading/error machinery is now one shared
+  `useFetchResultsState<T>(url: string | null)` in `use-results.ts`
+  (code review finding, fixed)** -- they used to be two independent,
+  near-line-for-line copies of the same tracked-value/effect/cancellation
+  logic; `useResults`/`useCustomResults` are now thin wrappers that just
+  build their own URL string and hand it to the shared hook.
+- **`ResultsPanel.tsx` gained a third render branch** (`data.model ===
+"custom-window"`, alongside the existing `"window"`/`"intraday-daily"`)
+  sharing a new extracted `WindowResultBody` component with the
+  `"window"` branch, rather than a second copy of that ~50-line JSX
+  block -- the two models are the identical underlying computation (same
+  `optimizeBothDirections` over a daily-close window), differing only in
+  which field identifies the result (`range` vs. `anchorMonth`), so
+  `WindowResultBody` takes a structural `WindowLikeResult` (the fields it
+  actually reads -- neither `range` nor `anchorMonth`) plus a
+  caller-supplied `descriptionPhrase`/`heroKey`/`emptyCopy`, derived
+  differently by each of the two call sites (`RANGE_COPY[range]` for
+  presets; `` `since ${formatDate(data.startDate)}` `` for a custom
+  anchor). **`ResultsPanel`'s own `range` prop is `PresetRange | null`
+  (code review finding, fixed -- it used to be required/non-null, forcing
+  `ResultsPage` to pass a harmless-but-fake placeholder `PresetRange` in
+  custom-anchor mode).** The two places `range` is actually read
+  (`RANGE_COPY[range]`, in the `"intraday-daily"` and `"window"`
+  branches) each assert it non-null first and `throw` if it somehow
+  isn't, rather than silently trusting a comment that it can't happen --
+  a real invariant (only `useResults(range)`-sourced data ever reaches
+  those two branches, and that hook requires a non-null `range`), now
+  enforced in code and caught by this app's own render-crash boundaries
+  (`app/error.tsx`/`app/global-error.tsx`, issue #46) if it's ever
+  violated, instead of assumed via comments/branch order alone.
+  `useDailyGuess` (`lib/use-daily-guess.ts`), called unconditionally
+  before these branches (Rules of Hooks), also grew a nullable `range`
+  parameter for the same reason -- when `range` is `null` it never reads
+  or writes storage and always reports "never guessed," since there's no
+  (range, date) pair to key a guess under in custom-anchor mode and the
+  guess UI never renders there anyway.
+- **`CustomWindowResult.startDate` is the anchor's own literal calendar
+  boundary** (e.g. `"2019-03-01"`), not forward-snapped to the nearest
+  real trading day -- same convention `WindowResult.startDate` already
+  follows for presets. The forward-snap is only ever visible in the
+  actual `trades`/`benchmark` data (via the ordinary slicing filter every
+  window already goes through), never a separate displayed field or UI
+  affordance -- there was no missing/holiday-date UI work needed for this
+  feature at all, unlike what the deferred live-compute design's own
+  section 2 had planned for. See `packages/core/CLAUDE.md`'s "Custom
+  date-range anchors" section for the full reasoning.

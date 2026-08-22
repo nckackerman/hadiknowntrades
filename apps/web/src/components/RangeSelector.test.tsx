@@ -32,4 +32,15 @@ describe("RangeSelector", () => {
 
     expect(onSelect).toHaveBeenCalledWith("MAX");
   });
+
+  it("marks every pill unpressed when selected is null (a custom start-date anchor is active instead, issue #11)", () => {
+    render(<RangeSelector selected={null} onSelect={() => {}} />);
+
+    for (const range of PRESET_RANGES) {
+      expect(screen.getByRole("button", { name: range === "MAX" ? "Max" : range })).toHaveAttribute(
+        "aria-pressed",
+        "false",
+      );
+    }
+  });
 });
