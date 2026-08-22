@@ -89,26 +89,58 @@ file's own header comment; don't re-derive it, read that first.
 - **Worst-case search (`optimizeWorstTrades`, issue #31)**: the same DP
   in the min direction, sharing 100% of `optimizeTrades`'s validation/
   calendar/reconstruction logic via a private `runOptimizer(...,
-direction)` — only `computeLevel`'s four comparison sites/sentinels are
+direction)` -- only `computeLevel`'s four comparison sites/sentinels are
   parameterized by `direction: "max" | "min"` (see that function's own
   doc comment for exactly which four, and why the "no price here"
   sentinel must flip to `+Infinity`, not stay `-Infinity`, for a min
   search). None of the three deterministic tie-break rules (cross-ticker
   alphabetical, cross-day earliest-wins, trade-vs-carry-forward strict
-  inequality) needed inverting for "min" — they're all about determinism
+  inequality) needed inverting for "min" -- they're all about determinism
   given an otherwise-tied objective, not about maximizing, so the same
   rule falls out unchanged under inversion. Live-verified (real Yahoo
   data, full 503-ticker S&P 500 universe, all 5 ranges, no S3 write): 0
   invariant violations (`worst <= optimal` held everywhere), 0 non-finite
   results, and the "worst case still nets a gain" edge case (see that
-  function's own doc comment) never triggered on real data — 5Y's worst
+  function's own doc comment) never triggered on real data -- 5Y's worst
   case came back $0.81 from $20, MAX's $0.02, both genuine losses. Full
   pipeline run (both directions, both paths, all 5 ranges, real network
-  I/O) took ~34s for the full universe — consistent with the "roughly
-  doubles nightly optimizer wall-clock, still cheap" expectation, and
-  confirms the intraday path's ~250-per-range separate `optimizeTrades`
-  calls (now doubled to include `optimizeWorstTrades`) stay cheap too,
-  not just the window path's single whole-window call.
+  I/O) took ~34s for the full universe -- cheap either way, but see the
+  next bullet for why "roughly doubles" was later tightened to "roughly
+  1.6-1.7x" once the redundant per-direction calendar build below was
+  fixed; confirms the intraday path's ~250-per-range separate
+  `optimizeTrades` calls (now doubled to include `optimizeWorstTrades`)
+  stay cheap too, not just the window path's single whole-window call.
+- **Calendar/ticker-sort now shared across both directions, not rebuilt
+  per call (code-review follow-up to issue #31, not part of its original
+  scope)**: `buildCalendar` and the alphabetical ticker sort are a pure
+  function of the input price data alone -- independent of `direction` --
+  but every call site (`apps/pipeline`'s `buildWindowResults`,
+  `optimizeIntradayDays`'s per-day loop) calls `optimizeTrades` then
+  `optimizeWorstTrades` back-to-back on the _identical_ input, so the
+  original `runOptimizer(..., direction)` design silently redid that work
+  twice per range (and, for the intraday path, twice per _day_ -- up to
+  ~252 extra redundant calendar builds for 1Y alone). Fixed by splitting
+  `runOptimizer` into `buildOptimizerState` (builds the calendar + sorted
+  ticker list once) and `runOptimizerForDirection` (runs the level-
+  building loop/reconstruction for one direction off an already-built
+  `OptimizerState`), plus a new exported `optimizeBothDirections` that
+  calls the former once and the latter twice -- both call sites above now
+  call `optimizeBothDirections` instead of the two separate functions.
+  `optimizeTrades`/`optimizeWorstTrades` themselves are unchanged as a
+  public API (still call `buildOptimizerState` + a single
+  `runOptimizerForDirection`, for any caller that only wants one
+  direction). Benchmarked (not estimated), same 503-ticker/21-year
+  synthetic-data shape as the ~330ms figure above, maxTrades=3, averaged
+  over 15 runs: the old "optimizeTrades then optimizeWorstTrades"
+  back-to-back pattern took ~745ms total; `optimizeBothDirections` over
+  the same input takes ~575ms -- about a 23% cut, consistent with
+  eliminating one of the two calendar builds/ticker sorts (each direction
+  alone still costs about the same ~330-370ms it always did; only the
+  _second_ call's redundant setup work goes away). The doubled-cost
+  intraday case (up to ~252 days x 2 for 1Y) benefits from this
+  proportionally more, since its per-day calendars are far smaller and
+  the fixed calendar-build/sort overhead was a proportionally larger
+  slice of each call.
 - **Fun/expected product quirk, not a bug**: the "Max" range genuinely
   produces astronomically large numbers (a 5-ticker demo run hit ~$716M
   from $20). That's real perfect-hindsight compounding over decades, not

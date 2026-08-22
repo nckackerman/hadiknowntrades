@@ -291,22 +291,29 @@ function reconstructTrades(levels: Level[], maxTrades: number): TradeChoice[] {
 }
 
 /**
- * Shared body behind optimizeTrades ("max") and optimizeWorstTrades
- * ("min", issue #31): validation, calendar-building, ticker sort, the
- * level-building loop, trade reconstruction, and the finite-endingBalance
- * check are all direction-agnostic -- only computeLevel's own comparisons
- * (see its doc comment) depend on `direction`. reconstructTrades itself
- * needs no direction-awareness either: it only follows `choice` pointers
- * that computeLevel already computed correctly for whichever direction
- * was requested.
+ * Everything a DP run needs that depends only on the input price data --
+ * not on `direction`, and not on a particular call's `OptimizeOptions` --
+ * (issue #31 perf follow-up): the built calendar and the sorted ticker
+ * list. Building this once and reusing it across both a "max" and a
+ * "min" run over the *same* price data (as every current caller does,
+ * via optimizeBothDirections below) avoids redundantly rebuilding the
+ * calendar and re-sorting tickers for the second run, since neither step
+ * depends on which direction is being searched.
  */
-function runOptimizer(
-  priceSeriesByTicker: Map<string, DailyClose[]>,
-  options: OptimizeOptions,
-  direction: Direction,
-): OptimizationResult {
-  const { startingCapital, maxTrades } = options;
+interface OptimizerState {
+  calendar: Calendar;
+  /**
+   * Sorted once here (not inside computeLevel, which is called up to
+   * maxTrades times per direction) since ticker order is invariant across
+   * both levels and direction -- also the source of the deterministic
+   * tie-break documented on computeLevel's own `sortedTickers` param.
+   */
+  sortedTickers: [string, (number | null)[]][];
+}
 
+/** Validates OptimizeOptions -- independent of any price data or direction, so callers that share one OptimizerState across two directions (see optimizeBothDirections) only need to call this once. */
+function validateOptimizeOptions(options: OptimizeOptions): void {
+  const { startingCapital, maxTrades } = options;
   if (!Number.isInteger(maxTrades) || maxTrades < 0 || maxTrades > MAX_REASONABLE_TRADES) {
     throw new OptimizerInputError(
       `maxTrades must be a non-negative integer no greater than ${MAX_REASONABLE_TRADES}, got ${maxTrades}`,
@@ -317,15 +324,36 @@ function runOptimizer(
       `startingCapital must be a positive finite number, got ${startingCapital}`,
     );
   }
+}
 
+/** Builds the direction-independent, options-independent state (calendar + sorted tickers) a DP run needs -- see OptimizerState's own doc comment for why this is worth sharing across a "max" and a "min" run over the same price data. */
+function buildOptimizerState(priceSeriesByTicker: Map<string, DailyClose[]>): OptimizerState {
   const calendar = buildCalendar(priceSeriesByTicker);
-  const T = calendar.dates.length;
-  // Sorted once here (not inside computeLevel, which is called up to
-  // maxTrades times) since ticker order is invariant across levels —
-  // also the source of the deterministic tie-break documented below.
   const sortedTickers = [...calendar.pricesByTicker.entries()].sort(([a], [b]) =>
     a < b ? -1 : a > b ? 1 : 0,
   );
+  return { calendar, sortedTickers };
+}
+
+/**
+ * Runs the DP (in the given direction) off an already-built OptimizerState:
+ * the level-building loop, trade reconstruction, and the finite-
+ * endingBalance check -- all direction-agnostic except for computeLevel's
+ * own comparisons (see its doc comment), which depend on `direction`.
+ * reconstructTrades itself needs no direction-awareness either: it only
+ * follows `choice` pointers that computeLevel already computed correctly
+ * for whichever direction was requested. Assumes `options` was already
+ * validated by the caller (both callers below validate once, up front,
+ * rather than once per direction).
+ */
+function runOptimizerForDirection(
+  state: OptimizerState,
+  options: OptimizeOptions,
+  direction: Direction,
+): OptimizationResult {
+  const { startingCapital, maxTrades } = options;
+  const { calendar, sortedTickers } = state;
+  const T = calendar.dates.length;
 
   // Level 0 (no trades left) is always multiplier 1 regardless of
   // direction -- "carry forward with zero trades remaining" means
@@ -381,6 +409,24 @@ function runOptimizer(
 }
 
 /**
+ * Validates options, builds a fresh OptimizerState from the given price
+ * data, and runs the DP once in the given direction -- the single-call
+ * path behind optimizeTrades/optimizeWorstTrades below. A caller that
+ * needs *both* directions over the *same* price data should call
+ * optimizeBothDirections instead, so the calendar/ticker-sort work isn't
+ * done twice (see OptimizerState's own doc comment).
+ */
+function runOptimizer(
+  priceSeriesByTicker: Map<string, DailyClose[]>,
+  options: OptimizeOptions,
+  direction: Direction,
+): OptimizationResult {
+  validateOptimizeOptions(options);
+  const state = buildOptimizerState(priceSeriesByTicker);
+  return runOptimizerForDirection(state, options, direction);
+}
+
+/**
  * Finds the sequence of up to `maxTrades` sequential, all-in, long-only
  * round-trip trades across all provided tickers that maximizes the
  * ending balance starting from `startingCapital`.
@@ -416,4 +462,31 @@ export function optimizeWorstTrades(
   options: OptimizeOptions,
 ): OptimizationResult {
   return runOptimizer(priceSeriesByTicker, options, "min");
+}
+
+/**
+ * Runs both optimizeTrades ("max") and optimizeWorstTrades ("min") over
+ * the *same* `priceSeriesByTicker`/`options`, sharing one built
+ * OptimizerState (the calendar + sorted ticker list) between the two
+ * runs instead of rebuilding it twice (issue #31 perf follow-up -- see
+ * OptimizerState's own doc comment for why that work is safe to share).
+ *
+ * Every current call site (apps/pipeline's buildWindowResults,
+ * packages/core's optimizeIntradayDays) always calls both directions
+ * back-to-back on identical input, so this is a drop-in replacement for
+ * "call optimizeTrades, then call optimizeWorstTrades" wherever that
+ * pattern shows up -- same two OptimizationResults, just computed
+ * without the redundant calendar-build/ticker-sort the two separate
+ * calls used to each do independently.
+ */
+export function optimizeBothDirections(
+  priceSeriesByTicker: Map<string, DailyClose[]>,
+  options: OptimizeOptions,
+): { best: OptimizationResult; worst: OptimizationResult } {
+  validateOptimizeOptions(options);
+  const state = buildOptimizerState(priceSeriesByTicker);
+  return {
+    best: runOptimizerForDirection(state, options, "max"),
+    worst: runOptimizerForDirection(state, options, "min"),
+  };
 }

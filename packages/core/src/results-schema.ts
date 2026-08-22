@@ -58,7 +58,7 @@ interface PrecomputedResultBase {
  * start from the same capital). Always
  * `worstCase.endingBalance <= endingBalance` by construction -- the
  * min-search explores a subset of the same trade-sequence space the
- * max-search does -- checked below in validateWorstCaseResult's caller.
+ * max-search does -- checked below in validateWorstCaseResultWith's caller.
  */
 export interface WorstCaseResult {
   endingBalance: number;
@@ -207,36 +207,24 @@ function validateIntradayTrade(trade: unknown, path: string, problems: string[])
     );
 }
 
-/**
- * Validates one `WorstCaseResult` (see results-schema.ts's own doc
- * comment on that type) embedded in a `WindowResult.worstCase` field --
- * same shape/style as validateTrade, reusing it for the nested `trades`
- * array.
- */
-function validateWorstCaseResult(value: unknown, path: string, problems: string[]): void {
-  if (value === null || typeof value !== "object") {
-    problems.push(`${path} must be an object, got ${describe(value)}`);
-    return;
-  }
-  const w = value as Record<string, unknown>;
-  if (!isPositiveFiniteNumber(w.endingBalance))
-    problems.push(
-      `${path}.endingBalance must be a positive finite number, got ${describe(w.endingBalance)}`,
-    );
-  if (!Array.isArray(w.trades)) {
-    problems.push(`${path}.trades must be an array, got ${describe(w.trades)}`);
-  } else {
-    w.trades.forEach((trade, i) => validateTrade(trade, `${path}.trades[${i}]`, problems));
-  }
-}
+/** A per-trade validator matching validateTrade/validateIntradayTrade's own signature -- the one thing validateWorstCaseResultWith's two callers below differ on. */
+type TradeValidator = (trade: unknown, path: string, problems: string[]) => void;
 
 /**
- * Validates one `IntradayWorstCaseResult` (see intraday-optimizer.ts)
- * embedded in an `IntradayDayResult.worstCase` field -- same shape/style
- * as validateWorstCaseResult above, but reusing validateIntradayTrade for
- * its nested `trades` array (buyTime/sellTime, not buyDate/sellDate).
+ * Validates one worst-case result object -- `WorstCaseResult` embedded in
+ * a `WindowResult.worstCase` field, or `IntradayWorstCaseResult` embedded
+ * in an `IntradayDayResult.worstCase` field (see results-schema.ts's own
+ * doc comment on those types). Both shapes are identical
+ * (`endingBalance` + `trades`) and differ only in which per-trade shape
+ * their `trades` array holds, so `validateTrade` for the window case is
+ * dependency-injected as `validateIntradayTrade` for the intraday case.
  */
-function validateIntradayWorstCaseResult(value: unknown, path: string, problems: string[]): void {
+function validateWorstCaseResultWith(
+  value: unknown,
+  path: string,
+  problems: string[],
+  validateTradeEntry: TradeValidator,
+): void {
   if (value === null || typeof value !== "object") {
     problems.push(`${path} must be an object, got ${describe(value)}`);
     return;
@@ -249,7 +237,7 @@ function validateIntradayWorstCaseResult(value: unknown, path: string, problems:
   if (!Array.isArray(w.trades)) {
     problems.push(`${path}.trades must be an array, got ${describe(w.trades)}`);
   } else {
-    w.trades.forEach((trade, i) => validateIntradayTrade(trade, `${path}.trades[${i}]`, problems));
+    w.trades.forEach((trade, i) => validateTradeEntry(trade, `${path}.trades[${i}]`, problems));
   }
 }
 
@@ -309,7 +297,7 @@ function validateIntradayDay(day: unknown, path: string, problems: string[]): vo
   } else {
     d.trades.forEach((trade, i) => validateIntradayTrade(trade, `${path}.trades[${i}]`, problems));
   }
-  validateIntradayWorstCaseResult(d.worstCase, `${path}.worstCase`, problems);
+  validateWorstCaseResultWith(d.worstCase, `${path}.worstCase`, problems, validateIntradayTrade);
   validateWorstNotExceedingOptimal(
     (d.worstCase as Record<string, unknown> | undefined)?.endingBalance,
     d.endingBalance,
@@ -409,7 +397,7 @@ export function validatePrecomputedResult(result: PrecomputedResult): void {
     } else {
       r.trades.forEach((trade, i) => validateTrade(trade, `trades[${i}]`, problems));
     }
-    validateWorstCaseResult(r.worstCase, "worstCase", problems);
+    validateWorstCaseResultWith(r.worstCase, "worstCase", problems, validateTrade);
     validateWorstNotExceedingOptimal(
       (r.worstCase as Record<string, unknown> | undefined)?.endingBalance,
       r.endingBalance,

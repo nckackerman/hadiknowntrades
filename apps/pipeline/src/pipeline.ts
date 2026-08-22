@@ -59,8 +59,7 @@
 import {
   BlockedError,
   optimizeIntradayDays,
-  optimizeTrades,
-  optimizeWorstTrades,
+  optimizeBothDirections,
   PRESET_RANGES,
   presetRangeStartDate,
   resultKey,
@@ -427,12 +426,15 @@ function buildWindowResults({
       if (sliced.length > 0) windowed.set(ticker, sliced);
     }
 
-    const optimized = optimizeTrades(windowed, { startingCapital, maxTrades });
-    // Same windowed history, same startingCapital/maxTrades -- just the
-    // min-direction search (issue #31), so this range's worst-case figure
-    // is solved over the identical trade-sequence space its optimal-case
-    // figure is.
-    const worst = optimizeWorstTrades(windowed, { startingCapital, maxTrades });
+    // Same windowed history, same startingCapital/maxTrades for both the
+    // best- and worst-case (min-direction, issue #31) searches, so
+    // optimizeBothDirections builds this range's calendar/ticker-sort
+    // once and reuses it for both instead of the two separate
+    // optimizeTrades/optimizeWorstTrades calls this used to be.
+    const { best: optimized, worst } = optimizeBothDirections(windowed, {
+      startingCapital,
+      maxTrades,
+    });
 
     return {
       schemaVersion: RESULTS_SCHEMA_VERSION,

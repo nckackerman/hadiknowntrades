@@ -157,11 +157,14 @@ bar type, not daily-close-specific):
 - **Bumped again to 3 for issue #31** (worst-case contrast stat): every
   `WindowResult` and every `IntradayDayResult` gains a `worstCase` field
   (`{ endingBalance, trades }`), computed in `buildWindowResults` here
-  (one extra `optimizeWorstTrades` call per window range, right next to
-  the existing `optimizeTrades` call) and in `packages/core`'s
-  `optimizeIntradayDays` itself for the intraday path (see that file's
-  own CLAUDE.md note on why the intraday side needed no change in this
-  file). Same rollout hazard as the schema-2 bump above, same "needs the
+  via one `optimizeBothDirections` call per window range (not two
+  separate `optimizeTrades`/`optimizeWorstTrades` calls -- a code-review
+  follow-up fixed that redundancy, see `packages/core/CLAUDE.md`'s
+  "Optimizer algorithm" section for the benchmark) and in
+  `packages/core`'s `optimizeIntradayDays` itself for the intraday path
+  (see that file's own CLAUDE.md note on why the intraday side needed no
+  other change in this file). Same rollout hazard as the schema-2 bump
+  above, same "needs the
   user's explicit go-ahead before/atomically with a real pipeline write"
   rule -- not yet performed as of this issue's implementation.
 

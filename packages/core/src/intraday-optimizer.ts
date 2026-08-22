@@ -18,13 +18,17 @@
 // unique per bar -- exactly what optimizeTrades needs from it, without
 // modification.
 //
-// Issue #31 folds a second call, optimizeWorstTrades() (the same DP's
-// min-direction search, see optimizer.ts), into this same per-day loop:
-// each day's IntradayDayResult carries a worstCase field alongside its
-// own optimal-case endingBalance/trades, solved over the exact same
-// day's bars.
+// Issue #31 folds a second, min-direction search (the same DP, see
+// optimizer.ts) into this same per-day loop via optimizeBothDirections()
+// (a code-review follow-up replaced an original two-call
+// optimizeTrades()+optimizeWorstTrades() pattern here with this single
+// call, so the two directions share one built calendar/ticker-sort per
+// day instead of each rebuilding it -- see optimizer.ts's own
+// OptimizerState doc comment): each day's IntradayDayResult carries a
+// worstCase field alongside its own optimal-case endingBalance/trades,
+// solved over the exact same day's bars.
 
-import { optimizeTrades, optimizeWorstTrades, type Trade } from "./optimizer";
+import { optimizeBothDirections, type Trade } from "./optimizer";
 import type { IntradayBar } from "./yahoo-client";
 
 export interface IntradayTrade {
@@ -199,12 +203,14 @@ export function optimizeIntradayDays(
 
   return dates.map((date) => {
     const dayBars = byDate.get(date)!;
-    const optimized = optimizeTrades(dayBars, { startingCapital, maxTrades: maxTradesPerDay });
-    // Same day's bars, same startingCapital/maxTrades -- just the min-
-    // direction search (issue #31), so this day's worst-case figure is
-    // solved over the identical trade-sequence space its optimal-case
-    // figure is.
-    const worst = optimizeWorstTrades(dayBars, {
+    // Same day's bars, same startingCapital/maxTrades for both the best-
+    // and worst-case (min-direction, issue #31) searches, so
+    // optimizeBothDirections builds this day's calendar/ticker-sort once
+    // and reuses it for both instead of the two separate optimizeTrades/
+    // optimizeWorstTrades calls this used to be -- a real saving here
+    // specifically, since this runs once per trading day (up to ~252
+    // times for 1Y) rather than once per range.
+    const { best: optimized, worst } = optimizeBothDirections(dayBars, {
       startingCapital,
       maxTrades: maxTradesPerDay,
     });

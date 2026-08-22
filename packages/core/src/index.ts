@@ -30,6 +30,7 @@ export {
   buildCalendar,
   optimizeTrades,
   optimizeWorstTrades,
+  optimizeBothDirections,
   OptimizerInputError,
 } from "./optimizer";
 export type { Calendar, OptimizationResult, OptimizeOptions, Trade } from "./optimizer";
