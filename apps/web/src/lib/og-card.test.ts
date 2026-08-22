@@ -5,7 +5,7 @@ import { buildOgCardContent, rangeLabel } from "./og-card";
 
 function windowResult(overrides: Partial<WindowResult> = {}): WindowResult {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     model: "window",
     range: "MAX",
     generatedAt: "2026-08-21T00:00:00.000Z",
@@ -19,13 +19,14 @@ function windowResult(overrides: Partial<WindowResult> = {}): WindowResult {
     worstCase: { endingBalance: 20, trades: [] },
     universeSize: 500,
     skippedTickers: [],
+    benchmark: null,
     ...overrides,
   };
 }
 
 function intradayResult(overrides: Partial<IntradayResult> = {}): IntradayResult {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     model: "intraday-daily",
     range: "1M",
     generatedAt: "2026-08-21T00:00:00.000Z",
@@ -35,6 +36,7 @@ function intradayResult(overrides: Partial<IntradayResult> = {}): IntradayResult
     startingCapital: 20,
     universeSize: 500,
     skippedTickers: [],
+    benchmark: null,
     days: [],
     ...overrides,
   };

@@ -1027,3 +1027,52 @@ effectiveStartingCapital)` -- the same general-purpose helper this
   storage backing where a read can genuinely lag behind a very recent
   write -- a cache, a network-backed store), confirmed to fail without
   the `userSetRef` guard and pass with it.
+
+## Buy-and-hold (SPY) comparison stat (issue #12)
+
+`components/BenchmarkStat.tsx` is a single prose `<p>`, not a
+`HeroAndWorstCase`-style wrapper -- it's one leaf render per branch (like
+`PortfolioChart`), not multiple children sharing duplicated layout
+markup, so there's no wrapper to factor out the way `HeroAndWorstCase`
+(issue #31's own code-review cleanup) was for `HeroStat`+`WorstCaseStat`.
+Placed directly below the existing methodology `<p>` in both of
+`ResultsPanel`'s render branches (window and intraday-daily) -- confirmed
+with a real screenshot (both branches, both themes, per this file's own
+"Headless-browser screenshot verification" section) that it reads as
+secondary context rather than competing with the hero figures.
+
+- **Reuses `effectiveStartingCapital`/`rescaleFromStartingCapital`
+  (issue #15)**, the exact same pattern `HeroStat`'s
+  `displayStartingCapital` prop already established -- no second rescale
+  mechanism. `startingCapital` passed to `BenchmarkStat` is the
+  precomputed result's own value (`data.startingCapital`, the level
+  `benchmark.endingBalance` was actually computed relative to), not
+  `activeDay.startingCapital` in the intraday-daily branch -- both are
+  numerically identical in practice (same pipeline constant), but
+  `data.startingCapital` is the field the benchmark was actually
+  attached alongside.
+- **`rangeLabel` prop disambiguates the intraday-daily model's real
+  juxtaposition**: `BenchmarkStat` is a whole-_range_ figure, but
+  everything else in that branch (`HeroStat`, the chart, the trade list)
+  is scoped to whichever single day is selected. Passing
+  `rangeLabel={RANGE_COPY[range]}` only in that branch renders "Buying
+  and holding SPY **over the past month** instead..."; the window branch
+  omits the prop (that whole view is already range-scoped, and the
+  methodology paragraph right above already names the range, so the
+  disambiguation would be redundant there).
+- **Gated behind the same guess-then-reveal condition as the rest of a
+  day's content (issue #34)** in the intraday-daily branch -- it sits
+  inside the `guess !== null && (...)` fragment, between the methodology
+  paragraph and the "You guessed $X" line. Showing it pre-guess would
+  partially spoil the real answer the guessing game is built around,
+  same reasoning `WorstCaseStat` is already gated there.
+- **`null` renders nothing at all** (`BenchmarkStat` returns `null`
+  early) -- consistent with this app's general silent-graceful-degrade
+  posture (e.g. the OG card route's model-based 404), not a visible
+  "unavailable" placeholder. A real, deliberate product choice, not an
+  oversight -- flagged as one in the original plan's own open questions,
+  kept as-is here.
+- No gain/loss coloring on the figures, unlike `HeroStat`'s multiplier
+  badge or `TradeRow`'s per-trade return badge -- deliberate simplicity:
+  this is a comparison figure, not itself a "did the optimizer win"
+  signal.

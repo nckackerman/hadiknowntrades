@@ -5,9 +5,23 @@ import {
   resultKey,
   ResultValidationError,
   validatePrecomputedResult,
+  type BenchmarkResult,
   type IntradayResult,
   type WindowResult,
 } from "./results-schema";
+
+/** A well-formed BenchmarkResult (issue #12), cloned and mutated by individual tests below rather than shared by reference. */
+function validBenchmark(): BenchmarkResult {
+  return {
+    ticker: "SPY",
+    startDate: "2019-06-17",
+    startPrice: 280,
+    endDate: "2024-06-14",
+    endPrice: 540,
+    endingBalance: 38.57,
+    truncated: false,
+  };
+}
 
 describe("resultKey", () => {
   it("builds the results/{RANGE}.json key for a preset range", () => {
@@ -19,13 +33,14 @@ describe("resultKey", () => {
 /** A well-formed WindowResult, cloned and mutated by individual tests below rather than shared by reference. */
 function validWindowResult(): WindowResult {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     range: "5Y",
     generatedAt: "2024-06-15T00:00:00.000Z",
     dataAsOf: "2024-06-14",
     startingCapital: 20,
     universeSize: 1,
     skippedTickers: [],
+    benchmark: null,
     model: "window",
     startDate: "2019-06-15",
     endDate: "2024-06-15",
@@ -58,13 +73,14 @@ function validWindowResult(): WindowResult {
 /** A well-formed IntradayResult, cloned and mutated by individual tests below rather than shared by reference. */
 function validIntradayResult(): IntradayResult {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     range: "1M",
     generatedAt: "2024-06-15T00:00:00.000Z",
     dataAsOf: "2024-06-14",
     startingCapital: 20,
     universeSize: 1,
     skippedTickers: ["MSFT"],
+    benchmark: null,
     model: "intraday-daily",
     endDate: "2024-06-15",
     maxTradesPerDay: 3,
@@ -286,5 +302,85 @@ describe("validatePrecomputedResult", () => {
       expect(message).toMatch(/endingBalance/);
       expect(message).toMatch(/trades\[0\]\.sellPrice/);
     }
+  });
+
+  describe("benchmark (issue #12)", () => {
+    it("passes a null benchmark (no benchmark data was available this run)", () => {
+      const result = validWindowResult();
+      result.benchmark = null;
+      expect(() => validatePrecomputedResult(result)).not.toThrow();
+    });
+
+    it("passes a well-formed benchmark object", () => {
+      const result = validWindowResult();
+      result.benchmark = validBenchmark();
+      expect(() => validatePrecomputedResult(result)).not.toThrow();
+    });
+
+    it("passes a well-formed truncated benchmark (the MAX/SPY-inception case)", () => {
+      const result = validWindowResult();
+      result.range = "MAX";
+      result.startDate = null;
+      result.benchmark = { ...validBenchmark(), truncated: true };
+      expect(() => validatePrecomputedResult(result)).not.toThrow();
+    });
+
+    it("rejects an entirely-missing benchmark field (undefined), distinct from a valid null", () => {
+      const result = validWindowResult() as unknown as Record<string, unknown>;
+      delete result.benchmark;
+      expect(() => validatePrecomputedResult(result as unknown as WindowResult)).toThrow(
+        /benchmark must be null or an object, got undefined/,
+      );
+    });
+
+    it("rejects a benchmark that isn't null or an object", () => {
+      const result = validWindowResult() as unknown as Record<string, unknown>;
+      result.benchmark = "SPY";
+      expect(() => validatePrecomputedResult(result as unknown as WindowResult)).toThrow(
+        /benchmark must be null or an object/,
+      );
+    });
+
+    it("rejects a benchmark with a non-string ticker", () => {
+      const result = validWindowResult();
+      result.benchmark = { ...validBenchmark(), ticker: "" };
+      expect(() => validatePrecomputedResult(result)).toThrow(/benchmark\.ticker/);
+    });
+
+    it("rejects a benchmark with a non-string startDate", () => {
+      const result = validWindowResult();
+      result.benchmark = { ...validBenchmark(), startDate: "" };
+      expect(() => validatePrecomputedResult(result)).toThrow(/benchmark\.startDate/);
+    });
+
+    it("rejects a benchmark with a non-finite startPrice", () => {
+      const result = validWindowResult();
+      result.benchmark = { ...validBenchmark(), startPrice: NaN };
+      expect(() => validatePrecomputedResult(result)).toThrow(/benchmark\.startPrice/);
+    });
+
+    it("rejects a benchmark with a non-string endDate", () => {
+      const result = validWindowResult();
+      result.benchmark = { ...validBenchmark(), endDate: "" };
+      expect(() => validatePrecomputedResult(result)).toThrow(/benchmark\.endDate/);
+    });
+
+    it("rejects a benchmark with a non-positive endPrice", () => {
+      const result = validWindowResult();
+      result.benchmark = { ...validBenchmark(), endPrice: -1 };
+      expect(() => validatePrecomputedResult(result)).toThrow(/benchmark\.endPrice/);
+    });
+
+    it("rejects a benchmark with a non-finite endingBalance", () => {
+      const result = validWindowResult();
+      result.benchmark = { ...validBenchmark(), endingBalance: Infinity };
+      expect(() => validatePrecomputedResult(result)).toThrow(/benchmark\.endingBalance/);
+    });
+
+    it("rejects a benchmark whose truncated field isn't a boolean", () => {
+      const result = validWindowResult();
+      result.benchmark = { ...validBenchmark(), truncated: "yes" as unknown as boolean };
+      expect(() => validatePrecomputedResult(result)).toThrow(/benchmark\.truncated/);
+    });
   });
 });

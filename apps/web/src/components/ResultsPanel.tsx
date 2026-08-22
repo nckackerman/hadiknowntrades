@@ -8,6 +8,7 @@ import { formatDate } from "@/lib/format-date";
 import { formatHeroCurrency } from "@/lib/format-currency";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { useDailyGuess } from "@/lib/use-daily-guess";
+import { BenchmarkStat } from "@/components/BenchmarkStat";
 import { DailyGuessForm } from "@/components/DailyGuessForm";
 import { DaySelector } from "@/components/DaySelector";
 import { HeroStat } from "@/components/HeroStat";
@@ -320,6 +321,17 @@ export function ResultsPanel({
                 {data.maxTradesPerDay} same-day all-in trades across the S&amp;P 500, using real
                 60-minute intraday prices. As of {data.dataAsOf}.
               </p>
+              {/* The benchmark is a whole-{range} figure (issue #12), not
+                  scoped to the currently-selected day the way HeroStat/the
+                  chart/trade list below are -- a real, deliberate
+                  juxtaposition, spelled out in BenchmarkStat's own copy
+                  ("over the full {range}") rather than left ambiguous. */}
+              <BenchmarkStat
+                benchmark={data.benchmark}
+                startingCapital={data.startingCapital}
+                displayStartingCapital={effectiveStartingCapital}
+                rangeLabel={RANGE_COPY[range]}
+              />
               <p className="text-sm text-[var(--text-muted)]">
                 {/* guess/guessStartingCapital are the raw dollar amount the
                     user typed and whatever effectiveStartingCapital the
@@ -407,6 +419,11 @@ export function ResultsPanel({
           all-in trades across the S&amp;P 500, using only closed (EOD) prices. As of{" "}
           {data.dataAsOf}.
         </p>
+        <BenchmarkStat
+          benchmark={data.benchmark}
+          startingCapital={data.startingCapital}
+          displayStartingCapital={effectiveStartingCapital}
+        />
       </div>
 
       <PortfolioChart points={points} />

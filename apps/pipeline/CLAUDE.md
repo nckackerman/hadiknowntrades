@@ -413,3 +413,70 @@ retention wall, lookback window, and fetch shape:
   already rely on, it just triggers more routinely for 1M than it does
   for 3M. See `packages/core/CLAUDE.md`'s "Mixed-granularity 1M/3M
   assembly" section for the full reasoning.
+
+## Buy-and-hold (SPY) comparison stat (issue #12)
+
+`pipeline.ts`'s `fetchBenchmarkHistory`/`computeBenchmark` add a whole-
+window SPY buy-and-hold figure to **every** `PrecomputedResult` (all 5
+ranges, both models), via a fourth, non-fatal concurrent fetch alongside
+the window/intraday/override paths. Much simpler than a granularity
+override: exactly one ticker (`SPY`, hardcoded per the issue's own scope
+-- no user-chosen ticker), so it skips `fetchUniverseHistory`'s worker-
+pool-plus-abort-classification machinery entirely (a flat try/catch is
+equally correct for `n=1`), and its failure never fails the run (same
+non-fatal posture as a granularity override) -- `benchmark: null` on
+every range this run if SPY's fetch fails outright.
+
+- **`RESULTS_SCHEMA_VERSION` bumped 3 -> 4** (a fresh bump on top of
+  issue #31's own 2 -> 3, not instead of it -- #31 and #12 were planned
+  in parallel against the same constant/`PrecomputedResultBase`, and #31
+  merged first). See `packages/core/CLAUDE.md`'s own note on
+  `BenchmarkResult`/`validateBenchmark`.
+- **Shown on all 5 ranges, not just the window model's 5Y/MAX** -- a
+  human-confirmed product decision. It's a single well-defined
+  whole-window figure (SPY's own start price to end price over the
+  range) regardless of which trading model a given range uses, unlike
+  e.g. the OG card (issue #33), which deliberately scopes itself to
+  `"window"` only for a genuinely different reason (no single top-level
+  `endingBalance` to headline for the intraday-daily model).
+- **`truncated` is deliberately NOT `start.date > rangeStartString`**
+  (an earlier draft of this issue's plan did exactly that, and an
+  independent plan review only caught half the problem -- the MAX-range
+  inversion, see below). The actual bug: a range's nominal
+  `rangeStartString` (`presetRangeStartDate`) is a plain calendar date
+  with no guarantee of being a real trading day -- **live-checked**
+  (not assumed) that it lands on a weekend for **~28% of days**, across
+  a 2-year sample, for _every_ bounded range (1M/3M/1Y/5Y). Comparing
+  `start.date` (the nearest real trading day actually used) directly
+  against that nominal boundary would flag `truncated: true` on a large
+  fraction of days for every bounded range, not just MAX -- exactly the
+  false-positive flicker the field's own semantics ("history doesn't
+  reach back that far") don't intend, and would defeat the whole
+  point of a flag meant to be a rare, MAX-specific caveat. Fixed:
+  `truncated` compares `rangeStartString` against SPY's _overall_
+  earliest fetched date (across the whole `closes` array, not just the
+  in-window slice) -- that only exceeds the nominal boundary when SPY's
+  data genuinely doesn't reach back that far _at all_, regardless of
+  which specific day inside the window happened to have the first
+  trading-day bar. Regression-tested in `pipeline.test.ts` with a
+  fixture asOf whose 5Y boundary is a real Saturday (2019-06-15, from
+  the file's own `ASOF` constant).
+- **The MAX-range inversion bug** (`presetRangeStartDate("MAX", asOf)`
+  returns `null`, which made an earlier expression short-circuit to
+  `truncated: false` unconditionally for MAX -- the one range this
+  field exists for) is fixed by `truncated: rangeStartString === null
+|| earliestOverall > rangeStartString`: `rangeStartString === null`
+  makes MAX unconditionally `truncated: true`, correct since SPY's
+  finite history (real inception 1993-01-29, confirmed live) is always
+  a truncation relative to an unbounded window.
+- **Live-verified** (both facts, not assumed): a real
+  `fetchDailyCloses("SPY", ...)` call confirms SPY's first real bar is
+  `1993-01-29` and the returned array is date-ascending in practice
+  (`computeBenchmark` still does an explicit min/max scan rather than
+  trusting `inWindow[0]`/`.at(-1)`, same defensive posture as
+  `findMaxDate` above -- this hasn't been shown to be _necessary_, just
+  cheap insurance, per `fetchDailyCloses`'s own undocumented-ordering
+  note in `packages/core/CLAUDE.md`). A real small-universe pipeline run
+  (`AAPL`+`MSFT`) produced a valid, schema-passing `benchmark` for every
+  one of the 5 written ranges, with MAX correctly `truncated: true` at
+  `startDate: "1993-01-29"` and every bounded range `truncated: false`.

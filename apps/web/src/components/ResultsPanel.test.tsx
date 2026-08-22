@@ -19,7 +19,7 @@ async function submitAnyGuess(user: ReturnType<typeof userEvent.setup>) {
 
 function fixtureResult(overrides: Partial<WindowResult> = {}): WindowResult {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     model: "window",
     range: "1Y",
     generatedAt: "2026-08-21T19:50:21.468Z",
@@ -66,13 +66,14 @@ function fixtureResult(overrides: Partial<WindowResult> = {}): WindowResult {
     },
     universeSize: 503,
     skippedTickers: [],
+    benchmark: null,
     ...overrides,
   };
 }
 
 function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): IntradayResult {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     model: "intraday-daily",
     range: "1M",
     generatedAt: "2026-08-21T19:50:21.468Z",
@@ -82,6 +83,7 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
     startingCapital: 20,
     universeSize: 503,
     skippedTickers: [],
+    benchmark: null,
     days: [
       {
         date: "2026-08-20",
@@ -292,6 +294,32 @@ describe("ResultsPanel", () => {
     expect(screen.queryByText(/no trade would have beaten/i)).not.toBeInTheDocument();
   });
 
+  it("renders the BenchmarkStat comparison line when the result has a benchmark, and omits it entirely when benchmark is null (issue #12)", () => {
+    const withBenchmark: ResultsState = {
+      status: "success",
+      data: fixtureResult({
+        benchmark: {
+          ticker: "SPY",
+          startDate: "2025-08-21",
+          startPrice: 400,
+          endDate: "2026-08-21",
+          endPrice: 460,
+          endingBalance: 23,
+          truncated: false,
+        },
+      }),
+    };
+    const { rerender } = render(<ResultsPanel range="1Y" state={withBenchmark} />);
+    expect(screen.getByText(/Buying and holding SPY instead/)).toBeInTheDocument();
+
+    const withoutBenchmark: ResultsState = {
+      status: "success",
+      data: fixtureResult({ benchmark: null }),
+    };
+    rerender(<ResultsPanel range="1Y" state={withoutBenchmark} />);
+    expect(screen.queryByText(/Buying and holding SPY/)).not.toBeInTheDocument();
+  });
+
   describe("intraday-daily model (issue #28)", () => {
     // Every day's result is gated behind the guess-then-reveal flow
     // (issue #34, see DailyGuessForm/use-daily-guess.ts) -- a stored
@@ -435,6 +463,38 @@ describe("ResultsPanel", () => {
       render(<ResultsPanel range="1M" state={state} />);
 
       expect(screen.getByText(/no trading days are available/i)).toBeInTheDocument();
+    });
+
+    it("renders the BenchmarkStat comparison line, disambiguated with the range, once the day's guess is revealed -- and never before (issue #12)", async () => {
+      const user = userEvent.setup();
+      const state: ResultsState = {
+        status: "success",
+        data: fixtureIntradayResult({
+          benchmark: {
+            ticker: "SPY",
+            startDate: "2026-07-21",
+            startPrice: 400,
+            endDate: "2026-08-21",
+            endPrice: 420,
+            endingBalance: 21,
+            truncated: false,
+          },
+        }),
+      };
+      render(<ResultsPanel range="1M" state={state} />);
+
+      // Gated behind the same guess-then-reveal condition as the rest of
+      // this day's content (issue #34) -- showing the benchmark before
+      // the guess is submitted would partially spoil the real answer.
+      expect(screen.queryByText(/Buying and holding SPY/)).not.toBeInTheDocument();
+
+      await submitAnyGuess(user);
+
+      // The whole-range benchmark (issue #12), disambiguated from the
+      // single selected day everything else on screen is scoped to.
+      expect(
+        screen.getByText(/Buying and holding SPY over the past month instead/),
+      ).toBeInTheDocument();
     });
 
     it("mentions maxTradesPerDay from the data, not a hardcoded literal", async () => {

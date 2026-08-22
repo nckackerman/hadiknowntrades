@@ -24,7 +24,7 @@ a second, competing rescale mechanism now — only to delete it once #15
 actually lands — would be strictly worse than depending on #15's current
 design. But this is a real, load-bearing assumption, not a formality:
 
-- §5 (UI) is written against PR #55's *current* code (read directly via
+- §5 (UI) is written against PR #55's _current_ code (read directly via
   `git show origin/feat/15-configurable-starting-capital:...` for
   `rescale-starting-capital.ts`, `HeroStat.tsx`, `ResultsPanel.tsx` — not
   guessed from the issue text). If #15 changes shape before merging (a
@@ -46,7 +46,7 @@ design. But this is a real, load-bearing assumption, not a formality:
 **No new fetch function, no new `RunPipelineOptions` field.** Unlike
 every granularity override (issues #29/#30), which each needed a genuinely
 new bar-granularity fetch function threaded through `RunPipelineOptions`
-and `apps/pipeline/src/run.ts`, this needs only the *same*
+and `apps/pipeline/src/run.ts`, this needs only the _same_
 `fetchDailyCloses` function `RunPipelineOptions` already carries, called
 once more for a different symbol (`"SPY"`) instead of once per
 S&P 500 constituent. `run.ts` needs **zero changes**.
@@ -81,22 +81,22 @@ S&P 500 constituent. `run.ts` needs **zero changes**.
   wrong" across ~503 tickers. For exactly one ticker, that distinction is
   meaningless — there's no "skip this ticker, keep going" option when
   it's the only ticker, and no other in-flight worker whose failure a
-  `BlockedError` needs to preempt. A flat try/catch that turns *any*
+  `BlockedError` needs to preempt. A flat try/catch that turns _any_
   failure into "no benchmark this run" is simpler and equally correct
   here; reusing the heavier machinery for `n=1` would be complexity
   without a matching benefit.
+
 - **Concurrency**: add this as a **fourth entry** in `runPipeline`'s
   existing outer `Promise.all([windowFetch, intradayFetch,
-  overrideOutcomes])`, becoming `Promise.all([windowFetch, intradayFetch,
-  overrideOutcomes, benchmarkFetch])`. It's a single extra HTTP request
+overrideOutcomes])`, becoming `Promise.all([windowFetch, intradayFetch,
+overrideOutcomes, benchmarkFetch])`. It's a single extra HTTP request
   per run (not a new ~503-ticker pool like the window/intraday/override
   paths), so — unlike the granularity overrides, which each meaningfully
   raised total request volume and got their own risk write-up in
   `apps/pipeline/CLAUDE.md` — this is a negligible addition to that
   budget. Worth stating explicitly so a reviewer doesn't conflate this
   with that larger, already-documented risk (see §9).
-- **`from`/`to`**: reuse the window path's own `earliestDate` (default
-  1970) and `asOf` — the same "ask for everything, let the client return
+- **`from`/`to`**: reuse the window path's own `earliestDate` (default 1970) and `asOf` — the same "ask for everything, let the client return
   whatever actually exists" pattern the window path already uses for the
   ~503-ticker universe fetch (`DEFAULT_EARLIEST_DATE`'s own comment: "the
   Yahoo client naturally returns only what actually exists in range").
@@ -117,7 +117,7 @@ S&P 500 constituent. `run.ts` needs **zero changes**.
   window/intraday split's must-still-fail-the-run standard"): losing the
   benchmark stat for a run means every range's comparison figure is
   simply absent (`benchmark: null`, see §3), not that a range serves
-  stale or broken *primary* data. Its outcome is still folded into the
+  stale or broken _primary_ data. Its outcome is still folded into the
   final status message purely for operational visibility, one more line
   alongside the existing override status lines.
 - **Not added to `skippedTickers`.** That field's existing semantics are
@@ -127,7 +127,7 @@ S&P 500 constituent. `run.ts` needs **zero changes**.
   path's fetch but not another's"). SPY is not a universe constituent —
   it never appears in `options.tickers` / `SP500_CONSTITUENTS` — so
   there is no meaningful "skipped from N candidates" framing for it the
-  way there is for a granularity override's *own* per-ticker skips
+  way there is for a granularity override's _own_ per-ticker skips
   (which genuinely are constituent-ticker skips, just from a second
   fetch over the same universe). Mixing SPY into that list would
   misrepresent what `skippedTickers` counts. Its failure is reported
@@ -189,7 +189,7 @@ function computeBenchmark(
 - Called once per `PresetRange` in `runPipeline`, right after the
   benchmark fetch settles (before `buildWindowResults`/
   `buildIntradayResults` run), producing a `Map<PresetRange,
-  BenchmarkResult | null>`. Both builder functions gain a
+BenchmarkResult | null>`. Both builder functions gain a
   `benchmarksByRange: Map<PresetRange, BenchmarkResult | null>` parameter
   and attach `benchmark: benchmarksByRange.get(range) ?? null` to each
   range's returned object — a one-line addition to each builder's return
@@ -215,7 +215,7 @@ case** — it can happen to any range, including 1M, if SPY's fetch simply
 fails outright.
 
 **(b) SPY fetch succeeds, but its own history doesn't reach back as far
-as the range's requested start date.** This is the *actual* MAX/1993
+as the range's requested start date.** This is the _actual_ MAX/1993
 case: MAX's own window is unbounded (`presetRangeStartDate("MAX", asOf)`
 returns `null`, meaning "as far back as anything has data" — the
 S&P 500 universe's own earliest constituent history goes back well
@@ -228,8 +228,8 @@ is still computed. What changes is:
   available close in the window (~1993-01-29), not the range's nominal
   start (which for MAX has no meaning to compare against anyway, since
   it's `null`/unbounded).
-- `truncated: true` is set whenever the *achieved* `startDate` is later
-  than the range's own *requested* start date (`rangeStartString`) — for
+- `truncated: true` is set whenever the _achieved_ `startDate` is later
+  than the range's own _requested_ start date (`rangeStartString`) — for
   MAX this is unconditionally true in practice (SPY's real inception is
   always later than "as far back as anything has data"); for every other
   range (1M/3M/1Y/5Y) it's false in every realistic case, since SPY's
@@ -248,7 +248,7 @@ multi-decade window the optimizer's own trades cover. §5's UI plan
 surfaces `truncated` in the displayed copy itself ("since SPY's earliest
 available data, {startDate}") rather than only in the JSON. A reader that
 ignores `truncated` and just prints `endingBalance` is not wrong about
-the *number*, only silently misleading about what window that number
+the _number_, only silently misleading about what window that number
 represents — worth stating plainly since nothing in the type system
 forces a consumer to branch on it (unlike `benchmark: null`, which forces
 a null-check just to compile against).
@@ -295,14 +295,14 @@ Add one field to `PrecomputedResultBase` (shared by both `WindowResult`
 and `IntradayResult`, so this is a single addition, not two):
 
 ```ts
-  /**
-   * SPY buy-and-hold comparison over the same window (issue #12). Null
-   * only when no benchmark data could be fetched at all this run (see
-   * results-schema.ts's BenchmarkResult / the fetch failure case) -- a
-   * present-but-truncated result is a real, honestly-scoped comparison,
-   * not a degraded/missing one; see BenchmarkResult.truncated.
-   */
-  benchmark: BenchmarkResult | null;
+/**
+ * SPY buy-and-hold comparison over the same window (issue #12). Null
+ * only when no benchmark data could be fetched at all this run (see
+ * results-schema.ts's BenchmarkResult / the fetch failure case) -- a
+ * present-but-truncated result is a real, honestly-scoped comparison,
+ * not a degraded/missing one; see BenchmarkResult.truncated.
+ */
+benchmark: BenchmarkResult | null;
 ```
 
 **`RESULTS_SCHEMA_VERSION` bump: 2 -> 3.** A reader needs to know about
@@ -329,13 +329,19 @@ function validateBenchmark(value: unknown, problems: string[]): void {
   if (!isNonEmptyString(b.startDate))
     problems.push(`benchmark.startDate must be a non-empty string, got ${describe(b.startDate)}`);
   if (!isPositiveFiniteNumber(b.startPrice))
-    problems.push(`benchmark.startPrice must be a positive finite number, got ${describe(b.startPrice)}`);
+    problems.push(
+      `benchmark.startPrice must be a positive finite number, got ${describe(b.startPrice)}`,
+    );
   if (!isNonEmptyString(b.endDate))
     problems.push(`benchmark.endDate must be a non-empty string, got ${describe(b.endDate)}`);
   if (!isPositiveFiniteNumber(b.endPrice))
-    problems.push(`benchmark.endPrice must be a positive finite number, got ${describe(b.endPrice)}`);
+    problems.push(
+      `benchmark.endPrice must be a positive finite number, got ${describe(b.endPrice)}`,
+    );
   if (!isPositiveFiniteNumber(b.endingBalance))
-    problems.push(`benchmark.endingBalance must be a positive finite number, got ${describe(b.endingBalance)}`);
+    problems.push(
+      `benchmark.endingBalance must be a positive finite number, got ${describe(b.endingBalance)}`,
+    );
   if (typeof b.truncated !== "boolean")
     problems.push(`benchmark.truncated must be a boolean, got ${describe(b.truncated)}`);
 }
@@ -467,7 +473,7 @@ own plan doc noted for its schema change).
   `pipeline.test.ts` additions: the new 4th concurrent fetch is wired up
   and awaited (a slow/rejecting benchmark fetch doesn't block or fail the
   other three paths), a benchmark fetch failure results in `benchmark:
-  null` on every written range without failing the run, and every
+null` on every written range without failing the run, and every
   written range's `benchmark` field round-trips through
   `validatePrecomputedResult` correctly.
 - **`apps/web`**: `BenchmarkStat.test.tsx` (renders nothing for `null`,
@@ -560,7 +566,7 @@ feature, not after every incremental fix):
    `buildCalendar` builds and sorts its own date set rather than trusting
    fetch order, which is itself informative). §2's `computeBenchmark`
    is written defensively (explicit min/max scan) rather than assuming
-   ascending order, but this has not been live-verified as *necessary*
+   ascending order, but this has not been live-verified as _necessary_
    (vs. just cheap insurance) — §7's live-verification step should
    settle whether the defensive version is doing real work or not, for
    future readers of this code who might otherwise "simplify" it back to
@@ -578,7 +584,7 @@ feature, not after every incremental fix):
   ~503-ticker pool, and that distinction is worth keeping clear so this
   change isn't mistakenly folded into that existing, much larger risk.
 - **Correctness / honesty risk**: the MAX/truncated case (§3) is the one
-  place this feature can be *technically correct but misleading* if the
+  place this feature can be _technically correct but misleading_ if the
   UI ever drops the `truncated` caveat in a future refactor — a ~33-year
   SPY-only comparison silently juxtaposed against a "MAX" range whose own
   window can span 50+ years for some constituents. The schema forces a
@@ -587,7 +593,7 @@ feature, not after every incremental fix):
   copy actually appears when `truncated` is true (§6), not just that the
   dollar figure is correct.
 - **Blast radius**: same rollout hazard #28's plan already documented
-  and #29/#30 repeated — bumping `RESULTS_SCHEMA_VERSION` means *all 5*
+  and #29/#30 repeated — bumping `RESULTS_SCHEMA_VERSION` means _all 5_
   range keys need to be rewritten by a real pipeline run before or
   atomically with deploying the schema-3-only `apps/web`, or every range
   (including the 4 this issue doesn't otherwise touch the behavior of)
