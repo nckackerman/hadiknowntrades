@@ -363,3 +363,89 @@ during a build, don't add a `.js` extension or a workaround here first -
 see `packages/core/CLAUDE.md`'s "Internal imports" note: the fix belongs
 in `packages/core`'s own relative-import style, not in how this app
 imports the package.
+
+## OG share card (issue #33): `/api/og/[range]`, Satori-rendered, ISR-cached
+
+`src/app/api/og/[range]/route.tsx` renders a 1200x630 PNG share card
+("$20 -> $48,203 - Max range") via Next's `ImageResponse` (`next/og`,
+Satori under the hood -- JSX/CSS to PNG, no headless browser). Content
+comes from `src/lib/og-card.ts`'s `buildOgCardContent` (pure, unit
+tested); pixels come from `src/components/OgCard.tsx`'s `renderOgCard`
+(split out specifically so it's callable directly, bypassing the route
+entirely -- see "Live verification without headless-browser or real S3"
+below).
+
+- **Scope: only the "window" result model (5Y, MAX today) gets a card.**
+  `buildOgCardContent` returns `null` for an "intraday-daily" result
+  (1M/3M/1Y, issue #28) and the route turns that into a 404 -- not an
+  oversight. That model has no single top-level `endingBalance` to
+  headline (per-day results don't compound, see
+  `packages/core/CLAUDE.md`), and picking which day's result a card
+  would even feature is its own product decision. Deliberately keyed off
+  the result's actual `model` field, not a hardcoded range list, so a
+  future model/range change stays correct with no list to remember to
+  update.
+- **Caching: real ISR (`export const dynamic = "force-static"` +
+  `export const revalidate = 86400`), not just a `Cache-Control` header
+  like `/api/results` uses.** This was a deliberate choice over that
+  route's own pattern: `/api/results` is fully dynamic per request
+  (`force-dynamic`) and relies on downstream caches respecting its
+  header, so its own handler still runs every request with nothing in
+  front of it. This route's handler -- which does real Satori/PNG
+  rendering, not a cheap JSON passthrough -- only runs once per range
+  per 24h; verified live via `next start` + curl: `x-nextjs-cache: MISS`
+  on the first request, `HIT` (no re-render) on the second. 24h matches
+  the pipeline's nightly cadence, the same staleness tolerance
+  `/api/results` already documents.
+  - This route deliberately has **no `generateStaticParams`** -- adding
+    one would make `next build` read from S3 at build time, which this
+    sandboxed dev environment has no credentials for. Omitting it means
+    every range is rendered (then cached) on its first real request
+    instead, identically in production, and keeps `next build` fully
+    offline-safe here (confirmed: `next build`'s route summary lists
+    `/api/og/[range]` as `○ (Static)`, `/api/results` as `ƒ (Dynamic)`,
+    exactly the intended split).
+  - **Known, accepted rough edge**: an _error_ response (misconfigured
+    bucket, a range not published yet, corrupt data) gets cached by
+    Next's Full Route Cache the same as a successful render, for the
+    same 24h window -- there's no "don't cache non-2xx" carve-out for
+    route handlers the way `fetch`'s own Data Cache has. Not engineered
+    around (throwing instead of returning a `Response` isn't a
+    documented, reliable escape hatch for ISR'd route handlers either) --
+    these are rare, operational failure modes, and a stale error for up
+    to a day is no worse than the staleness the rest of this
+    precomputed-nightly app already accepts everywhere else.
+  - This route reuses `getResultsResponse` (`/api/results`'s own logic)
+    in-process rather than re-implementing S3-read-plus-validate a
+    second time, so both routes can't drift on what counts as a
+    valid/corrupt/not-yet-published result. Its error body is `{ error,
+message }` JSON -- this route reads the `message` field back out
+    rather than using the plain HTTP status line, since a
+    `Response.json`-built response's `statusText` is an uninformative
+    empty string in practice (verified live: curling an unsupported
+    range returned `status=400` with an _empty_ `statusText`, only
+    fixed by reading the JSON body's own `message` instead).
+- **Live verification without a headless browser or real S3, without
+  contaminating the committed diff**: this dev environment has neither
+  (see this file's own "Headless-browser screenshot verification"
+  note for the browser side; `RESULTS_BUCKET`/AWS credentials for the
+  S3 side). Two throwaway techniques, both removed before committing:
+  1. A small `@vitest-environment node`-tagged test file that imports
+     `renderOgCard` directly and writes each fixture's PNG to disk for
+     visual inspection -- no route, no server, no S3 at all. **Must
+     override the environment to `node`**: this project's
+     `vitest.config.mts` defaults every test to `jsdom` (see its own
+     comment), and under jsdom, `next/og`'s PNG rasterization (resvg,
+     WASM-based) fails outright with `Unsupported input` -- something
+     about jsdom's globals confuses it. Plain `node` has no such issue;
+     confirmed by toggling only the environment tag with everything
+     else unchanged.
+  2. For a true end-to-end HTTP check (through Next's real routing,
+     `ImageResponse`'s content-type/status handling, and the ISR
+     cache itself, not just the render function in isolation): a
+     temporary in-memory `ResultReader` swapped in for `reader` when
+     `RESULTS_BUCKET` is unset, `next build` + `next start` against a
+     real local port, then `curl`. This is what produced the
+     `x-nextjs-cache: MISS`/`HIT` evidence above. Reverted immediately
+     after -- `git diff`/`git status` should show none of this in the
+     final commit.
