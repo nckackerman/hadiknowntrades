@@ -365,6 +365,42 @@ it only ever reads the 60-minute day-result array.
   depends on doesn't meet that bar. Revisit if `apps/web` ever starts
   branching on this field's presence.
 
+## Write-time result self-validation (issue #47)
+
+`src/results-schema.ts`'s `validatePrecomputedResult` is a runtime,
+hand-rolled check that a `PrecomputedResult` actually satisfies its own
+declared shape (`WindowResult`/`IntradayResult`, discriminated by
+`model`) -- required fields present, `startingCapital`/`endingBalance`/
+prices/day-balances finite numbers, `trades`/`days` arrays well-formed
+-- throwing `ResultValidationError` (every problem found, not just the
+first) if not. `apps/pipeline/src/pipeline.ts` calls it immediately
+before each range's `putObject` (see `apps/pipeline/CLAUDE.md`).
+
+- **Deliberately hand-rolled, not a schema library** (e.g. zod) --
+  checked first per the issue's own scope note, and this package has no
+  runtime-validation dependency today; the shape is small, stable, and
+  cheaper to keep in sync by hand-reading it against the interfaces
+  above than by maintaining a second, library-specific representation
+  of the same shape. Revisit if the shape ever grows enough that
+  hand-sync stops being the cheaper option.
+- **Must treat its input as untrusted despite the `PrecomputedResult`
+  compile-time parameter type** -- the whole point is catching a bug
+  that produces a runtime value violating that type despite TypeScript
+  (e.g. a `NaN` slipping through arithmetic, exactly optimizer.ts's own
+  `OptimizerInputError` "computed a non-finite endingBalance" case, just
+  on the *output* side instead of input). Every field access inside the
+  validator goes through an `unknown`/`Record<string, unknown>` cast and
+  an explicit runtime check (`Number.isFinite`, `Array.isArray`, etc.) --
+  never a bare property read trusted to have the declared type, which
+  would silently defeat the check for exactly the bug class it exists to
+  catch.
+- Same "defense in depth" spirit as `optimizer.ts`'s own input
+  validation (see above), just facing the opposite direction: that
+  validates the optimizer's *inputs* before use; this validates the
+  pipeline's *output* right before it becomes what `apps/web` reads --
+  there's nothing further downstream to catch a bad value once this
+  passes.
+
 ## Per-day intraday optimizer (issue #28)
 
 `src/intraday-optimizer.ts`'s `optimizeIntradayDays` needs **no new DP**.

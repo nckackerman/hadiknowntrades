@@ -66,6 +66,7 @@ import {
   RESULTS_SCHEMA_VERSION,
   toDateString,
   UnexpectedResponseError,
+  validatePrecomputedResult,
   type DailyClose,
   type IntradayBar,
   type IntradayDayResult,
@@ -835,11 +836,23 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
 
   // Independent writes to unrelated keys, already accepted as non-atomic
   // as a group (see the comment above) -- no reason to pay serial
-  // network latency for them.
+  // network latency for them. Each result is self-validated (issue #47)
+  // immediately before its own putObject call, so a malformed result
+  // (e.g. a refactor bug producing a NaN endingBalance) fails loudly
+  // instead of shipping silently to S3. The callback must stay `async`
+  // -- a synchronous throw from validatePrecomputedResult inside a
+  // non-async .map() callback would propagate out of .map() itself and
+  // abort the whole loop before later, still-valid results ever get a
+  // chance to write; wrapping in `async` turns that throw into this one
+  // result's own rejected promise instead, so Promise.all still starts
+  // (and lets finish) every other result's write independently -- see
+  // apps/pipeline/CLAUDE.md's "write whatever succeeded, then still
+  // throw" guarantee, which this must not break.
   await Promise.all(
-    results.map((result) =>
-      options.store.putObject(resultKey(result.range), JSON.stringify(result, null, 2)),
-    ),
+    results.map(async (result) => {
+      validatePrecomputedResult(result);
+      return options.store.putObject(resultKey(result.range), JSON.stringify(result, null, 2));
+    }),
   );
 
   const skippedTickers = [

@@ -16,7 +16,7 @@
 // docs/plans/issue-28-plan.md's addendum for why). A reader switches on
 // `model` to know which shape it got.
 
-import type { PresetRange } from "./preset-ranges";
+import { PRESET_RANGES, type PresetRange } from "./preset-ranges";
 import type { Trade } from "./optimizer";
 import type { IntradayDayResult } from "./intraday-optimizer";
 
@@ -82,3 +82,246 @@ export interface IntradayResult extends PrecomputedResultBase {
 }
 
 export type PrecomputedResult = WindowResult | IntradayResult;
+
+// --- Write-time self-validation (issue #47) ---------------------------
+//
+// The types above only enforce shape at compile time -- a `NaN`
+// `endingBalance` or a bug that drops a required field still satisfies
+// TypeScript, since `number` and optional-vs-missing checks are purely
+// static. apps/pipeline (src/pipeline.ts) writes whatever
+// buildWindowResults/buildIntradayResults produced straight to S3 with
+// no runtime check that the *value itself* still matches its declared
+// shape, so a malformed result would previously ship silently and only
+// surface later as a confusing frontend bug in apps/web. This section
+// gives the pipeline a runtime check to call immediately before each
+// putObject, in the same spirit as optimizer.ts's own
+// OptimizerInputError input validation (see packages/core/CLAUDE.md's
+// "defense in depth" note) -- except this validates output, not input,
+// and there's nothing upstream left to "trust" once this fails: it's
+// the last line of defense before a result becomes what apps/web reads.
+//
+// Deliberately hand-rolled rather than pulled in from a schema library
+// (e.g. zod): this package has no runtime-validation dependency today,
+// the shape being checked is small and stable, and a validator that's
+// just read top-to-bottom against the interfaces above is easier to
+// keep in sync with them by hand than round-tripping through a second,
+// schema-library-specific representation of the same shape.
+
+/** Thrown by validatePrecomputedResult when a PrecomputedResult fails to satisfy its own declared shape. */
+export class ResultValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ResultValidationError";
+  }
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isPositiveFiniteNumber(value: unknown): value is number {
+  return isFiniteNumber(value) && value > 0;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+/**
+ * Validates one `Trade` (see optimizer.ts) as it appears embedded in a
+ * `WindowResult.trades` entry, appending one message per problem found
+ * to `problems` rather than stopping at the first -- a malformed result
+ * is worth diagnosing in one pass, not one failed `putObject` retry at a
+ * time.
+ */
+function validateTrade(trade: unknown, path: string, problems: string[]): void {
+  if (trade === null || typeof trade !== "object") {
+    problems.push(`${path} must be an object, got ${describe(trade)}`);
+    return;
+  }
+  const t = trade as Record<string, unknown>;
+  if (!isNonEmptyString(t.ticker))
+    problems.push(`${path}.ticker must be a non-empty string, got ${describe(t.ticker)}`);
+  if (!isNonEmptyString(t.buyDate))
+    problems.push(`${path}.buyDate must be a non-empty string, got ${describe(t.buyDate)}`);
+  if (!isPositiveFiniteNumber(t.buyPrice))
+    problems.push(`${path}.buyPrice must be a positive finite number, got ${describe(t.buyPrice)}`);
+  if (!isNonEmptyString(t.sellDate))
+    problems.push(`${path}.sellDate must be a non-empty string, got ${describe(t.sellDate)}`);
+  if (!isPositiveFiniteNumber(t.sellPrice))
+    problems.push(
+      `${path}.sellPrice must be a positive finite number, got ${describe(t.sellPrice)}`,
+    );
+}
+
+/** Validates one `IntradayTrade` (see intraday-optimizer.ts) embedded in an `IntradayDayResult.trades` entry. */
+function validateIntradayTrade(trade: unknown, path: string, problems: string[]): void {
+  if (trade === null || typeof trade !== "object") {
+    problems.push(`${path} must be an object, got ${describe(trade)}`);
+    return;
+  }
+  const t = trade as Record<string, unknown>;
+  if (!isNonEmptyString(t.ticker))
+    problems.push(`${path}.ticker must be a non-empty string, got ${describe(t.ticker)}`);
+  if (!isNonEmptyString(t.date))
+    problems.push(`${path}.date must be a non-empty string, got ${describe(t.date)}`);
+  if (!isNonEmptyString(t.buyTime))
+    problems.push(`${path}.buyTime must be a non-empty string, got ${describe(t.buyTime)}`);
+  if (!isPositiveFiniteNumber(t.buyPrice))
+    problems.push(`${path}.buyPrice must be a positive finite number, got ${describe(t.buyPrice)}`);
+  if (!isNonEmptyString(t.sellTime))
+    problems.push(`${path}.sellTime must be a non-empty string, got ${describe(t.sellTime)}`);
+  if (!isPositiveFiniteNumber(t.sellPrice))
+    problems.push(
+      `${path}.sellPrice must be a positive finite number, got ${describe(t.sellPrice)}`,
+    );
+}
+
+/** Validates one `IntradayDayResult` (see intraday-optimizer.ts) embedded in an `IntradayResult.days` entry. */
+function validateIntradayDay(day: unknown, path: string, problems: string[]): void {
+  if (day === null || typeof day !== "object") {
+    problems.push(`${path} must be an object, got ${describe(day)}`);
+    return;
+  }
+  const d = day as Record<string, unknown>;
+  if (!isNonEmptyString(d.date))
+    problems.push(`${path}.date must be a non-empty string, got ${describe(d.date)}`);
+  if (!isPositiveFiniteNumber(d.startingCapital))
+    problems.push(
+      `${path}.startingCapital must be a positive finite number, got ${describe(d.startingCapital)}`,
+    );
+  if (!isPositiveFiniteNumber(d.endingBalance))
+    problems.push(
+      `${path}.endingBalance must be a positive finite number, got ${describe(d.endingBalance)}`,
+    );
+  if (!isPositiveFiniteNumber(d.barIntervalMinutes))
+    problems.push(
+      `${path}.barIntervalMinutes must be a positive finite number, got ${describe(d.barIntervalMinutes)}`,
+    );
+  if (!Array.isArray(d.trades)) {
+    problems.push(`${path}.trades must be an array, got ${describe(d.trades)}`);
+  } else {
+    d.trades.forEach((trade, i) => validateIntradayTrade(trade, `${path}.trades[${i}]`, problems));
+  }
+}
+
+/** A short, safe-to-embed-in-an-error-message description of an arbitrary value, for validation failure messages. */
+function describe(value: unknown): string {
+  if (value === undefined) return "undefined";
+  if (value === null) return "null";
+  if (typeof value === "number") return String(value); // covers NaN, Infinity legibly
+  if (typeof value === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) return `an array of length ${value.length}`;
+  if (typeof value === "object") return "an object";
+  return String(value);
+}
+
+/** Validates the fields every PrecomputedResult shares, regardless of `model`. */
+function validateBase(result: Record<string, unknown>, problems: string[]): void {
+  if (!isNonNegativeInteger(result.schemaVersion)) {
+    problems.push(
+      `schemaVersion must be a non-negative integer, got ${describe(result.schemaVersion)}`,
+    );
+  }
+  if (!(PRESET_RANGES as readonly string[]).includes(result.range as string)) {
+    problems.push(
+      `range must be one of ${PRESET_RANGES.join(", ")}, got ${describe(result.range)}`,
+    );
+  }
+  if (!isNonEmptyString(result.generatedAt)) {
+    problems.push(`generatedAt must be a non-empty string, got ${describe(result.generatedAt)}`);
+  }
+  if (!isNonEmptyString(result.dataAsOf)) {
+    problems.push(`dataAsOf must be a non-empty string, got ${describe(result.dataAsOf)}`);
+  }
+  if (!isPositiveFiniteNumber(result.startingCapital)) {
+    problems.push(
+      `startingCapital must be a positive finite number, got ${describe(result.startingCapital)}`,
+    );
+  }
+  if (!isNonNegativeInteger(result.universeSize)) {
+    problems.push(
+      `universeSize must be a non-negative integer, got ${describe(result.universeSize)}`,
+    );
+  }
+  if (!Array.isArray(result.skippedTickers)) {
+    problems.push(`skippedTickers must be an array, got ${describe(result.skippedTickers)}`);
+  } else {
+    result.skippedTickers.forEach((ticker, i) => {
+      if (!isNonEmptyString(ticker)) {
+        problems.push(`skippedTickers[${i}] must be a non-empty string, got ${describe(ticker)}`);
+      }
+    });
+  }
+}
+
+/**
+ * Validates that `result` actually satisfies its own declared shape
+ * (`WindowResult` or `IntradayResult`, per its `model` discriminant) at
+ * runtime -- required fields present, prices/balances finite numbers,
+ * `trades`/`days` arrays well-formed -- and throws `ResultValidationError`
+ * (listing every problem found, not just the first) if it doesn't.
+ *
+ * Callers should treat `result` as untrusted despite its `PrecomputedResult`
+ * compile-time type: the whole point of this check is to catch a bug that
+ * produces a runtime value violating that type despite TypeScript (e.g. a
+ * `NaN` slipping through arithmetic) -- trusting the static type here
+ * would defeat the purpose.
+ */
+export function validatePrecomputedResult(result: PrecomputedResult): void {
+  const problems: string[] = [];
+  if (result === null || typeof result !== "object") {
+    throw new ResultValidationError(`result must be an object, got ${describe(result)}`);
+  }
+  const r = result as unknown as Record<string, unknown>;
+  validateBase(r, problems);
+
+  if (r.model === "window") {
+    if (r.startDate !== null && !isNonEmptyString(r.startDate)) {
+      problems.push(`startDate must be a non-empty string or null, got ${describe(r.startDate)}`);
+    }
+    if (!isNonEmptyString(r.endDate)) {
+      problems.push(`endDate must be a non-empty string, got ${describe(r.endDate)}`);
+    }
+    if (!isNonNegativeInteger(r.maxTrades)) {
+      problems.push(`maxTrades must be a non-negative integer, got ${describe(r.maxTrades)}`);
+    }
+    if (!isPositiveFiniteNumber(r.endingBalance)) {
+      problems.push(
+        `endingBalance must be a positive finite number, got ${describe(r.endingBalance)}`,
+      );
+    }
+    if (!Array.isArray(r.trades)) {
+      problems.push(`trades must be an array, got ${describe(r.trades)}`);
+    } else {
+      r.trades.forEach((trade, i) => validateTrade(trade, `trades[${i}]`, problems));
+    }
+  } else if (r.model === "intraday-daily") {
+    if (!isNonEmptyString(r.endDate)) {
+      problems.push(`endDate must be a non-empty string, got ${describe(r.endDate)}`);
+    }
+    if (!isNonNegativeInteger(r.maxTradesPerDay)) {
+      problems.push(
+        `maxTradesPerDay must be a non-negative integer, got ${describe(r.maxTradesPerDay)}`,
+      );
+    }
+    if (!Array.isArray(r.days)) {
+      problems.push(`days must be an array, got ${describe(r.days)}`);
+    } else {
+      r.days.forEach((day, i) => validateIntradayDay(day, `days[${i}]`, problems));
+    }
+  } else {
+    problems.push(`model must be "window" or "intraday-daily", got ${describe(r.model)}`);
+  }
+
+  if (problems.length > 0) {
+    throw new ResultValidationError(
+      `PrecomputedResult for range ${describe(r.range)} failed schema self-validation (${problems.length} problem${problems.length === 1 ? "" : "s"}):\n` +
+        problems.map((p) => `  - ${p}`).join("\n"),
+    );
+  }
+}

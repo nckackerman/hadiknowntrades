@@ -155,6 +155,55 @@ bar type, not daily-close-specific):
   this repo's standing working agreement -- not yet performed as of this
   issue's implementation; see the PR for issue #28.
 
+## Write-time result self-validation (issue #47)
+
+Immediately before each range's `putObject` call, `runPipeline` now
+calls `validatePrecomputedResult` (`packages/core/src/results-schema.ts`
+-- see `packages/core/CLAUDE.md` for what it checks) on that result, so
+a malformed result (e.g. a future refactor bug producing a `NaN`
+`endingBalance`) throws and fails the Lambda invocation loudly instead
+of shipping silently to S3. This is this system's only alerting
+mechanism (see the top of this file) -- a thrown error here plugs into
+existing behavior with no new plumbing needed.
+
+- **The `results.map(...)` callback around the write loop must stay
+  `async`, not a bare arrow returning `store.putObject(...)` directly --
+  a real, easy-to-get-wrong subtlety, not a style choice.** `.map()`
+  invokes its callback *synchronously* for every element before
+  `Promise.all` ever starts awaiting; if `validatePrecomputedResult`
+  threw synchronously inside a *non*-`async` callback, that throw would
+  propagate straight out of `.map()` itself and abort the whole loop
+  before later elements' `putObject` calls ever got a chance to start --
+  silently breaking the "write whatever succeeded, then still throw if
+  either path failed" guarantee (see "Two independent paths" below) for
+  every range after the first invalid one in iteration order, not just
+  the invalid one. Making the callback `async` fixes this: a synchronous
+  throw inside an `async` function body is caught by the function's own
+  machinery and turned into that one element's rejected promise instead
+  of a synchronous exception out of `.map()`, so every other element's
+  `async` callback still runs (and its `putObject` still starts)
+  independently. `Promise.all` still rejects overall once any element
+  rejects -- that's what fails the Lambda invocation -- but the other,
+  still-valid writes aren't prevented from completing in the background.
+  If this callback is ever refactored back to a bare arrow function
+  around `store.putObject(...)`, re-add `async` (or otherwise ensure the
+  validation call can't throw synchronously out of `.map()`).
+- Covered by `src/pipeline.write-validation.test.ts`, a small file kept
+  deliberately separate from the main `pipeline.test.ts` -- it needs to
+  `vi.mock("@hadiknowntrades/core", ...)` to force `validatePrecomputedResult`
+  to fail for one specific range while leaving the real implementation
+  in place for every other range (via `importOriginal`), and `vi.mock`
+  applies module-wide to every test in whatever file calls it; doing
+  this in `pipeline.test.ts` would have broken every other test there
+  that expects real validation to pass. Uses `vi.hoisted()` to hold the
+  "which range should fail" flag the mock factory reads -- needed
+  because `vi.mock`'s factory (like the mock call itself) is hoisted
+  above normal top-level `const` declarations, so a plain outer variable
+  read by the factory would hit the temporal dead zone.
+  `results-schema.test.ts` (`packages/core`) already covers
+  `validatePrecomputedResult`'s own pass/fail logic directly; this file
+  only checks the pipeline's *wiring* to it.
+
 ## Granularity overrides: 3M's 5-minute and 1M's 1-minute bars (issues #30, #29)
 
 A **granularity override** upgrades one range's days to a finer bar
