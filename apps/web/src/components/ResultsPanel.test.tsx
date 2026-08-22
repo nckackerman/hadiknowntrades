@@ -443,6 +443,26 @@ describe("ResultsPanel", () => {
         expect(screen.getByText(/you guessed \$30\.00/i)).toBeInTheDocument();
       });
 
+      it("rescales the 'You guessed' figure when starting capital changes after the reveal, instead of leaving it stuck at the value guessed under the old capital -- real bug found in code review: HeroStat/the chart rescaled live on a post-reveal starting-capital edit but this line, driven by the raw stored guess, silently didn't", async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+        const { rerender } = render(<ResultsPanel range="1M" state={state} startingCapital={20} />);
+
+        // Guessed while the prompt showed $20.00 starting capital.
+        await user.type(screen.getByLabelText(/what do you think/i), "30");
+        await user.click(screen.getByRole("button", { name: /reveal/i }));
+        expect(screen.getByText(/you guessed \$30\.00/i)).toBeInTheDocument();
+
+        // Starting capital changes post-reveal (e.g. via StartingCapitalInput)
+        // to 10x the original -- the guess was $30 against $20, so it must
+        // now read as $300.00 to stay comparable to the also-rescaled
+        // HeroStat/chart figures, not stay frozen at the stale $30.00.
+        rerender(<ResultsPanel range="1M" state={state} startingCapital={200} />);
+
+        expect(screen.getByText(/you guessed \$300\.00/i)).toBeInTheDocument();
+        expect(screen.queryByText(/you guessed \$30\.00/i)).not.toBeInTheDocument();
+      });
+
       it("persists the guess across a simulated reload (re-mount with the same localStorage) and skips straight to the reveal", async () => {
         const user = userEvent.setup();
         const state: ResultsState = { status: "success", data: fixtureIntradayResult() };

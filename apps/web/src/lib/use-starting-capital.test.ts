@@ -137,4 +137,41 @@ describe("useStartingCapital", () => {
 
     expect(writeSpy).toHaveBeenCalledWith(STORAGE_KEY, "1000");
   });
+
+  // Regression coverage for a real code-review finding: the mount effect's
+  // hydration read is deferred to a microtask (see the hook's own doc
+  // comment on why), which leaves a window between mount and that
+  // microtask actually running. A setStartingCapital call landing in that
+  // window used to have no guard against the hydration microtask
+  // clobbering it back to a stale persisted value once it finally ran.
+  //
+  // Under this app's real local-storage.ts backing, that window is hard
+  // to exploit naturally in a test: writeStoredStartingCapital's write is
+  // synchronous, so by the time the deferred microtask actually reads
+  // storage, it would normally already see the fresh value the
+  // in-window call just wrote -- no observable clobber, coincidentally.
+  // This test forces the window open anyway by mocking readLocalStorage
+  // to keep returning a fixed stale value regardless of what's actually
+  // written (standing in for a future storage backing -- a cache, a
+  // network-backed store -- where a read genuinely can lag behind a
+  // write that happened moments earlier), which is exactly the shape of
+  // staleness the userSetRef guard exists to survive.
+  it("keeps an in-flight setStartingCapital update instead of letting the deferred hydration microtask clobber it with a stale persisted value (race condition fix)", async () => {
+    window.localStorage.setItem(STORAGE_KEY, "5000");
+    vi.spyOn(localStorageLib, "readLocalStorage").mockReturnValue("5000");
+
+    const { result } = renderHook(() => useStartingCapital());
+
+    // Synchronously, in the window between mount (which queues the
+    // hydration microtask) and that microtask actually running.
+    act(() => {
+      result.current[1](999);
+    });
+
+    await flushMicrotasks();
+
+    // Without the guard, the now-run hydration microtask would have
+    // overwritten this back to the mocked-stale 5000.
+    expect(result.current[0]).toBe(999);
+  });
 });

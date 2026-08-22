@@ -6,6 +6,7 @@ import type { ClientErrorCode, ResultsState } from "@/lib/use-results";
 import { deriveIntradayPortfolioSeries, derivePortfolioSeries } from "@/lib/portfolio-series";
 import { formatDate } from "@/lib/format-date";
 import { formatHeroCurrency } from "@/lib/format-currency";
+import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { useDailyGuess } from "@/lib/use-daily-guess";
 import { DailyGuessForm } from "@/components/DailyGuessForm";
 import { DaySelector } from "@/components/DaySelector";
@@ -153,7 +154,7 @@ export function ResultsPanel({
   // storage in that case, since the guess UI below only ever renders once
   // `activeDay` exists. See use-daily-guess.ts for why reading storage
   // directly here (rather than deferring to an effect) is safe.
-  const { guess, submitGuess } = useDailyGuess(range, activeDay?.date ?? "");
+  const { guess, guessStartingCapital, submitGuess } = useDailyGuess(range, activeDay?.date ?? "");
 
   if (state.status === "loading") {
     return <LoadingSkeleton />;
@@ -205,7 +206,7 @@ export function ResultsPanel({
               <DailyGuessForm
                 date={activeDay.date}
                 startingCapital={effectiveStartingCapital}
-                onSubmit={submitGuess}
+                onSubmit={(value) => submitGuess(value, effectiveStartingCapital)}
               />
             ) : (
               <HeroStat
@@ -250,7 +251,28 @@ export function ResultsPanel({
                 60-minute intraday prices. As of {data.dataAsOf}.
               </p>
               <p className="text-sm text-[var(--text-muted)]">
-                You guessed {formatHeroCurrency(guess)}.
+                {/* guess/guessStartingCapital are the raw dollar amount the
+                    user typed and whatever effectiveStartingCapital the
+                    prompt was showing at that moment (see the
+                    DailyGuessForm submission above and
+                    use-daily-guess.ts's own doc comment) -- if the user
+                    edits starting capital *after* revealing, that stored
+                    pair goes stale relative to the now-current
+                    effectiveStartingCapital driving HeroStat/the chart
+                    below. Rescale it the same way every other dollar
+                    figure on this page rescales (real bug, found in code
+                    review: this used to render the raw stored guess
+                    unrescaled, silently comparing against the wrong
+                    baseline once starting capital changed post-reveal). */}
+                You guessed{" "}
+                {formatHeroCurrency(
+                  rescaleFromStartingCapital(
+                    guess,
+                    guessStartingCapital ?? effectiveStartingCapital,
+                    effectiveStartingCapital,
+                  ),
+                )}
+                .
               </p>
             </>
           )}

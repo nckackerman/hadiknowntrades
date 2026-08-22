@@ -937,3 +937,59 @@ startingCapital={data.startingCapital} />` -- the hero stat above it
     the rescaled figure appears in `TradeList`'s narration /
     `DailyGuessForm`'s prompt, and that the raw `$20.00` does not) --
     the kind of test that would have caught either bug at merge time.
+- **A third `effectiveStartingCapital` miss, this time in the "You
+  guessed $X" line itself (found in a second-round `high` code review,
+  fixed)**: `ResultsPanel.tsx`'s intraday-daily branch renders that line
+  from `useDailyGuess`'s `guess` -- the raw dollar amount the user typed
+  into `DailyGuessForm` -- which used to render unrescaled even after a
+  post-reveal starting-capital edit, while `HeroStat`/the chart right
+  next to it rescaled live via the same `effectiveStartingCapital` this
+  file already threads everywhere else. Unlike the two misses above, the
+  fix isn't just "swap in `effectiveStartingCapital`" -- rescaling `guess`
+  correctly needs to know _what starting capital it was guessed against_,
+  which nothing captured before this fix. `daily-guess-storage.ts`'s
+  `StoredGuess` now carries `startingCapital` alongside `guess` (and
+  `saveDailyGuess`/`useDailyGuess`'s `submitGuess` both take an explicit
+  `startingCapital` argument -- `ResultsPanel.tsx` passes its own
+  `effectiveStartingCapital` at the moment of submission, the same value
+  `DailyGuessForm`'s prompt was showing), and the display line rescales
+  via `rescaleFromStartingCapital(guess, guessStartingCapital,
+effectiveStartingCapital)` -- the same general-purpose helper this
+  file's own top section already documents, applied to a dollar figure
+  that (unlike the chart/TradeList/HeroStat) genuinely needs its _origin_
+  capital tracked explicitly rather than always being re-derived fresh
+  from the current one. Regression test in `ResultsPanel.test.tsx`:
+  submit a guess under one starting capital, `rerender` with a different
+  one, assert the guessed figure rescales (and the stale unrescaled
+  figure is gone) the same way `HeroStat` already does.
+- **A microtask-window race in `use-starting-capital.ts`'s mount-time
+  hydration read (found in the same review pass, fixed)**: the "hydrate
+  from storage after mount" correction (see the hydration-safety
+  paragraph above) is deferred into a `queueMicrotask` callback to dodge
+  `react-hooks/set-state-in-effect`, which leaves a window between mount
+  and that microtask actually running where nothing stopped a real
+  `setStartingCapital` call from landing -- and, without a guard, the
+  microtask would still apply the stale persisted value on top of it
+  once it finally ran, silently discarding the update with no error.
+  Fixed with a `userSetRef` (`useRef(false)`, flipped `true` synchronously
+  inside `setStartingCapital` before its own `setStartingCapitalState`
+  call) that the microtask checks before applying the stored value,
+  bailing out if a real update already happened. Deliberately a `useRef`
+  here, not a second `useState` the way `StartingCapitalInput`'s own
+  `trackedValue`/`lastEmitted` resync (documented above) uses -- the
+  distinction that section's own paragraph draws still holds: a ref is
+  only unsafe for state that's _read during render_ (`react-hooks/refs`
+  really does flag that, confirmed there), and this ref is read
+  exclusively inside the microtask callback, never during render.
+  **Honest note on reproducing this as a test**: under this app's actual
+  `local-storage.ts` backing, the write from an in-window
+  `setStartingCapital` call is synchronous, so by the time the deferred
+  microtask actually reads storage, it normally already sees that same
+  fresh value -- no observable clobber, coincidentally, since read and
+  write share one synchronous, always-fresh backing store. The regression
+  test in `use-starting-capital.test.ts` forces the race window open
+  anyway by mocking `readLocalStorage` to keep returning a fixed stale
+  value regardless of what's actually written (standing in for a future
+  storage backing where a read can genuinely lag behind a very recent
+  write -- a cache, a network-backed store), confirmed to fail without
+  the `userSetRef` guard and pass with it.

@@ -89,7 +89,7 @@ No live recomputation per request -- everything is precomputed nightly.
   `setup-node` parse, and a typecheck ordering issue) that would have
   shipped otherwise; see `.github/workflows/CLAUDE.md`.
 - Before pushing, run **all four** of lint, typecheck, `pnpm build`, and
-  `pnpm test` locally — but CI's "Check results" step (see
+  `pnpm test` locally -- but CI's "Check results" step (see
   `.github/workflows/CLAUDE.md`) actually gates on a fifth,
   `pnpm format:check` (`prettier --check .`), which none of those four
   catch. This has genuinely shipped a red CI run on an otherwise-clean

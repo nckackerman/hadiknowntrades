@@ -13,28 +13,31 @@ describe("useDailyGuess", () => {
     const { result } = renderHook(() => useDailyGuess("1M", "2026-08-20"));
 
     expect(result.current.guess).toBeNull();
+    expect(result.current.guessStartingCapital).toBeNull();
   });
 
-  it("reflects a submitted guess immediately", () => {
+  it("reflects a submitted guess (and the starting capital it was made against) immediately", () => {
     const { result } = renderHook(() => useDailyGuess("1M", "2026-08-20"));
 
     act(() => {
-      result.current.submitGuess(42);
+      result.current.submitGuess(42, 20);
     });
 
     expect(result.current.guess).toBe(42);
+    expect(result.current.guessStartingCapital).toBe(20);
   });
 
   it("persists the guess to localStorage, so a fresh mount for the same (range, date) sees it (simulated reload)", () => {
     const { result, unmount } = renderHook(() => useDailyGuess("1M", "2026-08-20"));
     act(() => {
-      result.current.submitGuess(42);
+      result.current.submitGuess(42, 20);
     });
     unmount();
 
     const { result: reloaded } = renderHook(() => useDailyGuess("1M", "2026-08-20"));
 
     expect(reloaded.current.guess).toBe(42);
+    expect(reloaded.current.guessStartingCapital).toBe(20);
   });
 
   it("re-checks storage fresh when the date changes, instead of carrying over the previous date's guess", () => {
@@ -43,7 +46,7 @@ describe("useDailyGuess", () => {
     });
 
     act(() => {
-      result.current.submitGuess(42);
+      result.current.submitGuess(42, 20);
     });
     expect(result.current.guess).toBe(42);
 
@@ -63,7 +66,7 @@ describe("useDailyGuess", () => {
     );
 
     act(() => {
-      result.current.submitGuess(42);
+      result.current.submitGuess(42, 20);
     });
     expect(result.current.guess).toBe(42);
 
@@ -79,7 +82,7 @@ describe("useDailyGuess", () => {
   it("does not let a guess submitted under one range suppress the guess-gate for the same date under another range", () => {
     const { result: oneMonth } = renderHook(() => useDailyGuess("1M", "2026-08-20"));
     act(() => {
-      oneMonth.current.submitGuess(42);
+      oneMonth.current.submitGuess(42, 20);
     });
 
     const { result: threeMonth } = renderHook(() => useDailyGuess("3M", "2026-08-20"));

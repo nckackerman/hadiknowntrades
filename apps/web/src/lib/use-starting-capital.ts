@@ -14,7 +14,7 @@
 // directly, specifically so every feature's try/catch/SSR-guard logic
 // doesn't get re-implemented ad hoc per hook.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { readLocalStorage, writeLocalStorage } from "./local-storage";
 import {
@@ -62,9 +62,30 @@ function writeStoredStartingCapital(value: number): void {
  * the same one they accept too -- a brief flash of the default value
  * before the real one applies just after mount -- rather than a
  * console-visible hydration error.
+ *
+ * **Guarded against a race with an in-flight `setStartingCapital` call
+ * (a real bug, found in code review, fixed):** deferring the hydration
+ * read to a microtask (see the comment below) opens a window, between
+ * mount and that microtask actually running, where a caller could invoke
+ * the returned setter -- e.g. StartingCapitalInput's own mount-time
+ * `trackedValue` resync, or just a very fast user edit. Without a guard,
+ * the microtask's `setStartingCapitalState(stored)` would land *after*
+ * that update and silently clobber it back to whatever stale value was
+ * last persisted, discarding the update with no error and no trace.
+ * `userSetRef` closes that window: the setter flips it to `true`
+ * synchronously (same tick as its own `setStartingCapitalState` call, so
+ * there's no gap for the microtask to slip in between), and the
+ * microtask checks it immediately before applying the stored value,
+ * bailing out if a real update already happened. A plain `useRef` is
+ * fine here (unlike StartingCapitalInput's own `trackedValue`, which
+ * uses state instead of a ref specifically because it's *read during
+ * render* -- see apps/web/CLAUDE.md's note on why `react-hooks/refs`
+ * forbids that) -- this ref is only ever read from inside the microtask
+ * callback, never during render.
  */
 export function useStartingCapital(): [number, (next: number) => void] {
   const [startingCapital, setStartingCapitalState] = useState(DEFAULT_STARTING_CAPITAL);
+  const userSetRef = useRef(false);
 
   useEffect(() => {
     // Deferred to a microtask rather than called synchronously as the
@@ -76,6 +97,10 @@ export function useStartingCapital(): [number, (next: number) => void] {
     // (there, requestAnimationFrame; here, the microtask queue) instead
     // of calling it as the effect's own first statement.
     queueMicrotask(() => {
+      // A real setStartingCapital call already landed in the window
+      // between mount and this microtask running -- don't clobber it
+      // with a stale persisted value (see this hook's own doc comment).
+      if (userSetRef.current) return;
       const stored = readStoredStartingCapital();
       if (stored !== null) {
         setStartingCapitalState(stored);
@@ -86,6 +111,7 @@ export function useStartingCapital(): [number, (next: number) => void] {
   }, []);
 
   function setStartingCapital(next: number): void {
+    userSetRef.current = true;
     const clamped = clampStartingCapital(next);
     setStartingCapitalState(clamped);
     writeStoredStartingCapital(clamped);
