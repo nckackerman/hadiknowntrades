@@ -97,7 +97,14 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
 
   const hovered = hoverIndex !== null ? plotted[hoverIndex] : null;
 
-  function handlePointerMove(clientEvent: { clientX: number; currentTarget: SVGSVGElement }) {
+  /**
+   * Shared by pointermove (mouse hover / drag) and pointerdown (a
+   * single tap, issue #44) -- a tap fires pointerdown+pointerup with no
+   * intervening pointermove, so without also wiring this to pointerdown
+   * the tooltip/crosshair was only reachable by dragging a finger across
+   * the chart, which most touch users won't discover.
+   */
+  function revealNearestPoint(clientEvent: { clientX: number; currentTarget: SVGSVGElement }) {
     const rect = clientEvent.currentTarget.getBoundingClientRect();
     const scaleX = WIDTH / rect.width;
     const localX = (clientEvent.clientX - rect.left) * scaleX - MARGIN.left;
@@ -130,7 +137,8 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
         aria-label="Portfolio value over time, with buy and sell trade markers"
         tabIndex={0}
         className="w-full outline-none focus-visible:ring-2 focus-visible:ring-[var(--series-1)]"
-        onPointerMove={handlePointerMove}
+        onPointerDown={revealNearestPoint}
+        onPointerMove={revealNearestPoint}
         onPointerLeave={() => setHoverIndex(null)}
         onBlur={() => setHoverIndex(null)}
         onKeyDown={(keyboardEvent) => {

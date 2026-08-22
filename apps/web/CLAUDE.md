@@ -107,6 +107,29 @@ separator check), the single shared place this detection happens.
 check -- a real duplication caught in code review before this note was
 written; don't reintroduce a second copy of the check.
 
+## Chart pointer interaction: tap support (issue #44)
+
+`PortfolioChart`'s hover tooltip/crosshair used to only be reachable by
+a mouse hover (`onPointerMove`) -- on a touch device a single tap fires
+`pointerdown` + `pointerup` with **no** intervening `pointermove`, so the
+richest interaction on the chart was undiscoverable via tap alone. Fix:
+the nearest-point lookup that used to live only in `handlePointerMove`
+is now a shared `revealNearestPoint` function wired to both
+`onPointerDown` and `onPointerMove` -- same handler, so mouse and touch
+behavior can't drift apart.
+
+Testing this needed one non-obvious jsdom fact: **jsdom's SVG elements
+report a zero-size `getBoundingClientRect` by default** (checked live,
+not assumed) -- `revealNearestPoint` divides by `rect.width` to map a
+`clientX` into the chart's internal viewBox space, so an unstubbed test
+resolves every synthetic pointer event to `NaN`/`Infinity` regardless of
+`clientX`, silently picking `hoverIndex = 0` every time (the `nearest
+Distance` comparison against `Infinity` never advances past the fallback
+index). `PortfolioChart.test.tsx` stubs `getBoundingClientRect` on the
+`<svg>` per-test to return the component's own `WIDTH`/`HEIGHT`
+constants so `scaleX` comes out to `1` -- do the same for any future
+test that fires pointer events at a specific coordinate on this chart.
+
 ## Importing `@hadiknowntrades/core`
 
 Import it by its normal package specifier
