@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BlockedError,
   fetchDailyCloses,
+  fetchFiveMinuteBars,
   fetchIntradayBars,
   TickerNotFoundError,
   toYahooSymbol,
@@ -441,5 +442,69 @@ describe("fetchIntradayBars", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("fetchFiveMinuteBars", () => {
+  const from = new Date("2024-01-01T00:00:00Z");
+  const to = new Date("2024-01-05T00:00:00Z");
+
+  it("parses a valid response into full local-datetime/close pairs, same shape as fetchIntradayBars (issue #30)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, validChartBody()));
+
+    const result = await fetchFiveMinuteBars("AAPL", from, to, { fetchImpl });
+
+    expect(result).toEqual([
+      { date: "2024-01-02T10:30:00", close: 183.4 },
+      { date: "2024-01-03T10:30:00", close: 182.03 },
+    ]);
+  });
+
+  it("requests interval=5m, distinct from fetchIntradayBars's interval=60m", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, validChartBody()));
+
+    await fetchFiveMinuteBars("AAPL", from, to, { fetchImpl });
+
+    const [url] = fetchImpl.mock.calls[0] as [string];
+    expect(new URL(url).searchParams.get("interval")).toBe("5m");
+  });
+
+  it("pads period2 by a day, same as fetchIntradayBars/fetchDailyCloses", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, validChartBody()));
+
+    await fetchFiveMinuteBars("AAPL", from, to, { fetchImpl });
+
+    const [url] = fetchImpl.mock.calls[0] as [string];
+    const period2 = Number(new URL(url).searchParams.get("period2"));
+    const requestedEndSeconds = Math.floor(to.getTime() / 1000);
+    expect(period2).toBeGreaterThanOrEqual(requestedEndSeconds + 24 * 60 * 60);
+  });
+
+  it("shares the same error classification as fetchIntradayBars (e.g. BlockedError on 401, not retried)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(401, {}));
+
+    const error = await fetchFiveMinuteBars("AAPL", from, to, { fetchImpl }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(BlockedError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces an out-of-retention request as UnexpectedResponseError, not TickerNotFoundError -- verified live that Yahoo's 422 status short-circuits fetchChartSeries before it ever inspects chart.error (issue #30's 60-day retention wall)", async () => {
+    const outOfRetention = {
+      chart: {
+        result: null,
+        error: {
+          code: "Unprocessable Entity",
+          description:
+            "5m data not available for startTime=1700000000 and endTime=1705000000. The requested range must be within the last 60 days.",
+        },
+      },
+    };
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(422, outOfRetention));
+
+    const error = await fetchFiveMinuteBars("AAPL", from, to, { fetchImpl }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(UnexpectedResponseError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1); // 422 isn't a retryable status
   });
 });

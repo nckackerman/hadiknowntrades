@@ -147,6 +147,100 @@ startTime=... The requested range must be within the last 730 days."`
   issue's Phase-1 plan review before any code was written (it would have
   broken the "no adapter shim needed" reuse the whole design depends on).
 
+## 5-minute intraday bars (issue #30)
+
+`fetchFiveMinuteBars` in `src/yahoo-client.ts` fetches `interval=5m` bars
+from the same chart endpoint, upgrading the 3M range's most recent days
+to finer granularity (see "Mixed-granularity 3M assembly" below).
+Shares `fetchChartSeries`/`parseIntradayChartResult` with
+`fetchIntradayBars` -- same envelope, same single-request-no-chunking
+shape, only the interval string differs. Facts below verified
+empirically against the real endpoint, not assumed from the 60-minute
+case:
+
+- **Retention is a hard 60-day wall**, the same "N-1 succeeds, N fails"
+  pattern as 60m's 730-day limit: a request 59 days back succeeds
+  (thousands of bars), 60 days back gets `422 Unprocessable Entity`
+  with `chart.error.description` reading `"5m data not available for
+startTime=... The requested range must be within the last 60 days."`
+- **The out-of-retention case never reaches the `chart.error` branch at
+  all** -- verified live, and this is a real, previously-undocumented
+  gap in `fetchChartSeries`'s own comment (which suggests `chart.error`
+  is how an out-of-range request surfaces): the response's HTTP status
+  is 422, which is `!response.ok` and not in `isRetryableStatus`, so
+  `fetchChartSeries` throws `UnexpectedResponseError` from the
+  status-code branch _before_ ever calling `response.json()` far enough
+  to inspect `chart.error`. Concretely: an out-of-retention 5m request
+  throws `UnexpectedResponseError`, not `TickerNotFoundError`. This
+  matters operationally, not just academically -- `UnexpectedResponseError`
+  is a systemic-abort signal to `apps/pipeline`'s `fetchUniverseHistory`
+  (stops the whole fetch path, not just that one ticker), so a
+  miscalculated `from` date that puts every ticker's request past the
+  60-day wall would abort the entire 5-minute fetch, not just skip a
+  few tickers. `apps/pipeline` avoids ever hitting this in practice by
+  requesting a conservative 59-day-back window (one full day inside the
+  verified boundary) -- see `apps/pipeline/CLAUDE.md`'s "5-minute path"
+  section for why that's fine either way (the whole path degrades
+  gracefully regardless of which error class trips it).
+- `adjclose` is absent from real 5-minute responses too, same as 60m --
+  not re-verified bar-by-bar here since the parsing path
+  (`parseIntradayChartResult`/`extractCloses`) is shared code already
+  covered by the 60m verification above.
+
+## Mixed-granularity 3M assembly (issue #30)
+
+3M's per-day results (`IntradayResult.days`) are assembled from **two
+separate `optimizeIntradayDays` calls, merged**, not from a single
+mixed-granularity fetch or DP: one over the existing 60-minute-bar
+history (same fetch already used for 1M/1Y), one over a second
+5-minute-bar fetch scoped to the last 59 days. `apps/pipeline`'s
+`buildIntradayResults` merges the two day-result arrays keyed by date,
+letting the 5-minute version win wherever it exists (it can only exist
+for a day within the last 59 days, by construction of what was
+fetched) and falling back to the 60-minute version for every older day
+in the 3M window. 1M and 1Y are untouched -- they only ever read the
+60-minute day-result array, never the 5-minute one.
+
+- `IntradayDayResult.barIntervalMinutes` (stamped by
+  `optimizeIntradayDays` from `OptimizeIntradayOptions.barIntervalMinutes`,
+  required, not inferred) makes this visible **in the output itself**,
+  per-day -- deliberately not left as something a reader has to infer
+  from a day's date relative to "now," since the issue text called that
+  out explicitly as non-obvious. 1M/1Y days always carry `60`; 3M's
+  recent ~59 days carry `5`, its older days carry `60` -- genuinely
+  mixed within one range's `days` array.
+- **The 5-minute path is deliberately best-effort, not held to the same
+  alerting standard as the window/intraday path split** (see
+  `apps/pipeline/CLAUDE.md`'s "Two independent paths since issue #28"
+  section for that standard): a 5-minute fetch that aborts or comes back
+  empty makes 3M's recent days silently fall back to 60-minute bars --
+  i.e. exactly 3M's pre-#30 behavior -- rather than failing the whole
+  pipeline run. This was a deliberate judgment call, not an oversight:
+  the window-vs-intraday split's strict "must still fail the run" rule
+  exists because a silent failure there means a whole range serves
+  frozen/stale JSON forever with nothing to notice it; a 5-minute-path
+  failure instead means 3M reverts to already-shipped, fully-correct
+  (just coarser) 60-minute data -- qualitatively different from serving
+  stale or broken output. Re-litigate this if 5-minute-granularity 3M
+  data ever becomes something the product depends on rather than a
+  bonus precision upgrade.
+- Per-ticker skips accumulated by the 5-minute fetch are still merged
+  into 3M's own `skippedTickers` (and the pipeline-wide summary) even
+  though a 5-minute-only failure doesn't fail the run -- a ticker that
+  fails only the 5-minute fetch but succeeds the 60-minute one doesn't
+  appear at all in 3M's recent (5-minute-sourced) days, since the merge
+  swaps in the 5-minute day's _entire_ tickers-considered-that-day set,
+  not a per-ticker splice within a day -- worth surfacing as a skip even
+  though that ticker's older 3M days and its 1M/1Y results are unaffected.
+- `RESULTS_SCHEMA_VERSION` was **not** bumped for this issue --
+  `barIntervalMinutes` is a purely additive field on an already-versioned
+  shape (`IntradayDayResult`, introduced at schema version 2 by #28), and
+  nothing in `apps/web` reads it yet. The version-bump criterion
+  documented on `RESULTS_SCHEMA_VERSION` itself is "a shape change a
+  reader needs to know about" -- an additive field no current reader
+  depends on doesn't meet that bar. Revisit if `apps/web` ever starts
+  branching on this field's presence.
+
 ## Per-day intraday optimizer (issue #28)
 
 `src/intraday-optimizer.ts`'s `optimizeIntradayDays` needs **no new DP**.

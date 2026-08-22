@@ -22,6 +22,18 @@
 // adjclose) is identical in shape to the daily-close case -- only the
 // bar frequency and the per-bar timestamp's meaning (a specific
 // intraday moment, not a market-open-anchored calendar day) differ.
+//
+// Verified empirically for 5m bars (issue #30, upgrading 3M's most
+// recent days -- see packages/core/CLAUDE.md's "5-minute intraday bars"
+// section): `interval=5m` on the same endpoint retains exactly 60 days
+// of history, the same "N-1 succeeds, N fails" hard-wall pattern as the
+// 730-day limit for 60m (59 days back succeeds; 60 days back gets a 422
+// with `chart.error.description` reading "5m data not available for
+// startTime=... The requested range must be within the last 60 days.").
+// A single request per ticker is enough here too -- 60 days of 5-minute
+// bars is well within what one chart-endpoint response returns, no
+// chunking needed (unlike a hypothetical 1-minute path, deferred to
+// #29).
 
 import { isValidPrice } from "./is-valid-price";
 
@@ -37,12 +49,20 @@ const RETRY_BASE_DELAY_MS = 500;
 const MAX_RETRY_AFTER_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 const ONE_DAY_SECONDS = 24 * 60 * 60;
-// Interval string for the intraday fetch added in issue #28. Hardcoded
-// (not a parameter) on purpose -- finer granularities (1m for 1M, 5m for
-// the most recent 60 days of 3M) are deliberately deferred to follow-up
-// issues #29/#30 in the same milestone; widening this to a real
-// parameter then is a small, low-risk change once those are in scope.
+// Interval string for the 60-minute intraday fetch added in issue #28.
+// Hardcoded (not a parameter) on purpose -- a real "interval" parameter
+// would only be worth adding if a caller needed to choose between more
+// than these two fixed granularities at runtime, which none currently
+// do (each granularity has its own fetch function; see
+// fetchFiveMinuteBars below for the 5-minute one added in issue #30). A
+// still-finer 1-minute granularity for 1M is deliberately deferred to
+// issue #29.
 const INTRADAY_INTERVAL = "60m";
+// Interval string for the 5-minute intraday fetch added in issue #30
+// (upgrades the 3M range's most recent ~60 days -- see
+// fetchFiveMinuteBars below and packages/core/CLAUDE.md's "5-minute
+// intraday bars" section for the verified retention window).
+const FIVE_MINUTE_INTERVAL = "5m";
 // HTTP status Yahoo has been empirically confirmed (see issue #3) to use
 // for a genuinely nonexistent symbol.
 const NOT_FOUND_STATUS = 404;
@@ -362,6 +382,59 @@ export async function fetchIntradayBars(
   const url =
     `${CHART_BASE_URL}/${encodeURIComponent(yahooSymbol)}` +
     `?period1=${period1}&period2=${period2}&interval=${INTRADAY_INTERVAL}&includeAdjustedClose=true`;
+
+  return fetchChartSeries(symbol, url, parseIntradayChartResult, options);
+}
+
+/**
+ * Fetches 5-minute intraday price bars for a symbol over a date range
+ * (issue #30 -- upgrades the 3M range's most recent ~60 days from
+ * 60-minute to 5-minute granularity; the remaining older portion of 3M
+ * stays on fetchIntradayBars' 60-minute bars, since 5-minute data isn't
+ * retained that far back). Yahoo's retention for `interval=5m` is a hard
+ * 60-day wall (verified live -- see packages/core/CLAUDE.md's
+ * "5-minute intraday bars" section): a request 59 days back succeeds, a
+ * request 60 days back gets a 422 with `chart.error.description` reading
+ * "5m data not available for startTime=... The requested range must be
+ * within the last 60 days." The caller is responsible for keeping
+ * `from` within that window: verified live (unlike the chart.error note
+ * on fetchChartSeries might suggest) that this specific out-of-retention
+ * case never reaches that branch at all -- the response's HTTP status is
+ * 422, which fetchChartSeries's status-code check throws as
+ * UnexpectedResponseError *before* ever parsing the JSON body far enough
+ * to see chart.error, not a "this symbol has no data" TickerNotFoundError.
+ * That matters operationally: UnexpectedResponseError is a systemic-abort
+ * signal to apps/pipeline's fetchUniverseHistory, not a per-ticker skip --
+ * see apps/pipeline/CLAUDE.md's "5-minute path" section for how the
+ * pipeline avoids that ever mattering in practice (it requests a
+ * conservative 59-day-back window, one day inside the verified wall, and
+ * treats the whole 5-minute path as best-effort/gracefully-degradable
+ * regardless of which error class trips it). Same envelope, same
+ * single-request-no-chunking shape as fetchIntradayBars -- shares
+ * fetchChartSeries and parseIntradayChartResult with it, differing only
+ * in the interval string.
+ *
+ * @param symbol Ticker as commonly quoted, e.g. "AAPL", "BRK.B". Mapped
+ *   internally to Yahoo's symbol format.
+ * @param from Start of the range (inclusive) -- must be within the last
+ *   60 days of "now" at request time (see above).
+ * @param to End of the range (inclusive) -- like fetchIntradayBars,
+ *   internally padded by a day so the requested day's market-hours bars
+ *   are fully covered regardless of what time-of-day `to` carries.
+ * @param options.fetchImpl Override for the fetch implementation (tests).
+ */
+export async function fetchFiveMinuteBars(
+  symbol: string,
+  from: Date,
+  to: Date,
+  options: { fetchImpl?: typeof fetch } = {},
+): Promise<IntradayBar[]> {
+  const yahooSymbol = toYahooSymbol(symbol);
+  const period1 = Math.floor(from.getTime() / 1000);
+  const period2 = Math.floor(to.getTime() / 1000) + ONE_DAY_SECONDS;
+  const url =
+    `${CHART_BASE_URL}/${encodeURIComponent(yahooSymbol)}` +
+    `?period1=${period1}&period2=${period2}&interval=${FIVE_MINUTE_INTERVAL}&includeAdjustedClose=true`;
 
   return fetchChartSeries(symbol, url, parseIntradayChartResult, options);
 }
