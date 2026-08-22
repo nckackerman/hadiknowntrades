@@ -91,6 +91,12 @@ describe("formatMultiplier", () => {
     expect(formatMultiplier(999.4)).toBe("999x");
   });
 
+  it("steps up to the compact ladder instead of rounding a sub-1000 value up to 1000x", () => {
+    // 999.95 rounds to "1000" at 0 decimals in the plain-number branch --
+    // must step up to "1Kx" rather than ever displaying "1000x".
+    expect(formatMultiplier(999.95)).toBe("1Kx");
+  });
+
   it("switches to the compact K/M/B/T ladder at 1000x, same as currency", () => {
     expect(formatMultiplier(1000)).toBe("1Kx");
     expect(formatMultiplier(6876.860256895814)).toBe("6.9Kx");

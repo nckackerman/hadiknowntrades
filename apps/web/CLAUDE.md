@@ -196,6 +196,30 @@ a throwaway route (see "Screenshotting a component locally" above) that
 a "Max"-range-scale ending balance (~$716M from $20) renders as
 `(35.8Mx)`, not a wall of digits.
 
+`formatMultiplier`'s sub-1000 plain-number branch had a rounding-overflow
+bug (found in `/code-review`, fixed): a value in roughly `[999.5, 1000)`
+(e.g. `999.95`) took the plain-number branch since `abs < 1000`, but
+`.toFixed(0)` then rounded it up to the string `"1000"` -- a bare
+`"1000x"` instead of stepping up to the compact ladder's `"1Kx"`, the
+exact class of overflow `scaleToCompactUnit` already guarded against one
+tier up (e.g. `999,600` stepping up to `"1M"` rather than showing
+`"1000K"`). Fixed by checking `Number(abs.toFixed(digits)) >= 1000` and
+falling through to `formatCompactOrScientific` when it does;
+`scaleToCompactUnit` itself had to grow a fallback for this (its
+`COMPACT_UNITS.findIndex` returns `-1` for an `abs` just under 1000,
+since no K/M/B/T threshold is actually crossed -- now defaults to the
+smallest unit, K, in that case). **`formatCurrency`'s own sub-1000
+branch has this exact same latent bug and was not fixed** (out of scope
+for issue #45's multiplier badge, which only touches `formatMultiplier`)
+-- confirmed live that both `plainCurrencyWhole.format(999.6)` and
+`plainCurrencyWithCents.format(999.995)` round to `"$1,000"`/
+`"$1,000.00"` via `Intl.NumberFormat`'s own rounding rather than stepping
+up to `"$1K"`. If this is ever worth fixing, `formatCurrency`'s plain
+branch can't reuse `formatMultiplier`'s exact guard as-is since it
+formats via `Intl.NumberFormat`, not `toFixed`, but the same "check
+whether rounding at display precision reaches 1000, step up into the
+ladder if so" shape applies.
+
 ## Two result models since issue #28: window vs. intraday-daily
 
 `ResultsPanel.tsx` branches on the fetched `PrecomputedResult`'s

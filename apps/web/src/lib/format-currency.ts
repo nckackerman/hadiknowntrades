@@ -61,20 +61,26 @@ function formatScientific(sign: string, abs: number, { prefix = "", suffix = "" 
 
 /**
  * The K/M/B/T compact-suffix step, shared by both the currency and
- * multiplier ladders: scales `abs` (already known to be >= 1000) down to
- * the largest unit that keeps it under 1000, stepping up a unit if
- * rounding would otherwise push it out of range (e.g. 999,600 -> "1000"
+ * multiplier ladders: scales `abs` (normally already known to be >= 1000)
+ * down to the largest unit that keeps it under 1000, stepping up a unit
+ * if rounding would otherwise push it out of range (e.g. 999,600 -> "1000"
  * at the K unit steps up to "1M" instead of showing "1000K"). Returns
  * `null` when even the largest unit (T) rounds out of range -- the
  * caller's cue to fall through to `formatScientific` instead.
+ *
+ * Also tolerates `abs` just *under* 1000 (e.g. 999.95): `formatMultiplier`'s
+ * own plain-number branch calls this as its overflow guard when rounding
+ * a sub-1000 value at display precision would round it up to 1000 (see
+ * that function) -- no COMPACT_UNITS threshold matches (`findIndex`
+ * returns -1) since none of K/M/B/T's thresholds are actually crossed, so
+ * that case defaults to the smallest unit (K) rather than the
+ * non-null-asserted `undefined` that a plain lookup would produce.
  */
 function scaleToCompactUnit(
   abs: number,
 ): { scaled: number; digits: number; suffix: string } | null {
-  // COMPACT_UNITS' smallest threshold is 1e3 and callers only reach this
-  // with abs >= 1000, so this always finds a unit -- non-null assertion
-  // documents that instead of an unreachable fallback branch.
-  const unitIndex = COMPACT_UNITS.findIndex((u) => abs >= u.threshold);
+  const foundIndex = COMPACT_UNITS.findIndex((u) => abs >= u.threshold);
+  const unitIndex = foundIndex === -1 ? COMPACT_UNITS.length - 1 : foundIndex;
   let unit = COMPACT_UNITS[unitIndex]!;
   let scaled = abs / unit.threshold;
   // One decimal place, but don't show a trailing ".0" (e.g. "20K" not
@@ -202,7 +208,12 @@ export function formatPercent(fraction: number): string {
  *
  *   - Below 1000x: a plain number, whole from 10x up ("345x"), one
  *     decimal below that ("1.5x") -- unlike formatCurrency, there's no
- *     currency-style cents concept for a unitless ratio.
+ *     currency-style cents concept for a unitless ratio. If rounding to
+ *     that precision would push the value up to 1000 (e.g. 999.95 ->
+ *     "1000" at 0 decimals), steps up into the compact ladder instead of
+ *     ever displaying an out-of-range "1000x" -- the same class of
+ *     overflow `scaleToCompactUnit` already guards against one tier up
+ *     (e.g. 999,600 -> "1M" rather than "1000K").
  *   - 1000x up to 1e15x: a compact suffix, same ladder as currency
  *     ("6.9Kx" / "716Mx" / "1.2Tx").
  *   - 1e15x and above: scientific notation ("1.23×10¹⁶x").
@@ -217,7 +228,12 @@ export function formatMultiplier(value: number): string {
 
   if (abs < 1000) {
     const digits = abs >= 10 ? 0 : 1;
-    return `${sign}${abs.toFixed(digits).replace(/\.0$/, "")}x`;
+    const rounded = abs.toFixed(digits);
+    if (Number(rounded) < 1000) {
+      return `${sign}${rounded.replace(/\.0$/, "")}x`;
+    }
+    // Rounding overflowed to 1000 -- fall through to the compact ladder
+    // below instead of returning "1000x".
   }
 
   return formatCompactOrScientific(sign, abs, { suffix: "x" });
