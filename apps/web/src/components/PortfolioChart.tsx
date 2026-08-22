@@ -19,7 +19,24 @@ import { memo, useId, useMemo, useState } from "react";
 import { formatAxisCurrency, formatHeroCurrency } from "@/lib/format-currency";
 import { formatDateTime, isPortfolioDatetime } from "@/lib/format-date";
 import { buildLogScale, buildTimeScale, niceLogTicks } from "@/lib/chart-scales";
-import type { PortfolioPoint } from "@/lib/portfolio-series";
+import type { PortfolioEvent, PortfolioPoint } from "@/lib/portfolio-series";
+
+/**
+ * Capitalized verb for a marker's own label / the data-table's event
+ * column (issue #13): "Buy"/"Short" for an open event, "Sell"/"Cover"
+ * for a close event, depending on direction -- standard finance
+ * terminology, same wording TradeRow.tsx's own verbsFor uses.
+ */
+function eventLabelVerb(event: PortfolioEvent): string {
+  if (event.type === "open") return event.direction === "long" ? "Buy" : "Short";
+  return event.direction === "long" ? "Sell" : "Cover";
+}
+
+/** Lowercase verb for the hover tooltip's prose ("...bought AAPL at..."). */
+function eventTooltipVerb(event: PortfolioEvent): string {
+  if (event.type === "open") return event.direction === "long" ? "bought" : "shorted";
+  return event.direction === "long" ? "sold" : "covered";
+}
 
 interface PortfolioChartProps {
   points: readonly PortfolioPoint[];
@@ -134,7 +151,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
       <svg
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
         role="img"
-        aria-label="Portfolio value over time, with buy and sell trade markers"
+        aria-label="Portfolio value over time, with trade open and close markers"
         tabIndex={0}
         className="w-full outline-none focus-visible:ring-2 focus-visible:ring-[var(--series-1)]"
         onPointerDown={revealNearestPoint}
@@ -244,10 +261,12 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
             />
           )}
 
-          {/* Buy/sell markers with direct labels (ticker, date, price) */}
+          {/* Open/close markers with direct labels (ticker, date, price) --
+              "Buy"/"Sell" for a long, "Short"/"Cover" for a short (issue
+              #13, see eventLabelVerb). */}
           {eventMarkers.map((p, i) => {
             const event = p.event!;
-            const isAbove = event.type === "buy";
+            const isAbove = event.type === "open";
             const labelY = isAbove ? p.y - 14 : p.y + 24;
             return (
               <g key={`${p.date}-${event.type}-${event.ticker}-${i}`}>
@@ -267,8 +286,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
                   fontWeight={600}
                   fill="var(--text-primary)"
                 >
-                  {event.type === "buy" ? "Buy " : "Sell "}
-                  {event.ticker}
+                  {eventLabelVerb(event)} {event.ticker}
                 </text>
                 <text
                   x={p.x}
@@ -312,7 +330,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
             {hovered.event && (
               <span>
                 {" "}
-                ({hovered.event.type === "buy" ? "bought" : "sold"} {hovered.event.ticker} at{" "}
+                ({eventTooltipVerb(hovered.event)} {hovered.event.ticker} at{" "}
                 {formatHeroCurrency(hovered.event.price)})
               </span>
             )}
@@ -360,7 +378,7 @@ const ChartDataTable = memo(function ChartDataTable({
                 <td className="py-1 pr-4 tabular-nums">{formatHeroCurrency(p.value)}</td>
                 <td className="py-1">
                   {p.event
-                    ? `${p.event.type === "buy" ? "Buy" : "Sell"} ${p.event.ticker} @ ${formatHeroCurrency(p.event.price)}`
+                    ? `${eventLabelVerb(p.event)} ${p.event.ticker} @ ${formatHeroCurrency(p.event.price)}`
                     : ""}
                 </td>
               </tr>

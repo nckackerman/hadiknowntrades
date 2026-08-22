@@ -167,6 +167,34 @@ bar type, not daily-close-specific):
   above, same "needs the
   user's explicit go-ahead before/atomically with a real pipeline write"
   rule -- not yet performed as of this issue's implementation.
+- **Bumped again to 5 for issue #13** (short-selling mode): every
+  `WindowResult` and every `IntradayDayResult` gains a `longShort` field
+  (mirroring `worstCase`'s own sibling-field shape, plus its own nested
+  `worstCase`), computed in `buildWindowResults` here via one
+  `optimizeAllVariants` call per window range (replacing the previous
+  `optimizeBothDirections` call -- same one-shared-calendar-build
+  principle, now sharing across all 4 direction x instrument-set
+  combinations instead of 2) and in `packages/core`'s
+  `optimizeIntradayDays` itself for the intraday path (same "no other
+  change needed in this file" reasoning issue #31's own `worstCase`
+  bullet above already established -- see `packages/core/CLAUDE.md`'s
+  "Short-selling mode" section for the full design). `Trade`'s fields
+  are also renamed in this same bump (`buyDate`/`buyPrice`/`sellDate`/
+  `sellPrice` -> `openDate`/`openPrice`/`closeDate`/`closePrice`, plus a
+  new `direction` field) -- every test fixture in this file's own
+  `pipeline.test.ts` that builds a `Trade`/`IntradayTrade` literal, or
+  asserts on one, needed updating for the rename, not just for the new
+  field. Same rollout hazard as every prior schema bump -- needs the
+  user's explicit go-ahead before/atomically with a real pipeline write,
+  not yet performed as of this issue's implementation. **Live-verified**
+  (real S&P 500 data, full 503-ticker universe, no S3 write) that the two
+  new cross-checks (`longShort.endingBalance >= endingBalance`,
+  `longShort.worstCase.endingBalance <= worstCase.endingBalance`) hold
+  with 0 violations across all 5 window ranges and all 251 real trading
+  days of the 1Y intraday window -- see `packages/core/CLAUDE.md`'s
+  "Short-selling mode" section for the full numbers (including real
+  timing/memory measurements, since this is the largest single per-run
+  DP cost increase this optimizer has taken).
 
 ## Write-time result self-validation (issue #47)
 

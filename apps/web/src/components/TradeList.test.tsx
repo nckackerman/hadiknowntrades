@@ -8,10 +8,11 @@ import { TradeList } from "./TradeList";
 function trade(overrides: Partial<Trade> = {}): Trade {
   return {
     ticker: "AAPL",
-    buyDate: "2025-03-12",
-    buyPrice: 100,
-    sellDate: "2025-03-19",
-    sellPrice: 125,
+    direction: "long",
+    openDate: "2025-03-12",
+    openPrice: 100,
+    closeDate: "2025-03-19",
+    closePrice: 125,
     ...overrides,
   };
 }
@@ -44,8 +45,8 @@ describe("TradeList", () => {
       <TradeList
         trades={[
           trade({ ticker: "AAPL" }),
-          trade({ ticker: "MSFT", buyPrice: 50, sellPrice: 55 }),
-          trade({ ticker: "TSLA", buyPrice: 200, sellPrice: 180 }),
+          trade({ ticker: "MSFT", openPrice: 50, closePrice: 55 }),
+          trade({ ticker: "TSLA", openPrice: 200, closePrice: 180 }),
         ]}
         startingCapital={20}
       />,
@@ -68,7 +69,10 @@ describe("TradeList", () => {
   it("narrates a 2-trade sequence with a 'Finally' second (and last) leg, referring back to the running balance instead of restating the starting capital", () => {
     const { container } = render(
       <TradeList
-        trades={[trade({ ticker: "AAPL" }), trade({ ticker: "MSFT", buyPrice: 50, sellPrice: 50 })]}
+        trades={[
+          trade({ ticker: "AAPL" }),
+          trade({ ticker: "MSFT", openPrice: 50, closePrice: 50 }),
+        ]}
         startingCapital={20}
       />,
     );
@@ -87,8 +91,8 @@ describe("TradeList", () => {
       <TradeList
         trades={[
           trade({ ticker: "AAPL" }),
-          trade({ ticker: "MSFT", buyPrice: 50, sellPrice: 55 }),
-          trade({ ticker: "TSLA", buyPrice: 200, sellPrice: 180 }),
+          trade({ ticker: "MSFT", openPrice: 50, closePrice: 55 }),
+          trade({ ticker: "TSLA", openPrice: 200, closePrice: 180 }),
         ]}
         startingCapital={20}
       />,
@@ -105,7 +109,7 @@ describe("TradeList", () => {
 
   it("reads sensibly (negative percent, colored critical, no crash) for a losing leg -- generic even though today's optimizer never produces one", () => {
     const { container } = render(
-      <TradeList trades={[trade({ buyPrice: 200, sellPrice: 150 })]} startingCapital={20} />,
+      <TradeList trades={[trade({ openPrice: 200, closePrice: 150 })]} startingCapital={20} />,
     );
 
     expect(proseText(container)).toMatch(/\(-25\.0%\)/);
@@ -122,9 +126,9 @@ describe("TradeList", () => {
     const { container } = render(
       <TradeList
         trades={[
-          trade({ ticker: "A", buyPrice: 1, sellPrice: 300 }),
-          trade({ ticker: "B", buyPrice: 1, sellPrice: 400 }),
-          trade({ ticker: "C", buyPrice: 1, sellPrice: 300 }),
+          trade({ ticker: "A", openPrice: 1, closePrice: 300 }),
+          trade({ ticker: "B", openPrice: 1, closePrice: 400 }),
+          trade({ ticker: "C", openPrice: 1, closePrice: 300 }),
         ]}
         startingCapital={20}
       />,
@@ -135,5 +139,22 @@ describe("TradeList", () => {
     // formatHeroCurrency compacts this to "$720M", not 9 raw digits.
     expect(text).toMatch(/\$720M/);
     expect(text).not.toMatch(/\$720,000,000/);
+  });
+
+  it("narrates a short trade with 'shorted'/'covered' verbs and the reciprocal-price return (issue #13)", () => {
+    const { container } = render(
+      <TradeList
+        trades={[trade({ direction: "short", openPrice: 100, closePrice: 80 })]}
+        startingCapital={20}
+      />,
+    );
+
+    const text = proseText(container);
+    expect(text).toMatch(/Had you known, you'd have shorted AAPL on .* at \$100\.00/);
+    expect(text).toMatch(/covered on .* at \$80\.00/);
+    // Payoff 100/80 = 1.25 -- a gain, price fell.
+    expect(text).toMatch(/turning your \$20\.00 into \$25\.00/);
+    expect(text).toMatch(/\(\+25\.0%\)/);
+    expect(screen.getByText("(+25.0%)")).toHaveStyle({ color: "var(--status-good)" });
   });
 });

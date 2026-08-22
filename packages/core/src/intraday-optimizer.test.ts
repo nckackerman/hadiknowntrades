@@ -140,21 +140,23 @@ describe("optimizeIntradayDays", () => {
     expect(days[0]!.trades).toEqual([
       {
         ticker: "A",
+        direction: "long",
         date: "2024-01-02",
-        buyTime: "09:30:00",
-        buyPrice: 10,
-        sellTime: "10:30:00",
-        sellPrice: 30,
+        openTime: "09:30:00",
+        openPrice: 10,
+        closeTime: "10:30:00",
+        closePrice: 30,
       },
     ]);
     expect(days[1]!.trades).toEqual([
       {
         ticker: "B",
+        direction: "long",
         date: "2024-01-03",
-        buyTime: "09:30:00",
-        buyPrice: 10,
-        sellTime: "10:30:00",
-        sellPrice: 40,
+        openTime: "09:30:00",
+        openPrice: 10,
+        closeTime: "10:30:00",
+        closePrice: 40,
       },
     ]);
   });
@@ -299,11 +301,12 @@ describe("optimizeIntradayDays", () => {
       expect(days[0]!.worstCase.trades).toEqual([
         {
           ticker: "B",
+          direction: "long",
           date: "2024-01-02",
-          buyTime: "09:30:00",
-          buyPrice: 20,
-          sellTime: "10:30:00",
-          sellPrice: 10,
+          openTime: "09:30:00",
+          openPrice: 20,
+          closeTime: "10:30:00",
+          closePrice: 10,
         },
       ]);
     });
@@ -362,6 +365,100 @@ describe("optimizeIntradayDays", () => {
       // "worst case" slot (see optimizeWorstTrades's own doc comment).
       expect(days[0]!.worstCase.endingBalance).toBe(20);
       expect(days[0]!.worstCase.trades).toEqual([]);
+    });
+  });
+
+  describe("longShort (issue #13)", () => {
+    it("captures a purely declining day's short profit, which the long-only fields miss entirely", () => {
+      const barsByTicker = new Map<string, IntradayBar[]>([
+        [
+          "A",
+          bars("2024-01-02", [
+            ["09:30:00", 100],
+            ["10:30:00", 50],
+          ]),
+        ],
+      ]);
+
+      const days = optimizeIntradayDays(barsByTicker, {
+        startingCapital: 20,
+        maxTradesPerDay: 1,
+        barIntervalMinutes: 60,
+      });
+
+      expect(days[0]!.trades).toEqual([]);
+      expect(days[0]!.endingBalance).toBe(20);
+
+      expect(days[0]!.longShort.trades).toEqual([
+        {
+          ticker: "A",
+          direction: "short",
+          date: "2024-01-02",
+          openTime: "09:30:00",
+          openPrice: 100,
+          closeTime: "10:30:00",
+          closePrice: 50,
+        },
+      ]);
+      expect(multiplier(20, days[0]!.longShort.endingBalance)).toBeCloseTo(2, 6);
+    });
+
+    it("never reports a longShort.endingBalance below that same day's long-only endingBalance, or a longShort.worstCase.endingBalance above the long-only worstCase, across every day it produces", () => {
+      const barsByTicker = new Map<string, IntradayBar[]>([
+        [
+          "A",
+          [
+            ...bars("2024-01-02", [
+              ["09:30:00", 10],
+              ["10:30:00", 20],
+              ["11:30:00", 5],
+            ]),
+            ...bars("2024-01-03", [
+              ["09:30:00", 15],
+              ["10:30:00", 10],
+              ["11:30:00", 30],
+            ]),
+          ],
+        ],
+      ]);
+
+      const days = optimizeIntradayDays(barsByTicker, {
+        startingCapital: 20,
+        maxTradesPerDay: 2,
+        barIntervalMinutes: 60,
+      });
+
+      expect(days.length).toBeGreaterThan(0);
+      for (const day of days) {
+        expect(day.longShort.endingBalance).toBeGreaterThanOrEqual(day.endingBalance);
+        expect(day.longShort.worstCase.endingBalance).toBeLessThanOrEqual(
+          day.worstCase.endingBalance,
+        );
+        expect(day.longShort.worstCase.endingBalance).toBeLessThanOrEqual(
+          day.longShort.endingBalance,
+        );
+      }
+    });
+
+    it("stamps barIntervalMinutes-consistent trades through the longShort field too", () => {
+      const barsByTicker = new Map<string, IntradayBar[]>([
+        [
+          "A",
+          bars("2024-01-02", [
+            ["09:30:00", 100],
+            ["10:30:00", 50],
+          ]),
+        ],
+      ]);
+
+      const days = optimizeIntradayDays(barsByTicker, {
+        startingCapital: 20,
+        maxTradesPerDay: 1,
+        barIntervalMinutes: 5,
+      });
+
+      expect(days[0]!.barIntervalMinutes).toBe(5);
+      expect(days[0]!.longShort.trades[0]!.direction).toBe("short");
     });
   });
 });

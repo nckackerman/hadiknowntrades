@@ -33,16 +33,65 @@
 // comment for exactly what changes and why (in particular, why the "no
 // price here" sentinel must flip from -Infinity to +Infinity for a min
 // search, not just the comparison operators).
+//
+// Issue #13 adds a third axis, orthogonal to direction: short trades.
+// Every trade slot can now be either a "long" (buy low, sell high --
+// today's only mode, ratio P[close]/P[open]) or a "short" (profit when
+// the price falls -- ratio P[open]/P[close], see below) -- gated behind
+// an `includeShorts` flag threaded into computeLevel, off by default so
+// every existing long-only call path is byte-identical to before this
+// issue (see optimizeTrades/optimizeWorstTrades/optimizeBothDirections
+// below, which all still pass includeShorts: false).
+//
+// Short trades are modeled as reciprocal-price longs, not literal
+// fixed-share-count short-selling (docs/plans/issue-13-plan.md section
+// 1.1 works through why the literal model needs a fundamentally
+// different, more expensive algorithm and was rejected): a short opened
+// at P[open] and covered at P[close] multiplies the running balance by
+// P[open]/P[close], exactly the ratio a *long* on the reciprocal price
+// series 1/P(t) would produce. This is separable the same way the long
+// ratio is (P[open] * (1/P[close]), a term depending only on `open`
+// times a term depending only on `close`), so it reuses the exact same
+// suffix-best-then-O(1)-lookup shape as the long pass -- just a second
+// `g` array and the roles of "divide" and "multiply" swapped. No new
+// algorithmic technique, no change to the DP's O(days * tickers *
+// maxTrades) shape, just a larger per-ticker constant when
+// includeShorts is on.
+//
+// A short's payoff (P[open]/P[close]) is bounded below by 0 -- never
+// negative, unlike a real short's unbounded-downside risk -- since both
+// prices are real positive numbers (guarded by isValidPrice) and a
+// ratio of two positive numbers can't go negative. This is exactly why
+// it's safe to extend optimizeWorstTrades to shorts too (see that
+// function's own doc comment): a min search over this candidate set can
+// never produce an impossible negative balance the way it would under a
+// literal unbounded-downside short model.
+//
+// Fun/expected quirk this unlocks, worth knowing before building
+// display/formatting around it (see packages/core/CLAUDE.md's existing
+// "$716M from $20" MAX-range note for the long-only precedent): a
+// short's payoff is unbounded *above* as the covering price approaches
+// zero (P[open]/P[close] -> infinity as P[close] -> 0), so the
+// long+short MAX-direction search can in principle land on an even
+// larger astronomical ending balance than the long-only search already
+// does over the same window -- not a bug, just the same "real perfect-
+// hindsight compounding" effect from the other direction.
 
 import { isValidPrice } from "./is-valid-price";
 import type { DailyClose } from "./yahoo-client";
 
+/** "long" (buy low, sell high -- every trade before issue #13) or "short" (profit when the price falls, modeled as a reciprocal-price long -- see this file's own header comment for why). */
+export type TradeDirection = "long" | "short";
+
 export interface Trade {
   ticker: string;
-  buyDate: string;
-  buyPrice: number;
-  sellDate: string;
-  sellPrice: number;
+  direction: TradeDirection;
+  /** The date the position was opened -- a buy for a long, economically a sell for a short. Always the earlier of the two dates regardless of direction. */
+  openDate: string;
+  openPrice: number;
+  /** The date the position was closed -- a sell for a long, economically a buy (covering) for a short. Always the later of the two dates regardless of direction. */
+  closeDate: string;
+  closePrice: number;
 }
 
 export interface OptimizationResult {
@@ -125,6 +174,7 @@ export function buildCalendar(priceSeriesByTicker: Map<string, DailyClose[]>): C
 
 interface TradeChoice {
   ticker: string;
+  direction: TradeDirection;
   buyIdx: number;
   sellIdx: number;
 }
@@ -171,6 +221,25 @@ type Direction = "max" | "min";
  *   tie-break rule is kept, unchanged, for both directions -- see issue
  *   #31's plan doc (docs/plans/issue-31-plan.md section 1.3) for why
  *   this determinism-only rule doesn't need inverting for "min".
+ * @param includeShorts Issue #13 -- when true, a second pass runs per
+ *   ticker after the (unmodified) long pass, searching short candidates
+ *   (open at P[open], cover at P[close], payoff P[open]/P[close] -- see
+ *   this file's own header comment for the reciprocal-price derivation)
+ *   for the same value[]/choice[] slots. When false (every call site
+ *   before this issue, and optimizeTrades/optimizeWorstTrades/
+ *   optimizeBothDirections still today), this function's behavior is
+ *   byte-identical to before issue #13 -- the short block is skipped
+ *   entirely, no new allocation or comparison evaluated. Because the long
+ *   pass always runs to completion (including its own value[]/choice[]
+ *   update) before the short pass for the same ticker even starts, an
+ *   exact tie between a long and a short candidate for the same ticker
+ *   and the same day resolves in the long's favor -- a new, genuinely
+ *   arbitrary-but-deterministic tie-break axis this issue introduces (see
+ *   docs/plans/issue-13-plan.md section 1.4(b) for the worked example).
+ *   The existing three tie-break rules (cross-ticker alphabetical,
+ *   cross-day earliest-wins, trade-vs-carry-forward strict inequality)
+ *   are unaffected: a short candidate is just one more source competing
+ *   for the same strict-inequality-gated value[d] slot.
  * @param direction "max" (optimizeTrades) or "min" (optimizeWorstTrades,
  *   issue #31). Four things flip between the two, all mechanical, none
  *   optional:
@@ -199,6 +268,7 @@ function computeLevel(
   sortedTickers: [string, (number | null)[]][],
   prevValue: number[],
   direction: Direction,
+  includeShorts: boolean,
 ): Level {
   const worstSentinel = direction === "max" ? NEG_INFINITY : POS_INFINITY;
   const isBetterOrEqual =
@@ -264,7 +334,83 @@ function computeLevel(
       }
       if (runningBestBuyIdx !== -1 && isStrictlyBetter(runningBestValue, value[d]!)) {
         value[d] = runningBestValue;
-        choice[d] = { ticker, buyIdx: runningBestBuyIdx, sellIdx: runningBestSellIdx };
+        choice[d] = {
+          ticker,
+          direction: "long",
+          buyIdx: runningBestBuyIdx,
+          sellIdx: runningBestSellIdx,
+        };
+      }
+    }
+
+    // Issue #13: a second, short-candidate pass for this same ticker,
+    // appended immediately after the long pass above and only run when
+    // includeShorts is set. Structurally identical to the long pass --
+    // same suffixBest-then-O(1)-lookup shape, same worstSentinel/
+    // isBetterOrEqual/isStrictlyBetter primitives -- just built from a
+    // second g array (gShort) using the reciprocal-price ratio
+    // P[open]/P[close] instead of P[close]/P[open] (see this file's own
+    // header comment for the derivation of why that's separable the same
+    // way). Because this runs strictly after the long pass has already
+    // updated value[d]/choice[d] for this ticker, an exact tie between a
+    // long and a short candidate resolves in the long's favor -- see
+    // includeShorts's own doc comment above.
+    if (includeShorts) {
+      // gShort[i] = payoff of covering this ticker's short on day i,
+      // given the best (worst, for direction="min") remaining path (k-1
+      // trades) starting the day after -- mirrors g[] above, but as a
+      // multiplier applied to the *close* price's contribution rather
+      // than the open's (see the runningBestShort loop below for where
+      // the open price itself enters).
+      const gShort = new Array<number>(T);
+      for (let i = 0; i < T; i++) {
+        const p = prices[i]!;
+        gShort[i] = p === null ? worstSentinel : prevValue[i + 1]! / p;
+      }
+
+      // suffixBestGShort[i] = best(gShort[i..T-1]) -- same suffix-best
+      // machinery as suffixBestG above, over the short candidate array.
+      const suffixBestGShort = new Array<number>(T + 1).fill(worstSentinel);
+      const suffixBestCoverIdx = new Array<number>(T + 1).fill(-1);
+      for (let i = T - 1; i >= 0; i--) {
+        if (isBetterOrEqual(gShort[i]!, suffixBestGShort[i + 1]!)) {
+          suffixBestGShort[i] = gShort[i]!;
+          suffixBestCoverIdx[i] = i;
+        } else {
+          suffixBestGShort[i] = suffixBestGShort[i + 1]!;
+          suffixBestCoverIdx[i] = suffixBestCoverIdx[i + 1]!;
+        }
+      }
+
+      // runningBestShortValue[d] = best (max, or min for "min") over
+      // openIdx >= d of (P[openIdx] * suffixBestGShort[openIdx+1]) --
+      // note *multiply* by the open price here, mirroring the long
+      // pass's *divide*: opening a short plays the same structural role
+      // for the reciprocal-price ratio that buying (dividing by P[buy])
+      // plays for a long.
+      let runningBestShortValue = worstSentinel;
+      let runningBestOpenIdx = -1;
+      let runningBestCoverIdx = -1;
+      for (let d = T - 1; d >= 0; d--) {
+        const p = prices[d]!;
+        const bestCoverValue = suffixBestGShort[d + 1]!;
+        if (p !== null && bestCoverValue !== worstSentinel) {
+          const candidateShortRatio = p * bestCoverValue;
+          if (isBetterOrEqual(candidateShortRatio, runningBestShortValue)) {
+            runningBestShortValue = candidateShortRatio;
+            runningBestOpenIdx = d;
+            runningBestCoverIdx = suffixBestCoverIdx[d + 1]!;
+          }
+        }
+        if (runningBestOpenIdx !== -1 && isStrictlyBetter(runningBestShortValue, value[d]!)) {
+          value[d] = runningBestShortValue;
+          choice[d] = {
+            ticker,
+            direction: "short",
+            buyIdx: runningBestOpenIdx,
+            sellIdx: runningBestCoverIdx,
+          };
+        }
       }
     }
   }
@@ -350,6 +496,7 @@ function runOptimizerForDirection(
   state: OptimizerState,
   options: OptimizeOptions,
   direction: Direction,
+  includeShorts: boolean,
 ): OptimizationResult {
   const { startingCapital, maxTrades } = options;
   const { calendar, sortedTickers } = state;
@@ -365,17 +512,23 @@ function runOptimizerForDirection(
   };
   const levels: Level[] = [level0];
   for (let k = 1; k <= maxTrades; k++) {
-    levels.push(computeLevel(T, sortedTickers, levels[k - 1]!.value, direction));
+    levels.push(computeLevel(T, sortedTickers, levels[k - 1]!.value, direction, includeShorts));
   }
 
   const finalMultiplier = levels[maxTrades]!.value[0]!;
   const tradeChoices = reconstructTrades(levels, maxTrades);
 
+  // openDate/openPrice always come from c.buyIdx's date/price and
+  // closeDate/closePrice always come from c.sellIdx's, regardless of
+  // c.direction -- only the returned object's own `direction` field
+  // differs (issue #13's plan section 1.3: the buyIdx/sellIdx-to-open/
+  // close mapping is direction-agnostic by construction, no if/else
+  // needed here).
   const trades: Trade[] = tradeChoices.map((c) => {
     const prices = calendar.pricesByTicker.get(c.ticker);
-    const buyPrice = prices?.[c.buyIdx];
-    const sellPrice = prices?.[c.sellIdx];
-    if (buyPrice == null || sellPrice == null) {
+    const openPrice = prices?.[c.buyIdx];
+    const closePrice = prices?.[c.sellIdx];
+    if (openPrice == null || closePrice == null) {
       // Should be unreachable: computeLevel only ever selects indices
       // where this ticker has a known price.
       throw new Error(
@@ -384,10 +537,11 @@ function runOptimizerForDirection(
     }
     return {
       ticker: c.ticker,
-      buyDate: calendar.dates[c.buyIdx] as string,
-      buyPrice,
-      sellDate: calendar.dates[c.sellIdx] as string,
-      sellPrice,
+      direction: c.direction,
+      openDate: calendar.dates[c.buyIdx] as string,
+      openPrice,
+      closeDate: calendar.dates[c.sellIdx] as string,
+      closePrice,
     };
   });
 
@@ -423,7 +577,12 @@ function runOptimizer(
 ): OptimizationResult {
   validateOptimizeOptions(options);
   const state = buildOptimizerState(priceSeriesByTicker);
-  return runOptimizerForDirection(state, options, direction);
+  // includeShorts is always false here -- optimizeTrades/
+  // optimizeWorstTrades/optimizeBothDirections (the only callers of this
+  // function) are pinned to long-only, not merely defaulted, so their
+  // behavior stays provably unchanged by issue #13 (see optimizeAllVariants
+  // below for the only path that can reach includeShorts: true).
+  return runOptimizerForDirection(state, options, direction, false);
 }
 
 /**
@@ -486,7 +645,54 @@ export function optimizeBothDirections(
   validateOptimizeOptions(options);
   const state = buildOptimizerState(priceSeriesByTicker);
   return {
-    best: runOptimizerForDirection(state, options, "max"),
-    worst: runOptimizerForDirection(state, options, "min"),
+    best: runOptimizerForDirection(state, options, "max", false),
+    worst: runOptimizerForDirection(state, options, "min", false),
+  };
+}
+
+/**
+ * Runs all 4 direction x instrument-set combinations over the *same*
+ * `priceSeriesByTicker`/`options` (issue #13): long-only best/worst (the
+ * exact same results optimizeBothDirections would produce -- see
+ * `longOnly` below) and long+short best/worst, sharing one built
+ * OptimizerState across all 4 runs the same way optimizeBothDirections
+ * shares it across 2 (see OptimizerState's own doc comment).
+ *
+ * This is the *only* path that can ever reach computeLevel with
+ * `includeShorts: true` -- optimizeTrades/optimizeWorstTrades/
+ * optimizeBothDirections all still call runOptimizerForDirection with a
+ * fixed `includeShorts: false`, never threaded from a caller-supplied
+ * option, so their own behavior stays provably unchanged by this
+ * function's existence. `OptimizeOptions` itself gained no new field for
+ * this -- the flag lives only at this internal layer.
+ *
+ * `longShort.best.endingBalance >= longOnly.best.endingBalance` and
+ * `longShort.worst.endingBalance <= longOnly.worst.endingBalance` always
+ * hold by construction: the long+short search explores a strict superset
+ * of the long-only candidate trade set (every long candidate stays
+ * available, plus shorts), so a max search over a superset can never do
+ * worse and a min search over a superset can never do better (i.e. can
+ * only find an equal-or-lower minimum). See results-schema.ts's
+ * validatePrecomputedResult, which checks exactly this invariant on
+ * every stored result.
+ */
+export function optimizeAllVariants(
+  priceSeriesByTicker: Map<string, DailyClose[]>,
+  options: OptimizeOptions,
+): {
+  longOnly: { best: OptimizationResult; worst: OptimizationResult };
+  longShort: { best: OptimizationResult; worst: OptimizationResult };
+} {
+  validateOptimizeOptions(options);
+  const state = buildOptimizerState(priceSeriesByTicker);
+  return {
+    longOnly: {
+      best: runOptimizerForDirection(state, options, "max", false),
+      worst: runOptimizerForDirection(state, options, "min", false),
+    },
+    longShort: {
+      best: runOptimizerForDirection(state, options, "max", true),
+      worst: runOptimizerForDirection(state, options, "min", true),
+    },
   };
 }

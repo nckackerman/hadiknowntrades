@@ -27,20 +27,29 @@
 // OptimizerState doc comment): each day's IntradayDayResult carries a
 // worstCase field alongside its own optimal-case endingBalance/trades,
 // solved over the exact same day's bars.
+//
+// Issue #13 folds in a third axis, long+short, the same way: swaps
+// optimizeBothDirections() for optimizeAllVariants() (4 runs instead of
+// 2, still sharing one built calendar/ticker-sort per day), and each
+// day's IntradayDayResult additionally carries a longShort field
+// alongside its long-only endingBalance/trades/worstCase, mirroring how
+// WindowResult's own longShort field (results-schema.ts) sits alongside
+// its long-only fields.
 
-import { optimizeBothDirections, type Trade } from "./optimizer";
+import { optimizeAllVariants, type Trade, type TradeDirection } from "./optimizer";
 import type { IntradayBar } from "./yahoo-client";
 
 export interface IntradayTrade {
   ticker: string;
-  /** Calendar date this trade happened on, YYYY-MM-DD -- the same for buy and sell, since intraday trades never cross a day boundary by construction (see toIntradayTrade). */
+  direction: TradeDirection;
+  /** Calendar date this trade happened on, YYYY-MM-DD -- the same for open and close, since intraday trades never cross a day boundary by construction (see toIntradayTrade). */
   date: string;
   /** Local time of day the position was opened, HH:MM:SS. */
-  buyTime: string;
-  buyPrice: number;
+  openTime: string;
+  openPrice: number;
   /** Local time of day the position was closed, HH:MM:SS. */
-  sellTime: string;
-  sellPrice: number;
+  closeTime: string;
+  closePrice: number;
 }
 
 export interface IntradayDayResult {
@@ -78,6 +87,15 @@ export interface IntradayDayResult {
    * max-search does).
    */
   worstCase: IntradayWorstCaseResult;
+  /**
+   * The long+short counterpart to this day's own long-only endingBalance/
+   * trades/worstCase (issue #13) -- same shape as this day's own fields,
+   * solved over the same day's bars but with short trades also available
+   * to the search. See results-schema.ts's LongShortResult (the window
+   * model's own sibling field) for the full reasoning; this is its
+   * per-day equivalent.
+   */
+  longShort: IntradayLongShortResult;
 }
 
 /**
@@ -93,6 +111,21 @@ export interface IntradayDayResult {
 export interface IntradayWorstCaseResult {
   endingBalance: number;
   trades: IntradayTrade[];
+}
+
+/**
+ * Per-day long+short counterpart to IntradayDayResult's own long-only
+ * endingBalance/trades/worstCase (issue #13) -- mirrors
+ * IntradayWorstCaseResult's own flattening convention, plus a nested
+ * worstCase since the long+short variant has both a best and worst case
+ * of its own, same as the top-level long-only fields do. No
+ * startingCapital here either, for the same reason IntradayWorstCaseResult
+ * has none: identical to the sibling IntradayDayResult.startingCapital.
+ */
+export interface IntradayLongShortResult {
+  endingBalance: number;
+  trades: IntradayTrade[];
+  worstCase: IntradayWorstCaseResult;
 }
 
 export interface OptimizeIntradayOptions {
@@ -151,34 +184,37 @@ function groupByDate(
 }
 
 /**
- * Converts one optimizeTrades()-shaped Trade (whose buyDate/sellDate
+ * Converts one optimizeTrades()-shaped Trade (whose openDate/closeDate
  * literally contain the full local-datetime strings we fed it, since it
  * just echoes back whatever date string the caller supplied) into the
  * public IntradayTrade shape, with date and time split apart explicitly
- * -- deliberately not reusing Trade's buyDate/sellDate fields as-is for
+ * -- deliberately not reusing Trade's openDate/closeDate fields as-is for
  * intraday output, since apps/web's existing consumers of Trade
- * (TradeList, PortfolioChart, format-date.ts) all assume buyDate/sellDate
+ * (TradeList, PortfolioChart, format-date.ts) all assume openDate/closeDate
  * are plain calendar dates and would silently mis-render a full
- * datetime string passed through unmodified.
+ * datetime string passed through unmodified. `direction` passes straight
+ * through unchanged (issue #13) -- splitting date from time-of-day
+ * doesn't depend on which direction the trade was.
  */
 function toIntradayTrade(trade: Trade): IntradayTrade {
-  const buy = splitLocalDateTime(trade.buyDate);
-  const sell = splitLocalDateTime(trade.sellDate);
-  if (buy.date !== sell.date) {
+  const open = splitLocalDateTime(trade.openDate);
+  const close = splitLocalDateTime(trade.closeDate);
+  if (open.date !== close.date) {
     // Should be unreachable: optimizeTrades is only ever called here
     // (see optimizeIntradayDays) with a single day's bars, so every
-    // trade it returns must buy and sell within that same day.
+    // trade it returns must open and close within that same day.
     throw new Error(
-      `internal error: intraday trade for ${trade.ticker} spans buy date ${buy.date} and sell date ${sell.date}`,
+      `internal error: intraday trade for ${trade.ticker} spans open date ${open.date} and close date ${close.date}`,
     );
   }
   return {
     ticker: trade.ticker,
-    date: buy.date,
-    buyTime: buy.time,
-    buyPrice: trade.buyPrice,
-    sellTime: sell.time,
-    sellPrice: trade.sellPrice,
+    direction: trade.direction,
+    date: open.date,
+    openTime: open.time,
+    openPrice: trade.openPrice,
+    closeTime: close.time,
+    closePrice: trade.closePrice,
   };
 }
 
@@ -203,26 +239,33 @@ export function optimizeIntradayDays(
 
   return dates.map((date) => {
     const dayBars = byDate.get(date)!;
-    // Same day's bars, same startingCapital/maxTrades for both the best-
-    // and worst-case (min-direction, issue #31) searches, so
-    // optimizeBothDirections builds this day's calendar/ticker-sort once
-    // and reuses it for both instead of the two separate optimizeTrades/
-    // optimizeWorstTrades calls this used to be -- a real saving here
+    // Same day's bars, same startingCapital/maxTrades for all 4
+    // direction x instrument-set combinations, so optimizeAllVariants
+    // builds this day's calendar/ticker-sort once and reuses it for all
+    // 4 runs instead of separate calls -- a real saving here
     // specifically, since this runs once per trading day (up to ~252
     // times for 1Y) rather than once per range.
-    const { best: optimized, worst } = optimizeBothDirections(dayBars, {
+    const { longOnly, longShort } = optimizeAllVariants(dayBars, {
       startingCapital,
       maxTrades: maxTradesPerDay,
     });
     return {
       date,
       startingCapital,
-      endingBalance: optimized.endingBalance,
+      endingBalance: longOnly.best.endingBalance,
       barIntervalMinutes,
-      trades: optimized.trades.map(toIntradayTrade),
+      trades: longOnly.best.trades.map(toIntradayTrade),
       worstCase: {
-        endingBalance: worst.endingBalance,
-        trades: worst.trades.map(toIntradayTrade),
+        endingBalance: longOnly.worst.endingBalance,
+        trades: longOnly.worst.trades.map(toIntradayTrade),
+      },
+      longShort: {
+        endingBalance: longShort.best.endingBalance,
+        trades: longShort.best.trades.map(toIntradayTrade),
+        worstCase: {
+          endingBalance: longShort.worst.endingBalance,
+          trades: longShort.worst.trades.map(toIntradayTrade),
+        },
       },
     };
   });

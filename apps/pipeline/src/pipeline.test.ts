@@ -1,6 +1,7 @@
 import {
   BlockedError,
   PRESET_RANGES,
+  RESULTS_SCHEMA_VERSION,
   TickerNotFoundError,
   toDateString,
   TransientFetchError,
@@ -95,7 +96,7 @@ describe("runPipeline", () => {
       const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
       generatedAts.add(parsed.generatedAt);
       expect(parsed).toMatchObject({
-        schemaVersion: 4,
+        schemaVersion: RESULTS_SCHEMA_VERSION,
         model: "window",
         range,
         maxTrades: 3,
@@ -103,13 +104,22 @@ describe("runPipeline", () => {
         endDate: "2024-06-15",
       });
       expect(Array.isArray(parsed.trades)).toBe(true);
+      // Long+short (issue #13) is a populated sibling field, not merely
+      // present -- checked against the same superset invariant
+      // results-schema.ts's own write-time validation checks.
+      expect(parsed.longShort).toBeDefined();
+      expect(Array.isArray(parsed.longShort.trades)).toBe(true);
+      expect(parsed.longShort.endingBalance).toBeGreaterThanOrEqual(parsed.endingBalance);
+      expect(parsed.longShort.worstCase.endingBalance).toBeLessThanOrEqual(
+        parsed.worstCase.endingBalance,
+      );
     }
 
     for (const range of ["1M", "3M", "1Y"]) {
       const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
       generatedAts.add(parsed.generatedAt);
       expect(parsed).toMatchObject({
-        schemaVersion: 4,
+        schemaVersion: RESULTS_SCHEMA_VERSION,
         model: "intraday-daily",
         range,
         maxTradesPerDay: 3,
@@ -122,6 +132,13 @@ describe("runPipeline", () => {
         expect(typeof day.date).toBe("string");
         expect(day.startingCapital).toBe(20);
         expect(Array.isArray(day.trades)).toBe(true);
+        // Long+short (issue #13), per day.
+        expect(day.longShort).toBeDefined();
+        expect(Array.isArray(day.longShort.trades)).toBe(true);
+        expect(day.longShort.endingBalance).toBeGreaterThanOrEqual(day.endingBalance);
+        expect(day.longShort.worstCase.endingBalance).toBeLessThanOrEqual(
+          day.worstCase.endingBalance,
+        );
       }
     }
 
@@ -236,7 +253,9 @@ describe("runPipeline", () => {
 
       const max = JSON.parse(store.objects.get("results/MAX.json")!);
       expect(max.dataAsOf).toBe("2024-06-15"); // not 2024-06-16
-      expect(max.trades.every((t: { sellDate: string }) => t.sellDate <= "2024-06-15")).toBe(true);
+      expect(max.trades.every((t: { closeDate: string }) => t.closeDate <= "2024-06-15")).toBe(
+        true,
+      );
     });
 
     it("writes the intraday path's results even when the window path independently has no data, but still fails the run (for alerting)", async () => {
@@ -289,12 +308,12 @@ describe("runPipeline", () => {
       expect(max.worstCase.endingBalance).toBeLessThan(max.endingBalance);
       expect(max.worstCase.endingBalance).toBeLessThanOrEqual(max.startingCapital);
       expect(max.worstCase.trades).toEqual([
-        expect.objectContaining({ ticker: "DOWN", buyPrice: 200, sellPrice: 10 }),
+        expect.objectContaining({ ticker: "DOWN", openPrice: 200, closePrice: 10 }),
       ]);
       // The optimal-case picked the *other* ticker, so the two results'
       // trades genuinely differ, not just their endingBalance.
       expect(max.trades).toEqual([
-        expect.objectContaining({ ticker: "UP", buyPrice: 10, sellPrice: 200 }),
+        expect.objectContaining({ ticker: "UP", openPrice: 10, closePrice: 200 }),
       ]);
     });
   });
@@ -428,10 +447,10 @@ describe("runPipeline", () => {
       expect(day.worstCase).toBeDefined();
       expect(day.worstCase.endingBalance).toBeLessThan(day.endingBalance);
       expect(day.worstCase.trades).toEqual([
-        expect.objectContaining({ ticker: "DOWN", buyPrice: 100, sellPrice: 10 }),
+        expect.objectContaining({ ticker: "DOWN", openPrice: 100, closePrice: 10 }),
       ]);
       expect(day.trades).toEqual([
-        expect.objectContaining({ ticker: "UP", buyPrice: 10, sellPrice: 100 }),
+        expect.objectContaining({ ticker: "UP", openPrice: 10, closePrice: 100 }),
       ]);
     });
   });
@@ -495,11 +514,11 @@ describe("runPipeline", () => {
       );
 
       expect(recentDay.barIntervalMinutes).toBe(5);
-      expect(recentDay.trades[0].sellPrice).toBe(50); // from the 5-minute fixture, not the 60-minute one's 20
+      expect(recentDay.trades[0].closePrice).toBe(50); // from the 5-minute fixture, not the 60-minute one's 20
       expect(recentDay.endingBalance / recentDay.startingCapital).toBeCloseTo(5, 6);
 
       expect(olderDay.barIntervalMinutes).toBe(60);
-      expect(olderDay.trades[0].sellPrice).toBe(15);
+      expect(olderDay.trades[0].closePrice).toBe(15);
       expect(olderDay.endingBalance / olderDay.startingCapital).toBeCloseTo(1.5, 6);
     });
 
@@ -526,7 +545,7 @@ describe("runPipeline", () => {
         const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
         expect(parsed.days).toHaveLength(1);
         expect(parsed.days[0].barIntervalMinutes).toBe(60);
-        expect(parsed.days[0].trades[0].sellPrice).toBe(20); // the 60-minute price, not the 5-minute fixture's 50
+        expect(parsed.days[0].trades[0].closePrice).toBe(20); // the 60-minute price, not the 5-minute fixture's 50
         expect(parsed.days[0].endingBalance / parsed.days[0].startingCapital).toBeCloseTo(2, 6);
       }
     });
@@ -746,11 +765,11 @@ describe("runPipeline", () => {
       );
 
       expect(recentDay.barIntervalMinutes).toBe(1);
-      expect(recentDay.trades[0].sellPrice).toBe(50); // from the 1-minute fixture, not the 60-minute one's 20
+      expect(recentDay.trades[0].closePrice).toBe(50); // from the 1-minute fixture, not the 60-minute one's 20
       expect(recentDay.endingBalance / recentDay.startingCapital).toBeCloseTo(5, 6);
 
       expect(olderDay.barIntervalMinutes).toBe(60);
-      expect(olderDay.trades[0].sellPrice).toBe(15);
+      expect(olderDay.trades[0].closePrice).toBe(15);
       expect(olderDay.endingBalance / olderDay.startingCapital).toBeCloseTo(1.5, 6);
     });
 
@@ -777,7 +796,7 @@ describe("runPipeline", () => {
         const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
         expect(parsed.days).toHaveLength(1);
         expect(parsed.days[0].barIntervalMinutes).toBe(60);
-        expect(parsed.days[0].trades[0].sellPrice).toBe(20); // the 60-minute price, not the 1-minute fixture's 50
+        expect(parsed.days[0].trades[0].closePrice).toBe(20); // the 60-minute price, not the 1-minute fixture's 50
         expect(parsed.days[0].endingBalance / parsed.days[0].startingCapital).toBeCloseTo(2, 6);
       }
     });

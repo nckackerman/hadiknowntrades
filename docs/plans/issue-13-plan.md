@@ -16,7 +16,7 @@ below** -- this plan is written against its actual current shape (post-#31's
 ## 0. One-paragraph summary
 
 Add short trades to the DP's per-ticker search by giving every ticker/day
-a *second* set of suffix-best/running-best passes, structurally identical
+a _second_ set of suffix-best/running-best passes, structurally identical
 to the existing long-only pass but built from a reciprocal-price
 formulation (`P_open / P_close` instead of `P_close / P_open`) that stays
 separable and keeps the DP at the same `O(days x tickers x maxTrades)`
@@ -76,13 +76,13 @@ long side already uses, just applied to the entry price instead of
 model, and it has the property the issue's own Background section
 describes: unbounded downside. If `P[close] > 2 * P[open]` (price more
 than doubles against the short), the multiplier goes negative -- the
-position is worth *less than nothing*, a real short-selling risk this
+position is worth _less than nothing_, a real short-selling risk this
 formula faithfully reproduces.
 
 The problem: `2 - P[close]/P[open]` is **not separable** the way the long
 ratio is. The quantity to maximize over `close` for a fixed `open` is
 `2*prevValue[close+1] - (P[close]/P[open]) * prevValue[close+1]` -- a sum
-of a term depending only on `close` and a *second* term that depends on
+of a term depending only on `close` and a _second_ term that depends on
 `close` **scaled by a factor that varies with `open`**
 (`1/P[open]`). Framed as a family of lines in `x = 1/P[open]`-space (one
 line per candidate `close`: `-B(close)*x + A(close)`, with `B(close) =
@@ -95,7 +95,7 @@ component, not a bigger constant on the existing one.
 
 **Option B -- reciprocal-price / inverse-compounding short (recommended).**
 Define the short's growth multiplier as `P[open] / P[close]` -- literally
-run the *existing* long formula on the reciprocal price series `1/P(t)`
+run the _existing_ long formula on the reciprocal price series `1/P(t)`
 (a long on `1/P`: buy `1/P[open]`, sell `1/P[close]`, ratio =
 `(1/P[close]) / (1/P[open]) = P[open]/P[close]`). This is exactly what
 the issue's own Background bullet gestures at ("buy/sell inverted"). It
@@ -210,7 +210,7 @@ Key properties of this design, stated explicitly:
 - **`includeShorts: false` executes exactly today's code, nothing more.**
   The entire short block is behind one `if`, per ticker -- no new
   allocation, no new comparison evaluated, when the flag is off. This is
-  *why* "existing long-only behavior is provably unchanged" (the issue's
+  _why_ "existing long-only behavior is provably unchanged" (the issue's
   acceptance criterion) can be a structural guarantee, not a claim that
   needs re-proving by exhaustive testing: the long-only call path
   literally doesn't reach the new code at all.
@@ -223,7 +223,7 @@ Key properties of this design, stated explicitly:
 - **Per-ticker cost roughly doubles** (two suffix passes + two
   running-best passes instead of one each), not the asymptotic shape --
   still `O(days)` per ticker per level, so the whole DP stays `O(days x
-  tickers x maxTrades)`. See section 5 for what this costs in wall-clock
+tickers x maxTrades)`. See section 5 for what this costs in wall-clock
   terms.
 - **`TradeChoice` gains `direction: "long" | "short"`.** Internal-only
   type, no consumer impact; `buyIdx`/`sellIdx` field names are kept
@@ -236,8 +236,8 @@ Key properties of this design, stated explicitly:
 `Trade`'s current fields (`buyDate`, `buyPrice`, `sellDate`, `sellPrice`)
 are **long-specific verbs baked into field names**. Reusing them
 unchanged for a short trade would be actively misleading: a short's
-"buyDate" would hold the date the position was *opened* (economically a
-sell), and "sellDate" the date it was *covered* (economically a buy) --
+"buyDate" would hold the date the position was _opened_ (economically a
+sell), and "sellDate" the date it was _covered_ (economically a buy) --
 exactly backwards from what the field names say. Two options:
 
 - **(Rejected) Keep `buyDate`/`sellDate`/etc., add only `direction`.**
@@ -288,7 +288,7 @@ migration boundary this repo has used for every prior schema change.
 **(a) Does short-selling extend to `optimizeWorstTrades` too?**
 
 Under Option A (unbounded downside), this would be a real problem: the
-worst-case (min) search actively *seeks* the minimum, and an unbounded-
+worst-case (min) search actively _seeks_ the minimum, and an unbounded-
 downside candidate would let it find an arbitrarily catastrophic negative
 multiplier -- a worst-case `endingBalance` of, say, negative ten billion
 dollars from a $20 start is nonsensical for this app's "starting capital"
@@ -310,8 +310,8 @@ shorts too** -- there is no asymmetry to account for once Option B is
 the chosen model, which is itself a direct, non-obvious consequence of
 which of the two option-A/option-B models was picked in section 1.1 --
 this is the concrete resolution the issue asks for, not an assumption of
-symmetry: the symmetry holds *because* Option B was chosen, and would
-*not* hold under Option A (where the honest answer would likely be "no,
+symmetry: the symmetry holds _because_ Option B was chosen, and would
+_not_ hold under Option A (where the honest answer would likely be "no,
 don't extend it, or extend it with an explicit loss floor" -- flagged as
 the counterfactual, not adopted).
 
@@ -319,16 +319,16 @@ the counterfactual, not adopted).
 
 Yes -- worked through with a concrete scenario, not asserted.
 
-*Cross-ticker tie (no new rule needed).* Universe of two tickers, one
+_Cross-ticker tie (no new rule needed)._ Universe of two tickers, one
 day-pair, `maxTrades = 1`: AAPL priced `$100 -> $105` (long ratio =
 `1.05`), MSFT priced `$110 -> $104.7619048` (chosen so `110 /
-104.7619048 = 1.05` exactly, i.e. MSFT's *short* ratio ties AAPL's
-*long* ratio). Sorted tickers: AAPL before MSFT. Processing AAPL first
+104.7619048 = 1.05` exactly, i.e. MSFT's _short_ ratio ties AAPL's
+_long_ ratio). Sorted tickers: AAPL before MSFT. Processing AAPL first
 (long pass: ratio 1.05, strictly beats the carry-forward baseline of 1,
 updates `value[0]`/`choice[0]` to AAPL-long; short pass: AAPL short
 ratio = `100/105 = 0.9524`, a loss, doesn't beat 1.05, no update). Then
 MSFT (long pass: `104.76/110 = 0.9524`, doesn't beat 1.05; short pass:
-`110/104.76 = 1.05`, *tied* with the current record, and the update
+`110/104.76 = 1.05`, _tied_ with the current record, and the update
 check is strict `>`, so the tie does **not** overwrite). Result: AAPL-long
 wins, purely because AAPL sorts alphabetically before MSFT -- the
 existing cross-ticker tie-break (section 1.1's `sortedTickers` order,
@@ -336,13 +336,13 @@ already documented in `computeLevel`'s own doc comment) already resolves
 this correctly, unmodified, since the short pass is just one more
 candidate source competing for the same strict-`>`-gated `value[d]` slot.
 
-*Same-ticker tie (a genuinely new axis, resolved by processing order).*
+_Same-ticker tie (a genuinely new axis, resolved by processing order)._
 Single ticker AAPL, three days: `$100` (day 0), `$105` (day 1),
 `$95.2381` (day 2, chosen so `100/95.2381 = 1.05`). Long candidate
 (buy day 0, sell day 1): ratio `1.05`. Short candidate (open day 0,
 cover day 2): ratio `100/95.2381 = 1.05` -- an exact tie, **same
 ticker**, same opening day. Section 1.2's design processes the long pass
-to completion (including its own `value[d]`/`choice[d]` update) *before*
+to completion (including its own `value[d]`/`choice[d]` update) _before_
 the short pass even begins for that ticker -- so at the moment the short
 pass's own strict-`>` check runs, `value[0]` already holds the long
 candidate's `1.05`, and the short candidate's `1.05` fails to beat it
@@ -410,6 +410,7 @@ argument -- there is no new optional field on their shared options type
 whose absence a caller could get wrong.
 
 ## 3. Schema change (`packages/core/src/results-schema.ts`,
+
 `packages/core/src/intraday-optimizer.ts`)
 
 ### 3.1 `RESULTS_SCHEMA_VERSION`: 4 -> 5
@@ -452,7 +453,7 @@ export interface LongShortResult {
 shape). **Deliberately additive, not a restructure.** The alternative --
 replacing the flat `endingBalance`/`trades`/`worstCase` fields with a
 `variants: { longOnly, longShort }` wrapper -- was considered and
-rejected: it would touch *every* existing consumer of those flat fields
+rejected: it would touch _every_ existing consumer of those flat fields
 (`HeroStat`, `PortfolioChart` via `portfolio-series.ts`, `TradeList`,
 `WorstCaseStat`, the OG card route, `BenchmarkStat`'s
 `startingCapital` reference) purely to relocate data that doesn't need
@@ -477,7 +478,7 @@ depend on direction).
 
 - `validateTrade`/`validateIntradayTrade`: rename every field check to
   match the new names, and add `direction === "long" || direction ===
-  "short"`.
+"short"`.
 - New `validateLongShortResult` (mirrors `validateWorstCaseResultWith`'s
   existing shape -- reuse it directly, since `LongShortResult` and
   `WorstCaseResult` now differ only in `LongShortResult` nesting its own
@@ -497,13 +498,13 @@ depend on direction).
     superset can never do worse.
   - `longShort.worstCase.endingBalance <= worstCase.endingBalance` (the
     long-only worst-case figure). Same superset argument, inverted for a
-    min search: it can never find a *higher* (less bad) minimum than a
+    min search: it can never find a _higher_ (less bad) minimum than a
     min search over a subset could.
   - Both checks apply to `WindowResult` and to each `IntradayDayResult`
     the same way the existing `worstCase <= endingBalance` check already
     does at both levels.
 - **A recommended, optional extra guard** (lower priority, flagged as
-  "nice to have" rather than required): every entry in the *top-level*
+  "nice to have" rather than required): every entry in the _top-level_
   `trades`/`worstCase.trades` arrays (the long-only variant) should have
   `direction === "long"` -- a long-only search can never legitimately
   produce a short trade, so a `"short"` direction appearing there would
@@ -533,6 +534,7 @@ longShort: {
 ```
 
 ### 4.2 Intraday path: `optimizeIntradayDays` (`packages/core`), same as
+
 issue #31's own precedent
 
 Same reasoning issue #31's plan already recorded for `worstCase`:
@@ -584,7 +586,7 @@ this as confirmed):
   4 runs (not rebuilt per variant, same sharing principle as
   `optimizeBothDirections`), land in the same "cheaper than the naive sum"
   regime the existing #31 benchmark already demonstrated for calendar-
-  sharing -- but the *level-building* work itself (not the calendar/sort)
+  sharing -- but the _level-building_ work itself (not the calendar/sort)
   genuinely doubles per direction, since that part isn't shared across
   the long-only vs. long+short axis the way it is across the max-vs-min
   axis.
@@ -616,7 +618,7 @@ this as confirmed):
   `levels` array independently -- nothing forces all 4 variants'
   intermediate DP state to be resident simultaneously, so peak memory
   shouldn't scale with the number of variants the way wall-clock time
-  does. The *pipeline's* Lambda memory ceiling is a real, live, already-
+  does. The _pipeline's_ Lambda memory ceiling is a real, live, already-
   documented concern (`apps/pipeline/CLAUDE.md`: 903MB/1024MB pre-#29,
   proactively bumped to 2048MB for #29's not-yet-deployed 1-minute bars),
   but this issue's addition is primarily 4 sequential result objects
@@ -645,8 +647,7 @@ correctness bug this repo's `InvalidTradePriceError` precedent already
 guards against for bad prices.
 
 ```ts
-returnFraction =
-  direction === "long" ? closePrice / openPrice - 1 : openPrice / closePrice - 1;
+returnFraction = direction === "long" ? closePrice / openPrice - 1 : openPrice / closePrice - 1;
 ```
 
 ```ts
@@ -669,7 +670,7 @@ applies to both prices regardless of direction.
 `NarratableTrade` gains `direction: "long" | "short"`. `leadInFor`'s
 existing lead-in phrases ("Had you known, you'd have" / "Then you'd
 have" / "Finally, you'd have") are direction-agnostic and unchanged --
-only the *verb* that follows needs to branch: today's hardcoded "bought
+only the _verb_ that follows needs to branch: today's hardcoded "bought
 ... and sold ..." becomes direction-aware ("bought ... and sold ..." for
 long, "shorted ... and covered ..." for short). `narrateTrades` passes
 `direction` through to `computeTradeReturn`/`compoundBalance` (section
@@ -699,6 +700,7 @@ Maps `IntradayTrade`'s renamed fields into `TradeRow`'s renamed props,
 including the new `direction` prop -- otherwise unchanged.
 
 ### 6.6 `apps/web/src/lib/portfolio-series.ts` -- found via file audit, not
+
 named in the issue's own Background section
 
 `appendTradeSteps`'s `compoundBalance(value, trade.buyPrice,
@@ -716,6 +718,7 @@ field references (`trade.buyDate` -> `trade.openDate`, etc.) to match
 section 1.3/3.2's rename.
 
 ### 6.7 `apps/web/src/components/PortfolioChart.tsx` -- found via file
+
 audit, four call sites
 
 Directly branches on `event.type === "buy"` in four places (confirmed by
@@ -749,6 +752,7 @@ state for the shareability precedent, not because the issue text forces
 either choice.
 
 ### 6.9 `apps/web/src/components/ResultsPanel.tsx`: variant selection, the
+
 largest actual refactor surface in `apps/web`
 
 Every current read of `data.endingBalance`/`data.trades`/`data.worstCase`
@@ -770,7 +774,7 @@ called once per branch, its result threaded into `HeroStat`,
 `PortfolioChart` (via `portfolio-series.ts`), `TradeList`/
 `IntradayTradeList`, and `WorstCaseStat` instead of the raw top-level
 fields each currently reads directly. This mirrors the exact shape of
-mistake `apps/web/CLAUDE.md` already documents happening *twice* for
+mistake `apps/web/CLAUDE.md` already documents happening _twice_ for
 `effectiveStartingCapital` (issue #15) -- a component quietly reading the
 un-rescaled raw field instead of the thread-through value, caught only in
 code review, not by a test that didn't exist yet. **Recommendation: add
@@ -780,10 +784,11 @@ not the long-only ones) rather than relying on a second code-review catch
 of the same class of bug.
 
 ### 6.10 `daily-guess-storage.ts`/`useDailyGuess` (issue #34): key must
+
 also include `mode`
 
 `apps/web/CLAUDE.md` already documents that a guess is keyed by
-`(range, date)`, not just `date`, because the *same* calendar date can
+`(range, date)`, not just `date`, because the _same_ calendar date can
 carry a genuinely different result depending on range (different
 granularity overrides). **The identical argument applies to `mode`**: the
 same `(range, date)` can now carry a genuinely different `endingBalance`
@@ -796,10 +801,11 @@ that file's own existing note already warns about for range. **Required
 extension, not optional** -- flagged prominently since it's the kind of
 gap that's easy to miss (the mode toggle and the guessing game are
 different features, landed in different issues, with no obvious reason
-for an implementer of *this* issue to re-open `daily-guess-storage.ts`
+for an implementer of _this_ issue to re-open `daily-guess-storage.ts`
 unless this cross-reference is made explicit).
 
 ### 6.11 OG share card (`/api/og/[range]`, issue #33): scope call, not
+
 resolved
 
 The OG card is already scoped to the `"window"` model only, and always
@@ -828,14 +834,14 @@ feature") and the issue's own explicit acceptance criterion:
 
 1. A real pipeline run (local invocation against real Yahoo data,
    no S3 write needed for this check) confirming: `longShort.endingBalance
-   >= endingBalance` and `longShort.worstCase.endingBalance <=
-   worstCase.endingBalance` hold for all 5 ranges on real data (the two
-   cross-checks from section 3.3), and that at least one real short trade
-   actually appears somewhere in `longShort.trades` across the 5 ranges
-   (a real S&P 500 universe over any meaningfully long window should have
-   *some* declining stretch a short profits from -- if none appears
-   anywhere, that's worth investigating before treating the feature as
-   working, not just shrugging it off as "long-only would've won anyway").
+   > = endingBalance`and`longShort.worstCase.endingBalance <=
+   > worstCase.endingBalance`hold for all 5 ranges on real data (the two
+cross-checks from section 3.3), and that at least one real short trade
+actually appears somewhere in`longShort.trades` across the 5 ranges
+   > (a real S&P 500 universe over any meaningfully long window should have
+   > _some_ declining stretch a short profits from -- if none appears
+   > anywhere, that's worth investigating before treating the feature as
+   > working, not just shrugging it off as "long-only would've won anyway").
 2. A real wall-clock timing measurement of `optimizeAllVariants` against
    the full S&P 500 universe, confirming or correcting section 5's
    analytical ~1.6-1.8s/range, ~2.8-3x estimate -- required, not assumed,
@@ -928,8 +934,8 @@ Collected from throughout this document, not new:
 6. **Section 6.11**: OG share card stays long-only-only for this issue,
    not extended to a `mode`-aware cache matrix.
 7. **Section 3.3**: the "top-level trades must all have `direction ===
-   "long""" guard is recommended but explicitly lower-priority than the
-   two `>=`/`<=` cross-checks.
+"long""" guard is recommended but explicitly lower-priority than the
+two `>=`/`<=` cross-checks.
 
 ## 10. Risks (summary)
 

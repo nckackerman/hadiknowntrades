@@ -147,6 +147,119 @@ direction)` -- only `computeLevel`'s four comparison sites/sentinels are
   a calculation error — worth remembering when designing display/number
   formatting in `apps/web` (issue #8), since a naive `$` format will
   look absurd or broken to a first-time viewer without some framing.
+  **Issue #13's short-selling mode makes this even more astronomical**:
+  a short's reciprocal-price payoff (see below) is unbounded above as the
+  covering price approaches zero, so `longShort.endingBalance` can exceed
+  `endingBalance` by a wide margin on the MAX range -- live-verified
+  (real S&P 500 data, 2026-08-21): MAX's long-only best came back
+  ~$138.8B from $20, long+short's own best ~$215.1B over the _same_
+  window. Same "real perfect-hindsight compounding, not a bug" framing,
+  just a second axis it can come from now.
+
+## Short-selling mode (issue #13)
+
+`src/optimizer.ts` gains a second trade type alongside every existing
+long trade: a short, opened at `P[open]` and covered at `P[close]`,
+modeled as **reciprocal-price** (payoff `P[open]/P[close]`, i.e. exactly
+what running the existing long formula on the reciprocal price series
+`1/P(t)` would produce) rather than literal fixed-share-count short
+mechanics -- see `docs/plans/issue-13-plan.md` section 1.1 for the full
+derivation of why the literal model needs a fundamentally different (and
+much more expensive) algorithm, and why reciprocal-price stays separable
+the same way the existing long ratio is. This is a real, deliberate
+economic-modeling trade-off, not an oversight: **a short's payoff under
+this model is bounded below by 0 -- never negative -- unlike a real
+short's unbounded downside risk.** (The plan's own section 1.4(a)
+originally described this as "bounded to (0, +infinity)"; that phrasing
+is imprecise, since that interval is unbounded _above_ -- the actual,
+precise claim, and the one that matters for the safety argument below, is
+"bounded below by 0.") That's exactly why it was safe to extend
+`optimizeWorstTrades`'s min-direction search to include short candidates
+too (see that function's own doc comment): a min search over a
+candidate set that's bounded below by 0 can never produce an impossible
+negative balance the way it would under the literal, unbounded-downside
+model.
+
+- **Gated behind an internal `includeShorts` flag, not a public
+  `OptimizeOptions` field** -- `computeLevel` gains a second,
+  `includeShorts`-conditional pass per ticker (structurally identical to
+  the existing long pass: same suffix-best-then-`O(1)`-lookup shape, same
+  `worstSentinel`/comparison primitives, just a second `g` array and the
+  roles of "divide" and "multiply" swapped). `optimizeTrades`/
+  `optimizeWorstTrades`/`optimizeBothDirections` all still call
+  `runOptimizerForDirection` with a fixed `includeShorts: false` --
+  pinned, not merely defaulted -- so their own behavior is provably
+  unchanged by this issue (the long-only call path literally never
+  reaches the new code). The only way to reach `includeShorts: true` is
+  the new `optimizeAllVariants`, which runs all 4 direction x
+  instrument-set combinations off one shared `OptimizerState`, mirroring
+  `optimizeBothDirections`'s own calendar/ticker-sort sharing.
+- **A new, genuinely arbitrary-but-deterministic tie-break axis**: when a
+  long and a short candidate tie exactly for the same `value[d]` slot,
+  the long wins -- not because of any principled preference, but because
+  each ticker's long pass runs to completion (including its own
+  `value[]`/`choice[]` update) before that same ticker's short pass even
+  starts. Same character as the three pre-existing tie-break rules
+  (cross-ticker alphabetical, cross-day earliest-wins, trade-vs-carry-
+  forward strict inequality) -- about determinism given an otherwise-tied
+  objective, not about maximizing.
+- **The plan's own worked example for the same-ticker tie-break turned
+  out not to actually exercise it, found and corrected during
+  implementation (not just re-derived on paper -- checked empirically
+  against the real DP).** The plan's numbers ($100/$105/$95.2381, chosen
+  so `100/95.2381` ties the long's `105/100`) miss that a short opened on
+  the _second_ day and covered on the third (`105/95.2381 ~= 1.1025`)
+  strictly beats both intended candidates -- the DP correctly finds that
+  better trade instead of the claimed tie, which is itself a small
+  additional confirmation the implementation is doing the right thing,
+  not a bug. `optimizer.test.ts`'s own same-ticker tie-break test uses a
+  different, exhaustively-checked fixture (`[8, 10, 10, 8]`) instead of
+  reusing the plan's numbers as-is.
+- **`Trade`'s fields are renamed** to direction-neutral `openDate`/
+  `openPrice`/`closeDate`/`closePrice` (from `buyDate`/`buyPrice`/
+  `sellDate`/`sellPrice`), plus a new `direction: "long" | "short"`
+  field -- `openDate`/`openPrice` always come from the earlier of the two
+  indices and `closeDate`/`closePrice` from the later, regardless of
+  direction, so trade reconstruction needs no direction-based branching.
+  Same rename applies to `IntradayTrade` (`intraday-optimizer.ts`):
+  `buyTime`/`sellTime` -> `openTime`/`closeTime`, plus `direction`.
+- **`RESULTS_SCHEMA_VERSION` bumped 4 -> 5** (`results-schema.ts`) for
+  the field rename plus a new `longShort` sibling field on
+  `WindowResult`/`IntradayDayResult` (mirroring issue #31's `worstCase`
+  sibling-field precedent, not a restructure of the existing flat
+  fields). `validatePrecomputedResult` gained two new cross-checks, both
+  true by construction and both live-verified as never violated on real
+  data (see below): `longShort.endingBalance >= endingBalance` (a max
+  search over a superset -- every long candidate plus shorts -- can never
+  do worse) and `longShort.worstCase.endingBalance <= worstCase
+.endingBalance` (same argument, inverted for a min search). Also a
+  lower-priority optional guard: every trade in a long-only `trades`/
+  `worstCase.trades` array must have `direction === "long"`, catching
+  exactly the class of bug where `includeShorts` gets accidentally wired
+  to `true` for a call site that should be `false`.
+- **Live-verified** (real S&P 500 data, full 503-ticker universe,
+  2026-08-21, no S3 write): both cross-checks held with **0 violations**
+  across all 5 window ranges and all 251 real trading days of the 1Y
+  intraday path. Real short trades appeared routinely, not just as a
+  theoretical possibility -- every one of the 5 window ranges had at
+  least one short trade in `longShort.best.trades` or
+  `longShort.worst.trades`, and 218 of 251 real intraday days had a short
+  trade in that day's `longShort.best.trades`.
+- **Performance, live-measured (not just the plan's analytical estimate)**:
+  for the single most expensive case (MAX range, full S&P 500,
+  `maxTrades=3`), `optimizeAllVariants` took ~3.36s versus
+  `optimizeBothDirections`'s own ~1.48s over the same input -- a ~2.3x
+  ratio, in the ballpark of (a bit better than) the plan's own "roughly
+  doubles per direction" framing for this single-range, single-call
+  comparison. All 5 window ranges' `optimizeAllVariants` calls together
+  took ~4.0s. The intraday path is comfortably cheap in absolute terms:
+  ~1.08s total for all 251 real trading days' `optimizeIntradayDays`
+  calls (which now always compute all 4 variants), ~4.3ms/day on
+  average. Peak RSS during the window-path live-verification run (full
+  fetch + all 5 ranges' `optimizeAllVariants` calls) was ~1.28GB, driven
+  primarily by holding the full fetched 503-ticker/21-year daily-close
+  history in memory, not by the optimizer's own additional short-search
+  state.
 
 ## 60-minute intraday bars (issue #28)
 

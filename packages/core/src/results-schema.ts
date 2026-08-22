@@ -18,11 +18,11 @@
 
 import { PRESET_RANGES, type PresetRange } from "./preset-ranges";
 import type { Trade } from "./optimizer";
-import type { IntradayDayResult } from "./intraday-optimizer";
+import type { IntradayDayResult, IntradayLongShortResult } from "./intraday-optimizer";
 import { isValidPrice } from "./is-valid-price";
 
 /** Bumped whenever the shape of PrecomputedResult changes in a way a reader needs to know about. */
-export const RESULTS_SCHEMA_VERSION = 4;
+export const RESULTS_SCHEMA_VERSION = 5;
 
 /**
  * The S3 key a precomputed result is stored/read under for a given range.
@@ -104,6 +104,32 @@ export interface WorstCaseResult {
 }
 
 /**
+ * The long+short counterpart to a WindowResult's own long-only
+ * endingBalance/trades/worstCase (issue #13) -- searched over the same
+ * window, but with short trades (reciprocal-price payoff, see
+ * optimizer.ts's own header comment) also available alongside longs.
+ * Deliberately an additive sibling field, not a restructure of the
+ * existing flat fields -- mirrors WorstCaseResult's own precedent
+ * (issue #31) for "a second, alternative computation over the same
+ * window," and keeps every existing long-only consumer untouched. No
+ * redundant startingCapital here either, same reasoning as
+ * WorstCaseResult: identical to the sibling WindowResult.startingCapital.
+ *
+ * Always true by construction (checked in validatePrecomputedResult
+ * below): `endingBalance >= ` the sibling long-only `endingBalance` (the
+ * long+short max-search explores a strict superset of the long-only
+ * candidate set), and `worstCase.endingBalance <= ` the sibling
+ * `worstCase.endingBalance` (same superset argument, inverted for a min
+ * search).
+ */
+export interface LongShortResult {
+  endingBalance: number;
+  trades: Trade[];
+  /** Same "worst achievable" meaning as the sibling top-level worstCase, but searched over the long+short candidate set (issue #13) -- see optimizer.ts's own header comment for why this is safe to include (a short's payoff is bounded below by 0 under the chosen model, never negative, so a min search can't produce an impossible result). */
+  worstCase: WorstCaseResult;
+}
+
+/**
  * The original whole-window model (every range, before issue #28; 5Y/MAX
  * only, after): at most `maxTrades` sequential, all-in trades across the
  * *entire* window, using daily closing prices.
@@ -119,6 +145,8 @@ export interface WindowResult extends PrecomputedResultBase {
   trades: Trade[];
   /** The worst achievable <=maxTrades outcome over the same window (issue #31) -- see WorstCaseResult. */
   worstCase: WorstCaseResult;
+  /** The long+short counterpart to this window's own long-only fields (issue #13) -- see LongShortResult. */
+  longShort: LongShortResult;
 }
 
 /**
@@ -179,7 +207,7 @@ export class ResultValidationError extends Error {
  * independently here -- keeps that definition from drifting between call
  * sites (see that file's own header comment). Used for every
  * positive-finite-number field this validator checks, not just
- * buyPrice/sellPrice -- the predicate is identical either way, just under
+ * openPrice/closePrice -- the predicate is identical either way, just under
  * a more general name for fields (startingCapital, endingBalance, ...)
  * that aren't literally a price.
  */
@@ -195,12 +223,17 @@ function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
+/** Validates a `Trade`/`IntradayTrade` `direction` field (issue #13) -- "long" or "short", nothing else. */
+function isValidDirection(value: unknown): value is "long" | "short" {
+  return value === "long" || value === "short";
+}
+
 /**
  * Validates one `Trade` (see optimizer.ts) as it appears embedded in a
- * `WindowResult.trades` entry, appending one message per problem found
- * to `problems` rather than stopping at the first -- a malformed result
- * is worth diagnosing in one pass, not one failed `putObject` retry at a
- * time.
+ * `WindowResult.trades`/`longShort.trades`/`worstCase.trades` entry,
+ * appending one message per problem found to `problems` rather than
+ * stopping at the first -- a malformed result is worth diagnosing in one
+ * pass, not one failed `putObject` retry at a time.
  */
 function validateTrade(trade: unknown, path: string, problems: string[]): void {
   if (trade === null || typeof trade !== "object") {
@@ -210,19 +243,23 @@ function validateTrade(trade: unknown, path: string, problems: string[]): void {
   const t = trade as Record<string, unknown>;
   if (!isNonEmptyString(t.ticker))
     problems.push(`${path}.ticker must be a non-empty string, got ${describe(t.ticker)}`);
-  if (!isNonEmptyString(t.buyDate))
-    problems.push(`${path}.buyDate must be a non-empty string, got ${describe(t.buyDate)}`);
-  if (!isPositiveFiniteNumber(t.buyPrice))
-    problems.push(`${path}.buyPrice must be a positive finite number, got ${describe(t.buyPrice)}`);
-  if (!isNonEmptyString(t.sellDate))
-    problems.push(`${path}.sellDate must be a non-empty string, got ${describe(t.sellDate)}`);
-  if (!isPositiveFiniteNumber(t.sellPrice))
+  if (!isValidDirection(t.direction))
+    problems.push(`${path}.direction must be "long" or "short", got ${describe(t.direction)}`);
+  if (!isNonEmptyString(t.openDate))
+    problems.push(`${path}.openDate must be a non-empty string, got ${describe(t.openDate)}`);
+  if (!isPositiveFiniteNumber(t.openPrice))
     problems.push(
-      `${path}.sellPrice must be a positive finite number, got ${describe(t.sellPrice)}`,
+      `${path}.openPrice must be a positive finite number, got ${describe(t.openPrice)}`,
+    );
+  if (!isNonEmptyString(t.closeDate))
+    problems.push(`${path}.closeDate must be a non-empty string, got ${describe(t.closeDate)}`);
+  if (!isPositiveFiniteNumber(t.closePrice))
+    problems.push(
+      `${path}.closePrice must be a positive finite number, got ${describe(t.closePrice)}`,
     );
 }
 
-/** Validates one `IntradayTrade` (see intraday-optimizer.ts) embedded in an `IntradayDayResult.trades` entry. */
+/** Validates one `IntradayTrade` (see intraday-optimizer.ts) embedded in an `IntradayDayResult.trades`/`longShort.trades`/`worstCase.trades` entry. */
 function validateIntradayTrade(trade: unknown, path: string, problems: string[]): void {
   if (trade === null || typeof trade !== "object") {
     problems.push(`${path} must be an object, got ${describe(trade)}`);
@@ -231,17 +268,21 @@ function validateIntradayTrade(trade: unknown, path: string, problems: string[])
   const t = trade as Record<string, unknown>;
   if (!isNonEmptyString(t.ticker))
     problems.push(`${path}.ticker must be a non-empty string, got ${describe(t.ticker)}`);
+  if (!isValidDirection(t.direction))
+    problems.push(`${path}.direction must be "long" or "short", got ${describe(t.direction)}`);
   if (!isNonEmptyString(t.date))
     problems.push(`${path}.date must be a non-empty string, got ${describe(t.date)}`);
-  if (!isNonEmptyString(t.buyTime))
-    problems.push(`${path}.buyTime must be a non-empty string, got ${describe(t.buyTime)}`);
-  if (!isPositiveFiniteNumber(t.buyPrice))
-    problems.push(`${path}.buyPrice must be a positive finite number, got ${describe(t.buyPrice)}`);
-  if (!isNonEmptyString(t.sellTime))
-    problems.push(`${path}.sellTime must be a non-empty string, got ${describe(t.sellTime)}`);
-  if (!isPositiveFiniteNumber(t.sellPrice))
+  if (!isNonEmptyString(t.openTime))
+    problems.push(`${path}.openTime must be a non-empty string, got ${describe(t.openTime)}`);
+  if (!isPositiveFiniteNumber(t.openPrice))
     problems.push(
-      `${path}.sellPrice must be a positive finite number, got ${describe(t.sellPrice)}`,
+      `${path}.openPrice must be a positive finite number, got ${describe(t.openPrice)}`,
+    );
+  if (!isNonEmptyString(t.closeTime))
+    problems.push(`${path}.closeTime must be a non-empty string, got ${describe(t.closeTime)}`);
+  if (!isPositiveFiniteNumber(t.closePrice))
+    problems.push(
+      `${path}.closePrice must be a positive finite number, got ${describe(t.closePrice)}`,
     );
 }
 
@@ -309,6 +350,107 @@ function validateWorstNotExceedingOptimal(
   }
 }
 
+/**
+ * Validates one `LongShortResult`/`IntradayLongShortResult` (issue #13) --
+ * `endingBalance`/`trades` validate identically to a `WorstCaseResult`
+ * (reused directly via validateWorstCaseResultWith, since the two shapes
+ * only differ in LongShortResult nesting its own `worstCase`), plus that
+ * nested `worstCase` validated the same way a second time, plus the same
+ * "worst never exceeds optimal" cross-check applied to this nested pair.
+ */
+function validateLongShortResultWith(
+  value: unknown,
+  path: string,
+  problems: string[],
+  validateTradeEntry: TradeValidator,
+): void {
+  validateWorstCaseResultWith(value, path, problems, validateTradeEntry);
+  if (value === null || typeof value !== "object") return; // already reported above
+  const ls = value as Record<string, unknown>;
+  validateWorstCaseResultWith(ls.worstCase, `${path}.worstCase`, problems, validateTradeEntry);
+  validateWorstNotExceedingOptimal(
+    (ls.worstCase as Record<string, unknown> | undefined)?.endingBalance,
+    ls.endingBalance,
+    `${path}.worstCase.endingBalance`,
+    problems,
+  );
+}
+
+/**
+ * Cross-checks that the long+short max-search never does worse than its
+ * long-only counterpart (issue #13) -- true by construction: the
+ * long+short search explores a strict superset of the long-only
+ * candidate trade set (every long candidate remains available, plus
+ * shorts), so a max search over a superset can never do worse.
+ * Specifically valuable because a violation is exactly the signature a
+ * short-search implementation bug (e.g. the short block accidentally
+ * excluding some long candidates) would produce.
+ */
+function validateLongShortNotBelowLongOnly(
+  longShortEndingBalance: unknown,
+  longOnlyEndingBalance: unknown,
+  path: string,
+  problems: string[],
+): void {
+  if (
+    isPositiveFiniteNumber(longShortEndingBalance) &&
+    isPositiveFiniteNumber(longOnlyEndingBalance) &&
+    longShortEndingBalance < longOnlyEndingBalance
+  ) {
+    problems.push(
+      `${path} (${longShortEndingBalance}) must be >= its long-only counterpart (${longOnlyEndingBalance})`,
+    );
+  }
+}
+
+/**
+ * Cross-checks that the long+short min-search (worst case) never finds a
+ * *higher* (less bad) minimum than its long-only counterpart (issue #13)
+ * -- same superset argument as validateLongShortNotBelowLongOnly above,
+ * inverted for a min search: it can never find a higher minimum than a
+ * min search over a subset could.
+ */
+function validateLongShortWorstNotAboveLongOnlyWorst(
+  longShortWorstEndingBalance: unknown,
+  longOnlyWorstEndingBalance: unknown,
+  path: string,
+  problems: string[],
+): void {
+  if (
+    isPositiveFiniteNumber(longShortWorstEndingBalance) &&
+    isPositiveFiniteNumber(longOnlyWorstEndingBalance) &&
+    longShortWorstEndingBalance > longOnlyWorstEndingBalance
+  ) {
+    problems.push(
+      `${path} (${longShortWorstEndingBalance}) must be <= its long-only counterpart (${longOnlyWorstEndingBalance})`,
+    );
+  }
+}
+
+/**
+ * Optional extra guard (issue #13, lower priority than the two cross-
+ * checks above): every trade in a long-only trades array must have
+ * `direction === "long"` -- a long-only search can never legitimately
+ * produce a short trade, so a `"short"` appearing here indicates a bug
+ * (e.g. `includeShorts` accidentally wired to `true` for a call site
+ * that should be `false`). Cheap, and catches exactly the class of
+ * regression this schema's "long-only behavior provably unchanged"
+ * argument depends on staying true. Silently skips a malformed entry --
+ * validateTrade/validateIntradayTrade already reported that separately.
+ */
+function validateAllTradesAreLong(trades: unknown, path: string, problems: string[]): void {
+  if (!Array.isArray(trades)) return;
+  trades.forEach((trade, i) => {
+    if (trade === null || typeof trade !== "object") return;
+    const direction = (trade as Record<string, unknown>).direction;
+    if (direction !== "long") {
+      problems.push(
+        `${path}[${i}].direction must be "long" in a long-only trades array, got ${describe(direction)}`,
+      );
+    }
+  });
+}
+
 /** Validates one `IntradayDayResult` (see intraday-optimizer.ts) embedded in an `IntradayResult.days` entry. */
 function validateIntradayDay(day: unknown, path: string, problems: string[]): void {
   if (day === null || typeof day !== "object") {
@@ -334,12 +476,33 @@ function validateIntradayDay(day: unknown, path: string, problems: string[]): vo
     problems.push(`${path}.trades must be an array, got ${describe(d.trades)}`);
   } else {
     d.trades.forEach((trade, i) => validateIntradayTrade(trade, `${path}.trades[${i}]`, problems));
+    validateAllTradesAreLong(d.trades, `${path}.trades`, problems);
   }
   validateWorstCaseResultWith(d.worstCase, `${path}.worstCase`, problems, validateIntradayTrade);
   validateWorstNotExceedingOptimal(
     (d.worstCase as Record<string, unknown> | undefined)?.endingBalance,
     d.endingBalance,
     `${path}.worstCase.endingBalance`,
+    problems,
+  );
+  const worstCaseTrades = (d.worstCase as Record<string, unknown> | undefined)?.trades;
+  if (worstCaseTrades !== undefined) {
+    validateAllTradesAreLong(worstCaseTrades, `${path}.worstCase.trades`, problems);
+  }
+
+  // Long+short counterpart to this day's own long-only fields (issue #13).
+  validateLongShortResultWith(d.longShort, `${path}.longShort`, problems, validateIntradayTrade);
+  const longShort = d.longShort as Record<string, unknown> | undefined;
+  validateLongShortNotBelowLongOnly(
+    longShort?.endingBalance,
+    d.endingBalance,
+    `${path}.longShort.endingBalance`,
+    problems,
+  );
+  validateLongShortWorstNotAboveLongOnlyWorst(
+    (longShort?.worstCase as Record<string, unknown> | undefined)?.endingBalance,
+    (d.worstCase as Record<string, unknown> | undefined)?.endingBalance,
+    `${path}.longShort.worstCase.endingBalance`,
     problems,
   );
 }
@@ -481,12 +644,34 @@ export function validatePrecomputedResult(result: PrecomputedResult): void {
       problems.push(`trades must be an array, got ${describe(r.trades)}`);
     } else {
       r.trades.forEach((trade, i) => validateTrade(trade, `trades[${i}]`, problems));
+      validateAllTradesAreLong(r.trades, "trades", problems);
     }
     validateWorstCaseResultWith(r.worstCase, "worstCase", problems, validateTrade);
     validateWorstNotExceedingOptimal(
       (r.worstCase as Record<string, unknown> | undefined)?.endingBalance,
       r.endingBalance,
       "worstCase.endingBalance",
+      problems,
+    );
+    const worstCaseTrades = (r.worstCase as Record<string, unknown> | undefined)?.trades;
+    if (worstCaseTrades !== undefined) {
+      validateAllTradesAreLong(worstCaseTrades, "worstCase.trades", problems);
+    }
+
+    // Long+short counterpart to this window's own long-only fields
+    // (issue #13).
+    validateLongShortResultWith(r.longShort, "longShort", problems, validateTrade);
+    const longShort = r.longShort as Record<string, unknown> | undefined;
+    validateLongShortNotBelowLongOnly(
+      longShort?.endingBalance,
+      r.endingBalance,
+      "longShort.endingBalance",
+      problems,
+    );
+    validateLongShortWorstNotAboveLongOnlyWorst(
+      (longShort?.worstCase as Record<string, unknown> | undefined)?.endingBalance,
+      (r.worstCase as Record<string, unknown> | undefined)?.endingBalance,
+      "longShort.worstCase.endingBalance",
       problems,
     );
   } else if (r.model === "intraday-daily") {

@@ -11,19 +11,23 @@
 // -- see that module's own doc comment for why (this was independently
 // re-implemented in three places before that extraction).
 
+import type { TradeDirection } from "@hadiknowntrades/core";
+
 import { compoundBalance, computeTradeReturn } from "./trade-math";
 
 /**
- * The minimum a trade needs to carry to be narrated: a ticker, already
- * pre-formatted buy/sell labels (a calendar date for TradeList, a
- * time-of-day for a future IntradayTradeList use), and the two prices.
- * Deliberately not `Trade` itself -- keeping this shape narrow (and
- * label-formatting the caller's job) is what lets one function serve
- * both the window model's date-labeled trades and the intraday model's
- * time-labeled ones without an adapter.
+ * The minimum a trade needs to carry to be narrated: a ticker, a
+ * direction (issue #13), already pre-formatted buy/sell labels (a
+ * calendar date for TradeList, a time-of-day for a future
+ * IntradayTradeList use), and the two prices. Deliberately not `Trade`
+ * itself -- keeping this shape narrow (and label-formatting the caller's
+ * job) is what lets one function serve both the window model's
+ * date-labeled trades and the intraday model's time-labeled ones without
+ * an adapter.
  */
 export interface NarratableTrade {
   ticker: string;
+  direction: TradeDirection;
   buyLabel: string;
   buyPrice: number;
   sellLabel: string;
@@ -35,6 +39,10 @@ export interface TradeNarration {
   /** "Had you known, you'd have" (first trade) / "Then you'd have" (a middle trade) / "Finally, you'd have" (the last trade, including the last of a 2-trade sequence) -- see leadInFor below for why this doesn't need special-casing per trade count. */
   leadIn: string;
   ticker: string;
+  direction: TradeDirection;
+  /** "bought"/"sold" for a long, "shorted"/"covered" for a short -- see verbsFor below. */
+  openVerb: string;
+  closeVerb: string;
   buyLabel: string;
   buyPrice: number;
   sellLabel: string;
@@ -44,8 +52,9 @@ export interface TradeNarration {
   /**
    * The running balance immediately after this trade sells, compounding
    * every prior trade in the sequence -- exactly the same multiplicative
-   * chain optimizer.ts uses to derive `endingBalance` (startBalance *
-   * sellPrice / buyPrice), so the last trade's endBalance matches the
+   * chain optimizer.ts uses to derive `endingBalance` (startBalance times
+   * closePrice/openPrice for a long, openPrice/closePrice for a short),
+   * so the last trade's endBalance matches the
    * result's own endingBalance (modulo floating-point noise). This is
    * the value that can land on the Max-range's astronomically large
    * numbers (see packages/core/CLAUDE.md's "Fun/expected product quirk"
@@ -54,7 +63,7 @@ export interface TradeNarration {
    * compact/scientific form instead of a wall of digits.
    */
   endBalance: number;
-  /** sellPrice / buyPrice - 1 -- identical to this trade's own portfolio-return fraction (an all-in, fully-reinvested trade means the ticker's own price return *is* the portfolio's return for that leg), so there's no separate "portfolio return" to compute. Negative for a loss leg -- today's optimizer never produces one, but this isn't assumed here. Computed via trade-math.ts's computeTradeReturn, the same helper TradeRow.tsx uses. */
+  /** Identical to this trade's own portfolio-return fraction (an all-in, fully-reinvested trade means the ticker's own price return *is* the portfolio's return for that leg), so there's no separate "portfolio return" to compute. Negative for a loss leg. Computed via trade-math.ts's computeTradeReturn (direction-aware, issue #13), the same helper TradeRow.tsx uses. */
   returnFraction: number;
   /** returnFraction >= 0 -- matches TradeRow.tsx's own established "flat counts as a gain" convention via the shared computeTradeReturn helper, so the two can't drift apart on what counts as good/bad. */
   isGain: boolean;
@@ -73,6 +82,19 @@ function leadInFor(index: number, total: number): string {
   if (index === 0) return "Had you known, you'd have";
   if (index === total - 1) return "Finally, you'd have";
   return "Then you'd have";
+}
+
+/**
+ * "bought"/"sold" for a long, "shorted"/"covered" for a short (issue
+ * #13, standard finance terminology) -- the verb pair that follows a
+ * trade's leadIn phrase. leadInFor's own phrasing ("Had you known, you'd
+ * have", etc.) is direction-agnostic and unchanged; only the verb needs
+ * to branch.
+ */
+function verbsFor(direction: TradeDirection): { openVerb: string; closeVerb: string } {
+  return direction === "long"
+    ? { openVerb: "bought", closeVerb: "sold" }
+    : { openVerb: "shorted", closeVerb: "covered" };
 }
 
 /**
@@ -96,12 +118,25 @@ export function narrateTrades(
   let runningBalance = startingCapital;
   return trades.map((trade, index) => {
     const startBalance = runningBalance;
-    const { returnFraction, isGain } = computeTradeReturn(trade.buyPrice, trade.sellPrice);
-    runningBalance = compoundBalance(startBalance, trade.buyPrice, trade.sellPrice);
+    const { returnFraction, isGain } = computeTradeReturn(
+      trade.buyPrice,
+      trade.sellPrice,
+      trade.direction,
+    );
+    runningBalance = compoundBalance(
+      startBalance,
+      trade.buyPrice,
+      trade.sellPrice,
+      trade.direction,
+    );
+    const { openVerb, closeVerb } = verbsFor(trade.direction);
     return {
       key: `${trade.ticker}-${trade.buyLabel}-${index}`,
       leadIn: leadInFor(index, trades.length),
       ticker: trade.ticker,
+      direction: trade.direction,
+      openVerb,
+      closeVerb,
       buyLabel: trade.buyLabel,
       buyPrice: trade.buyPrice,
       sellLabel: trade.sellLabel,

@@ -39,10 +39,11 @@ export function TradeList({ trades, startingCapital }: TradeListProps) {
   const narrations = narrateTrades(
     trades.map((trade) => ({
       ticker: trade.ticker,
-      buyLabel: formatDate(trade.buyDate),
-      buyPrice: trade.buyPrice,
-      sellLabel: formatDate(trade.sellDate),
-      sellPrice: trade.sellPrice,
+      direction: trade.direction,
+      buyLabel: formatDate(trade.openDate),
+      buyPrice: trade.openPrice,
+      sellLabel: formatDate(trade.closeDate),
+      sellPrice: trade.closePrice,
     })),
     startingCapital,
   );
@@ -71,9 +72,9 @@ export function TradeList({ trades, startingCapital }: TradeListProps) {
         // text with a bolded ticker and a colored percent inline.
         const startPhrase =
           index === 0 ? `your ${formatHeroCurrency(narration.startBalance)}` : "that";
-        const before = `${index > 0 ? " " : ""}${narration.leadIn} bought `;
+        const before = `${index > 0 ? " " : ""}${narration.leadIn} ${narration.openVerb} `;
         const middle =
-          ` on ${narration.buyLabel} at ${formatHeroCurrency(narration.buyPrice)} and sold on ` +
+          ` on ${narration.buyLabel} at ${formatHeroCurrency(narration.buyPrice)} and ${narration.closeVerb} on ` +
           `${narration.sellLabel} at ${formatHeroCurrency(narration.sellPrice)}, turning ` +
           `${startPhrase} into ${formatHeroCurrency(narration.endBalance)} `;
 

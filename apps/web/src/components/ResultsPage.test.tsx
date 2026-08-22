@@ -61,4 +61,54 @@ describe("ResultsPage", () => {
 
     expect(replace).toHaveBeenCalledWith("/?range=5Y", { scroll: false });
   });
+
+  describe("mode (issue #13)", () => {
+    it("defaults to long-only when the URL has no mode param", () => {
+      render(<ResultsPage />);
+
+      expect(screen.getByRole("button", { name: "Long only" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    });
+
+    it("reads the initial mode from the URL, case-insensitively", () => {
+      search = "mode=LONG-SHORT";
+      render(<ResultsPage />);
+
+      expect(screen.getByRole("button", { name: "Long + short" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    });
+
+    it("falls back to the default mode for an unrecognized URL param", () => {
+      search = "mode=bogus";
+      render(<ResultsPage />);
+
+      expect(screen.getByRole("button", { name: "Long only" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    });
+
+    it("writes the selected mode to the URL via router.replace when the toggle is clicked", async () => {
+      const user = userEvent.setup();
+      render(<ResultsPage />);
+
+      await user.click(screen.getByRole("button", { name: "Long + short" }));
+
+      expect(replace).toHaveBeenCalledWith("/?mode=long-short", { scroll: false });
+    });
+
+    it("preserves the current range when only the mode changes", async () => {
+      search = "range=5Y";
+      const user = userEvent.setup();
+      render(<ResultsPage />);
+
+      await user.click(screen.getByRole("button", { name: "Long + short" }));
+
+      expect(replace).toHaveBeenCalledWith("/?range=5Y&mode=long-short", { scroll: false });
+    });
+  });
 });

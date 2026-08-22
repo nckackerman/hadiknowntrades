@@ -21,6 +21,7 @@ function fixtureResult(range: (typeof PRESET_RANGES)[number]): PrecomputedResult
     endingBalance: 42,
     trades: [],
     worstCase: { endingBalance: 20, trades: [] },
+    longShort: { endingBalance: 42, trades: [], worstCase: { endingBalance: 20, trades: [] } },
     universeSize: 500,
     skippedTickers: [],
     benchmark: null,

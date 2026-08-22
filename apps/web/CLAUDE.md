@@ -1076,3 +1076,121 @@ secondary context rather than competing with the hero figures.
   badge or `TradeRow`'s per-trade return badge -- deliberate simplicity:
   this is a comparison figure, not itself a "did the optimizer win"
   signal.
+
+## Long-only vs. long+short mode (issue #13)
+
+`lib/mode.ts` owns `Mode` (`"long" | "long-short"`) and `parseMode` --
+same shape as `results-api.ts`'s own `parseRange`, but deliberately its
+own module rather than folded into that file, since mode is a pure
+frontend display concept with no schema/API meaning of its own (the
+pipeline always computes and stores both variants; the frontend just
+picks which one to show). `ResultsPage.tsx` owns the selected mode as URL
+state (`?mode=long|long-short`, case-insensitive on read, same pattern
+`?range=`/`?day=` already use there) via `ModeToggle.tsx` (a second pill
+toggle next to `RangeSelector`, same controlled-component shape) --
+**not** a localStorage-persisted preference like
+`use-starting-capital.ts` -- confirmed by the human user as a genuine
+product decision, not left to guesswork: "which trade set is being
+shown" is core, shareable content state (the same category `?range=`/
+`?day=` occupy), not a personal display preference like starting
+capital. A missing/unrecognized `?mode=` falls back to `"long"`
+(`DEFAULT_MODE`), so an existing shared link with no `mode` param keeps
+showing exactly what it showed before this toggle existed.
+
+- **`ResultsPanel.tsx`'s `selectVariant` is the single place "which
+  variant to read" gets decided** -- every dollar-figure/trade-list
+  consumer (`HeroAndWorstCase`, `PortfolioChart` via
+  `derivePortfolioSeries`/`deriveIntradayPortfolioSeries`,
+  `TradeList`/`IntradayTradeList`) is threaded its result instead of
+  reading the raw top-level `endingBalance`/`trades`/`worstCase` fields
+  directly. This mirrors the exact shape of mistake this file's own
+  "Configurable starting capital" section already documents happening
+  _twice_ for `effectiveStartingCapital` (issue #15) -- a component
+  quietly reading the un-threaded/wrong-variant field instead of the
+  selected one, caught only in code review rather than by a test that
+  didn't exist yet at the time. `ResultsPanel.test.tsx`'s own "mode
+  (issue #13)" describe block is the regression-test-up-front version of
+  that lesson, applied before the equivalent bug had a chance to ship
+  once for this feature (render with `mode="long-short"` and assert the
+  `longShort` variant's figures/tickers appear, the long-only ones
+  don't).
+- **`HeroStat`'s `heroKey` is keyed on mode too, not just range/day** --
+  switching modes surfaces a genuinely different trade sequence (a new
+  `endingBalance`, potentially a completely different set of tickers),
+  much closer to a range/day switch than to a `startingCapital` edit (an
+  instant rescale of the _same_ trades, deliberately _not_ keyed, per
+  this file's own "Configurable starting capital" section) -- so a mode
+  switch remounts `HeroStat` and replays its reveal animation, the same
+  as switching range or day does.
+- **`daily-guess-storage.ts`'s guess key extends to `(range, date,
+mode)`, not just `(range, date)`** -- the identical argument this
+  file's own "Daily guessing game" section already makes for why `range`
+  alone wasn't enough (the same calendar date can carry a genuinely
+  different result depending on range) applies one axis further: the
+  same `(range, date)` can now carry a genuinely different
+  `endingBalance` depending on mode. Without this, a guess submitted
+  under `mode=long` would incorrectly satisfy the guess-gate for the same
+  `(range, date)` under `mode=long-short` too, skipping straight to a
+  reveal the user never actually guessed against. `useDailyGuess` gained
+  a required third `mode` parameter (not optional/defaulted, same
+  "no silent fallback by omission" reasoning `trade-math.ts`'s own
+  `direction` parameter uses below) and re-checks storage fresh whenever
+  any of `range`/`date`/`mode` changes, via the same "adjust state during
+  render when a prop changes" idiom this hook already used for
+  range/date.
+- **`lib/trade-math.ts`'s `computeTradeReturn`/`compoundBalance` both
+  gained a required `direction` parameter** (not optional/defaulted --
+  same reasoning `InvalidTradePriceError` already established for bad
+  prices: a silent long-only fallback by omission would be exactly the
+  kind of correctness bug this file's own error-throwing convention
+  guards against). A short's math mirrors `optimizer.ts`'s own
+  reciprocal-price payoff exactly (`openPrice/closePrice` instead of
+  `closePrice/openPrice`), so a rendered trade's narrated return/balance
+  always matches what the optimizer itself used to compound
+  `endingBalance` -- no drift between two implementations of the same
+  math, the same property this module's own header comment already
+  documents as the reason it exists.
+- **`lib/narrate-trades.ts`/`TradeRow.tsx` both gained direction-aware
+  verb pairs**: "bought"/"sold" (narration) or "Buy"/"Sell" (`TradeRow`)
+  for a long, "shorted"/"covered" or "Short"/"Cover" for a short --
+  standard finance terminology. `TradeRow`'s `buyLabel`/`sellLabel` props
+  renamed to `openLabel`/`closeLabel` to match the schema rename below.
+- **`lib/portfolio-series.ts`'s `PortfolioEvent.type` generalizes from
+  `"buy" | "sell"` to `"open" | "close"`, plus a new `direction` field**
+  -- a short's "open" event (no value jump, same as a long's "buy") and
+  "close" event (the point value actually jumps, same as a long's
+  "sell") stay structurally analogous to the existing long annotations,
+  just relabeled and direction-tagged. `appendTradeSteps`'s
+  `compoundBalance` call threads `direction` through, same reasoning as
+  `trade-math.ts` above.
+- **`PortfolioChart.tsx` branches on the event type in _five_ places, not
+  four** (a real miscount corrected during this issue's implementation,
+  not just a rename pass): the marker's above/below positioning logic
+  (`event.type === "open"`), the marker `<g>` key (interpolates
+  `event.type`, now `"open"`/`"close"` instead of `"buy"`/`"sell"`), the
+  marker's own label text (now `eventLabelVerb(event)`, "Buy"/"Short" or
+  "Sell"/"Cover"), the hover tooltip's verb (`eventTooltipVerb(event)`,
+  "bought"/"shorted" or "sold"/"covered"), and the accessible data
+  table's row text (`eventLabelVerb` again). Any future audit of this
+  component's own direction-aware branches should expect five sites, not
+  four.
+- **OG share card (`/api/og/[range]`, issue #33) deliberately stays
+  long-only-only** -- `og-card.ts`/`OgCard.tsx` needed zero changes for
+  this issue (neither file touches `Trade`'s renamed fields or
+  `longShort` at all, only `endingBalance`/`startingCapital`/`dataAsOf`,
+  none of which changed meaning). A `mode`-aware share card would double
+  its own cached-variant matrix (5 ranges -> 10 range x mode combos) for
+  a feature this issue's own scope never asked for -- left as a possible
+  follow-up issue, not silently bundled in here.
+- **Live-verified** (real S&P 500 data, full 503-ticker universe, no S3
+  write): both the window path's 5 ranges and the intraday path's 251
+  real trading days produced 0 invariant violations, and real short
+  trades appeared in every one of the 5 window ranges' `longShort`
+  fields and in 218 of the 251 intraday days -- see
+  `packages/core/CLAUDE.md`'s "Short-selling mode" section for the full
+  numbers (this file's own consumers were verified via the full
+  `apps/web` test suite plus a manual read of the rendered fixtures in
+  `ResultsPanel.test.tsx`'s "mode" describe block, not a live pipeline
+  write -- the schema-5 rollout itself is a real-AWS action gated on the
+  user's go-ahead, same as every prior schema bump, and not yet
+  performed as of this issue's implementation).

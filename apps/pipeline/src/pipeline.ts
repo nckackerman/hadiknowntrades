@@ -69,7 +69,7 @@
 import {
   BlockedError,
   optimizeIntradayDays,
-  optimizeBothDirections,
+  optimizeAllVariants,
   PRESET_RANGES,
   presetRangeStartDate,
   resultKey,
@@ -577,12 +577,13 @@ function buildWindowResults({
       if (sliced.length > 0) windowed.set(ticker, sliced);
     }
 
-    // Same windowed history, same startingCapital/maxTrades for both the
-    // best- and worst-case (min-direction, issue #31) searches, so
-    // optimizeBothDirections builds this range's calendar/ticker-sort
-    // once and reuses it for both instead of the two separate
-    // optimizeTrades/optimizeWorstTrades calls this used to be.
-    const { best: optimized, worst } = optimizeBothDirections(windowed, {
+    // Same windowed history, same startingCapital/maxTrades for all 4
+    // direction x instrument-set combinations, so optimizeAllVariants
+    // builds this range's calendar/ticker-sort once and reuses it for
+    // all 4 runs instead of separate calls (issue #13 extends issue
+    // #31's original best/worst sharing to also cover long-only vs.
+    // long+short).
+    const { longOnly, longShort } = optimizeAllVariants(windowed, {
       startingCapital,
       maxTrades,
     });
@@ -597,9 +598,14 @@ function buildWindowResults({
       endDate: endDateString,
       maxTrades,
       startingCapital,
-      endingBalance: optimized.endingBalance,
-      trades: optimized.trades,
-      worstCase: { endingBalance: worst.endingBalance, trades: worst.trades },
+      endingBalance: longOnly.best.endingBalance,
+      trades: longOnly.best.trades,
+      worstCase: { endingBalance: longOnly.worst.endingBalance, trades: longOnly.worst.trades },
+      longShort: {
+        endingBalance: longShort.best.endingBalance,
+        trades: longShort.best.trades,
+        worstCase: { endingBalance: longShort.worst.endingBalance, trades: longShort.worst.trades },
+      },
       universeSize: windowed.size,
       skippedTickers: [...skipped],
       benchmark: benchmarksByRange.get(range) ?? null,

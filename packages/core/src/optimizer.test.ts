@@ -4,6 +4,7 @@ import {
   buildCalendar,
   optimizeTrades,
   optimizeWorstTrades,
+  optimizeAllVariants,
   OptimizerInputError,
   type Calendar,
 } from "./optimizer.js";
@@ -43,7 +44,14 @@ describe("optimizeTrades: hand-verified fixtures", () => {
 
     expect(multiplier(20, result.endingBalance)).toBeCloseTo(3, 6);
     expect(result.trades).toEqual([
-      { ticker: "A", buyDate: "2024-01-01", buyPrice: 10, sellDate: "2024-01-04", sellPrice: 30 },
+      {
+        ticker: "A",
+        direction: "long",
+        openDate: "2024-01-01",
+        openPrice: 10,
+        closeDate: "2024-01-04",
+        closePrice: 30,
+      },
     ]);
   });
 
@@ -57,8 +65,22 @@ describe("optimizeTrades: hand-verified fixtures", () => {
 
     expect(multiplier(20, result.endingBalance)).toBeCloseTo(24, 6);
     expect(result.trades).toEqual([
-      { ticker: "A", buyDate: "2024-01-01", buyPrice: 10, sellDate: "2024-01-02", sellPrice: 30 },
-      { ticker: "A", buyDate: "2024-01-03", buyPrice: 5, sellDate: "2024-01-04", sellPrice: 40 },
+      {
+        ticker: "A",
+        direction: "long",
+        openDate: "2024-01-01",
+        openPrice: 10,
+        closeDate: "2024-01-02",
+        closePrice: 30,
+      },
+      {
+        ticker: "A",
+        direction: "long",
+        openDate: "2024-01-03",
+        openPrice: 5,
+        closeDate: "2024-01-04",
+        closePrice: 40,
+      },
     ]);
   });
 
@@ -73,7 +95,14 @@ describe("optimizeTrades: hand-verified fixtures", () => {
 
     expect(multiplier(20, result.endingBalance)).toBeCloseTo(5, 6);
     expect(result.trades).toEqual([
-      { ticker: "B", buyDate: "2024-01-01", buyPrice: 5, sellDate: "2024-01-02", sellPrice: 25 },
+      {
+        ticker: "B",
+        direction: "long",
+        openDate: "2024-01-01",
+        openPrice: 5,
+        closeDate: "2024-01-02",
+        closePrice: 25,
+      },
     ]);
   });
 
@@ -90,8 +119,22 @@ describe("optimizeTrades: hand-verified fixtures", () => {
 
     expect(multiplier(20, result.endingBalance)).toBeCloseTo(10, 6);
     expect(result.trades).toEqual([
-      { ticker: "A", buyDate: "2024-01-01", buyPrice: 10, sellDate: "2024-01-02", sellPrice: 20 },
-      { ticker: "B", buyDate: "2024-01-03", buyPrice: 5, sellDate: "2024-01-04", sellPrice: 25 },
+      {
+        ticker: "A",
+        direction: "long",
+        openDate: "2024-01-01",
+        openPrice: 10,
+        closeDate: "2024-01-02",
+        closePrice: 20,
+      },
+      {
+        ticker: "B",
+        direction: "long",
+        openDate: "2024-01-03",
+        openPrice: 5,
+        closeDate: "2024-01-04",
+        closePrice: 25,
+      },
     ]);
   });
 
@@ -116,7 +159,14 @@ describe("optimizeTrades: hand-verified fixtures", () => {
 
     expect(multiplier(20, result.endingBalance)).toBeCloseTo(3, 6);
     expect(result.trades).toEqual([
-      { ticker: "A", buyDate: "2024-01-01", buyPrice: 10, sellDate: "2024-01-02", sellPrice: 30 },
+      {
+        ticker: "A",
+        direction: "long",
+        openDate: "2024-01-01",
+        openPrice: 10,
+        closeDate: "2024-01-02",
+        closePrice: 30,
+      },
     ]);
   });
 });
@@ -232,7 +282,14 @@ describe("optimizeWorstTrades: hand-verified fixtures", () => {
 
     expect(multiplier(20, result.endingBalance)).toBeCloseTo(0.75, 6);
     expect(result.trades).toEqual([
-      { ticker: "A", buyDate: "2024-01-02", buyPrice: 20, sellDate: "2024-01-03", sellPrice: 15 },
+      {
+        ticker: "A",
+        direction: "long",
+        openDate: "2024-01-02",
+        openPrice: 20,
+        closeDate: "2024-01-03",
+        closePrice: 15,
+      },
     ]);
   });
 
@@ -247,7 +304,14 @@ describe("optimizeWorstTrades: hand-verified fixtures", () => {
 
     expect(multiplier(20, result.endingBalance)).toBeCloseTo(0.2, 6);
     expect(result.trades).toEqual([
-      { ticker: "B", buyDate: "2024-01-01", buyPrice: 20, sellDate: "2024-01-02", sellPrice: 4 },
+      {
+        ticker: "B",
+        direction: "long",
+        openDate: "2024-01-01",
+        openPrice: 20,
+        closeDate: "2024-01-02",
+        closePrice: 4,
+      },
     ]);
   });
 
@@ -264,8 +328,22 @@ describe("optimizeWorstTrades: hand-verified fixtures", () => {
 
     expect(multiplier(20, result.endingBalance)).toBeCloseTo(0.025, 6);
     expect(result.trades).toEqual([
-      { ticker: "A", buyDate: "2024-01-01", buyPrice: 20, sellDate: "2024-01-02", sellPrice: 5 },
-      { ticker: "B", buyDate: "2024-01-03", buyPrice: 30, sellDate: "2024-01-04", sellPrice: 3 },
+      {
+        ticker: "A",
+        direction: "long",
+        openDate: "2024-01-01",
+        openPrice: 20,
+        closeDate: "2024-01-02",
+        closePrice: 5,
+      },
+      {
+        ticker: "B",
+        direction: "long",
+        openDate: "2024-01-03",
+        openPrice: 30,
+        closeDate: "2024-01-04",
+        closePrice: 3,
+      },
     ]);
   });
 
@@ -291,7 +369,14 @@ describe("optimizeWorstTrades: hand-verified fixtures", () => {
 
     expect(multiplier(20, result.endingBalance)).toBeCloseTo(1 / 6, 6);
     expect(result.trades).toEqual([
-      { ticker: "A", buyDate: "2024-01-01", buyPrice: 30, sellDate: "2024-01-02", sellPrice: 5 },
+      {
+        ticker: "A",
+        direction: "long",
+        openDate: "2024-01-01",
+        openPrice: 30,
+        closeDate: "2024-01-02",
+        closePrice: 5,
+      },
     ]);
   });
 
@@ -437,11 +522,19 @@ describe("buildCalendar", () => {
  *   itself is direction-agnostic other than which of Math.max/Math.min
  *   picks a winner at each branch point, so both directions share one
  *   brute-force implementation rather than two copies.
+ * @param includeShorts (issue #13) when true, every (open, close) pair is
+ *   also considered as a short candidate with ratio
+ *   `prices[open] / prices[close]` (the reciprocal-price payoff, see
+ *   optimizer.ts's own header comment) alongside the existing long
+ *   candidate `prices[close] / prices[open]` -- both compete for the same
+ *   `pick` at every branch point, exactly mirroring computeLevel's own
+ *   "long pass then short pass, same value[]/choice[] slot" structure.
  */
 function bruteForceMultiplier(
   calendar: Calendar,
   maxTrades: number,
   direction: "max" | "min" = "max",
+  includeShorts = false,
 ): number {
   const T = calendar.dates.length;
   const tickers = [...calendar.pricesByTicker.entries()];
@@ -452,13 +545,18 @@ function bruteForceMultiplier(
     let bestVal = best(tradesLeft - 1, minDay); // take no trade at this level
     for (const [, prices] of tickers) {
       for (let buy = minDay; buy < T; buy++) {
-        const buyPrice = prices[buy];
-        if (buyPrice === null || buyPrice === undefined) continue;
+        const openPrice = prices[buy];
+        if (openPrice === null || openPrice === undefined) continue;
         for (let sell = buy + 1; sell < T; sell++) {
-          const sellPrice = prices[sell];
-          if (sellPrice === null || sellPrice === undefined) continue;
-          const val = (sellPrice / buyPrice) * best(tradesLeft - 1, sell + 1);
-          bestVal = pick(bestVal, val);
+          const closePrice = prices[sell];
+          if (closePrice === null || closePrice === undefined) continue;
+          const rest = best(tradesLeft - 1, sell + 1);
+          const longVal = (closePrice / openPrice) * rest;
+          bestVal = pick(bestVal, longVal);
+          if (includeShorts) {
+            const shortVal = (openPrice / closePrice) * rest;
+            bestVal = pick(bestVal, shortVal);
+          }
         }
       }
     }
@@ -682,6 +780,203 @@ describe("optimizeWorstTrades: fuzz test against brute force and the worst<=opti
 
       expect(worst.endingBalance).toBeCloseTo(expectedMultiplier, 6);
       expect(worst.endingBalance).toBeLessThanOrEqual(best.endingBalance + EPSILON);
+    });
+  }
+});
+
+// --- optimizeAllVariants (issue #13): long+short DP correctness --------
+//
+// The Option B (reciprocal-price) short model, see optimizer.ts's own
+// header comment and docs/plans/issue-13-plan.md section 1.1. These
+// tests cross-check the DP's short pass the same way #31's own tests
+// cross-checked the min-direction pass: hand-verified fixtures, the two
+// structural invariants (results-schema.ts's own write-time checks),
+// the plan's own worked tie-break examples, and a brute-force/fuzz
+// cross-check extended to include short candidates.
+
+describe("optimizeAllVariants: hand-verified fixtures (issue #13)", () => {
+  it("a purely declining ticker is only profitable via a short, captured only by the longShort variant", () => {
+    // A: 100 -> 50. No long trade can profit (every ratio < 1), so
+    // longOnly.best should take zero trades. A short (open @100, cover
+    // @50) has payoff 100/50 = 2x, which longShort.best should find.
+    const prices = new Map([["A", series([100, 50])]]);
+
+    const { longOnly, longShort } = optimizeAllVariants(prices, {
+      startingCapital: 20,
+      maxTrades: 1,
+    });
+
+    expect(longOnly.best.trades).toEqual([]);
+    expect(longOnly.best.endingBalance).toBe(20);
+
+    expect(longShort.best.trades).toEqual([
+      {
+        ticker: "A",
+        direction: "short",
+        openDate: "2024-01-01",
+        openPrice: 100,
+        closeDate: "2024-01-02",
+        closePrice: 50,
+      },
+    ]);
+    expect(multiplier(20, longShort.best.endingBalance)).toBeCloseTo(2, 6);
+  });
+
+  it("longShort.best never does worse than longOnly.best (superset invariant) across the shared cross-check fixtures", () => {
+    for (const fixture of CROSS_CHECK_FIXTURES) {
+      const priceSeriesByTicker = new Map(
+        Object.entries(fixture.prices).map(([ticker, prices]) => [ticker, series(prices)]),
+      );
+      const { longOnly, longShort } = optimizeAllVariants(priceSeriesByTicker, {
+        startingCapital: 20,
+        maxTrades: fixture.maxTrades,
+      });
+      expect(longShort.best.endingBalance).toBeGreaterThanOrEqual(
+        longOnly.best.endingBalance - EPSILON,
+      );
+    }
+  });
+
+  it("longShort.worst never does better (i.e. never higher) than longOnly.worst (superset invariant) across the shared cross-check fixtures", () => {
+    for (const fixture of CROSS_CHECK_FIXTURES) {
+      const priceSeriesByTicker = new Map(
+        Object.entries(fixture.prices).map(([ticker, prices]) => [ticker, series(prices)]),
+      );
+      const { longOnly, longShort } = optimizeAllVariants(priceSeriesByTicker, {
+        startingCapital: 20,
+        maxTrades: fixture.maxTrades,
+      });
+      expect(longShort.worst.endingBalance).toBeLessThanOrEqual(
+        longOnly.worst.endingBalance + EPSILON,
+      );
+    }
+  });
+
+  it("same-ticker long/short exact tie resolves in the long's favor (a corrected version of docs/plans/issue-13-plan.md section 1.4(b)'s worked example -- see the note below)", () => {
+    // A: 8 (d0), 10 (d1), 10 (d2), 8 (d3). The long bought d0/sold d1 has
+    // ratio 10/8 = 1.25; a short opened d1 (or d2) and covered d3 has the
+    // same ratio (10/8 = 1.25 either way) -- an exact tie in floating
+    // point, empirically confirmed (not just asserted) to round-trip
+    // bit-for-bit equal. No other long or short candidate in this fixture
+    // beats 1.25, so this really is the tie the DP has to break.
+    //
+    // Note: the plan's own worked example for this scenario ($100/$105/
+    // $95.2381) turns out not to actually produce the claimed tie once
+    // every candidate is checked -- a short opened on day 1 (not day 0)
+    // and covered on day 2 (105/95.2381 ~= 1.1025) strictly beats both
+    // the intended tied candidates, so the plan's own numbers don't
+    // exercise this tie-break rule at all (verified empirically, not
+    // just by re-deriving the plan's algebra by hand). This fixture
+    // reproduces the same *rule* (long pass completes, including its own
+    // value[]/choice[] update, before the short pass for the same ticker
+    // even starts, so an exact tie for the same value[d] slot resolves
+    // to the long) with numbers that were actually checked against every
+    // candidate first.
+    const prices = new Map([["A", series([8, 10, 10, 8])]]);
+
+    const { longShort } = optimizeAllVariants(prices, { startingCapital: 20, maxTrades: 1 });
+
+    expect(longShort.best.trades).toEqual([
+      {
+        ticker: "A",
+        direction: "long",
+        openDate: "2024-01-01",
+        openPrice: 8,
+        closeDate: "2024-01-02",
+        closePrice: 10,
+      },
+    ]);
+  });
+
+  it("cross-ticker long/short exact tie resolves alphabetically (AAPL's long beats MSFT's short, docs/plans/issue-13-plan.md section 1.4(b))", () => {
+    // AAPL: 100 -> 105 (long ratio 1.05). MSFT: 110 -> 104.76190476190476
+    // (short ratio 110/104.76190476190476 ties AAPL's long ratio exactly
+    // in floating point). AAPL sorts before MSFT, so AAPL's long pass
+    // updates the record first; MSFT's short pass then ties but doesn't
+    // beat it (strict > required).
+    const prices = new Map([
+      ["AAPL", series([100, 105])],
+      ["MSFT", series([110, 104.76190476190476])],
+    ]);
+
+    const { longShort } = optimizeAllVariants(prices, { startingCapital: 20, maxTrades: 1 });
+
+    expect(longShort.best.trades).toEqual([
+      {
+        ticker: "AAPL",
+        direction: "long",
+        openDate: "2024-01-01",
+        openPrice: 100,
+        closeDate: "2024-01-02",
+        closePrice: 105,
+      },
+    ]);
+  });
+
+  it("includeShorts: false call paths (optimizeTrades/optimizeWorstTrades/optimizeBothDirections) never produce a short trade -- long-only behavior provably unchanged", () => {
+    // A ticker that's only profitable via a short (see the first test
+    // above) -- optimizeTrades itself (not optimizeAllVariants) must
+    // still find nothing, proving includeShorts stays false on this path.
+    const prices = new Map([["A", series([100, 50])]]);
+    const result = optimizeTrades(prices, { startingCapital: 20, maxTrades: 1 });
+    expect(result.trades).toEqual([]);
+    expect(result.endingBalance).toBe(20);
+  });
+});
+
+describe("optimizeAllVariants: brute-force cross-check, long+short (issue #13)", () => {
+  for (const fixture of CROSS_CHECK_FIXTURES) {
+    it(`matches brute force with shorts included: ${fixture.name} (maxTrades=${fixture.maxTrades})`, () => {
+      const priceSeriesByTicker = new Map(
+        Object.entries(fixture.prices).map(([ticker, prices]) => [ticker, series(prices)]),
+      );
+      const calendar = buildCalendar(priceSeriesByTicker);
+      const expectedBest = bruteForceMultiplier(calendar, fixture.maxTrades, "max", true);
+      const expectedWorst = bruteForceMultiplier(calendar, fixture.maxTrades, "min", true);
+
+      const { longShort } = optimizeAllVariants(priceSeriesByTicker, {
+        startingCapital: 1,
+        maxTrades: fixture.maxTrades,
+      });
+
+      expect(longShort.best.endingBalance).toBeCloseTo(expectedBest, 6);
+      expect(longShort.worst.endingBalance).toBeCloseTo(expectedWorst, 6);
+    });
+  }
+});
+
+describe("optimizeAllVariants: fuzz test against brute force and the superset invariants (issue #13)", () => {
+  // A separate seed from the other fuzz describe blocks above.
+  const rand = mulberry32(0x13000d);
+  const FUZZ_ITERATIONS = 300;
+
+  for (let i = 0; i < FUZZ_ITERATIONS; i++) {
+    const fixture = randomFixture(rand);
+
+    it(`fuzz case ${i}: ${JSON.stringify(fixture)}`, () => {
+      const priceSeriesByTicker = new Map(
+        Object.entries(fixture.prices).map(([ticker, prices]) => [ticker, series(prices)]),
+      );
+      const calendar = buildCalendar(priceSeriesByTicker);
+      const expectedBest = bruteForceMultiplier(calendar, fixture.maxTrades, "max", true);
+      const expectedWorst = bruteForceMultiplier(calendar, fixture.maxTrades, "min", true);
+
+      const { longOnly, longShort } = optimizeAllVariants(priceSeriesByTicker, {
+        startingCapital: 1,
+        maxTrades: fixture.maxTrades,
+      });
+
+      expect(longShort.best.endingBalance).toBeCloseTo(expectedBest, 6);
+      expect(longShort.worst.endingBalance).toBeCloseTo(expectedWorst, 6);
+      expect(longShort.best.endingBalance).toBeGreaterThanOrEqual(
+        longOnly.best.endingBalance - EPSILON,
+      );
+      expect(longShort.worst.endingBalance).toBeLessThanOrEqual(
+        longOnly.worst.endingBalance + EPSILON,
+      );
+      for (const trade of longShort.best.trades) {
+        expect(["long", "short"]).toContain(trade.direction);
+      }
     });
   }
 });

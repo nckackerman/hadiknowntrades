@@ -1,11 +1,12 @@
 import { useMemo } from "react";
 
-import type { PresetRange } from "@hadiknowntrades/core";
+import type { IntradayTrade, PresetRange, Trade } from "@hadiknowntrades/core";
 
 import type { ClientErrorCode, ResultsState } from "@/lib/use-results";
 import { deriveIntradayPortfolioSeries, derivePortfolioSeries } from "@/lib/portfolio-series";
 import { formatDate } from "@/lib/format-date";
 import { formatHeroCurrency } from "@/lib/format-currency";
+import { DEFAULT_MODE, type Mode } from "@/lib/mode";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { useDailyGuess } from "@/lib/use-daily-guess";
 import { BenchmarkStat } from "@/components/BenchmarkStat";
@@ -25,6 +26,30 @@ const RANGE_COPY: Record<PresetRange, string> = {
   "5Y": "the past 5 years",
   MAX: "all available history",
 };
+
+/** The three fields every dollar-figure/trade-list consumer below actually reads, shared by the window model's WindowResult/LongShortResult and the intraday-daily model's IntradayDayResult/IntradayLongShortResult -- both pairs have this exact shape. */
+interface Variant<T> {
+  endingBalance: number;
+  trades: T[];
+  worstCase: { endingBalance: number; trades: T[] };
+}
+
+/**
+ * Picks which of a result's two computed variants (issue #13) every
+ * dollar-figure/trade-list consumer below should read: the long-only
+ * fields (unchanged since before this issue) or the sibling `longShort`
+ * fields, both always present on a real pipeline-written result. This is
+ * the single place that decision is made -- every consumer downstream
+ * (HeroAndWorstCase, PortfolioChart via portfolio-series.ts,
+ * TradeList/IntradayTradeList) is threaded this function's result instead
+ * of reading the raw top-level fields directly, the same class of mistake
+ * apps/web/CLAUDE.md documents happening *twice* for
+ * `effectiveStartingCapital` (issue #15) -- a component quietly reading
+ * the un-rescaled/wrong-variant field instead of the thread-through value.
+ */
+function selectVariant<T>(base: Variant<T>, longShort: Variant<T>, mode: Mode): Variant<T> {
+  return mode === "long" ? base : longShort;
+}
 
 /** A human error message per API error code (see ../app/api/results/route.ts's errorResponse calls) -- the API's own `message` is logged/available too, but these read better as UI copy for each specific, known failure shape. */
 function errorCopy(error: ClientErrorCode, apiMessage: string): { title: string; body: string } {
@@ -149,6 +174,15 @@ interface ResultsPanelProps {
   /** Called when the user picks a different day from the DaySelector. Required whenever the data can be intraday-model; omit only where a caller (e.g. a window-only test) never needs it. */
   onSelectDay?: (day: string) => void;
   /**
+   * Long-only vs. long+short (issue #13) -- which of a result's two
+   * computed variants (see selectVariant above) every dollar-figure/
+   * trade-list consumer below reads. Defaults to "long" (the pre-#13
+   * behavior), keeping default rendering (and every existing caller/test
+   * that doesn't pass this) pixel-identical to before this prop existed --
+   * same convention startingCapital/onStartingCapitalChange already use.
+   */
+  mode?: Mode;
+  /**
    * The user's chosen starting dollar amount (issue #15) to rescale
    * every displayed dollar figure to -- omit (along with
    * onStartingCapitalChange) to fall back to whatever the precomputed
@@ -168,6 +202,7 @@ export function ResultsPanel({
   state,
   selectedDay = null,
   onSelectDay,
+  mode = DEFAULT_MODE,
   startingCapital,
   onStartingCapitalChange,
 }: ResultsPanelProps) {
@@ -200,27 +235,49 @@ export function ResultsPanel({
     if (state.status !== "success") return [];
     const { data } = state;
     if (data.model === "window") {
+      const variant = selectVariant<Trade>(
+        { endingBalance: data.endingBalance, trades: data.trades, worstCase: data.worstCase },
+        data.longShort,
+        mode,
+      );
       return derivePortfolioSeries(
         startingCapital ?? data.startingCapital,
         data.startDate,
         data.endDate,
-        data.trades,
+        variant.trades,
       );
     }
     if (!activeDay) return [];
+    const variant = selectVariant<IntradayTrade>(
+      {
+        endingBalance: activeDay.endingBalance,
+        trades: activeDay.trades,
+        worstCase: activeDay.worstCase,
+      },
+      activeDay.longShort,
+      mode,
+    );
     return deriveIntradayPortfolioSeries(
       startingCapital ?? activeDay.startingCapital,
       activeDay.date,
-      activeDay.trades,
+      variant.trades,
     );
-  }, [state, activeDay, startingCapital]);
+  }, [state, activeDay, startingCapital, mode]);
 
   // Called unconditionally (Rules of Hooks) even when there's no active
   // intraday day yet -- an empty-string date is never actually read from
   // storage in that case, since the guess UI below only ever renders once
   // `activeDay` exists. See use-daily-guess.ts for why reading storage
-  // directly here (rather than deferring to an effect) is safe.
-  const { guess, guessStartingCapital, submitGuess } = useDailyGuess(range, activeDay?.date ?? "");
+  // directly here (rather than deferring to an effect) is safe. `mode` is
+  // threaded through as part of the guess key (issue #13) -- the same
+  // (range, date) pair can carry a genuinely different result depending on
+  // mode, exactly the argument daily-guess-storage.ts's own doc comment
+  // already makes for why `range` alone wasn't enough either.
+  const { guess, guessStartingCapital, submitGuess } = useDailyGuess(
+    range,
+    activeDay?.date ?? "",
+    mode,
+  );
 
   if (state.status === "loading") {
     return <LoadingSkeleton />;
@@ -250,7 +307,19 @@ export function ResultsPanel({
       );
     }
 
-    const isEmptyDay = activeDay.trades.length === 0;
+    // Which variant (long-only or long+short, issue #13) every dollar
+    // figure/trade-list below reads -- see selectVariant's own doc
+    // comment.
+    const dayVariant = selectVariant<IntradayTrade>(
+      {
+        endingBalance: activeDay.endingBalance,
+        trades: activeDay.trades,
+        worstCase: activeDay.worstCase,
+      },
+      activeDay.longShort,
+      mode,
+    );
+    const isEmptyDay = dayVariant.trades.length === 0;
     const effectiveStartingCapital = startingCapital ?? activeDay.startingCapital;
 
     return (
@@ -280,21 +349,22 @@ export function ResultsPanel({
               // WorstCaseStat's worst-case figure before the guess is
               // submitted would partially spoil "the real answer" the
               // guessing game is built around. `heroKey` is the active
-              // day's date so switching days (via DaySelector) remounts
-              // HeroStat instead of just updating its props in place --
-              // useCountUp's reveal animation only fires on mount (see
-              // HeroStat's own doc comment), so without this key the
-              // visible figure would stay frozen at the previous day's
-              // animated value while the sr-only figure (driven directly
-              // by the prop) correctly updated, silently disagreeing with
-              // each other. Deliberately not keyed on startingCapital too
-              // (issue #15) -- a capital edit should rescale the figures
-              // instantly, not replay the reveal/celebration.
+              // day's date plus mode (issue #13) so switching days (via
+              // DaySelector) or modes (via ModeToggle) remounts HeroStat
+              // instead of just updating its props in place -- useCountUp's
+              // reveal animation only fires on mount (see HeroStat's own
+              // doc comment), so without this key the visible figure would
+              // stay frozen at the previous day's/mode's animated value
+              // while the sr-only figure (driven directly by the prop)
+              // correctly updated, silently disagreeing with each other.
+              // Deliberately not keyed on startingCapital too (issue #15)
+              // -- a capital edit should rescale the figures instantly, not
+              // replay the reveal/celebration.
               <HeroAndWorstCase
-                heroKey={activeDay.date}
+                heroKey={`${activeDay.date}-${mode}`}
                 startingCapital={activeDay.startingCapital}
-                endingBalance={activeDay.endingBalance}
-                worstCaseEndingBalance={activeDay.worstCase.endingBalance}
+                endingBalance={dayVariant.endingBalance}
+                worstCaseEndingBalance={dayVariant.worstCase.endingBalance}
                 displayStartingCapital={effectiveStartingCapital}
               />
             )}
@@ -371,7 +441,7 @@ export function ResultsPanel({
                   No trade would have beaten holding cash on {formatDate(activeDay.date)}.
                 </div>
               ) : (
-                <IntradayTradeList trades={activeDay.trades} />
+                <IntradayTradeList trades={dayVariant.trades} />
               )}
             </div>
           </>
@@ -380,7 +450,14 @@ export function ResultsPanel({
     );
   }
 
-  const isEmpty = data.trades.length === 0;
+  // Which variant (long-only or long+short, issue #13) every dollar
+  // figure/trade-list below reads -- see selectVariant's own doc comment.
+  const windowVariant = selectVariant<Trade>(
+    { endingBalance: data.endingBalance, trades: data.trades, worstCase: data.worstCase },
+    data.longShort,
+    mode,
+  );
+  const isEmpty = windowVariant.trades.length === 0;
   const effectiveStartingCapital = startingCapital ?? data.startingCapital;
 
   return (
@@ -388,23 +465,27 @@ export function ResultsPanel({
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <HeroAndWorstCase
-            // Keyed on range + dataAsOf for the same reason the
-            // intraday-daily branch above keys on activeDay.date: remount
-            // HeroStat (not just update its props) whenever the underlying
-            // result actually changes, so useCountUp's reveal animation
-            // fires fresh instead of leaving the visible figure frozen at a
-            // stale animated value. Today this is also accidentally covered
-            // by useResults always passing through a loading state between
+            // Keyed on range + dataAsOf + mode for the same reason the
+            // intraday-daily branch above keys on activeDay.date + mode:
+            // remount HeroStat (not just update its props) whenever the
+            // underlying result actually changes, so useCountUp's reveal
+            // animation fires fresh instead of leaving the visible figure
+            // frozen at a stale animated value. Mode (issue #13) is keyed
+            // the same as range/dataAsOf here, not treated like
+            // startingCapital below -- switching to long+short surfaces a
+            // genuinely different trade sequence, not an instant rescale
+            // of the same one. Today this is also accidentally covered by
+            // useResults always passing through a loading state between
             // results (see use-results.ts), which unmounts HeroStat itself
             // -- but that's an implementation detail of the current fetch
             // state machine, not a guarantee; an explicit key here doesn't
             // depend on it holding. Deliberately not keyed on
             // startingCapital too (issue #15) -- see the intraday-daily
             // branch's identical comment above.
-            heroKey={`${data.range}-${data.dataAsOf}`}
+            heroKey={`${data.range}-${data.dataAsOf}-${mode}`}
             startingCapital={data.startingCapital}
-            endingBalance={data.endingBalance}
-            worstCaseEndingBalance={data.worstCase.endingBalance}
+            endingBalance={windowVariant.endingBalance}
+            worstCaseEndingBalance={windowVariant.worstCase.endingBalance}
             displayStartingCapital={effectiveStartingCapital}
           />
           {onStartingCapitalChange && (
@@ -435,7 +516,7 @@ export function ResultsPanel({
             No trade would have beaten holding cash over {RANGE_COPY[range]}.
           </div>
         ) : (
-          <TradeList trades={data.trades} startingCapital={effectiveStartingCapital} />
+          <TradeList trades={windowVariant.trades} startingCapital={effectiveStartingCapital} />
         )}
       </div>
     </div>

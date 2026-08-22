@@ -31,15 +31,23 @@ export {
   optimizeTrades,
   optimizeWorstTrades,
   optimizeBothDirections,
+  optimizeAllVariants,
   OptimizerInputError,
 } from "./optimizer";
-export type { Calendar, OptimizationResult, OptimizeOptions, Trade } from "./optimizer";
+export type {
+  Calendar,
+  OptimizationResult,
+  OptimizeOptions,
+  Trade,
+  TradeDirection,
+} from "./optimizer";
 
 export { optimizeIntradayDays } from "./intraday-optimizer";
 export type {
   IntradayDayResult,
   IntradayTrade,
   IntradayWorstCaseResult,
+  IntradayLongShortResult,
   OptimizeIntradayOptions,
 } from "./intraday-optimizer";
 
@@ -60,5 +68,6 @@ export type {
   IntradayResult,
   ResultModel,
   WorstCaseResult,
+  LongShortResult,
   BenchmarkResult,
 } from "./results-schema";

@@ -1,4 +1,8 @@
-import type { IntradayResult, WindowResult } from "@hadiknowntrades/core";
+import {
+  RESULTS_SCHEMA_VERSION,
+  type IntradayResult,
+  type WindowResult,
+} from "@hadiknowntrades/core";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,7 +23,7 @@ async function submitAnyGuess(user: ReturnType<typeof userEvent.setup>) {
 
 function fixtureResult(overrides: Partial<WindowResult> = {}): WindowResult {
   return {
-    schemaVersion: 4,
+    schemaVersion: RESULTS_SCHEMA_VERSION,
     model: "window",
     range: "1Y",
     generatedAt: "2026-08-21T19:50:21.468Z",
@@ -32,24 +36,27 @@ function fixtureResult(overrides: Partial<WindowResult> = {}): WindowResult {
     trades: [
       {
         ticker: "SNDK",
-        buyDate: "2025-08-21",
-        buyPrice: 45.5,
-        sellDate: "2026-06-25",
-        sellPrice: 2335,
+        direction: "long",
+        openDate: "2025-08-21",
+        openPrice: 45.5,
+        closeDate: "2026-06-25",
+        closePrice: 2335,
       },
       {
         ticker: "MNST",
-        buyDate: "2026-07-21",
-        buyPrice: 47.22999954223633,
-        sellDate: "2026-07-28",
-        sellPrice: 97.73999786376953,
+        direction: "long",
+        openDate: "2026-07-21",
+        openPrice: 47.22999954223633,
+        closeDate: "2026-07-28",
+        closePrice: 97.73999786376953,
       },
       {
         ticker: "MRNA",
-        buyDate: "2026-08-06",
-        buyPrice: 53.86000061035156,
-        sellDate: "2026-08-19",
-        sellPrice: 174.3800048828125,
+        direction: "long",
+        openDate: "2026-08-06",
+        openPrice: 53.86000061035156,
+        closeDate: "2026-08-19",
+        closePrice: 174.3800048828125,
       },
     ],
     worstCase: {
@@ -57,12 +64,42 @@ function fixtureResult(overrides: Partial<WindowResult> = {}): WindowResult {
       trades: [
         {
           ticker: "ZBRA",
-          buyDate: "2025-08-21",
-          buyPrice: 300,
-          sellDate: "2026-08-21",
-          sellPrice: 63,
+          direction: "long",
+          openDate: "2025-08-21",
+          openPrice: 300,
+          closeDate: "2026-08-21",
+          closePrice: 63,
         },
       ],
+    },
+    // The long+short counterpart (issue #13) -- deliberately distinct
+    // figures/tickers from the long-only fields above, so a test can tell
+    // which variant actually rendered.
+    longShort: {
+      endingBalance: 9000,
+      trades: [
+        {
+          ticker: "COIN",
+          direction: "short",
+          openDate: "2025-08-21",
+          openPrice: 500,
+          closeDate: "2026-01-01",
+          closePrice: 50,
+        },
+      ],
+      worstCase: {
+        endingBalance: 2,
+        trades: [
+          {
+            ticker: "ZBRA",
+            direction: "long",
+            openDate: "2025-08-21",
+            openPrice: 300,
+            closeDate: "2026-08-21",
+            closePrice: 63,
+          },
+        ],
+      },
     },
     universeSize: 503,
     skippedTickers: [],
@@ -73,7 +110,7 @@ function fixtureResult(overrides: Partial<WindowResult> = {}): WindowResult {
 
 function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): IntradayResult {
   return {
-    schemaVersion: 4,
+    schemaVersion: RESULTS_SCHEMA_VERSION,
     model: "intraday-daily",
     range: "1M",
     generatedAt: "2026-08-21T19:50:21.468Z",
@@ -93,11 +130,12 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
         trades: [
           {
             ticker: "AAPL",
+            direction: "long",
             date: "2026-08-20",
-            buyTime: "09:30:00",
-            buyPrice: 100,
-            sellTime: "10:30:00",
-            sellPrice: 125,
+            openTime: "09:30:00",
+            openPrice: 100,
+            closeTime: "10:30:00",
+            closePrice: 125,
           },
         ],
         worstCase: {
@@ -105,13 +143,44 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
           trades: [
             {
               ticker: "GOOG",
+              direction: "long",
               date: "2026-08-20",
-              buyTime: "09:30:00",
-              buyPrice: 100,
-              sellTime: "10:30:00",
-              sellPrice: 60,
+              openTime: "09:30:00",
+              openPrice: 100,
+              closeTime: "10:30:00",
+              closePrice: 60,
             },
           ],
+        },
+        // The long+short counterpart (issue #13) -- deliberately distinct
+        // figures/tickers, so a test can tell which variant rendered.
+        longShort: {
+          endingBalance: 90,
+          trades: [
+            {
+              ticker: "COIN",
+              direction: "short",
+              date: "2026-08-20",
+              openTime: "09:30:00",
+              openPrice: 100,
+              closeTime: "10:30:00",
+              closePrice: 20,
+            },
+          ],
+          worstCase: {
+            endingBalance: 8,
+            trades: [
+              {
+                ticker: "GOOG",
+                direction: "long",
+                date: "2026-08-20",
+                openTime: "09:30:00",
+                openPrice: 100,
+                closeTime: "10:30:00",
+                closePrice: 60,
+              },
+            ],
+          },
         },
       },
       {
@@ -122,11 +191,12 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
         trades: [
           {
             ticker: "MSFT",
+            direction: "long",
             date: "2026-08-21",
-            buyTime: "09:30:00",
-            buyPrice: 200,
-            sellTime: "10:30:00",
-            sellPrice: 400,
+            openTime: "09:30:00",
+            openPrice: 200,
+            closeTime: "10:30:00",
+            closePrice: 400,
           },
         ],
         worstCase: {
@@ -134,13 +204,44 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
           trades: [
             {
               ticker: "TSLA",
+              direction: "long",
               date: "2026-08-21",
-              buyTime: "09:30:00",
-              buyPrice: 200,
-              sellTime: "10:30:00",
-              sellPrice: 40,
+              openTime: "09:30:00",
+              openPrice: 200,
+              closeTime: "10:30:00",
+              closePrice: 40,
             },
           ],
+        },
+        // The long+short counterpart (issue #13) -- deliberately distinct
+        // figures/tickers, so a test can tell which variant rendered.
+        longShort: {
+          endingBalance: 400,
+          trades: [
+            {
+              ticker: "COIN",
+              direction: "short",
+              date: "2026-08-21",
+              openTime: "09:30:00",
+              openPrice: 200,
+              closeTime: "10:30:00",
+              closePrice: 20,
+            },
+          ],
+          worstCase: {
+            endingBalance: 2,
+            trades: [
+              {
+                ticker: "TSLA",
+                direction: "long",
+                date: "2026-08-21",
+                openTime: "09:30:00",
+                openPrice: 200,
+                closeTime: "10:30:00",
+                closePrice: 40,
+              },
+            ],
+          },
         },
       },
     ],
@@ -279,10 +380,11 @@ describe("ResultsPanel", () => {
         trades: [
           {
             ticker: "AAPL",
-            buyDate: "2025-08-21",
-            buyPrice: 100,
-            sellDate: "2025-09-01",
-            sellPrice: 110,
+            direction: "long",
+            openDate: "2025-08-21",
+            openPrice: 100,
+            closeDate: "2025-09-01",
+            closePrice: 110,
           },
         ],
         endingBalance: 22,
@@ -445,6 +547,11 @@ describe("ResultsPanel", () => {
               barIntervalMinutes: 60,
               trades: [],
               worstCase: { endingBalance: 20, trades: [] },
+              longShort: {
+                endingBalance: 20,
+                trades: [],
+                worstCase: { endingBalance: 20, trades: [] },
+              },
             },
           ],
         }),
@@ -644,6 +751,72 @@ describe("ResultsPanel", () => {
         expect(screen.queryByRole("button", { name: /reveal/i })).not.toBeInTheDocument();
         expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
       });
+    });
+  });
+
+  describe("mode (issue #13): long-only vs. long+short variant selection", () => {
+    // Regression tests for the exact class of mistake apps/web/CLAUDE.md
+    // already documents happening *twice* for effectiveStartingCapital
+    // (issue #15) -- a component quietly reading the raw/wrong-variant
+    // field instead of the thread-through value. fixtureResult's own
+    // `longShort` figures/tickers are deliberately distinct from the
+    // long-only ones so a test can tell which variant actually rendered.
+    // Two of the tests below submit a guess (intraday-daily model), which
+    // persists to the same jsdom localStorage across tests -- clear it
+    // after every test to keep them independent, same as the
+    // "intraday-daily model" describe block above.
+    afterEach(() => {
+      window.localStorage.clear();
+    });
+
+    it("defaults to the long-only variant when mode is omitted", () => {
+      const state: ResultsState = { status: "success", data: fixtureResult() };
+      render(<ResultsPanel range="1Y" state={state} />);
+
+      expect(screen.getAllByText("$6.9K").length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/SNDK/).length).toBeGreaterThan(0);
+      expect(screen.queryByText(/COIN/)).not.toBeInTheDocument();
+      expect(screen.queryByText("$9K")).not.toBeInTheDocument();
+    });
+
+    it("renders the long+short variant's HeroStat/trade list when mode='long-short' (window model)", () => {
+      const state: ResultsState = { status: "success", data: fixtureResult() };
+      render(<ResultsPanel range="1Y" state={state} mode="long-short" />);
+
+      expect(screen.getAllByText("$9K").length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/COIN/).length).toBeGreaterThan(0);
+      expect(screen.queryByText(/SNDK/)).not.toBeInTheDocument();
+    });
+
+    it("renders the long+short variant's WorstCaseStat when mode='long-short' (window model)", () => {
+      const state: ResultsState = { status: "success", data: fixtureResult() };
+      render(<ResultsPanel range="1Y" state={state} mode="long-short" />);
+
+      // longShort.worstCase.endingBalance is 2 (vs. the long-only 4.2).
+      expect(screen.getByText("$2.00")).toBeInTheDocument();
+      expect(screen.queryByText("$4.20")).not.toBeInTheDocument();
+    });
+
+    it("renders the long+short variant for the intraday-daily model too, once guessed", async () => {
+      const user = userEvent.setup();
+      const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+      render(<ResultsPanel range="1M" state={state} mode="long-short" />);
+      await submitAnyGuess(user);
+
+      // Most recent day (2026-08-21): longShort.endingBalance 400, ticker COIN.
+      expect(screen.getAllByText(/COIN/).length).toBeGreaterThan(0);
+      expect(screen.queryByText(/MSFT/)).not.toBeInTheDocument();
+    });
+
+    it("keeps the guess-gate independent per mode -- a guess made under long-only doesn't skip the reveal for long-short on the same day", async () => {
+      const user = userEvent.setup();
+      const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+      const { rerender } = render(<ResultsPanel range="1M" state={state} mode="long" />);
+      await submitAnyGuess(user);
+      expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
+
+      rerender(<ResultsPanel range="1M" state={state} mode="long-short" />);
+      expect(screen.getByRole("button", { name: /reveal/i })).toBeInTheDocument();
     });
   });
 });

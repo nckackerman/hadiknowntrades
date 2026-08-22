@@ -1,8 +1,8 @@
 // Persists a user's guess for one intraday day's result (issue #34),
-// keyed per (range, calendar date) pair -- built on local-storage.ts's
-// defensive read/write rather than touching `window.localStorage`
-// directly, so this module never has to think about SSR/private-
-// browsing/disabled-storage itself.
+// keyed per (range, calendar date, mode) triple -- built on
+// local-storage.ts's defensive read/write rather than touching
+// `window.localStorage` directly, so this module never has to think
+// about SSR/private-browsing/disabled-storage itself.
 //
 // Keying on range as well as date matters because the same calendar
 // date can genuinely carry a different intraday result depending on
@@ -14,17 +14,26 @@
 // across 1M/3M/1Y. A guess keyed by date alone would silently skip the
 // guess-gate on a range switch that lands on the same date -- see
 // apps/web/CLAUDE.md's "Daily guessing game" note.
+//
+// Keying on mode too (issue #13) is the identical argument applied one
+// axis further: the same (range, date) can now carry a genuinely
+// different endingBalance depending on whether long-only or long+short
+// is selected (see selectVariant in ResultsPanel.tsx) -- without this, a
+// guess submitted under mode=long would incorrectly satisfy the
+// guess-gate for the same (range, date) under mode=long-short too,
+// skipping straight to a reveal the user never actually guessed against.
 
 import type { PresetRange } from "@hadiknowntrades/core";
 
+import type { Mode } from "./mode";
 import { readLocalStorage, writeLocalStorage } from "./local-storage";
 
 // Namespaced (not just the bare date) so this can't collide with a key
 // some other feature picks -- see apps/web/CLAUDE.md's localStorage note.
 const KEY_PREFIX = "hikt:daily-guess:";
 
-function keyFor(range: PresetRange, date: string): string {
-  return `${KEY_PREFIX}${range}:${date}`;
+function keyFor(range: PresetRange, date: string, mode: Mode): string {
+  return `${KEY_PREFIX}${range}:${date}:${mode}`;
 }
 
 /**
@@ -56,17 +65,17 @@ function isStoredGuess(value: unknown): value is StoredGuess {
 }
 
 /**
- * The user's previously-submitted guess for `date` under `range` (and
- * the starting capital it was made against), or `null` if they haven't
- * guessed that (range, date) pair yet -- including if storage is
- * unavailable, or holds a value that doesn't parse as a well-formed
- * guess (a corrupt/hand-edited value -- e.g. a negative guess or a
- * non-positive startingCapital, neither of which any real form
+ * The user's previously-submitted guess for `date` under `range` and
+ * `mode` (and the starting capital it was made against), or `null` if
+ * they haven't guessed that (range, date, mode) triple yet -- including
+ * if storage is unavailable, or holds a value that doesn't parse as a
+ * well-formed guess (a corrupt/hand-edited value -- e.g. a negative guess
+ * or a non-positive startingCapital, neither of which any real form
  * submission could produce -- should read the same as "never guessed",
  * not throw or render nonsense).
  */
-export function getDailyGuess(range: PresetRange, date: string): StoredGuess | null {
-  const raw = readLocalStorage(keyFor(range, date));
+export function getDailyGuess(range: PresetRange, date: string, mode: Mode): StoredGuess | null {
+  const raw = readLocalStorage(keyFor(range, date, mode));
   if (raw === null) return null;
 
   let parsed: unknown;
@@ -79,13 +88,14 @@ export function getDailyGuess(range: PresetRange, date: string): StoredGuess | n
   return isStoredGuess(parsed) ? parsed : null;
 }
 
-/** Records `guess` (made while the prompt showed `startingCapital`) as the user's guess for `date` under `range`, overwriting any previous guess for that same (range, date) pair. */
+/** Records `guess` (made while the prompt showed `startingCapital`) as the user's guess for `date` under `range`/`mode`, overwriting any previous guess for that same (range, date, mode) triple. */
 export function saveDailyGuess(
   range: PresetRange,
   date: string,
+  mode: Mode,
   guess: number,
   startingCapital: number,
 ): void {
   const stored: StoredGuess = { guess, startingCapital };
-  writeLocalStorage(keyFor(range, date), JSON.stringify(stored));
+  writeLocalStorage(keyFor(range, date, mode), JSON.stringify(stored));
 }
