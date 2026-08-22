@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  RESULTS_SCHEMA_VERSION,
   resultKey,
   ResultValidationError,
   validatePrecomputedResult,
@@ -172,6 +173,17 @@ describe("validatePrecomputedResult", () => {
     const result = validWindowResult() as unknown as Record<string, unknown>;
     result.model = "something-else";
     expect(() => validatePrecomputedResult(result as unknown as WindowResult)).toThrow(/model/);
+  });
+
+  it("rejects a result whose schemaVersion doesn't exactly match RESULTS_SCHEMA_VERSION (stale or reverted, not just non-negative)", () => {
+    const stale = validWindowResult();
+    stale.schemaVersion = RESULTS_SCHEMA_VERSION - 1;
+    expect(() => validatePrecomputedResult(stale)).toThrow(ResultValidationError);
+    expect(() => validatePrecomputedResult(stale)).toThrow(/schemaVersion/);
+
+    const future = validWindowResult();
+    future.schemaVersion = RESULTS_SCHEMA_VERSION + 1;
+    expect(() => validatePrecomputedResult(future)).toThrow(/schemaVersion/);
   });
 
   it("rejects a result whose range isn't one of the preset ranges", () => {

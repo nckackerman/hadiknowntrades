@@ -844,16 +844,53 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // non-async .map() callback would propagate out of .map() itself and
   // abort the whole loop before later, still-valid results ever get a
   // chance to write; wrapping in `async` turns that throw into this one
-  // result's own rejected promise instead, so Promise.all still starts
-  // (and lets finish) every other result's write independently -- see
-  // apps/pipeline/CLAUDE.md's "write whatever succeeded, then still
-  // throw" guarantee, which this must not break.
-  await Promise.all(
+  // result's own rejected promise instead, so every other result's write
+  // still gets a chance to start -- see apps/pipeline/CLAUDE.md's "write
+  // whatever succeeded, then still throw" guarantee, which this must
+  // not break.
+  //
+  // Promise.allSettled, not Promise.all: validation is synchronous and
+  // effectively instant, but putObject is real S3 I/O taking real time.
+  // With Promise.all, one range's validation failure rejects almost
+  // immediately, and Promise.all rejects the whole thing as soon as ANY
+  // input promise rejects -- it does not wait for the others to settle.
+  // That rejection would propagate out of runPipeline to the Lambda
+  // handler, and AWS can freeze/recycle the execution environment as
+  // soon as the handler's returned promise settles, potentially cutting
+  // off other, valid ranges' still-in-flight S3 writes before they
+  // finish -- silently breaking the exact "write whatever succeeded"
+  // guarantee this comment claims to preserve (the in-memory test store
+  // can't catch this: it has no real I/O delay, so every write there
+  // resolves before the rejection even has a chance to race it).
+  // allSettled waits for every write to finish, succeed or fail, before
+  // this function decides anything -- see failedWrites below for how a
+  // rejection is turned into part of the aggregated error instead.
+  const writeOutcomes = await Promise.allSettled(
     results.map(async (result) => {
       validatePrecomputedResult(result);
-      return options.store.putObject(resultKey(result.range), JSON.stringify(result, null, 2));
+      await options.store.putObject(resultKey(result.range), JSON.stringify(result, null, 2));
+      return result.range;
     }),
   );
+  // Every rejection, not just the first -- plain Promise.all (and a
+  // naive "throw on the first rejected settlement" loop) would only
+  // ever surface one range's problem even when multiple ranges are
+  // independently broken in the same run, hiding real information from
+  // whoever reads the thrown error. Paired with the range it belongs to
+  // (rather than just the bare error message) since a putObject failure
+  // -- unlike a ResultValidationError, which already names its own range
+  // -- has no other way to say which range it was.
+  const failedWrites = writeOutcomes
+    .map((outcome, i) => ({ outcome, range: results[i]!.range }))
+    .filter(
+      (entry): entry is typeof entry & { outcome: PromiseRejectedResult } =>
+        entry.outcome.status === "rejected",
+    )
+    .map(({ outcome, range }) => {
+      const reason = outcome.reason;
+      return `${range}: ${reason instanceof Error ? reason.message : String(reason)}`;
+    });
+  const writtenCount = writeOutcomes.filter((outcome) => outcome.status === "fulfilled").length;
 
   const skippedTickers = [
     ...new Set([
@@ -863,7 +900,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     ]),
   ];
 
-  if (windowFetch.failureReason || intradayFetch.failureReason) {
+  if (windowFetch.failureReason || intradayFetch.failureReason || failedWrites.length > 0) {
     // At least one path produced real, useful results and those have
     // already been written above -- but this run still needs to fail
     // the Lambda invocation, which is this system's *only* alerting
@@ -875,7 +912,10 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     // specifically while daily-close fetches keep working) must not let
     // the run "succeed" indefinitely while that path's ranges silently
     // serve increasingly stale data with nothing beyond a console.warn
-    // buried in CloudWatch to notice it.
+    // buried in CloudWatch to notice it. A write-time failure (issue #47
+    // self-validation, or a real putObject error) is folded into this
+    // same throw for the same reason -- one aggregated error per run,
+    // not a separate throw for fetch-time vs. write-time problems.
     //
     // Deliberately excludes every granularity override's failureReason
     // (issues #30/#29): an override's failure never leaves anything
@@ -890,15 +930,23 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
           `${spec.label} path (${spec.range} only, non-fatal): ${outcome.failureReason ?? "ok"}.`,
       )
       .join(" ");
+    const writeFailureLines =
+      failedWrites.length > 0
+        ? ` Write failures (${failedWrites.length} of ${results.length} computed result(s)):\n` +
+          failedWrites.map((message) => `  - ${message}`).join("\n")
+        : "";
     throw new Error(
-      `pipeline: wrote ${results.length} of ${PRESET_RANGES.length} ranges, but at least one path failed -- ` +
+      `pipeline: wrote ${writtenCount} of ${PRESET_RANGES.length} ranges, but at least one path or write failed -- ` +
         `failing this run so it doesn't silently succeed while that path goes stale. ` +
         `Window (5Y/MAX) path: ${windowFetch.failureReason ?? "ok"}. ` +
         `Intraday (1M/3M/1Y) path: ${intradayFetch.failureReason ?? "ok"}. ` +
         `${overrideStatusLines} ` +
-        `Skipped tickers: ${skippedTickers.length > 0 ? skippedTickers.join(", ") : "(none)"}.`,
+        `Skipped tickers: ${skippedTickers.length > 0 ? skippedTickers.join(", ") : "(none)"}.` +
+        writeFailureLines,
     );
   }
 
+  // Every write succeeded -- if any had failed, the block above would
+  // already have thrown before reaching here.
   return { results, skippedTickers };
 }

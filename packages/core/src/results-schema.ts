@@ -19,6 +19,7 @@
 import { PRESET_RANGES, type PresetRange } from "./preset-ranges";
 import type { Trade } from "./optimizer";
 import type { IntradayDayResult } from "./intraday-optimizer";
+import { isValidPrice } from "./is-valid-price";
 
 /** Bumped whenever the shape of PrecomputedResult changes in a way a reader needs to know about. */
 export const RESULTS_SCHEMA_VERSION = 2;
@@ -115,12 +116,19 @@ export class ResultValidationError extends Error {
   }
 }
 
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
+/**
+ * Builds on the same `isValidPrice` (`is-valid-price.ts`) that
+ * `optimizer.ts`/`yahoo-client.ts` already use to define "legitimate
+ * price," rather than re-deriving `Number.isFinite(value) && value > 0`
+ * independently here -- keeps that definition from drifting between call
+ * sites (see that file's own header comment). Used for every
+ * positive-finite-number field this validator checks, not just
+ * buyPrice/sellPrice -- the predicate is identical either way, just under
+ * a more general name for fields (startingCapital, endingBalance, ...)
+ * that aren't literally a price.
+ */
 function isPositiveFiniteNumber(value: unknown): value is number {
-  return isFiniteNumber(value) && value > 0;
+  return typeof value === "number" && isValidPrice(value);
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -222,9 +230,9 @@ function describe(value: unknown): string {
 
 /** Validates the fields every PrecomputedResult shares, regardless of `model`. */
 function validateBase(result: Record<string, unknown>, problems: string[]): void {
-  if (!isNonNegativeInteger(result.schemaVersion)) {
+  if (result.schemaVersion !== RESULTS_SCHEMA_VERSION) {
     problems.push(
-      `schemaVersion must be a non-negative integer, got ${describe(result.schemaVersion)}`,
+      `schemaVersion must be exactly ${RESULTS_SCHEMA_VERSION}, got ${describe(result.schemaVersion)}`,
     );
   }
   if (!(PRESET_RANGES as readonly string[]).includes(result.range as string)) {

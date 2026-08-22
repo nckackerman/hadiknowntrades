@@ -400,6 +400,25 @@ before each range's `putObject` (see `apps/pipeline/CLAUDE.md`).
   pipeline's _output_ right before it becomes what `apps/web` reads --
   there's nothing further downstream to catch a bad value once this
   passes.
+- **`schemaVersion` is checked for exact equality against
+  `RESULTS_SCHEMA_VERSION`, not just "is it a non-negative integer."**
+  An earlier version of `validateBase` only did the looser check --
+  caught in code review as a real gap, not a nitpick: a stale or
+  reverted `schemaVersion` (e.g. a rollback that regressed the constant
+  without regenerating results, or a hand-crafted test fixture that
+  forgot to bump it) is exactly the kind of self-inconsistency this
+  validator exists to catch, and "any non-negative integer" would
+  silently accept it.
+- **`isPositiveFiniteNumber` (used for `startingCapital`/`endingBalance`/
+  day balances/`buyPrice`/`sellPrice`) builds on `is-valid-price.ts`'s
+  `isValidPrice`** (`typeof v === "number" && isValidPrice(v)`) rather
+  than re-deriving `Number.isFinite(value) && value > 0` independently
+  -- also caught in code review: `optimizer.ts` and `yahoo-client.ts`
+  already centralize that exact predicate through `isValidPrice`
+  specifically so "legitimate price" can't drift between call sites,
+  and this validator had quietly re-implemented it a third time. The
+  predicate is unchanged either way (both are `Number.isFinite(value) &&
+value > 0`); this is a reuse fix, not a behavior change.
 
 ## Per-day intraday optimizer (issue #28)
 

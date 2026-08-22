@@ -170,7 +170,7 @@ existing behavior with no new plumbing needed.
   `async`, not a bare arrow returning `store.putObject(...)` directly --
   a real, easy-to-get-wrong subtlety, not a style choice.** `.map()`
   invokes its callback _synchronously_ for every element before
-  `Promise.all` ever starts awaiting; if `validatePrecomputedResult`
+  `Promise.allSettled` ever starts awaiting; if `validatePrecomputedResult`
   threw synchronously inside a _non_-`async` callback, that throw would
   propagate straight out of `.map()` itself and abort the whole loop
   before later elements' `putObject` calls ever got a chance to start --
@@ -182,24 +182,61 @@ existing behavior with no new plumbing needed.
   machinery and turned into that one element's rejected promise instead
   of a synchronous exception out of `.map()`, so every other element's
   `async` callback still runs (and its `putObject` still starts)
-  independently. `Promise.all` still rejects overall once any element
-  rejects -- that's what fails the Lambda invocation -- but the other,
-  still-valid writes aren't prevented from completing in the background.
-  If this callback is ever refactored back to a bare arrow function
-  around `store.putObject(...)`, re-add `async` (or otherwise ensure the
-  validation call can't throw synchronously out of `.map()`).
+  independently. If this callback is ever refactored back to a bare
+  arrow function around `store.putObject(...)`, re-add `async` (or
+  otherwise ensure the validation call can't throw synchronously out of
+  `.map()`).
+- **The write loop uses `Promise.allSettled`, not `Promise.all` -- an
+  early version of this used `Promise.all`, and that was a real, subtle
+  bug caught in code review, not a style preference.** `validatePrecomputedResult`
+  is synchronous and effectively instantaneous; a sibling range's
+  `store.putObject(...)` call is real network I/O (a real S3 `PUT` in
+  production) taking real time. With `Promise.all`, one range's
+  validation failure rejects almost immediately -- well before other
+  ranges' in-flight `putObject` calls have finished -- and `Promise.all`
+  settles (rejected) as soon as **any** input promise rejects; it does
+  not wait for the others. That rejection propagates out of `runPipeline`
+  to the Lambda handler, and AWS can freeze/recycle the execution
+  environment as soon as the handler's returned promise settles --
+  potentially cutting off other, valid ranges' still-in-flight S3 writes
+  before they land. That directly undermines the "write whatever
+  succeeded, then still throw if something failed" guarantee this
+  section (and this file's tests) claims to preserve -- the earlier
+  "the other, still-valid writes aren't prevented from completing in
+  the background" claim this bullet used to make was true only in a
+  same-process, no-real-I/O sense, not once a real Lambda freeze after
+  invocation is in the picture. **The existing in-memory test store
+  can't catch this on its own** -- it has no I/O delay, so every write
+  resolves before a rejection ever has a chance to race it; the fix
+  (`src/pipeline.write-validation.test.ts`) added a configurable
+  per-key write delay to the test store specifically so a slower,
+  valid write can be shown to still land even though a sibling range's
+  validation rejects first. Fixed by switching to `Promise.allSettled`:
+  every write is given the chance to finish, succeed or fail, before
+  `runPipeline` decides anything. A related finding from the same
+  review: plain `Promise.all` (or a naive "throw on the first rejected
+  settlement" loop) only ever surfaces the **first** validation/write
+  failure even when multiple ranges are independently broken in the
+  same run -- `runPipeline` now collects every `rejected` outcome and
+  folds all of them, one line per failed range, into the same
+  aggregated error the "at least one path failed" check below already
+  builds (see "Two independent paths" below), rather than throwing a
+  second, separate error for write-time problems.
 - Covered by `src/pipeline.write-validation.test.ts`, a small file kept
   deliberately separate from the main `pipeline.test.ts` -- it needs to
   `vi.mock("@hadiknowntrades/core", ...)` to force `validatePrecomputedResult`
-  to fail for one specific range while leaving the real implementation
-  in place for every other range (via `importOriginal`), and `vi.mock`
-  applies module-wide to every test in whatever file calls it; doing
-  this in `pipeline.test.ts` would have broken every other test there
-  that expects real validation to pass. Uses `vi.hoisted()` to hold the
-  "which range should fail" flag the mock factory reads -- needed
-  because `vi.mock`'s factory (like the mock call itself) is hoisted
-  above normal top-level `const` declarations, so a plain outer variable
-  read by the factory would hit the temporal dead zone.
+  to fail for one or more specific ranges while leaving the real
+  implementation in place for every other range (via `importOriginal`),
+  and `vi.mock` applies module-wide to every test in whatever file calls
+  it; doing this in `pipeline.test.ts` would have broken every other
+  test there that expects real validation to pass. Uses `vi.hoisted()`
+  to hold the "which ranges should fail" set the mock factory reads --
+  needed because `vi.mock`'s factory (like the mock call itself) is
+  hoisted above normal top-level `const` declarations, so a plain outer
+  variable read by the factory would hit the temporal dead zone. One
+  test forces two ranges to fail simultaneously and asserts the thrown
+  error names both, while every other, still-valid (and deliberately
+  slow-to-write) range still lands in the store.
   `results-schema.test.ts` (`packages/core`) already covers
   `validatePrecomputedResult`'s own pass/fail logic directly; this file
   only checks the pipeline's _wiring_ to it.
