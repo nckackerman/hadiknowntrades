@@ -305,12 +305,22 @@ skippedDays}`, mirroring `apps/pipeline`'s own `fetchUniverseHistory`
   `{history, skipped, abortError}` shape for the identical "contain the
   failure, but still report it" problem) -- **every caller of
   `optimizeIntradayDays`, including every test, needed updating for this
-  shape change**, not just apps/pipeline's own call sites. See
+  shape change**, not just apps/pipeline's own call sites. `catch (error)`
+  here is deliberately broad -- any exception during a day's solve, not
+  narrowed by type -- but always folds into `skippedDays` regardless of
+  which exception fired; this function itself never distinguishes "the
+  documented overflow" from "some other bug" (and a third code-review
+  round on issue #13's PR confirmed that's correct: `catch`-and-report
+  here is genuinely fine, the real gap it found was one level up, in a
+  _caller_ silently discarding the `skippedDays` this function had
+  already correctly populated -- see the next sentence). See
   `apps/pipeline/CLAUDE.md`'s "Code review follow-up: issue #13
   short-selling PR" section for how apps/pipeline turns `skippedDays`
-  into a real, run-failing alert (for the base 60-minute pass) vs. a
-  non-fatal, already-logged degradation (for a granularity override's
-  own pass).
+  into a real, run-failing alert for _both_ the base 60-minute pass and
+  every granularity override's own pass (a third code-review round fixed
+  the override side, which had been wrongly treated as non-fatal by
+  analogy to an unrelated case -- an override _fetch_ failure, which
+  does stay non-fatal).
 
 ## 60-minute intraday bars (issue #28)
 

@@ -292,21 +292,64 @@ path or write failed" throw that issue #47's write-time validation
 failures already use -- a range/day that couldn't be computed at all is
 genuinely missing this run (or, on a later run, silently stuck stale),
 exactly the failure mode this system's must-fail-the-run alerting exists
-to catch, unlike a granularity override's non-fatal failure.
+to catch. See `pipeline.test.ts`'s "per-range/per-day compute-failure
+containment" describe block for fixtures covering both the window-path
+and intraday-base-path cases (each uses a same-ticker pair with one
+price at `Number.MIN_VALUE` to trigger a real overflow, not a mocked
+throw).
 
-**One deliberate asymmetry**: an _override_ granularity's own per-day
-failures (e.g. the 5-minute fetch's optimizer overflowing for one day)
-are logged but NOT folded into the fatal `failures` list -- unlike the
-_base_ 60-minute pass's failures, which always are. This mirrors the
-existing override-fetch-failure posture exactly:
-`mergeDaysByGranularity` already falls back to the base 60-minute day
-for any date an override doesn't cover, so an override-only day failure
-degrades gracefully to that range's pre-override behavior for that one
-day, not a loss of previously-working data. See `pipeline.test.ts`'s
-"per-range/per-day compute-failure containment" describe block for
-fixtures covering both the window-path and intraday-base-path cases
-(each uses a same-ticker pair with one price at `Number.MIN_VALUE` to
-trigger a real overflow, not a mocked throw).
+**A third code-review round found the original "one deliberate
+asymmetry" here (an _override_ granularity's per-day solve failures were
+logged but NOT folded into the fatal `failures` list, unlike the _base_
+60-minute pass's) was itself a real, if narrower, instance of the same
+bug class -- "contained but not silent" had quietly slipped into
+"contained, and therefore silent."** The original reasoning leaned on an
+analogy to override _fetch_ failures (a per-ticker data-availability
+gap): since `mergeDaysByGranularity` already falls back to the base
+60-minute day for any date an override doesn't cover, an override-only
+day failure was treated as "gracefully degrading," the same as a fetch
+failure. **That analogy doesn't actually hold once you separate two
+different questions -- "does this range's stored _output_ degrade
+gracefully" (yes, for both fetch and solve failures, via the same merge
+fallback) from "does this failure deserve this system's only alerting
+mechanism" (no for a fetch failure, yes for a solve failure).** A fetch
+failure means the finer-grained data was never available -- there is
+nothing to alert on, the range's data is exactly as correct as its
+pre-override self. A solve failure means the data _was_ fetched
+successfully and something broke while `optimizeIntradayDays` computed
+over it -- e.g. the documented short-payoff overflow, but just as
+plausibly a genuinely new defect this codebase hasn't seen yet. Silently
+downgrading the latter to "non-fatal, logged only via console.error
+buried in CloudWatch" because its _symptom_ happens to be paperable-over
+is exactly what this system's "no custom retry/alerting" design (see the
+top of this file) exists to prevent -- see the guarantee's own framing
+elsewhere in this file: "nothing beyond a console.warn buried in
+CloudWatch to notice." **Fixed**: `buildIntradayResults` now folds
+_every_ override's own `skippedDays` (prefixed `"<label> override
+(<range>): "` for context) into its `failures` return value alongside
+the base pass's, so a solve failure on either pass reaches
+`computeFailures` and fails the run the same way -- while the per-day
+try/catch inside `optimizeIntradayDays` still _contains_ it (that
+override's other days, and every other range/path, still compute and
+write normally). Containment and fatality are independent axes, not the
+same lever: this fix keeps the former (one bad day still can't crash the
+whole run before other results get a chance to write) while restoring
+the latter for a case where it genuinely belongs. The override
+_fetch_-failure posture (`GranularityOverrideInput.outcome.failureReason`,
+surfaced only via `overrideStatusLines` for visibility) is unchanged and
+correctly still non-fatal -- that distinction was never the bug; only
+the solve-failure side had been folded into the same non-fatal bucket by
+mistake. See `pipeline.override-solve-failure.test.ts` for a regression
+test (kept in its own file, like `pipeline.write-validation.test.ts`,
+since it needs to mock `optimizeIntradayDays` for just the override
+call) using a genuinely _non-overflow_ forced failure specifically to
+prove the fix isn't narrowed to the overflow case -- and
+`intraday-optimizer.test.ts`'s own "reports a genuinely different
+(non-overflow) exception the same way" test, which locks in that
+`optimizeIntradayDays`'s own `catch` block was never actually the bug
+(it already unconditionally folded every exception into `skippedDays`
+regardless of type) -- the gap was entirely in how `buildIntradayResults`
+consumed an override call's returned `skippedDays`, one level up.
 
 ## Write-time result self-validation (issue #47)
 
@@ -469,17 +512,29 @@ GranularityOverride>` lookup that `buildIntradayResults`'s final
   see the top of this file). Fixed via `maxDateString(dataAsOf,
 override?.extraDataAsOf ?? null)`; a range with no override (1Y) has its
   `dataAsOf` untouched.
-- **Neither override is held to the window/intraday split's "must still
-  fail the run" standard** (see the section above): an override's abort
-  or empty-data outcome does not get added to the `if
+- **An override's own _fetch_ failure (abort or empty-data outcome) is
+  NOT held to the window/intraday split's "must still fail the run"
+  standard** (see the section above): it does not get added to the `if
 (windowFetch.failureReason || intradayFetch.failureReason)` throw
-  condition in `runPipeline` -- each override's status is only reported
-  in that error's message for visibility, alongside the two required
-  paths' statuses. The reasoning is qualitatively different from why
+  condition in `runPipeline` -- each override's fetch status is only
+  reported in that error's message for visibility, alongside the two
+  required paths' statuses. **This is deliberately narrower than it used
+  to read**: an earlier version of this bullet said "neither override is
+  held to that standard" at all, covering an override's own _solve_
+  failures too (`optimizeIntradayDays` throwing while solving data the
+  override's fetch _did_ return) -- a third code-review round on issue
+  #13's PR found that was itself a real gap, not a deliberate design
+  choice that happened to also cover solve failures: see "Per-range/
+  per-day optimizer-overflow containment" (under "Code review follow-up:
+  issue #13 short-selling PR") above for the full reasoning and the fix
+  (override solve failures now DO fold into `computeFailures` and fail
+  the run, exactly like a base-pass solve failure). The reasoning below
+  is about fetch failures specifically. The reasoning is qualitatively
+  different from why
   window/intraday _are_ held to that standard: their failure means a
   whole range silently serves frozen/stale JSON forever, which is
-  exactly what that alerting exists to catch. An override's failure
-  instead means its range's affected days silently fall back to
+  exactly what that alerting exists to catch. An override's _fetch_
+  failure instead means its range's affected days silently fall back to
   already-shipped, fully-correct (just coarser) 60-minute bars --
   functionally identical to that range's pre-override behavior, not a
   loss of previously-working data. Revisit this distinction if

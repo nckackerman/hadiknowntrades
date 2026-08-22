@@ -321,6 +321,30 @@ function validateWorstCaseResultWith(
 }
 
 /**
+ * Shared "positive-finite a vs b ordering" predicate (code review
+ * follow-up to issue #13) -- validateWorstNotExceedingOptimal,
+ * validateLongShortNotBelowLongOnly, and
+ * validateLongShortWorstNotAboveLongOnlyWorst below all used to
+ * hand-roll this exact same check (both operands must already be
+ * known-valid positive finite numbers, then one comparator decides
+ * whether to report a problem), differing only in which comparison they
+ * ran and how they worded the resulting message -- extracted here so
+ * there's one place that owns "only fire once both values are already
+ * valid numbers" instead of three copies that could drift apart.
+ */
+function validateOrdering(
+  actual: unknown,
+  bound: unknown,
+  violates: (actual: number, bound: number) => boolean,
+  problems: string[],
+  message: (actual: number, bound: number) => string,
+): void {
+  if (isPositiveFiniteNumber(actual) && isPositiveFiniteNumber(bound) && violates(actual, bound)) {
+    problems.push(message(actual, bound));
+  }
+}
+
+/**
  * Cross-checks that a worst-case ending balance never exceeds its
  * sibling optimal-case one (issue #31) -- a real, always-true invariant
  * by construction (the min-search explores a subset of the same
@@ -339,15 +363,14 @@ function validateWorstNotExceedingOptimal(
   path: string,
   problems: string[],
 ): void {
-  if (
-    isPositiveFiniteNumber(worstEndingBalance) &&
-    isPositiveFiniteNumber(optimalEndingBalance) &&
-    worstEndingBalance > optimalEndingBalance
-  ) {
-    problems.push(
-      `${path} (${worstEndingBalance}) must not exceed its optimal-case counterpart (${optimalEndingBalance})`,
-    );
-  }
+  validateOrdering(
+    worstEndingBalance,
+    optimalEndingBalance,
+    (worst, optimal) => worst > optimal,
+    problems,
+    (worst, optimal) =>
+      `${path} (${worst}) must not exceed its optimal-case counterpart (${optimal})`,
+  );
 }
 
 /**
@@ -392,15 +415,14 @@ function validateLongShortNotBelowLongOnly(
   path: string,
   problems: string[],
 ): void {
-  if (
-    isPositiveFiniteNumber(longShortEndingBalance) &&
-    isPositiveFiniteNumber(longOnlyEndingBalance) &&
-    longShortEndingBalance < longOnlyEndingBalance
-  ) {
-    problems.push(
-      `${path} (${longShortEndingBalance}) must be >= its long-only counterpart (${longOnlyEndingBalance})`,
-    );
-  }
+  validateOrdering(
+    longShortEndingBalance,
+    longOnlyEndingBalance,
+    (longShort, longOnly) => longShort < longOnly,
+    problems,
+    (longShort, longOnly) =>
+      `${path} (${longShort}) must be >= its long-only counterpart (${longOnly})`,
+  );
 }
 
 /**
@@ -416,15 +438,14 @@ function validateLongShortWorstNotAboveLongOnlyWorst(
   path: string,
   problems: string[],
 ): void {
-  if (
-    isPositiveFiniteNumber(longShortWorstEndingBalance) &&
-    isPositiveFiniteNumber(longOnlyWorstEndingBalance) &&
-    longShortWorstEndingBalance > longOnlyWorstEndingBalance
-  ) {
-    problems.push(
-      `${path} (${longShortWorstEndingBalance}) must be <= its long-only counterpart (${longOnlyWorstEndingBalance})`,
-    );
-  }
+  validateOrdering(
+    longShortWorstEndingBalance,
+    longOnlyWorstEndingBalance,
+    (longShortWorst, longOnlyWorst) => longShortWorst > longOnlyWorst,
+    problems,
+    (longShortWorst, longOnlyWorst) =>
+      `${path} (${longShortWorst}) must be <= its long-only counterpart (${longOnlyWorst})`,
+  );
 }
 
 /**

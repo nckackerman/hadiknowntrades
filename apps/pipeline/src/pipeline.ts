@@ -452,9 +452,33 @@ function mergeDaysByGranularity(
 function mergeDayVariants(a: IntradayDayResult, b: IntradayDayResult): IntradayDayResult {
   const longOnlyWinner = b.endingBalance > a.endingBalance ? b : a;
   const longShortWinner = b.longShort.endingBalance > a.longShort.endingBalance ? b : a;
-  return longOnlyWinner === longShortWinner
-    ? longOnlyWinner
-    : { ...longOnlyWinner, longShort: longShortWinner.longShort };
+  const merged: IntradayDayResult =
+    longOnlyWinner === longShortWinner
+      ? longOnlyWinner
+      : { ...longOnlyWinner, longShort: longShortWinner.longShort };
+
+  // Defense in depth for the proof in this function's own doc comment
+  // (code review follow-up): the proof shows these two cross-checks
+  // (mirroring results-schema.ts's own write-time invariants) hold
+  // unconditionally by construction, but it rests on premises about the
+  // reciprocal-price short model and results-schema.ts's own threshold
+  // definitions -- premises a future change to either could silently
+  // invalidate without anything here noticing. Don't rely on the proof
+  // alone; catch a violation at the moment it happens instead of only
+  // via results-schema.ts's own validatePrecomputedResult, much later
+  // and with far less context about which merge produced it.
+  if (merged.longShort.endingBalance < merged.endingBalance) {
+    throw new Error(
+      `internal error: mergeDayVariants produced longShort.endingBalance (${merged.longShort.endingBalance}) below its long-only counterpart (${merged.endingBalance}) for ${merged.date} -- should be impossible by construction, see this function's own doc comment`,
+    );
+  }
+  if (merged.longShort.worstCase.endingBalance > merged.worstCase.endingBalance) {
+    throw new Error(
+      `internal error: mergeDayVariants produced longShort.worstCase.endingBalance (${merged.longShort.worstCase.endingBalance}) above its long-only counterpart (${merged.worstCase.endingBalance}) for ${merged.date} -- should be impossible by construction, see this function's own doc comment`,
+    );
+  }
+
+  return merged;
 }
 
 interface PathFetchOutcome<TBar> {
@@ -906,17 +930,34 @@ interface BuildIntradayResultsOptions {
 interface BuildIntradayResultsOutcome {
   results: IntradayResult[];
   /**
-   * One entry per *base* (60-minute) day that failed to solve, formatted
-   * `"YYYY-MM-DD: <error message>"` (see optimizeIntradayDays' own
-   * OptimizeIntradayResult.skippedDays doc comment). A day that fails
-   * only in a *granularity override*'s own optimizeIntradayDays call is
-   * deliberately NOT included here -- mergeDaysByGranularity already
-   * falls back to the base 60-minute day for any date the override
-   * doesn't cover, the identical graceful-degradation path an override
-   * fetch failure already takes (see "Granularity overrides" in this
-   * file's own module header) -- so an override-only day failure is
-   * still logged (via optimizeIntradayDays' own console.error) but isn't
-   * treated as fatal here.
+   * One entry per day that failed to *solve* at all, formatted
+   * `"YYYY-MM-DD: <error message>"` for the base 60-minute pass or
+   * `"<label> override (<range>): YYYY-MM-DD: <error message>"` for a
+   * granularity override's own pass (see optimizeIntradayDays' own
+   * OptimizeIntradayResult.skippedDays doc comment for where each
+   * message string comes from). **Both are included here, and both are
+   * fatal** -- a third code-review round on issue #13's PR caught that an
+   * earlier version of this file deliberately excluded override-day solve
+   * failures, reasoning (by analogy to an override *fetch* failure) that
+   * mergeDaysByGranularity's fallback to the base 60-minute day makes an
+   * override-only day failure "graceful" the same way a missing override
+   * fetch is. That analogy doesn't actually hold: a fetch failure means
+   * the finer-grained data was never available in the first place (a
+   * data-availability gap, genuinely nothing to alert on); a solve
+   * failure means the data *was* fetched successfully and something
+   * broke while computing over it (a correctness bug, e.g. a future
+   * change re-triggering the reciprocal-price overflow guard, or a
+   * genuinely new defect) -- exactly the kind of problem this system's
+   * only alerting mechanism (see the top of this file) exists to catch,
+   * regardless of whether mergeDaysByGranularity happens to paper over
+   * the missing day for that one range. The per-day try/catch inside
+   * optimizeIntradayDays still *contains* the failure (one bad day can't
+   * crash the whole run before other days/ranges get a chance to write);
+   * this field is what keeps containment from also meaning invisibility.
+   * A per-ticker *fetch* failure on an override (a ticker's finer data
+   * just isn't available) stays non-fatal, unaffected by this -- see
+   * `overrideStatusLines` in runPipeline, which reports that case
+   * separately and still doesn't fold it in here.
    */
   failures: string[];
 }
@@ -946,8 +987,7 @@ function buildIntradayResults({
   // skippedDays here are fatal -- see BuildIntradayResultsOutcome's own
   // doc comment: every intraday range depends on this base 60-minute
   // pass, so a day it can't solve is genuinely missing (or, on a later
-  // run, silently stale) for every range covering it, unlike an
-  // override-only day failure.
+  // run, silently stale) for every range covering it.
   const { days: sixtyMinuteDays, skippedDays: baseFailures } = optimizeIntradayDays(cappedHistory, {
     startingCapital,
     maxTradesPerDay,
@@ -961,26 +1001,39 @@ function buildIntradayResults({
   // (and no longer is) a real, code-review-flagged violation of "adding
   // an override should be localized."
   const granularityOverrides = new Map<PresetRange, GranularityOverride>();
+  const overrideSolveFailures: string[] = [];
   for (const { spec, outcome } of overrides) {
     const cappedOverrideHistory = capHistoryToEndDate(outcome.history, endDateString);
-    // This override's own skippedDays are deliberately discarded here
-    // (not threaded into this function's `failures`) -- see
-    // BuildIntradayResultsOutcome's own doc comment for why an
-    // override-only day failure stays non-fatal, the same posture an
-    // override *fetch* failure already gets. optimizeIntradayDays itself
-    // still console.error's each one, so it's not silently swallowed --
-    // just not escalated to "must fail the run."
-    const { days: overrideDays } = optimizeIntradayDays(cappedOverrideHistory, {
-      startingCapital,
-      maxTradesPerDay,
-      barIntervalMinutes: spec.barIntervalMinutes,
-    });
+    // This override's own skippedDays ARE folded into this function's
+    // `failures` (a third code-review round's must-fix, see
+    // BuildIntradayResultsOutcome's own doc comment for the full
+    // reasoning) -- unlike an override *fetch* failure (a per-ticker
+    // data-availability gap, genuinely non-fatal), a solve failure here
+    // means real fetched data broke the optimizer, which is exactly what
+    // this system's alerting exists to catch. optimizeIntradayDays' own
+    // per-day try/catch still contains it (this override's other days,
+    // and every other range/path, still compute and write normally) --
+    // containment and fatality are independent axes here, not the same
+    // thing.
+    const { days: overrideDays, skippedDays: overrideSkippedDays } = optimizeIntradayDays(
+      cappedOverrideHistory,
+      {
+        startingCapital,
+        maxTradesPerDay,
+        barIntervalMinutes: spec.barIntervalMinutes,
+      },
+    );
+    for (const entry of overrideSkippedDays) {
+      overrideSolveFailures.push(`${spec.label} override (${spec.range}): ${entry}`);
+    }
     // This override's actual per-day results: whichever of the two
     // granularities produced the better outcome for each day (see
     // mergeDaysByGranularity -- NOT an unconditional "finer granularity
-    // always wins"). If overrideDays is empty (fetch failure or no
-    // data), this is just sixtyMinuteDays unchanged -- the graceful-
-    // degradation path.
+    // always wins"). If overrideDays is empty (fetch failure, solve
+    // failure, or no data), this is just sixtyMinuteDays unchanged -- the
+    // graceful-degradation path for *this range's stored output*, even
+    // though a solve failure specifically still fails the run above via
+    // overrideSolveFailures.
     granularityOverrides.set(spec.range, {
       days: mergeDaysByGranularity(sixtyMinuteDays, overrideDays),
       extraHistories: [cappedOverrideHistory],
@@ -1055,7 +1108,7 @@ function buildIntradayResults({
     };
   });
 
-  return { results, failures: baseFailures };
+  return { results, failures: [...baseFailures, ...overrideSolveFailures] };
 }
 
 export async function runPipeline(options: RunPipelineOptions): Promise<PipelineRunSummary> {
@@ -1332,12 +1385,21 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     // catch.
     //
     // Deliberately excludes every granularity override's failureReason
-    // (issues #30/#29): an override's failure never leaves anything
-    // silently stale -- it just means that override's range falls back
-    // to already-shipped, fully-correct 60-minute bars, the same as its
-    // pre-override behavior -- so overrides don't need to meet this same
-    // "must still fail the run" bar. Each override's status is still
-    // included in the message below purely for operational visibility.
+    // (issues #30/#29) -- i.e. that override's own *fetch* coming back
+    // empty or aborting: this never leaves anything silently stale, it
+    // just means that override's range falls back to already-shipped,
+    // fully-correct 60-minute bars, the same as its pre-override
+    // behavior, so a fetch failure alone doesn't need to meet this same
+    // "must still fail the run" bar. Each override's fetch status is
+    // still included in the message below purely for operational
+    // visibility. This is NOT the same as an override *solve* failure
+    // (optimizeIntradayDays throwing on data the override's fetch DID
+    // successfully return) -- that case IS folded into computeFailures
+    // above (a third code-review round's must-fix; see
+    // BuildIntradayResultsOutcome's own doc comment for why "the data
+    // just isn't available" and "the data broke the optimizer" need
+    // different fatality, even though both degrade the same way in the
+    // stored output via mergeDaysByGranularity's fallback).
     const overrideStatusLines = overrideInputs
       .map(
         ({ spec, outcome }) =>

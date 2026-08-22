@@ -501,6 +501,45 @@ describe("optimizeIntradayDays", () => {
       expect(skippedDays[0]).toContain("non-finite endingBalance");
     });
 
+    it("reports a genuinely different (non-overflow) exception the same way, not narrowed to just the documented short-payoff overflow case", () => {
+      // maxTradesPerDay: -1 fails optimizeAllVariants' own input
+      // validation (OptimizerInputError: "maxTrades must be a
+      // non-negative integer") -- a completely different failure mode
+      // than the overflow case above, with a different message. This
+      // exercises that the try/catch here is a genuinely broad `catch
+      // (error)` that always folds into skippedDays regardless of which
+      // exception fired, not one narrowed to (or specially formatted
+      // for) just the short-payoff overflow it was originally added to
+      // contain -- a third code-review round's must-fix, see
+      // apps/pipeline/CLAUDE.md's "Code review follow-up: issue #13
+      // short-selling PR" section for the full reasoning (the actual
+      // gap this round found was one level up, in how apps/pipeline
+      // consumed a granularity override's own skippedDays -- see
+      // pipeline.override-solve-failure.test.ts -- but this function's
+      // own contract, that it never discriminates by exception type, is
+      // the guarantee that fix depends on).
+      const barsByTicker = new Map<string, IntradayBar[]>([
+        [
+          "A",
+          bars("2024-01-02", [
+            ["09:30:00", 10],
+            ["10:30:00", 20],
+          ]),
+        ],
+      ]);
+
+      const { days, skippedDays } = optimizeIntradayDays(barsByTicker, {
+        startingCapital: 20,
+        maxTradesPerDay: -1,
+        barIntervalMinutes: 60,
+      });
+
+      expect(days).toEqual([]);
+      expect(skippedDays).toHaveLength(1);
+      expect(skippedDays[0]).toContain("2024-01-02");
+      expect(skippedDays[0]).toContain("maxTrades must be a non-negative integer");
+    });
+
     it("returns empty days/skippedDays when there is nothing to solve at all", () => {
       const { days, skippedDays } = optimizeIntradayDays(new Map(), {
         startingCapital: 20,
