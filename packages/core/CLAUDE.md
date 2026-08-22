@@ -580,7 +580,18 @@ list) import.
   anchor's own boundary correctly snaps forward to the next real bar --
   see `apps/pipeline/src/pipeline.custom-range.test.ts`).
 - `anchorMonthToDate`/`toAnchorMonth` round-trip an `AnchorMonth` string
-  to/from a UTC `Date` at the 1st of that month -- the regex
+  to/from a UTC `Date` at the 1st of that month. **`customRangeAnchors`
+  itself now actually calls `toAnchorMonth` to format each generated
+  anchor, instead of hand-rolling the identical zero-pad formatting a
+  second time inline (second-round code review finding, fixed)** --
+  `toAnchorMonth` was exported through this package's public API
+  (`index.ts`) specifically for this, but had zero real callers anywhere
+  in the codebase until this fix; `customRangeAnchors` is the one real
+  producer of `AnchorMonth` strings, so it's the one place this should
+  have been calling it all along. No behavior change -- same output for
+  every anchor, just one implementation of the formatting instead of two
+  that could silently drift.
+  The regex
   (`^\d{4}-(0[1-9]|1[0-2])$`) is what rejects an out-of-range month like
   `"2019-13"`, but is **NOT** sufficient on its own for the year (a real
   bug, found in code review, fixed): a syntactically well-formed 4-digit

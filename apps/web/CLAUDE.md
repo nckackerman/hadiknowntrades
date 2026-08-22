@@ -1110,6 +1110,28 @@ left to justify a second route.
   a month boundary; an anchor outside the actually-published set just
   falls through to the ordinary `not_found` 404 instead, same as any
   preset range not yet computed on a first-ever pipeline run.
+- **`getPrecomputedResultResponse`'s JSON.parse try/catch alone wasn't
+  enough (second-round code review finding, fixed)**: a successfully-
+  parsed value can still be `null` or a non-object primitive (a
+  plausible shape for a partially-written S3 object -- see
+  `packages/core/CLAUDE.md`'s write-time validation notes), and the next
+  line used to read `.schemaVersion` straight off it -- a `null` parse
+  result throws an uncaught `TypeError` there, escaping this route as a
+  raw, undocumented 500 instead of the same 502 `corrupt_data` every
+  other malformed-data path here returns. Fixed with an explicit
+  `typeof parsed !== "object" || parsed === null` check folded into the
+  existing `corrupt_data` response, between the JSON.parse try/catch and
+  the schemaVersion check. Regression-tested for both `null` and a bare
+  number in `results-api.test.ts`.
+- **`ResultsPanel.tsx`'s `errorCopy()` switch had no case for
+  `"invalid_anchor"` (second-round code review finding, fixed)** -- a
+  real `ApiErrorCode` `getCustomResultsResponse` (above) returns for a
+  malformed `?anchor=` value, but the switch silently fell through to
+  the generic "Something went wrong" default instead of a tailored
+  message, unlike the symmetric `"invalid_range"` case ("Unsupported
+  range"). Added an `"invalid_anchor"` case ("Unsupported start date"),
+  with a regression test in `ResultsPanel.test.tsx` -- the original gap
+  was untested, which is how it shipped unnoticed.
 - **`CustomRangeSelector.tsx`** is a plain `<select>` next to
   `RangeSelector`, same reasoning `DaySelector` already established (see
   "Two result models" above): up to 252 anchor options is far too many

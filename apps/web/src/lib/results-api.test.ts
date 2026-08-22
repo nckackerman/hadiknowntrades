@@ -161,6 +161,26 @@ describe("getResultsResponse", () => {
     expect(body.error).toBe("corrupt_data");
   });
 
+  it("returns a 502 (not an uncaught TypeError) when the stored object parses to `null` -- a plausible partial-write shape", async () => {
+    const objects = new Map([["results/1Y.json", "null"]]);
+
+    const response = await getResultsResponse("1Y", memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("corrupt_data");
+  });
+
+  it("returns a 502 when the stored object parses to a non-object primitive", async () => {
+    const objects = new Map([["results/1Y.json", "42"]]);
+
+    const response = await getResultsResponse("1Y", memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("corrupt_data");
+  });
+
   it("reads the range-specific key and returns the parsed result with 200 and caching headers, case-insensitively", async () => {
     const result = fixtureResult("1Y");
     const objects = new Map([["results/1Y.json", JSON.stringify(result)]]);

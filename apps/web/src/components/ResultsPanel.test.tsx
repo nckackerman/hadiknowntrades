@@ -209,6 +209,18 @@ describe("ResultsPanel", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/not published yet/i);
   });
 
+  it("shows an unsupported-start-date message for a 400 invalid_anchor", () => {
+    const state: ResultsState = {
+      status: "error",
+      httpStatus: 400,
+      error: "invalid_anchor",
+      message: 'Unsupported or missing "anchor" query parameter. Received: bogus.',
+    };
+    render(<ResultsPanel range="1Y" state={state} />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/unsupported start date/i);
+  });
+
   it("shows a server-misconfigured message for a 500", () => {
     const state: ResultsState = {
       status: "error",

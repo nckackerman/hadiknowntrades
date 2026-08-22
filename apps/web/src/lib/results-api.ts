@@ -155,13 +155,28 @@ async function getPrecomputedResultResponse<
     return errorResponse(404, "not_found", config.notFoundMessage(parsed));
   }
 
-  let result: TResult;
+  let parsedBody: unknown;
   try {
-    result = JSON.parse(raw) as TResult;
+    parsedBody = JSON.parse(raw);
   } catch (error) {
     console.error(`[api/results] stored ${label} is not valid JSON:`, error);
     return errorResponse(502, "corrupt_data", "Stored results could not be parsed.");
   }
+
+  // JSON.parse succeeds on plenty of shapes that aren't a usable result
+  // object -- `null`, a bare number/string/boolean, or an array -- any of
+  // which is a plausible shape for a partially-written S3 object (this
+  // codebase's own docs note apps/pipeline's writes are non-atomic, see
+  // packages/core/CLAUDE.md's write-time validation notes). Without this
+  // check, `result.schemaVersion` below would throw an uncaught TypeError
+  // for a `null` parse result (reading a property off `null`) and escape
+  // this route as a raw, undocumented 500 instead of the same 502
+  // `corrupt_data` response every other malformed-data path here returns.
+  if (typeof parsedBody !== "object" || parsedBody === null) {
+    console.error(`[api/results] stored ${label} did not parse to a JSON object`);
+    return errorResponse(502, "corrupt_data", "Stored results could not be parsed.");
+  }
+  const result = parsedBody as TResult;
 
   // apps/pipeline (writer) and this API (reader) are independently
   // deployable -- a schema bump on one side without the other must not

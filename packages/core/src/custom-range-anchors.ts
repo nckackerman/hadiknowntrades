@@ -137,8 +137,14 @@ export function customRangeAnchors(asOf: Date): AnchorMonth[] {
     // totalIndex.
     const totalIndex = startYear * 12 + startMonth - i;
     const year = Math.floor(totalIndex / 12);
-    const month = (totalIndex % 12) + 1;
-    anchors.push(`${year}-${String(month).padStart(2, "0")}`);
+    const month = totalIndex % 12; // 0-indexed, matching Date.UTC's own convention
+    // Routed through toAnchorMonth (below) rather than hand-rolling the
+    // identical zero-pad formatting a second time here -- a real,
+    // code-review-caught duplication: this function is the one real
+    // producer of AnchorMonth strings, but toAnchorMonth (exported
+    // through this package's public API for exactly this purpose) had
+    // zero actual callers anywhere in the codebase until this fix.
+    anchors.push(toAnchorMonth(new Date(Date.UTC(year, month, 1))));
   }
   return anchors;
 }

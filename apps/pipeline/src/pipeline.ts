@@ -218,30 +218,73 @@ interface UniverseFetchResult<TBar> {
 }
 
 /**
- * Fetches full history (from..to) for every ticker, with bounded
- * concurrency. A ticker that fails with TickerNotFoundError or
- * TransientFetchError is skipped (logged, doesn't fail the run) -- those
- * are per-ticker problems. Generic over the bar shape so the same
- * concurrency/abort/skip logic backs both the daily-close fetch and the
- * intraday-bar fetch (issue #28) instead of a second copy-pasted worker
- * pool.
+ * The one bounded-worker-pool shape every concurrency-capped loop in
+ * this file builds on: at most `concurrency` workers, each repeatedly
+ * pulling the next index off one shared cursor (`[0, itemCount)`) and
+ * awaiting `perItem(index)` for it, until either every index has been
+ * claimed or `perItem` signals to stop dispatching new work by
+ * returning `true`.
  *
- * BlockedError or UnexpectedResponseError set `abortError` rather than
- * throwing: a block means we shouldn't keep firing off hundreds more
- * requests, and an unexpected-response is documented (see
- * yahoo-client.ts) as "likely permanent regardless of symbol" -- i.e. a
- * systemic problem, not a per-ticker one, so treating it as an ordinary
- * skip would risk masking a total data-fetch failure as a handful of
- * unlucky tickers. Once any worker hits one of these, a shared flag
- * stops every worker from starting a *new* fetch (an in-flight request
- * already underway still completes/rejects on its own -- there's no
- * cheap way to cancel it without threading an AbortSignal through the
- * fetch client -- but no further tickers get queued once the flag is
- * set). Returning `abortError` instead of throwing preserves whatever
- * `skipped` had already been accumulated from tickers that failed
- * individually *before* the abort -- a caller that discards `history` on
- * abort (see fetchPathHistory) can still keep that real per-ticker
- * bookkeeping instead of losing it along with the untrusted partial data.
+ * **Factored out so there's exactly one implementation of this pattern
+ * in this file (issue #11 code review finding, second round)**:
+ * `fetchUniverseHistory` (every fetch pool, issue #28) and
+ * `mapWithConcurrency` (the S3 write loop, issue #11) used to each hand-
+ * roll their own copy of this exact "N workers pulling the next index
+ * off a shared cursor" loop -- a previous fix round asked for
+ * `mapWithConcurrency` to "mirror" `fetchUniverseHistory`'s own shape,
+ * which produced a second, independently-written copy instead of true
+ * reuse. Both now call this one function; only what each does *per
+ * item* differs.
+ *
+ * A worker checks `stopped` *before* claiming its next index, the same
+ * place `fetchUniverseHistory`'s original abort check lived -- an
+ * in-flight `perItem` call already underway when another worker signals
+ * stop still runs to completion (there's no cheap way to cancel it
+ * without threading an AbortSignal through the caller's own async work),
+ * but no further indices get claimed once the flag is set.
+ */
+async function runWorkerPool(
+  itemCount: number,
+  concurrency: number,
+  perItem: (index: number) => Promise<boolean | void>,
+): Promise<void> {
+  let nextIndex = 0;
+  let stopped = false;
+
+  async function worker(): Promise<void> {
+    for (;;) {
+      if (stopped) return;
+      const i = nextIndex++;
+      if (i >= itemCount) return;
+      if (await perItem(i)) stopped = true;
+    }
+  }
+
+  const workerCount = Math.min(concurrency, itemCount);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+}
+
+/**
+ * Fetches full history (from..to) for every ticker, with bounded
+ * concurrency (via runWorkerPool above). A ticker that fails with
+ * TickerNotFoundError or TransientFetchError is skipped (logged,
+ * doesn't fail the run) -- those are per-ticker problems. Generic over
+ * the bar shape so the same concurrency/abort/skip logic backs both the
+ * daily-close fetch and the intraday-bar fetch (issue #28) instead of a
+ * second copy-pasted worker pool.
+ *
+ * BlockedError or UnexpectedResponseError set `abortError` and signal
+ * runWorkerPool to stop (by returning `true`) rather than throwing: a
+ * block means we shouldn't keep firing off hundreds more requests, and
+ * an unexpected-response is documented (see yahoo-client.ts) as "likely
+ * permanent regardless of symbol" -- i.e. a systemic problem, not a
+ * per-ticker one, so treating it as an ordinary skip would risk masking
+ * a total data-fetch failure as a handful of unlucky tickers. Returning
+ * `abortError` instead of throwing preserves whatever `skipped` had
+ * already been accumulated from tickers that failed individually
+ * *before* the abort -- a caller that discards `history` on abort (see
+ * fetchPathHistory) can still keep that real per-ticker bookkeeping
+ * instead of losing it along with the untrusted partial data.
  */
 async function fetchUniverseHistory<TBar>(
   tickers: readonly string[],
@@ -252,57 +295,49 @@ async function fetchUniverseHistory<TBar>(
 ): Promise<UniverseFetchResult<TBar>> {
   const history = new Map<string, TBar[]>();
   const skipped: string[] = [];
-  let nextIndex = 0;
   let abortError: BlockedError | UnexpectedResponseError | null = null;
 
-  async function worker(): Promise<void> {
-    for (;;) {
-      if (abortError) return;
-      const i = nextIndex++;
-      if (i >= tickers.length) return;
-      const ticker = tickers[i]!;
-      try {
-        const series = await fetchFn(ticker, from, to);
-        history.set(ticker, series);
-      } catch (error) {
-        if (error instanceof BlockedError || error instanceof UnexpectedResponseError) {
-          abortError = error;
-          return;
-        }
-        skipped.push(ticker);
-        console.warn(
-          `[pipeline] skipping ${ticker}: ${error instanceof Error ? error.message : error}`,
-        );
+  await runWorkerPool(tickers.length, concurrency, async (i) => {
+    const ticker = tickers[i]!;
+    try {
+      const series = await fetchFn(ticker, from, to);
+      history.set(ticker, series);
+    } catch (error) {
+      if (error instanceof BlockedError || error instanceof UnexpectedResponseError) {
+        abortError = error;
+        return true;
       }
+      skipped.push(ticker);
+      console.warn(
+        `[pipeline] skipping ${ticker}: ${error instanceof Error ? error.message : error}`,
+      );
     }
-  }
-
-  const workerCount = Math.min(concurrency, tickers.length);
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    return false;
+  });
 
   return { history, skipped, abortError };
 }
 
 /**
- * Runs `worker` over `items` with at most `concurrency` running at once,
- * collecting every outcome (success or failure) as a
- * Promise.allSettled-shaped result array -- the same "N workers each
- * pulling the next index off a shared cursor" bounded-concurrency shape
- * fetchUniverseHistory's own `worker`/`workerCount` loop above already
- * uses for every fetch pool, mirrored here (not reinvented as a second,
- * differently-shaped mechanism) for the pipeline's own S3 write loop
- * (issue #11 code review finding): before this, the write loop fired
- * every WriteJob's putObject via one unbounded `Promise.allSettled`, the
- * only place in this file with no concurrency cap at all, unlike every
- * fetch pool's own DEFAULT_FETCH_CONCURRENCY.
+ * Runs `worker` over `items` with at most `concurrency` running at once
+ * (via runWorkerPool above), collecting every outcome (success or
+ * failure) as a Promise.allSettled-shaped result array, in original item
+ * order -- backs the pipeline's own S3 write loop (issue #11 code review
+ * finding): before this existed, the write loop fired every WriteJob's
+ * putObject via one unbounded `Promise.allSettled`, the only place in
+ * this file with no concurrency cap at all, unlike every fetch pool's
+ * own DEFAULT_FETCH_CONCURRENCY.
  *
- * A generic, item-order-preserving cousin of fetchUniverseHistory's own
- * worker loop rather than a literal call-through to it: that function is
- * daily-close/intraday-bar-fetch-specific (BlockedError/
- * UnexpectedResponseError abort classification, a `history`
- * Map<string, TBar[]> return shape) in a way that doesn't generalize to
- * "run an arbitrary async job over an arbitrary item list," which is all
- * the write loop actually needs.
+ * A generic, item-order-preserving instantiation of runWorkerPool rather
+ * than a call into fetchUniverseHistory itself: that function's own
+ * return shape (BlockedError/UnexpectedResponseError abort
+ * classification, a `history` Map<string, TBar[]>) is daily-close/
+ * intraday-bar-fetch-specific in a way that doesn't generalize to "run
+ * an arbitrary async job over an arbitrary item list, never aborting
+ * early," which is all the write loop actually needs -- this function
+ * never returns `true` from its own runWorkerPool callback, so every
+ * item always gets a chance to run regardless of an earlier item's
+ * outcome.
  */
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
@@ -310,23 +345,15 @@ async function mapWithConcurrency<T, R>(
   worker: (item: T, index: number) => Promise<R>,
 ): Promise<PromiseSettledResult<R>[]> {
   const results: PromiseSettledResult<R>[] = new Array(items.length);
-  let nextIndex = 0;
 
-  async function run(): Promise<void> {
-    for (;;) {
-      const i = nextIndex++;
-      if (i >= items.length) return;
-      try {
-        const value = await worker(items[i]!, i);
-        results[i] = { status: "fulfilled", value };
-      } catch (reason) {
-        results[i] = { status: "rejected", reason };
-      }
+  await runWorkerPool(items.length, concurrency, async (i) => {
+    try {
+      const value = await worker(items[i]!, i);
+      results[i] = { status: "fulfilled", value };
+    } catch (reason) {
+      results[i] = { status: "rejected", reason };
     }
-  }
-
-  const workerCount = Math.min(concurrency, items.length);
-  await Promise.all(Array.from({ length: workerCount }, () => run()));
+  });
 
   return results;
 }
@@ -840,6 +867,22 @@ interface BuildCustomWindowResultsOptions {
 }
 
 /**
+ * buildCustomWindowResults's return value: the actual computed results,
+ * plus a count of how many requested anchors were validly skipped
+ * (duplicate, malformed, or future-dated -- see the loop below) rather
+ * than genuinely failing. runPipeline's own `expectedResultCount` (the
+ * denominator in its aggregated-failure message) subtracts this count so
+ * the "wrote N of M" ratio doesn't overstate the real gap for a future
+ * caller whose anchor list isn't as clean as customRangeAnchors's own
+ * (which never produces a duplicate/malformed/future-dated entry today).
+ */
+interface CustomWindowResultsBuild {
+  results: CustomWindowResult[];
+  /** Requested anchors skipped for a legitimate reason (not a failure) -- see the loop below for the three cases. */
+  validlySkippedCount: number;
+}
+
+/**
  * Computes one CustomWindowResult per requested anchor (issue #11's
  * coarsened design) -- structurally the same per-window computation as
  * buildWindowResults above (same computeWindowOptimization call, same
@@ -857,8 +900,9 @@ function buildCustomWindowResults({
   skipped,
   benchmarkCloses,
   anchors,
-}: BuildCustomWindowResultsOptions): CustomWindowResult[] {
+}: BuildCustomWindowResultsOptions): CustomWindowResultsBuild {
   const results: CustomWindowResult[] = [];
+  let validlySkippedCount = 0;
   // Defensive de-dup guard (code review finding, issue #11): customResultKey
   // is a pure function of anchorMonth alone, so two anchors list entries
   // sharing the same anchorMonth would otherwise silently collide on the
@@ -874,6 +918,7 @@ function buildCustomWindowResults({
       console.warn(
         `[pipeline] skipping duplicate custom-range anchor "${anchorMonth}" (already computed a result for it this run)`,
       );
+      validlySkippedCount++;
       continue;
     }
     seenAnchors.add(anchorMonth);
@@ -885,6 +930,7 @@ function buildCustomWindowResults({
       // principle pass an arbitrary list (e.g. a test). Skip rather than
       // crash the whole nightly run over one bad string.
       console.warn(`[pipeline] skipping malformed custom-range anchor "${anchorMonth}"`);
+      validlySkippedCount++;
       continue;
     }
     const startDateString = toDateString(anchorDate);
@@ -895,7 +941,13 @@ function buildCustomWindowResults({
     // principle include one. A future-dated anchor has literally nothing
     // to compute (there's no data past endDateString), so skip it rather
     // than writing a degenerate always-empty CustomWindowResult.
-    if (startDateString > endDateString) continue;
+    if (startDateString > endDateString) {
+      console.warn(
+        `[pipeline] skipping future-dated custom-range anchor "${anchorMonth}" (starts ${startDateString}, after endDate ${endDateString})`,
+      );
+      validlySkippedCount++;
+      continue;
+    }
 
     const { windowed, best, worst } = computeWindowOptimization(
       history,
@@ -924,7 +976,7 @@ function buildCustomWindowResults({
     });
   }
 
-  return results;
+  return { results, validlySkippedCount };
 }
 
 /**
@@ -1334,8 +1386,8 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // Defaults to zero anchors unless the caller opts in (see
   // RunPipelineOptions.customRangeAnchors's own doc comment) -- src/run.ts
   // is the one real caller that does, for the actual nightly run.
-  const customResults = windowFetch.failureReason
-    ? []
+  const customBuild: CustomWindowResultsBuild = windowFetch.failureReason
+    ? { results: [], validlySkippedCount: 0 }
     : buildCustomWindowResults({
         history: windowFetch.history,
         dataAsOf: windowFetch.dataAsOf!,
@@ -1347,6 +1399,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         benchmarkCloses: benchmarkFetch.closes,
         anchors: options.customRangeAnchors ?? [],
       });
+  const customResults = customBuild.results;
 
   if (windowResults.length === 0 && intradayResults.length === 0) {
     // Refuse to overwrite S3's existing (presumably good) results with
@@ -1522,7 +1575,18 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     // were ever attempted out of an expected 5). Preserves this
     // message's original "wrote N of 5 ranges" framing (pre-issue #11)
     // while generalizing to also count custom anchors.
-    const expectedResultCount = PRESET_RANGES.length + (options.customRangeAnchors?.length ?? 0);
+    //
+    // Subtracts customBuild.validlySkippedCount (a duplicate, malformed,
+    // or future-dated anchor buildCustomWindowResults itself chose to
+    // skip, not a failure) so this ratio doesn't overstate the real gap
+    // for a future caller whose anchor list isn't as clean as
+    // customRangeAnchors's own (which never produces one of these today
+    // -- see that function's own tests). Zero for the one real production
+    // caller in practice, so this is a no-op there.
+    const expectedResultCount =
+      PRESET_RANGES.length +
+      (options.customRangeAnchors?.length ?? 0) -
+      customBuild.validlySkippedCount;
     throw new Error(
       `pipeline: wrote ${writtenCount} of ${expectedResultCount} expected result(s) (${PRESET_RANGES.length} preset range(s), ${options.customRangeAnchors?.length ?? 0} custom anchor(s) requested; ${writeJobs.length} actually computed), but at least one path or write failed -- ` +
         `failing this run so it doesn't silently succeed while that path goes stale. ` +

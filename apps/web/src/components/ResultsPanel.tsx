@@ -47,6 +47,8 @@ function errorCopy(error: ClientErrorCode, apiMessage: string): { title: string;
       };
     case "invalid_range":
       return { title: "Unsupported range", body: apiMessage };
+    case "invalid_anchor":
+      return { title: "Unsupported start date", body: apiMessage };
     case "server_misconfigured":
       return {
         title: "Results are temporarily unavailable",

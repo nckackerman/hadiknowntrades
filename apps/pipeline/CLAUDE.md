@@ -216,21 +216,33 @@ options.store.putObject(job.key, job.body); return job.label; })` --
   write jobs: 5 preset + up to 252 custom anchors -- this feature's own
   live verification explicitly excluded S3 writes, see
   `packages/core/CLAUDE.md`'s "Custom date-range anchors" section).
-  `mapWithConcurrency` (this file) mirrors `fetchUniverseHistory`'s own
-  "N workers pulling the next index off a shared cursor" bounded-pool
-  shape rather than inventing a second, differently-structured
-  concurrency mechanism, but returns a `PromiseSettledResult<R>[]`
-  (fulfilled/rejected per item, in original item order) instead of
-  `fetchUniverseHistory`'s own `{ history, skipped, abortError }` shape
-  -- the two loops have genuinely different semantics (abort-on-systemic-
-  failure vs. "run every job to completion regardless"), so
-  `mapWithConcurrency` is a separate, more generic function, not a call
-  into `fetchUniverseHistory` itself. `writeConcurrency` defaults to the
-  same value as `fetchConcurrency` but is its own `RunPipelineOptions`
-  field -- deliberately not reusing `fetchConcurrency` directly, since
-  Yahoo's own request-volume tolerance and S3's are independent
-  concerns that could reasonably need different caps later even though
-  they happen to agree today.
+  `mapWithConcurrency` (this file) and `fetchUniverseHistory` both build
+  on one shared `runWorkerPool(itemCount, concurrency, perItem)` helper
+  (this file) -- **not two independent copies of the "N workers pulling
+  the next index off a shared cursor" loop that merely look alike, which
+  is what an earlier fix round actually produced despite claiming to
+  "mirror" the shape (a real, code-review-caught gap, second round --
+  asking for one function to "mirror" another's shape is not the same
+  instruction as asking it to reuse that shape, and got interpreted as
+  the weaker one).** `runWorkerPool` doesn't know about tickers, S3, or
+  abort classification at all -- it just calls `perItem(index)` per
+  claimed index and stops dispatching new work once some call returns
+  `true`. `fetchUniverseHistory` uses that `true` return for its
+  BlockedError/UnexpectedResponseError abort signal;
+  `mapWithConcurrency` never returns `true` (every job always gets a
+  chance to run) and instead uses `runWorkerPool` purely for the
+  concurrency cap, turning each outcome into a `PromiseSettledResult<R>`
+  itself. The two callers still return genuinely different shapes
+  (`{ history, skipped, abortError }` vs. `PromiseSettledResult<R>[]`,
+  in original item order) since their semantics differ (abort-on-
+  systemic-failure vs. "run every job to completion regardless") -- only
+  the worker-pool mechanics underneath are now actually shared, not just
+  described as such. `writeConcurrency` defaults to the same value as
+  `fetchConcurrency` but is its own `RunPipelineOptions` field --
+  deliberately not reusing `fetchConcurrency` directly, since Yahoo's
+  own request-volume tolerance and S3's are independent concerns that
+  could reasonably need different caps later even though they happen to
+  agree today.
 - **The write loop uses `Promise.allSettled`-equivalent semantics (every
   job settles, success or failure, before the loop decides anything),
   not `Promise.all` -- an early version of this used `Promise.all`, and
@@ -605,6 +617,25 @@ for the full design writeup.
   whenever a whole path failed before any of its results were even built
   (e.g. "wrote 2 of 2" reads as a clean 100%, hiding that a failed path
   meant only 2 were ever attempted out of an expected 5).
+  - **That denominator also subtracts anchors `buildCustomWindowResults`
+    itself validly skips (duplicate, malformed, or future-dated -- see
+    its own loop), not just anchors lost to a whole failed path (second-
+    round code review finding, fixed).** Before this, `expectedResultCount`
+    used the raw `options.customRangeAnchors.length` unconditionally, so
+    a caller-supplied anchor list containing e.g. a duplicate would count
+    it toward the "expected" total even though `buildCustomWindowResults`
+    never intended to write a result for it -- overstating the real gap
+    in the "wrote N of M" ratio for any future caller whose anchor list
+    isn't as clean as `customRangeAnchors`'s own (which never produces a
+    duplicate/malformed/future-dated entry today, per that function's own
+    tests -- so this is a no-op for the one real production caller,
+    purely a correctness fix for a less-clean future or test caller).
+    `buildCustomWindowResults` now returns `{ results, validlySkippedCount }`
+    instead of a bare array; `runPipeline` subtracts that count from
+    `expectedResultCount`. The future-dated-anchor skip branch also
+    gained a `console.warn` here, matching its two sibling skip branches
+    (duplicate, malformed), which both already logged -- it used to be
+    the only one of the three that skipped silently.
 - **This is the answer to the cache/invalidation-gap an independent
   reviewer flagged on the original plan**: there is no separate
   "permanent cache" for custom-anchor results, and therefore no separate
