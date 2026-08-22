@@ -15,6 +15,7 @@ import { IntradayTradeList } from "@/components/IntradayTradeList";
 import { PortfolioChart } from "@/components/PortfolioChart";
 import { StartingCapitalInput } from "@/components/StartingCapitalInput";
 import { TradeList } from "@/components/TradeList";
+import { WorstCaseStat } from "@/components/WorstCaseStat";
 
 const RANGE_COPY: Record<PresetRange, string> = {
   "1M": "the past month",
@@ -71,6 +72,70 @@ function LoadingSkeleton() {
         <div className="h-16 w-full rounded-lg bg-[var(--surface-2)]" />
         <div className="h-16 w-full rounded-lg bg-[var(--surface-2)]" />
       </div>
+    </div>
+  );
+}
+
+interface HeroAndWorstCaseProps {
+  /**
+   * Passed straight through as HeroStat's own `key` -- must change
+   * whenever the underlying result changes (a newly-selected intraday
+   * day, or a new range/dataAsOf for the window model) so useCountUp's
+   * reveal animation remounts and fires fresh instead of leaving the
+   * visible figure frozen at a stale animated value. See each call
+   * site's own key expression for what identifies "changed" for that
+   * model.
+   */
+  heroKey: string;
+  startingCapital: number;
+  endingBalance: number;
+  worstCaseEndingBalance: number;
+  /**
+   * The user's chosen starting capital (issue #15) to display-rescale
+   * both stats to -- defaults to `startingCapital` (a no-op ratio of 1)
+   * at each call site, the same optional-in-spirit convention `HeroStat`
+   * itself uses. Passed straight through to `HeroStat` as its own
+   * `displayStartingCapital` prop (layered on top of, not fed into, its
+   * count-up tween -- see that prop's own doc comment); `WorstCaseStat`
+   * has no animation to protect, so it's simpler here: rescale
+   * `worstCaseEndingBalance` directly via `rescaleFromStartingCapital`
+   * and pass the rescaled pair straight in. The multiplier either
+   * component derives (`endingBalance / startingCapital`) is unaffected
+   * either way, since rescaling multiplies both sides by the same ratio.
+   */
+  displayStartingCapital: number;
+}
+
+/**
+ * The HeroStat + WorstCaseStat pairing shared by both the intraday-daily
+ * and window-model success branches below -- same wrapper layout, same
+ * two stats side by side, differing only in which day's or range's
+ * numbers feed them and what identifies "the result changed" for
+ * `heroKey`.
+ */
+function HeroAndWorstCase({
+  heroKey,
+  startingCapital,
+  endingBalance,
+  worstCaseEndingBalance,
+  displayStartingCapital,
+}: HeroAndWorstCaseProps) {
+  return (
+    <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:gap-8">
+      <HeroStat
+        key={heroKey}
+        startingCapital={startingCapital}
+        endingBalance={endingBalance}
+        displayStartingCapital={displayStartingCapital}
+      />
+      <WorstCaseStat
+        startingCapital={displayStartingCapital}
+        endingBalance={rescaleFromStartingCapital(
+          worstCaseEndingBalance,
+          startingCapital,
+          displayStartingCapital,
+        )}
+      />
     </div>
   );
 }
@@ -209,21 +274,26 @@ export function ResultsPanel({
                 onSubmit={(value) => submitGuess(value, effectiveStartingCapital)}
               />
             ) : (
-              <HeroStat
-                // Keyed on the active day so switching days (via
-                // DaySelector) remounts HeroStat instead of just updating
-                // its props in place -- useCountUp's reveal animation only
-                // fires on mount (see HeroStat's own doc comment), so
-                // without this key the visible figure would stay frozen
-                // at the previous day's animated value while the sr-only
-                // figure (driven directly by the prop) correctly updated,
-                // silently disagreeing with each other. Deliberately not
-                // keyed on startingCapital too (issue #15) -- a capital
-                // edit should rescale the figures instantly, not replay
-                // the reveal/celebration.
-                key={activeDay.date}
+              // Gated behind the same guess-then-reveal condition as the
+              // rest of this day's content (issue #34) -- showing
+              // WorstCaseStat's worst-case figure before the guess is
+              // submitted would partially spoil "the real answer" the
+              // guessing game is built around. `heroKey` is the active
+              // day's date so switching days (via DaySelector) remounts
+              // HeroStat instead of just updating its props in place --
+              // useCountUp's reveal animation only fires on mount (see
+              // HeroStat's own doc comment), so without this key the
+              // visible figure would stay frozen at the previous day's
+              // animated value while the sr-only figure (driven directly
+              // by the prop) correctly updated, silently disagreeing with
+              // each other. Deliberately not keyed on startingCapital too
+              // (issue #15) -- a capital edit should rescale the figures
+              // instantly, not replay the reveal/celebration.
+              <HeroAndWorstCase
+                heroKey={activeDay.date}
                 startingCapital={activeDay.startingCapital}
                 endingBalance={activeDay.endingBalance}
+                worstCaseEndingBalance={activeDay.worstCase.endingBalance}
                 displayStartingCapital={effectiveStartingCapital}
               />
             )}
@@ -305,7 +375,7 @@ export function ResultsPanel({
     <div className="flex flex-col gap-8">
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap items-end justify-between gap-4">
-          <HeroStat
+          <HeroAndWorstCase
             // Keyed on range + dataAsOf for the same reason the
             // intraday-daily branch above keys on activeDay.date: remount
             // HeroStat (not just update its props) whenever the underlying
@@ -319,9 +389,10 @@ export function ResultsPanel({
             // depend on it holding. Deliberately not keyed on
             // startingCapital too (issue #15) -- see the intraday-daily
             // branch's identical comment above.
-            key={`${data.range}-${data.dataAsOf}`}
+            heroKey={`${data.range}-${data.dataAsOf}`}
             startingCapital={data.startingCapital}
             endingBalance={data.endingBalance}
+            worstCaseEndingBalance={data.worstCase.endingBalance}
             displayStartingCapital={effectiveStartingCapital}
           />
           {onStartingCapitalChange && (

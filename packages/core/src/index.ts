@@ -26,13 +26,20 @@ export type { DailyClose, IntradayBar } from "./yahoo-client";
 // `node script.mjs` — there's no compiled .js output and no tsx/ts-node
 // in this repo (yet) to make that work outside a TS-aware runtime.
 
-export { buildCalendar, optimizeTrades, OptimizerInputError } from "./optimizer";
+export {
+  buildCalendar,
+  optimizeTrades,
+  optimizeWorstTrades,
+  optimizeBothDirections,
+  OptimizerInputError,
+} from "./optimizer";
 export type { Calendar, OptimizationResult, OptimizeOptions, Trade } from "./optimizer";
 
 export { optimizeIntradayDays } from "./intraday-optimizer";
 export type {
   IntradayDayResult,
   IntradayTrade,
+  IntradayWorstCaseResult,
   OptimizeIntradayOptions,
 } from "./intraday-optimizer";
 
@@ -52,4 +59,5 @@ export type {
   WindowResult,
   IntradayResult,
   ResultModel,
+  WorstCaseResult,
 } from "./results-schema";

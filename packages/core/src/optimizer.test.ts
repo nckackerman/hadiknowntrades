@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { buildCalendar, optimizeTrades, OptimizerInputError, type Calendar } from "./optimizer.js";
+import {
+  buildCalendar,
+  optimizeTrades,
+  optimizeWorstTrades,
+  OptimizerInputError,
+  type Calendar,
+} from "./optimizer.js";
 import type { DailyClose } from "./yahoo-client.js";
 
 // Backstop against a spy leaking into later tests if an assertion throws
@@ -211,6 +217,156 @@ describe("optimizeTrades: edge cases", () => {
   });
 });
 
+// --- optimizeWorstTrades (issue #31): the same DP's min-direction search.
+// See computeLevel's own doc comment (optimizer.ts) for exactly which
+// four comparison sites/sentinels flip between "max" and "min" -- these
+// tests exercise the min-direction behavior directly rather than trusting
+// that documentation alone.
+
+describe("optimizeWorstTrades: hand-verified fixtures", () => {
+  it("single ticker, one trade: picks the single worst buy/sell pair", () => {
+    // prices: [10, 20, 15, 30] -- worst is buy day1 (20) sell day2 (15) = 0.75x.
+    const prices = new Map([["A", series([10, 20, 15, 30])]]);
+
+    const result = optimizeWorstTrades(prices, { startingCapital: 20, maxTrades: 1 });
+
+    expect(multiplier(20, result.endingBalance)).toBeCloseTo(0.75, 6);
+    expect(result.trades).toEqual([
+      { ticker: "A", buyDate: "2024-01-02", buyPrice: 20, sellDate: "2024-01-03", sellPrice: 15 },
+    ]);
+  });
+
+  it("picks the worse ticker, not just the first one", () => {
+    // Ticker A: 10 -> 5 (0.5x). Ticker B: 20 -> 4 (0.2x). Should pick B.
+    const prices = new Map([
+      ["A", series([10, 5])],
+      ["B", series([20, 4])],
+    ]);
+
+    const result = optimizeWorstTrades(prices, { startingCapital: 20, maxTrades: 1 });
+
+    expect(multiplier(20, result.endingBalance)).toBeCloseTo(0.2, 6);
+    expect(result.trades).toEqual([
+      { ticker: "B", buyDate: "2024-01-01", buyPrice: 20, sellDate: "2024-01-02", sellPrice: 4 },
+    ]);
+  });
+
+  it("chains multiple losing trades across tickers to compound a worse result than any single trade", () => {
+    // Ticker A: [20, 5] -- worst trade 0.25x. Ticker B: [null, null, 30, 3] --
+    // only has data from day 2, worst trade 0.1x. Two non-overlapping
+    // losing trades compound to 0.025x, worse than either alone.
+    const prices = new Map([
+      ["A", series([20, 5])],
+      ["B", series([null, null, 30, 3])],
+    ]);
+
+    const result = optimizeWorstTrades(prices, { startingCapital: 20, maxTrades: 2 });
+
+    expect(multiplier(20, result.endingBalance)).toBeCloseTo(0.025, 6);
+    expect(result.trades).toEqual([
+      { ticker: "A", buyDate: "2024-01-01", buyPrice: 20, sellDate: "2024-01-02", sellPrice: 5 },
+      { ticker: "B", buyDate: "2024-01-03", buyPrice: 30, sellDate: "2024-01-04", sellPrice: 3 },
+    ]);
+  });
+
+  it("takes fewer than maxTrades when every available trade would be a gain (the rare 'still a gain' edge case, issue #31 plan section 1.4)", () => {
+    // Strictly rising prices -- every possible trade gains money, so the
+    // worst-case optimizer should take zero trades (multiplier 1) rather
+    // than force a gain into the "worst case" slot.
+    const prices = new Map([["A", series([10, 20, 30])]]);
+
+    const result = optimizeWorstTrades(prices, { startingCapital: 20, maxTrades: 3 });
+
+    expect(result.endingBalance).toBeCloseTo(20, 6);
+    expect(result.trades).toEqual([]);
+  });
+
+  it("uses fewer than maxTrades when only some trades are losing", () => {
+    // One losing trade (30 -> 5) followed by a strict rise (5 -> 40 -> 100).
+    // A second trade would only gain money, so with maxTrades=2 the
+    // worst-case optimizer should still take exactly one trade.
+    const prices = new Map([["A", series([30, 5, 40, 100])]]);
+
+    const result = optimizeWorstTrades(prices, { startingCapital: 20, maxTrades: 2 });
+
+    expect(multiplier(20, result.endingBalance)).toBeCloseTo(1 / 6, 6);
+    expect(result.trades).toEqual([
+      { ticker: "A", buyDate: "2024-01-01", buyPrice: 30, sellDate: "2024-01-02", sellPrice: 5 },
+    ]);
+  });
+
+  it("breaks a tie between equally-bad tickers deterministically (alphabetically first), same rule as the max direction", () => {
+    const pricesAB = new Map([
+      ["A", series([20, 10])],
+      ["B", series([20, 10])],
+    ]);
+    const pricesBA = new Map([
+      ["B", series([20, 10])],
+      ["A", series([20, 10])],
+    ]);
+
+    const resultAB = optimizeWorstTrades(pricesAB, { startingCapital: 20, maxTrades: 1 });
+    const resultBA = optimizeWorstTrades(pricesBA, { startingCapital: 20, maxTrades: 1 });
+
+    expect(resultAB.trades[0]?.ticker).toBe("A");
+    expect(resultBA.trades[0]?.ticker).toBe("A");
+    expect(resultAB.endingBalance).toBe(resultBA.endingBalance);
+  });
+});
+
+describe("optimizeWorstTrades: edge cases", () => {
+  it("returns the starting capital unchanged for an empty universe", () => {
+    const result = optimizeWorstTrades(new Map(), { startingCapital: 20, maxTrades: 3 });
+
+    expect(result.endingBalance).toBe(20);
+    expect(result.trades).toEqual([]);
+  });
+
+  it("returns the starting capital unchanged when maxTrades is 0", () => {
+    const prices = new Map([["A", series([10, 1])]]);
+
+    const result = optimizeWorstTrades(prices, { startingCapital: 20, maxTrades: 0 });
+
+    expect(result.endingBalance).toBe(20);
+    expect(result.trades).toEqual([]);
+  });
+
+  it("ignores a non-positive or non-finite close instead of dividing by it and producing garbage", () => {
+    const prices = new Map([
+      ["A", series([0, 30])],
+      ["B", series([10, 8, 6])],
+    ]);
+
+    const result = optimizeWorstTrades(prices, { startingCapital: 20, maxTrades: 1 });
+
+    expect(Number.isFinite(result.endingBalance)).toBe(true);
+    expect(multiplier(20, result.endingBalance)).toBeCloseTo(0.6, 6); // B: 10 -> 6
+    expect(result.trades[0]?.ticker).toBe("B");
+  });
+
+  it.each([-1, 1.5, NaN, Infinity, 51])(
+    "rejects an invalid maxTrades (%s) with a typed error instead of crashing or hanging",
+    (maxTrades) => {
+      const prices = new Map([["A", series([10, 20])]]);
+
+      expect(() => optimizeWorstTrades(prices, { startingCapital: 20, maxTrades })).toThrow(
+        OptimizerInputError,
+      );
+    },
+  );
+
+  it.each([0, -20, NaN, Infinity, -Infinity])(
+    "rejects a non-positive or non-finite startingCapital (%s) instead of silently propagating garbage",
+    (startingCapital) => {
+      const prices = new Map([["A", series([10, 20])]]);
+
+      expect(() => optimizeWorstTrades(prices, { startingCapital, maxTrades: 1 })).toThrow(
+        OptimizerInputError,
+      );
+    },
+  );
+});
+
 describe("buildCalendar", () => {
   it("unions dates across tickers and reindexes each ticker's prices, nulling gaps", () => {
     const prices = new Map([
@@ -275,9 +431,21 @@ describe("buildCalendar", () => {
 // validate the DP's efficient implementation actually computes the same
 // answer as trying every possibility.
 
-function bruteForceMultiplier(calendar: Calendar, maxTrades: number): number {
+/**
+ * @param direction "max" (the default, matching optimizeTrades) or "min"
+ *   (matching optimizeWorstTrades, issue #31) -- the exhaustive search
+ *   itself is direction-agnostic other than which of Math.max/Math.min
+ *   picks a winner at each branch point, so both directions share one
+ *   brute-force implementation rather than two copies.
+ */
+function bruteForceMultiplier(
+  calendar: Calendar,
+  maxTrades: number,
+  direction: "max" | "min" = "max",
+): number {
   const T = calendar.dates.length;
   const tickers = [...calendar.pricesByTicker.entries()];
+  const pick = direction === "max" ? Math.max : Math.min;
 
   function best(tradesLeft: number, minDay: number): number {
     if (tradesLeft === 0 || minDay >= T) return 1;
@@ -290,7 +458,7 @@ function bruteForceMultiplier(calendar: Calendar, maxTrades: number): number {
           const sellPrice = prices[sell];
           if (sellPrice === null || sellPrice === undefined) continue;
           const val = (sellPrice / buyPrice) * best(tradesLeft - 1, sell + 1);
-          if (val > bestVal) bestVal = val;
+          bestVal = pick(bestVal, val);
         }
       }
     }
@@ -375,6 +543,53 @@ describe("optimizeTrades: brute-force cross-check", () => {
   }
 });
 
+describe("optimizeWorstTrades: brute-force cross-check (issue #31)", () => {
+  for (const fixture of CROSS_CHECK_FIXTURES) {
+    it(`matches brute force in the min direction: ${fixture.name} (maxTrades=${fixture.maxTrades})`, () => {
+      const priceSeriesByTicker = new Map(
+        Object.entries(fixture.prices).map(([ticker, prices]) => [ticker, series(prices)]),
+      );
+      const calendar = buildCalendar(priceSeriesByTicker);
+      const expectedMultiplier = bruteForceMultiplier(calendar, fixture.maxTrades, "min");
+
+      const result = optimizeWorstTrades(priceSeriesByTicker, {
+        startingCapital: 1,
+        maxTrades: fixture.maxTrades,
+      });
+
+      expect(result.endingBalance).toBeLessThanOrEqual(expectedMultiplier + EPSILON);
+      expect(result.endingBalance).toBeCloseTo(expectedMultiplier, 6);
+    });
+  }
+});
+
+describe("optimizeWorstTrades: never beats optimizeTrades (worst <= optimal by construction)", () => {
+  // The min-search explores a subset of the same trade-sequence space the
+  // max-search does, so optimizeWorstTrades's endingBalance must never
+  // exceed optimizeTrades's for the same input -- exactly the invariant
+  // results-schema.ts's write-time validation also cross-checks. This is
+  // a strong, cheap regression guard against a comparator-flip mistake in
+  // computeLevel's direction parameterization.
+  for (const fixture of CROSS_CHECK_FIXTURES) {
+    it(`worst <= optimal: ${fixture.name} (maxTrades=${fixture.maxTrades})`, () => {
+      const priceSeriesByTicker = new Map(
+        Object.entries(fixture.prices).map(([ticker, prices]) => [ticker, series(prices)]),
+      );
+
+      const best = optimizeTrades(priceSeriesByTicker, {
+        startingCapital: 20,
+        maxTrades: fixture.maxTrades,
+      });
+      const worst = optimizeWorstTrades(priceSeriesByTicker, {
+        startingCapital: 20,
+        maxTrades: fixture.maxTrades,
+      });
+
+      expect(worst.endingBalance).toBeLessThanOrEqual(best.endingBalance + EPSILON);
+    });
+  }
+});
+
 // --- Fuzz test against the brute-force oracle -------------------------
 //
 // A deterministic (seeded, not Math.random -- reproducible in CI, never
@@ -435,6 +650,38 @@ describe("optimizeTrades: fuzz test against brute force", () => {
       });
 
       expect(result.endingBalance).toBeCloseTo(expectedMultiplier, 6);
+    });
+  }
+});
+
+describe("optimizeWorstTrades: fuzz test against brute force and the worst<=optimal invariant (issue #31)", () => {
+  // A separate seed from the max-direction fuzz test above -- not sharing
+  // one PRNG instance/seed keeps the two describe blocks' fixture sets
+  // independent of each other's iteration order or count.
+  const rand = mulberry32(0x5eed31);
+  const FUZZ_ITERATIONS = 300;
+
+  for (let i = 0; i < FUZZ_ITERATIONS; i++) {
+    const fixture = randomFixture(rand);
+
+    it(`fuzz case ${i}: ${JSON.stringify(fixture)}`, () => {
+      const priceSeriesByTicker = new Map(
+        Object.entries(fixture.prices).map(([ticker, prices]) => [ticker, series(prices)]),
+      );
+      const calendar = buildCalendar(priceSeriesByTicker);
+      const expectedMultiplier = bruteForceMultiplier(calendar, fixture.maxTrades, "min");
+
+      const worst = optimizeWorstTrades(priceSeriesByTicker, {
+        startingCapital: 1,
+        maxTrades: fixture.maxTrades,
+      });
+      const best = optimizeTrades(priceSeriesByTicker, {
+        startingCapital: 1,
+        maxTrades: fixture.maxTrades,
+      });
+
+      expect(worst.endingBalance).toBeCloseTo(expectedMultiplier, 6);
+      expect(worst.endingBalance).toBeLessThanOrEqual(best.endingBalance + EPSILON);
     });
   }
 });
