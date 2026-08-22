@@ -1,4 +1,4 @@
-// Currency formatting for the hero stat and chart axis. See
+// Currency/multiplier formatting for the hero stat and chart axis. See
 // packages/core/CLAUDE.md's "Fun/expected product quirk" note: the "Max"
 // range genuinely produces astronomically large endingBalance values (a
 // demo run hit ~$716M from $20; real full-universe runs over decades can
@@ -7,7 +7,11 @@
 // past its largest defined unit (trillion): it keeps piling raw digits
 // in front of "T" instead of stepping to a bigger unit, e.g.
 // $1,000,000,000T for 1e21. See this file's tests for that behavior
-// verified live against the runtime's Intl implementation.
+// verified live against the runtime's Intl implementation. The same
+// astronomical-scale problem applies to the endingBalance/startingCapital
+// *multiplier* (issue #45) -- a "Max" range's ratio can be just as huge
+// as the dollar figure it's derived from, so formatMultiplier below
+// shares this same compact/scientific ladder rather than re-deriving it.
 
 const COMPACT_UNITS: { threshold: number; suffix: string }[] = [
   { threshold: 1e12, suffix: "T" },
@@ -43,10 +47,81 @@ function toSuperscript(exponent: number): string {
     .join("");
 }
 
-function formatScientific(sign: string, abs: number): string {
+/**
+ * Scientific-notation fallback shared by every ladder past
+ * SCIENTIFIC_THRESHOLD. `prefix`/`suffix` are the only thing that differ
+ * between the `$`-prefixed currency ladder ("$1.23×10¹⁶") and the
+ * unitless-`x` multiplier ladder ("1.23×10¹⁶x").
+ */
+function formatScientific(sign: string, abs: number, { prefix = "", suffix = "" } = {}): string {
   const exponential = abs.toExponential(2); // e.g. "1.23e+16"
   const [mantissa, exponent] = exponential.split("e");
-  return `${sign}$${mantissa}×10${toSuperscript(Number(exponent))}`;
+  return `${sign}${prefix}${mantissa}×10${toSuperscript(Number(exponent))}${suffix}`;
+}
+
+/**
+ * The K/M/B/T compact-suffix step, shared by both the currency and
+ * multiplier ladders: scales `abs` (already known to be >= 1000) down to
+ * the largest unit that keeps it under 1000, stepping up a unit if
+ * rounding would otherwise push it out of range (e.g. 999,600 -> "1000"
+ * at the K unit steps up to "1M" instead of showing "1000K"). Returns
+ * `null` when even the largest unit (T) rounds out of range -- the
+ * caller's cue to fall through to `formatScientific` instead.
+ */
+function scaleToCompactUnit(
+  abs: number,
+): { scaled: number; digits: number; suffix: string } | null {
+  // COMPACT_UNITS' smallest threshold is 1e3 and callers only reach this
+  // with abs >= 1000, so this always finds a unit -- non-null assertion
+  // documents that instead of an unreachable fallback branch.
+  const unitIndex = COMPACT_UNITS.findIndex((u) => abs >= u.threshold);
+  let unit = COMPACT_UNITS[unitIndex]!;
+  let scaled = abs / unit.threshold;
+  // One decimal place, but don't show a trailing ".0" (e.g. "20K" not
+  // "20.0K") -- matches the stat-tile convention from the dataviz skill
+  // (auto-compact: 1,284 / 12.9K / $4.2M).
+  let digits = scaled >= 100 ? 0 : 1;
+
+  // toFixed rounds, and rounding can push a value right up to the next
+  // unit's boundary -- step up to the next larger unit instead of ever
+  // displaying an out-of-range "1000K".
+  if (Number(scaled.toFixed(digits)) >= 1000) {
+    if (unitIndex === 0) {
+      // Already at the largest compact unit (T): rounding pushed it past
+      // 999T, which is effectively the scientific-notation boundary this
+      // ladder already draws at 1e15.
+      return null;
+    }
+    unit = COMPACT_UNITS[unitIndex - 1]!;
+    scaled = abs / unit.threshold;
+    digits = scaled >= 100 ? 0 : 1;
+  }
+
+  return { scaled, digits, suffix: unit.suffix };
+}
+
+/**
+ * Formats `abs` (>= 1000) via the shared compact/scientific ladder,
+ * wrapping the result in `prefix`/`suffix` -- the one piece of the
+ * ladder that's specific to which caller (currency vs. multiplier) is
+ * using it.
+ */
+function formatCompactOrScientific(
+  sign: string,
+  abs: number,
+  options: { prefix?: string; suffix?: string } = {},
+): string {
+  if (abs >= SCIENTIFIC_THRESHOLD) {
+    return formatScientific(sign, abs, options);
+  }
+
+  const scale = scaleToCompactUnit(abs);
+  if (!scale) {
+    return formatScientific(sign, abs, options);
+  }
+
+  const formatted = scale.scaled.toFixed(scale.digits).replace(/\.0$/, "");
+  return `${sign}${options.prefix ?? ""}${formatted}${scale.suffix}${options.suffix ?? ""}`;
 }
 
 const plainCurrencyWithCents = new Intl.NumberFormat("en-US", {
@@ -89,39 +164,7 @@ function formatCurrency(value: number, { cents }: { cents: boolean }): string {
     return sign + (cents ? plainCurrencyWithCents : plainCurrencyWhole).format(abs);
   }
 
-  if (abs >= SCIENTIFIC_THRESHOLD) {
-    return formatScientific(sign, abs);
-  }
-
-  // COMPACT_UNITS' smallest threshold is 1e3 and abs >= 1000 is already
-  // guaranteed above, so this always finds a unit -- non-null assertion
-  // documents that instead of an unreachable fallback branch.
-  const unitIndex = COMPACT_UNITS.findIndex((u) => abs >= u.threshold);
-  let unit = COMPACT_UNITS[unitIndex]!;
-  let scaled = abs / unit.threshold;
-  // One decimal place, but don't show a trailing ".0" (e.g. "$20K" not
-  // "$20.0K") -- matches the stat-tile convention from the dataviz skill
-  // (auto-compact: 1,284 / 12.9K / $4.2M).
-  let digits = scaled >= 100 ? 0 : 1;
-
-  // toFixed rounds, and rounding can push a value right up to the next
-  // unit's boundary (e.g. 999,600 -> "1000" at the K unit) -- step up to
-  // the next larger unit instead of ever displaying an out-of-range
-  // "$1000K".
-  if (Number(scaled.toFixed(digits)) >= 1000) {
-    if (unitIndex === 0) {
-      // Already at the largest compact unit (T): rounding pushed it
-      // past 999T, which is effectively the scientific-notation
-      // boundary this function already draws at 1e15.
-      return formatScientific(sign, abs);
-    }
-    unit = COMPACT_UNITS[unitIndex - 1]!;
-    scaled = abs / unit.threshold;
-    digits = scaled >= 100 ? 0 : 1;
-  }
-
-  const formatted = scaled.toFixed(digits).replace(/\.0$/, "");
-  return `${sign}$${formatted}${unit.suffix}`;
+  return formatCompactOrScientific(sign, abs, { prefix: "$" });
 }
 
 /**
@@ -146,4 +189,36 @@ export function formatPercent(fraction: number): string {
   }
   const sign = fraction >= 0 ? "+" : "";
   return `${sign}${(fraction * 100).toFixed(1)}%`;
+}
+
+/**
+ * Formats a unitless "345x" multiplier badge for the hero stat (issue
+ * #45), e.g. `formatMultiplier(endingBalance / startingCapital)`. Shares
+ * `formatCurrency`'s compact-suffix/scientific-notation ladder
+ * (`scaleToCompactUnit`, `formatScientific`) rather than duplicating it,
+ * since a "Max" range's multiplier can be just as astronomically large
+ * as the dollar figure it's derived from -- see this file's top-of-file
+ * comment and `packages/core/CLAUDE.md`'s "Max range" note.
+ *
+ *   - Below 1000x: a plain number, whole from 10x up ("345x"), one
+ *     decimal below that ("1.5x") -- unlike formatCurrency, there's no
+ *     currency-style cents concept for a unitless ratio.
+ *   - 1000x up to 1e15x: a compact suffix, same ladder as currency
+ *     ("6.9Kx" / "716Mx" / "1.2Tx").
+ *   - 1e15x and above: scientific notation ("1.23×10¹⁶x").
+ */
+export function formatMultiplier(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "--";
+  }
+
+  const sign = value < 0 ? "-" : "";
+  const abs = Math.abs(value);
+
+  if (abs < 1000) {
+    const digits = abs >= 10 ? 0 : 1;
+    return `${sign}${abs.toFixed(digits).replace(/\.0$/, "")}x`;
+  }
+
+  return formatCompactOrScientific(sign, abs, { suffix: "x" });
 }

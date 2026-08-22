@@ -1,6 +1,6 @@
 "use client";
 
-import { formatHeroCurrency } from "@/lib/format-currency";
+import { formatHeroCurrency, formatMultiplier } from "@/lib/format-currency";
 import { shouldCelebrate } from "@/lib/should-celebrate";
 import { useCountUp } from "@/lib/use-count-up";
 import { CelebrationBurst } from "@/components/CelebrationBurst";
@@ -37,12 +37,30 @@ const COUNT_UP_DURATION_MS = 1200;
  * reuses this component. `settled` compares the animated value against
  * the final one bit-for-bit, which is safe because useCountUp always
  * sets the exact target (not an approximation) once it lands.
+ *
+ * A plain "(345x)" multiplier badge (issue #45) sits alongside the
+ * dollar figures, inside the same flex row -- deliberately *not* tied to
+ * the count-up: it's computed straight from the final
+ * `endingBalance`/`startingCapital` props, not `animatedEndingBalance`,
+ * so it's correct from the very first render with no mid-tween
+ * intermediate values to manage (no aria-hidden/sr-only pairing needed,
+ * unlike the animated figure above). Colored the same way TradeRow.tsx
+ * colors its own per-trade return badge (`--status-good`/
+ * `--status-critical`), reusing that established convention rather than
+ * inventing a new one -- including TradeRow's own `>= ` (not `>`)
+ * threshold for what counts as "good", so a flat 1x result reads as
+ * neutral/good rather than critical. That's deliberately a *different*
+ * threshold than this component's own `isGain` below, which stays a
+ * strict `>` because it gates the celebration burst, where "exactly
+ * broke even" should never fire confetti.
  */
 export function HeroStat({ startingCapital, endingBalance }: HeroStatProps) {
   const animatedEndingBalance = useCountUp(startingCapital, endingBalance, COUNT_UP_DURATION_MS);
   const isGain = endingBalance > startingCapital;
   const settled = animatedEndingBalance === endingBalance;
   const celebrate = shouldCelebrate(isGain, settled);
+  const multiplier = endingBalance / startingCapital;
+  const isMultiplierGain = multiplier >= 1;
 
   return (
     <div className="flex flex-col items-start gap-1">
@@ -58,6 +76,12 @@ export function HeroStat({ startingCapital, endingBalance }: HeroStatProps) {
           </span>
           <span aria-hidden="true">{formatHeroCurrency(animatedEndingBalance)}</span>
           <span className="sr-only">{formatHeroCurrency(endingBalance)}</span>
+          <span
+            className="text-xl font-semibold sm:text-2xl"
+            style={{ color: isMultiplierGain ? "var(--status-good)" : "var(--status-critical)" }}
+          >
+            ({formatMultiplier(multiplier)})
+          </span>
         </p>
         <CelebrationBurst active={celebrate} />
       </div>

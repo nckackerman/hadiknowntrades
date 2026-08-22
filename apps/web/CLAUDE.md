@@ -61,6 +61,19 @@ UI changes can now get an actual rendered screenshot, not just component
 tests and traced fixture data -- worth reaching for on any visual/layout
 change, not only decorative ones.
 
+**Screenshotting a component locally when there's no real S3 data
+(issue #45)**: this machine has no `RESULTS_BUCKET` env var and no AWS
+credentials wired up for local `next dev`, so `/?range=...` 500s on
+`/api/results` before any real page ever renders -- there's no fixture
+route to fall back to either. Don't let that block a screenshot
+verification: add a throwaway route (e.g.
+`src/app/debug-hero-stat/page.tsx`) that imports the component directly
+and renders it with hardcoded props, screenshot that, then delete the
+route before committing -- it never needs to touch the results-API path
+at all. Worked cleanly for HeroStat's multiplier badge (rendered four
+prop combinations -- big gain, flat, loss, "Max"-scale astronomical gain
+-- on one throwaway page in a single screenshot pass).
+
 ## Client-side animation (`useCountUp`, issue #35)
 
 `HeroStat.tsx`'s count-up reveal (`lib/use-count-up.ts`) is a plain
@@ -149,6 +162,39 @@ couple dozen absolutely-positioned `<span>`s, no canvas/library
   `shouldCelebrate` latching `prefersReducedMotion()` once at the
   render where `isGain && settled` first goes true rather than
   re-reading it every render.
+
+### Multiplier badge (issue #45)
+
+`HeroStat.tsx`'s "(345x)" badge sits in the same flex row as the dollar
+figures (inside the existing `<p>`, still inside the burst's `relative`
+wrapper -- no new wrapping div needed) and is deliberately computed from
+the final `endingBalance`/`startingCapital` props, not
+`animatedEndingBalance` -- it's correct on the very first render with no
+mid-tween intermediate value, so unlike the dollar figures it needs no
+`aria-hidden`/`sr-only` pairing at all.
+
+It reuses `TradeRow.tsx`'s established gain/loss coloring convention
+(`--status-good`/`--status-critical`), but **deliberately at a different
+threshold than this same component's own `isGain`**: the badge treats an
+exact 1x (flat) result as a gain (`multiplier >= 1`, matching TradeRow's
+own `returnFraction >= 0`), while `isGain` (`endingBalance >
+startingCapital`, strict) stays untouched because it also gates the
+celebration burst, where "exactly broke even" should never fire
+confetti. Don't unify these into one flag -- they answer different
+questions (what color reads as bad vs. what's worth celebrating) and
+happen to only look the same at a glance.
+
+`formatMultiplier` (`format-currency.ts`) reuses `formatCurrency`'s
+compact-suffix/scientific-notation ladder via two extracted helpers,
+`scaleToCompactUnit` (the K/M/B/T step) and a `prefix`/`suffix`-
+parameterized `formatScientific` -- the multiplier ladder differs from
+the currency one only in having no `$`/no-cents-vs-cents branch for its
+own sub-1000 case (a plain `toFixed`, not an `Intl.NumberFormat`, since
+there's no currency-style cents concept for a unitless ratio) and in
+appending `x` as a suffix instead of `$` as a prefix. Verified live via
+a throwaway route (see "Screenshotting a component locally" above) that
+a "Max"-range-scale ending balance (~$716M from $20) renders as
+`(35.8Mx)`, not a wall of digits.
 
 ## Two result models since issue #28: window vs. intraday-daily
 

@@ -75,6 +75,63 @@ describe("HeroStat", () => {
     expect(screen.getAllByText("$20.00")).toHaveLength(1); // only the static starting-capital figure
   });
 
+  describe("multiplier badge (issue #45)", () => {
+    it("renders the multiplier alongside the dollar figures, next to (not replacing) them", () => {
+      render(<HeroStat startingCapital={20} endingBalance={6876.86} />);
+
+      // 6876.86 / 20 = 343.843, rounds to a whole "344x" -- see
+      // format-currency.test.ts for the rounding rules themselves.
+      expect(screen.getByText("(344x)")).toBeInTheDocument();
+      // The dollar figures are still there too -- this is additive, not
+      // a replacement (see the earlier "renders the starting capital
+      // plainly" test for the fuller assertion on those).
+      expect(
+        screen.getByText("$20.00", { selector: "span:not([aria-hidden])" }),
+      ).toBeInTheDocument();
+    });
+
+    it("shows the final multiplier immediately, not tied to the count-up animation", () => {
+      stubPrefersReducedMotion(false);
+      // Never invoke the callback -- the count-up figure itself is still
+      // stuck at its starting value (see the equivalent dollar-figure
+      // test above), but the multiplier badge isn't driven by the same
+      // animation and should already read the final ratio.
+      vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+
+      render(<HeroStat startingCapital={20} endingBalance={6876.86} />);
+
+      expect(screen.getByText("(344x)")).toBeInTheDocument();
+    });
+
+    it("is plain static text, not wired to aria-live or aria-hidden the way the animated figure is", () => {
+      render(<HeroStat startingCapital={20} endingBalance={6876.86} />);
+
+      const badge = screen.getByText("(344x)");
+      expect(badge).not.toHaveAttribute("aria-live");
+      expect(badge).not.toHaveAttribute("aria-hidden");
+    });
+
+    it("colors the badge as a gain when the multiplier is at least 1x", () => {
+      render(<HeroStat startingCapital={20} endingBalance={6876.86} />);
+
+      expect(screen.getByText("(344x)")).toHaveStyle({ color: "var(--status-good)" });
+    });
+
+    it("colors the badge as a loss when the multiplier is below 1x", () => {
+      render(<HeroStat startingCapital={20} endingBalance={5} />);
+
+      const badge = screen.getByText("(0.3x)");
+      expect(badge).toBeInTheDocument();
+      expect(badge).toHaveStyle({ color: "var(--status-critical)" });
+    });
+
+    it("colors a flat, exactly-1x result as a gain (not critical), matching TradeRow's >= threshold", () => {
+      render(<HeroStat startingCapital={20} endingBalance={20} />);
+
+      expect(screen.getByText("(1x)")).toHaveStyle({ color: "var(--status-good)" });
+    });
+  });
+
   describe("celebration burst (issue #36)", () => {
     it("fires once the count-up lands on a gain", () => {
       stubPrefersReducedMotion(false);
