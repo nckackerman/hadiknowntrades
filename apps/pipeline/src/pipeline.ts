@@ -475,17 +475,42 @@ function maxDateString(a: string, b: string | null): string {
  * `longShort.endingBalance`, regardless of which of the two bundles'
  * source day ends up winning independently.
  */
+interface MergeDaysByGranularityOutcome {
+  days: IntradayDayResult[];
+  /**
+   * One entry per date where mergeDayVariants had to fall back instead
+   * of combining the two sources' bundles (see that function's own doc
+   * comment) -- expected to be empty on every real run (the underlying
+   * cross-check is proven to never actually fire, see below), but
+   * plumbed through to buildIntradayResults' own `failures` return so a
+   * violation, if the "never" premise is ever wrong, still fails the run
+   * via computeFailures instead of only being visible as a console.error
+   * buried in CloudWatch.
+   */
+  failures: string[];
+}
+
 function mergeDaysByGranularity(
   primaryDays: IntradayDayResult[],
   overrideDays: IntradayDayResult[],
-): IntradayDayResult[] {
+): MergeDaysByGranularityOutcome {
   const byDate = new Map<string, IntradayDayResult>();
+  const failures: string[] = [];
   for (const day of primaryDays) byDate.set(day.date, day);
   for (const day of overrideDays) {
     const existing = byDate.get(day.date);
-    byDate.set(day.date, existing ? mergeDayVariants(existing, day) : day);
+    if (!existing) {
+      byDate.set(day.date, day);
+      continue;
+    }
+    const { day: merged, fallback } = mergeDayVariants(existing, day);
+    if (fallback) failures.push(fallback);
+    byDate.set(day.date, merged);
   }
-  return [...byDate.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return {
+    days: [...byDate.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
+    failures,
+  };
 }
 
 /**
@@ -524,33 +549,83 @@ function mergeDaysByGranularity(
  * - `merged.longShort.worstCase.endingBalance <=
  *   merged.worstCase.endingBalance`: this is the one that needs real
  *   care -- a same-source-only argument does NOT obviously carry over
- *   once the two bundles can come from different sources. It holds
- *   anyway, by a structural property of this optimizer's reciprocal-price
- *   short model (see optimizer.ts's header comment): for *any* single
- *   source `S`, flipping every leg of `S`'s own long-only-worst trade
- *   sequence (long <-> short, same slots) is always a *valid* candidate
- *   sequence for `S`'s own longShort-best search (same day, same
- *   candidate pool, includeShorts=true both ways) -- so
- *   `S.longShort.endingBalance >= startingCapital^2 /
- *   S.worstCase.endingBalance`, i.e. `S.worstCase.endingBalance >=
- *   startingCapital^2 / S.longShort.endingBalance`. Applying this to `X`:
- *   `X.worstCase.endingBalance >= startingCapital^2 /
- *   X.longShort.endingBalance`. Symmetrically, flipping every leg of
- *   `Y`'s own longShort-*worst* sequence is a valid candidate for `Y`'s
- *   own longShort-*best* search, giving `Y.longShort.worstCase.endingBalance
- *   <= startingCapital^2 / Y.longShort.endingBalance`. Since (by
- *   definition of `Y` winning) `Y.longShort.endingBalance >
- *   X.longShort.endingBalance`, we get `startingCapital^2 /
- *   Y.longShort.endingBalance < startingCapital^2 /
- *   X.longShort.endingBalance <= X.worstCase.endingBalance =
- *   merged.worstCase.endingBalance`. Chaining:
+ *   once the two bundles can come from different sources. **A prior
+ *   version of this comment's proof for this bullet had a real
+ *   directional algebra error, caught in a later code-review round: it
+ *   described flipping `Y`'s own longShort-*worst* sequence into a
+ *   candidate for `Y`'s own longShort-*best* search, which actually
+ *   derives `Y.longShort.worstCase.endingBalance >= startingCapital^2 /
+ *   Y.longShort.endingBalance` (a *lower* bound on the product, the
+ *   opposite of what's needed) -- not the `<=` the old text claimed.
+ *   Both the corrected derivation below and a 20,000-trial randomized
+ *   brute-force check against the real `optimizeAllVariants` (varied
+ *   ticker counts, trade counts, and price ranges down to 0.0001,
+ *   specifically to stress the reciprocal-price short's near-zero
+ *   overflow regime; 2,087 of those trials genuinely exercised the
+ *   `X !== Y` disagreeing-winners case this proof depends on) found
+ *   **zero violations** -- the corrected proof's conclusion is the same
+ *   as the original's stated (if mis-derived) conclusion, it just needed
+ *   the right derivation to actually be trustworthy.**
+ *
+ *   The corrected derivation, by a structural property of this
+ *   optimizer's reciprocal-price short model (see optimizer.ts's header
+ *   comment): for *any* single source `S`, flipping every leg of a
+ *   candidate sequence (long <-> short, same slots, same day) turns a
+ *   sequence worth `v` into one worth `startingCapital^2 / v`, and the
+ *   flipped sequence is always a *valid* candidate wherever the original
+ *   was (same day, same candidate pool, includeShorts=true both ways).
+ *   Two flips are used, each pairing a sequence with the search *most
+ *   directly bounded* by its flip -- flipping into a *max* search only
+ *   ever yields a *lower* bound on that search's result (the max can't be
+ *   beaten by one specific candidate); flipping into a *min* search only
+ *   ever yields an *upper* bound (symmetric reasoning): (1) flipping `X`'s
+ *   own long-only-*worst* sequence is a valid candidate for `X`'s own
+ *   longShort-*best* search (a max search) -- giving a lower bound,
+ *   `X.longShort.endingBalance >= startingCapital^2 /
+ *   X.worstCase.endingBalance`, i.e. `X.worstCase.endingBalance >=
+ *   startingCapital^2 / X.longShort.endingBalance`. (2) flipping `Y`'s own
+ *   longShort-*best* sequence is a valid candidate for `Y`'s own
+ *   longShort-*worst* search (a min search) -- giving an upper bound,
+ *   `Y.longShort.worstCase.endingBalance <= startingCapital^2 /
+ *   Y.longShort.endingBalance` (this is the step the old text got
+ *   backwards: it must be *best* flipped into the *worst* search, not
+ *   *worst* into the *best* search, to land on a `<=` instead of a `>=`).
+ *   Since (by definition of `Y` winning) `Y.longShort.endingBalance >
+ *   X.longShort.endingBalance` (or `>=` on an exact tie, still enough
+ *   below), we get `startingCapital^2 / Y.longShort.endingBalance <=
+ *   startingCapital^2 / X.longShort.endingBalance <=
+ *   X.worstCase.endingBalance = merged.worstCase.endingBalance`. Chaining:
  *   `merged.longShort.worstCase.endingBalance =
  *   Y.longShort.worstCase.endingBalance <= startingCapital^2 /
- *   Y.longShort.endingBalance < merged.worstCase.endingBalance`. QED --
- *   this holds unconditionally, with no extra guard needed at the call
- *   site below, and is exercised directly in pipeline.test.ts with a
- *   fixture where the two granularities disagree on which is long-only-
- *   best vs. long-short-best.
+ *   Y.longShort.endingBalance <= merged.worstCase.endingBalance`. QED --
+ *   this holds unconditionally (no guard needed to make it *true*), and
+ *   is exercised directly in pipeline.test.ts with a fixture where the
+ *   two granularities disagree on which is long-only-best vs.
+ *   long-short-best.
+ *
+ * **Defense in depth regardless of the proof above (code review
+ * follow-up, second round)**: a *provably* safe invariant is still worth
+ * containing rather than trusted blindly at runtime, especially given
+ * this exact proof was already wrong once. Unlike the first cross-check
+ * review round's fix (a bare `throw` on violation -- correct in spirit,
+ * but with no try/catch anywhere between this function and
+ * `buildIntradayResults`, so a real violation would have crashed the
+ * *entire* `runPipeline` invocation, discarding every other already-
+ * computed range's and day's results too), a violation here now falls
+ * back to using the long-only winner's own day *wholesale* for both
+ * bundles (see the code below) -- trivially safe, since a single day
+ * from a single `optimizeAllVariants` call always satisfies both
+ * cross-checks internally by construction (the same guarantee
+ * `results-schema.ts`'s own validator already relies on) -- and reports
+ * it as a failure through `mergeDaysByGranularity`'s own return value,
+ * which `buildIntradayResults` folds into its `failures` (fatal, reaches
+ * `computeFailures`) exactly like an override solve failure. Contained
+ * (this one day, and only the merge that hit it, degrades instead of
+ * crashing every other range/day) but not silent (still fails the run --
+ * a violation, if it ever actually happens despite the proof above,
+ * means either this proof or one of its premises broke, which is exactly
+ * the kind of thing this system's only alerting mechanism exists to
+ * catch, not paper over).
  *
  * **Known, accepted limitation, documented rather than engineered
  * around (same "neither override is held to the same alerting standard"
@@ -566,7 +641,10 @@ function mergeDaysByGranularity(
  * granularity strictly better across both bundles, or only one
  * granularity covering a date at all -- is unaffected and exact.
  */
-function mergeDayVariants(a: IntradayDayResult, b: IntradayDayResult): IntradayDayResult {
+function mergeDayVariants(
+  a: IntradayDayResult,
+  b: IntradayDayResult,
+): { day: IntradayDayResult; fallback: string | null } {
   const longOnlyWinner = b.endingBalance > a.endingBalance ? b : a;
   const longShortWinner = b.longShort.endingBalance > a.longShort.endingBalance ? b : a;
   const merged: IntradayDayResult =
@@ -575,27 +653,50 @@ function mergeDayVariants(a: IntradayDayResult, b: IntradayDayResult): IntradayD
       : { ...longOnlyWinner, longShort: longShortWinner.longShort };
 
   // Defense in depth for the proof in this function's own doc comment
-  // (code review follow-up): the proof shows these two cross-checks
-  // (mirroring results-schema.ts's own write-time invariants) hold
-  // unconditionally by construction, but it rests on premises about the
-  // reciprocal-price short model and results-schema.ts's own threshold
-  // definitions -- premises a future change to either could silently
-  // invalidate without anything here noticing. Don't rely on the proof
-  // alone; catch a violation at the moment it happens instead of only
-  // via results-schema.ts's own validatePrecomputedResult, much later
-  // and with far less context about which merge produced it.
+  // (code review follow-up, second round): the proof shows these two
+  // cross-checks (mirroring results-schema.ts's own write-time
+  // invariants) hold unconditionally by construction, but it rests on
+  // premises about the reciprocal-price short model and
+  // results-schema.ts's own threshold definitions -- premises a future
+  // change to either could silently invalidate without anything here
+  // noticing, and this exact proof was already once wrong in a way that
+  // still happened to reach the right conclusion (see the doc comment
+  // above) -- reason enough not to trust it blindly at runtime. Unlike
+  // the first review round's fix (a bare throw here), a violation is
+  // now *contained*: fall back to the long-only winner's own day
+  // wholesale for both bundles (trivially safe -- a single day from one
+  // optimizeAllVariants call always satisfies both cross-checks
+  // internally by construction) rather than propagate a throw out of
+  // mergeDaysByGranularity/buildIntradayResults and crash the entire
+  // runPipeline invocation, discarding every other already-computed
+  // range's and day's results too. The violation is still reported
+  // (`fallback`, non-null), not silently swallowed -- see
+  // mergeDaysByGranularity's own MergeDaysByGranularityOutcome doc
+  // comment for how that reaches buildIntradayResults' failures and, from
+  // there, computeFailures/this system's alerting.
+  const violations: string[] = [];
   if (merged.longShort.endingBalance < merged.endingBalance) {
-    throw new Error(
-      `internal error: mergeDayVariants produced longShort.endingBalance (${merged.longShort.endingBalance}) below its long-only counterpart (${merged.endingBalance}) for ${merged.date} -- should be impossible by construction, see this function's own doc comment`,
+    violations.push(
+      `longShort.endingBalance (${merged.longShort.endingBalance}) below its long-only counterpart (${merged.endingBalance})`,
     );
   }
   if (merged.longShort.worstCase.endingBalance > merged.worstCase.endingBalance) {
-    throw new Error(
-      `internal error: mergeDayVariants produced longShort.worstCase.endingBalance (${merged.longShort.worstCase.endingBalance}) above its long-only counterpart (${merged.worstCase.endingBalance}) for ${merged.date} -- should be impossible by construction, see this function's own doc comment`,
+    violations.push(
+      `longShort.worstCase.endingBalance (${merged.longShort.worstCase.endingBalance}) above its long-only counterpart (${merged.worstCase.endingBalance})`,
     );
   }
 
-  return merged;
+  if (violations.length === 0) {
+    return { day: merged, fallback: null };
+  }
+
+  return {
+    day: longOnlyWinner,
+    fallback:
+      `${merged.date}: cross-source merge would have violated ${violations.join("; ")} -- ` +
+      `should be impossible by construction, see mergeDayVariants' own doc comment; falling ` +
+      `back to the long-only winner's own day wholesale for both bundles instead of crashing`,
+  };
 }
 
 interface PathFetchOutcome<TBar> {
@@ -1401,6 +1502,16 @@ interface BuildIntradayResultsOutcome {
    * just isn't available) stays non-fatal, unaffected by this -- see
    * `overrideStatusLines` in runPipeline, which reports that case
    * separately and still doesn't fold it in here.
+   *
+   * A third source feeds this same list (code review follow-up, second
+   * round): `mergeDaysByGranularity`'s own merge-fallback reports (see
+   * `MergeDaysByGranularityOutcome.failures`' own doc comment), formatted
+   * the same `"<label> override (<range>): <message>"` way as an override
+   * solve failure above. Expected to be empty on every real run (the
+   * cross-check it guards is proven safe by construction, see
+   * `mergeDayVariants`), but folded in here rather than only
+   * `console.error`-ed, for the identical "contained but not silent"
+   * reason as everything else in this field.
    */
   failures: string[];
 }
@@ -1476,9 +1587,19 @@ function buildIntradayResults({
     // failure, or no data), this is just sixtyMinuteDays unchanged -- the
     // graceful-degradation path for *this range's stored output*, even
     // though a solve failure specifically still fails the run above via
-    // overrideSolveFailures.
+    // overrideSolveFailures. mergeFailures (expected empty on every real
+    // run -- see mergeDayVariants' own doc comment) folds in the same way
+    // overrideSkippedDays does above, for the identical "contained but
+    // not silent" reason.
+    const { days: mergedDays, failures: mergeFailures } = mergeDaysByGranularity(
+      sixtyMinuteDays,
+      overrideDays,
+    );
+    for (const entry of mergeFailures) {
+      overrideSolveFailures.push(`${spec.label} override (${spec.range}): ${entry}`);
+    }
     granularityOverrides.set(spec.range, {
-      days: mergeDaysByGranularity(sixtyMinuteDays, overrideDays),
+      days: mergedDays,
       extraHistories: [cappedOverrideHistory],
       extraSkipped: outcome.skipped,
       extraDataAsOf: outcome.dataAsOf,

@@ -261,6 +261,101 @@ granularities in one scalar field without a schema change. Same
 "documented tradeoff" posture as this file's own "neither override is
 held to the same alerting standard" precedent.
 
+### mergeDayVariants' assertion: real crash risk found (second review
+
+### round), but the underlying proof turned out to be fixable, not wrong
+
+A later review round found the paragraph above's proof had a real flaw,
+with a concrete counterexample (`X.worstCase=50`, `Y.longShort.best=200`,
+`Y.worstCase=65`, `Y.longShort.worst=60` -- every value individually
+valid per each source's own _checked_ invariants, yet `60 > 50` trips the
+"impossible by construction" throw) -- and, independently and more
+urgently, that the throw itself had **no try/catch anywhere between
+`mergeDayVariants` and `buildIntradayResults`**, unlike every other risky
+computation this PR added (the per-range/per-day overflow containment
+below already wraps its own risky calls). If this assertion ever fired on
+real data, it would crash the _entire_ `runPipeline` invocation --
+discarding every other already-computed window/custom-anchor/intraday
+result too, not just the one affected day. Both findings were addressed,
+but they resolved differently, and it's worth being precise about which
+is which:
+
+- **The crash risk was real and is fixed**: `mergeDayVariants` no longer
+  throws. A violation now falls back to the long-only winner's own day
+  wholesale for _both_ bundles (trivially safe -- a single day from one
+  `optimizeAllVariants` call always satisfies both cross-checks
+  internally, by construction) and reports it through
+  `mergeDaysByGranularity`'s own return value, which `buildIntradayResults`
+  folds into its `failures` -- fatal, reaching `computeFailures` and this
+  system's only alerting mechanism, exactly like an override solve
+  failure (see the section below) -- rather than a bare throw. Contained,
+  but not silent: the same "contained but not silent" principle the
+  overflow-containment fix below already established, now applied here
+  too.
+- **The counterexample itself does NOT reflect data the real optimizer
+  can produce -- re-derived and empirically confirmed, not just
+  re-asserted.** The counterexample's own numbers silently violate a
+  _deeper_ structural invariant of the reciprocal-price short model that
+  isn't explicitly checked anywhere in code but _is_ mathematically
+  guaranteed for any real `optimizeAllVariants` output: for a single
+  source's own longShort search, flipping every leg of its best sequence
+  (long <-> short, same slots) is always a valid candidate for that same
+  source's own _worst_ search (both use `includeShorts: true`), so
+  `longShort.worst * longShort.best <= startingCapital^2` always holds.
+  The counterexample's `Y.longShort.worst=60` and `Y.longShort.best=200`
+  give a product of 12,000 -- way past `startingCapital^2 = 400` at this
+  app's real `$20` starting capital -- so those two numbers together
+  could never come out of a real optimizer call in the first place, only
+  out of hand-picked test values that individually pass the _shallower_
+  checked invariant (`longShort.worst <= worst`) while silently breaking
+  this unchecked deeper one.
+- **The original proof's stated _conclusion_ for this exact inequality
+  was correct; its stated _derivation_ had a real, independent algebra
+  error, since fixed.** The original text said "flipping `Y`'s own
+  longShort-_worst_ sequence is a valid candidate for `Y`'s own
+  longShort-_best_ search, giving `Y.longShort.worst <=
+startingCapital^2 / Y.longShort.best`" -- but flipping a sequence into
+  a _max_ search only ever yields a _lower_ bound on that search's
+  result (a max can't be beaten by one specific candidate), so that
+  pairing actually derives `Y.longShort.worst >= startingCapital^2 /
+Y.longShort.best` -- the opposite direction from both the text's own
+  stated conclusion and from what the overall proof needs. The fix pairs
+  each flip with the search it actually bounds: flipping `X`'s long-only
+  _worst_ sequence into `X`'s own longShort-_best_ search (a max search)
+  gives a lower bound, `X.worst >= startingCapital^2 / X.longShort.best`;
+  flipping `Y`'s longShort-_best_ sequence into `Y`'s own longShort-
+  _worst_ search (a min search) gives an upper bound,
+  `Y.longShort.worst <= startingCapital^2 / Y.longShort.best`. Chaining
+  those two facts with `Y.longShort.best > X.longShort.best` (true
+  whenever `Y` wins the longShort slot) proves
+  `Y.longShort.worst <= X.worst` unconditionally -- see `mergeDayVariants`'s
+  own doc comment in `pipeline.ts` for the full corrected chain.
+- **Verified two ways, not just re-derived on paper**: (1) the corrected
+  hand proof above, and (2) a throwaway 20,000-trial randomized
+  brute-force check directly against the real `optimizeAllVariants`
+  (varied ticker counts, trade counts 1-3, and price ranges down to
+  `0.0001` specifically to stress the reciprocal-price short's near-zero
+  overflow regime) -- **0 violations**, with 2,087 of those trials
+  genuinely exercising the `X !== Y` disagreeing-winners case (one source
+  wins long-only, the other wins longShort) the proof depends on, not
+  just the trivial `X === Y` same-source case. Script deleted before
+  commit, same technique this file's other "live-verified, no S3 write"
+  entries use.
+- **Net effect**: the containment fix (no more bare throw) is real,
+  necessary, and applies regardless of whether the proof is fixable --
+  "provably safe" is still worth containing rather than trusted blindly
+  at runtime, especially given this exact proof was already wrong once
+  (its derivation, not its conclusion). But the fallback path itself is
+  expected to be **dead code on every real run**, the same
+  "defense-in-depth for something that shouldn't be reachable" posture as
+  `results-schema.ts`'s own write-time cross-checks. `pipeline.merge-
+fallback.test.ts` exercises it anyway, via a mocked `optimizeIntradayDays`
+  injecting the same style of counterexample values directly (the only
+  way to reach this path at all, since real optimizer output can't) --
+  confirming the fallback produces a valid, safe result and the run still
+  fails loudly via `computeFailures`, instead of trusting the containment
+  logic never gets exercised by any test.
+
 ### Per-range/per-day optimizer-overflow containment
 
 **The bug**: a short's reciprocal-price payoff (`P[open]/P[close]`) is
