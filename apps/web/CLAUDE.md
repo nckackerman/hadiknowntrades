@@ -129,7 +129,7 @@ it:
 - `next build`'s own type-checking pass is happy with `error.tsx` as-is,
   but running `tsc --noEmit` directly (skipping `next typegen`) fails on
   an unrelated pre-existing error in `layout.tsx` (`Cannot find name
-  'LayoutProps'` -- a Next-generated ambient type). Always run the
+'LayoutProps'` -- a Next-generated ambient type). Always run the
   package's own `pnpm run typecheck` script (which runs `next typegen`
   first), not a bare `tsc --noEmit`, or this looks like a bug the new
   code introduced when it isn't one.
