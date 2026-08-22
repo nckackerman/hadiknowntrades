@@ -69,21 +69,22 @@ describe("app/error.tsx", () => {
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 
-  it("recovers via reset() when Try again is clicked", () => {
+  it("calls reset() when Try again is clicked", () => {
+    const reset = vi.fn();
+
     render(
-      <TestErrorBoundary>
-        <Boom />
-      </TestErrorBoundary>,
+      <ErrorPage error={new Error("deliberate render-time throw for testing")} reset={reset} />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
 
-    // reset() clears the boundary's own error state and re-renders its
-    // children -- Boom throws again immediately, but the fact that the
-    // fallback is still what's on screen (rather than something else,
-    // or a crash) confirms reset() actually ran and the boundary took
-    // another render pass, not that the click did nothing.
-    expect(screen.getByRole("alert")).toBeInTheDocument();
+    // Asserting on the reset callback itself (rather than just what's
+    // still on screen afterwards) is what actually pins down the
+    // button's onClick wiring -- Boom re-throwing unconditionally meant
+    // the fallback staying visible was true regardless of whether
+    // reset() was ever invoked, so that alone wouldn't catch a
+    // regression that broke this wiring.
+    expect(reset).toHaveBeenCalledTimes(1);
   });
 
   it("logs the error for debugging", () => {
