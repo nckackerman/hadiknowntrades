@@ -6,12 +6,14 @@ import type { ClientErrorCode, ResultsState } from "@/lib/use-results";
 import { deriveIntradayPortfolioSeries, derivePortfolioSeries } from "@/lib/portfolio-series";
 import { formatDate } from "@/lib/format-date";
 import { formatHeroCurrency } from "@/lib/format-currency";
+import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { useDailyGuess } from "@/lib/use-daily-guess";
 import { DailyGuessForm } from "@/components/DailyGuessForm";
 import { DaySelector } from "@/components/DaySelector";
 import { HeroStat } from "@/components/HeroStat";
 import { IntradayTradeList } from "@/components/IntradayTradeList";
 import { PortfolioChart } from "@/components/PortfolioChart";
+import { StartingCapitalInput } from "@/components/StartingCapitalInput";
 import { TradeList } from "@/components/TradeList";
 
 const RANGE_COPY: Record<PresetRange, string> = {
@@ -80,10 +82,29 @@ interface ResultsPanelProps {
   selectedDay?: string | null;
   /** Called when the user picks a different day from the DaySelector. Required whenever the data can be intraday-model; omit only where a caller (e.g. a window-only test) never needs it. */
   onSelectDay?: (day: string) => void;
+  /**
+   * The user's chosen starting dollar amount (issue #15) to rescale
+   * every displayed dollar figure to -- omit (along with
+   * onStartingCapitalChange) to fall back to whatever the precomputed
+   * result's own startingCapital already is, which keeps default
+   * rendering (and every existing caller/test that doesn't pass this)
+   * pixel-identical to before this prop existed. The input control
+   * itself only renders when onStartingCapitalChange is provided, the
+   * same optional-pair convention selectedDay/onSelectDay already uses.
+   */
+  startingCapital?: number;
+  onStartingCapitalChange?: (value: number) => void;
 }
 
 /** Switches on the fetch state to render loading / error / (empty or full) success -- see useResults for the state machine this drives off of. Success further switches on the result's `model` (issue #28): the original whole-window model, or the per-day intraday model. */
-export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: ResultsPanelProps) {
+export function ResultsPanel({
+  range,
+  state,
+  selectedDay = null,
+  onSelectDay,
+  startingCapital,
+  onStartingCapitalChange,
+}: ResultsPanelProps) {
   // Must run unconditionally (before the early returns below) per the
   // Rules of Hooks. Computed once here (not re-derived again later in
   // the intraday render branch below) so there's a single source of
@@ -101,26 +122,39 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
   // reference) doesn't get defeated by a fresh `points` array on every
   // ResultsPanel render that isn't actually a new fetch result or day
   // selection.
+  //
+  // Rescaling to the user's chosen starting capital (issue #15) needs no
+  // separate math here: derivePortfolioSeries/deriveIntradayPortfolioSeries
+  // are already pure linear scalings of whatever startingCapital they're
+  // handed (every point is that value times a chain of price ratios), so
+  // simply passing `startingCapital ?? <the precomputed one>` in produces
+  // an already-correctly-rescaled series for free -- see
+  // rescale-starting-capital.ts's own doc comment for why that's safe.
   const points = useMemo(() => {
     if (state.status !== "success") return [];
     const { data } = state;
     if (data.model === "window") {
-      return derivePortfolioSeries(data.startingCapital, data.startDate, data.endDate, data.trades);
+      return derivePortfolioSeries(
+        startingCapital ?? data.startingCapital,
+        data.startDate,
+        data.endDate,
+        data.trades,
+      );
     }
     if (!activeDay) return [];
     return deriveIntradayPortfolioSeries(
-      activeDay.startingCapital,
+      startingCapital ?? activeDay.startingCapital,
       activeDay.date,
       activeDay.trades,
     );
-  }, [state, activeDay]);
+  }, [state, activeDay, startingCapital]);
 
   // Called unconditionally (Rules of Hooks) even when there's no active
   // intraday day yet -- an empty-string date is never actually read from
   // storage in that case, since the guess UI below only ever renders once
   // `activeDay` exists. See use-daily-guess.ts for why reading storage
   // directly here (rather than deferring to an effect) is safe.
-  const { guess, submitGuess } = useDailyGuess(range, activeDay?.date ?? "");
+  const { guess, guessStartingCapital, submitGuess } = useDailyGuess(range, activeDay?.date ?? "");
 
   if (state.status === "loading") {
     return <LoadingSkeleton />;
@@ -151,6 +185,7 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
     }
 
     const isEmptyDay = activeDay.trades.length === 0;
+    const effectiveStartingCapital = startingCapital ?? activeDay.startingCapital;
 
     return (
       <div className="flex flex-col gap-8">
@@ -163,11 +198,15 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
               // use-daily-guess.ts) -- at which point the branch below
               // mounts the real HeroStat for the first time, so its
               // existing count-up/celebration choreography fires right
-              // at the moment of reveal instead of on page load.
+              // at the moment of reveal instead of on page load. Prompted
+              // against the user's chosen starting capital (issue #15),
+              // not the raw per-day precomputed one, so the guess prompt
+              // stays consistent with every other dollar figure on the
+              // page (see effectiveStartingCapital above).
               <DailyGuessForm
                 date={activeDay.date}
-                startingCapital={activeDay.startingCapital}
-                onSubmit={submitGuess}
+                startingCapital={effectiveStartingCapital}
+                onSubmit={(value) => submitGuess(value, effectiveStartingCapital)}
               />
             ) : (
               <HeroStat
@@ -178,19 +217,31 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
                 // without this key the visible figure would stay frozen
                 // at the previous day's animated value while the sr-only
                 // figure (driven directly by the prop) correctly updated,
-                // silently disagreeing with each other.
+                // silently disagreeing with each other. Deliberately not
+                // keyed on startingCapital too (issue #15) -- a capital
+                // edit should rescale the figures instantly, not replay
+                // the reveal/celebration.
                 key={activeDay.date}
                 startingCapital={activeDay.startingCapital}
                 endingBalance={activeDay.endingBalance}
+                displayStartingCapital={effectiveStartingCapital}
               />
             )}
-            {onSelectDay && (
-              <DaySelector
-                days={data.days.map((d) => d.date)}
-                selected={activeDay.date}
-                onSelect={onSelectDay}
-              />
-            )}
+            <div className="flex flex-wrap items-end gap-4">
+              {onStartingCapitalChange && (
+                <StartingCapitalInput
+                  value={effectiveStartingCapital}
+                  onChange={onStartingCapitalChange}
+                />
+              )}
+              {onSelectDay && (
+                <DaySelector
+                  days={data.days.map((d) => d.date)}
+                  selected={activeDay.date}
+                  onSelect={onSelectDay}
+                />
+              )}
+            </div>
           </div>
           {guess !== null && (
             <>
@@ -200,7 +251,28 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
                 60-minute intraday prices. As of {data.dataAsOf}.
               </p>
               <p className="text-sm text-[var(--text-muted)]">
-                You guessed {formatHeroCurrency(guess)}.
+                {/* guess/guessStartingCapital are the raw dollar amount the
+                    user typed and whatever effectiveStartingCapital the
+                    prompt was showing at that moment (see the
+                    DailyGuessForm submission above and
+                    use-daily-guess.ts's own doc comment) -- if the user
+                    edits starting capital *after* revealing, that stored
+                    pair goes stale relative to the now-current
+                    effectiveStartingCapital driving HeroStat/the chart
+                    below. Rescale it the same way every other dollar
+                    figure on this page rescales (real bug, found in code
+                    review: this used to render the raw stored guess
+                    unrescaled, silently comparing against the wrong
+                    baseline once starting capital changed post-reveal). */}
+                You guessed{" "}
+                {formatHeroCurrency(
+                  rescaleFromStartingCapital(
+                    guess,
+                    guessStartingCapital ?? effectiveStartingCapital,
+                    effectiveStartingCapital,
+                  ),
+                )}
+                .
               </p>
             </>
           )}
@@ -227,26 +299,38 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
   }
 
   const isEmpty = data.trades.length === 0;
+  const effectiveStartingCapital = startingCapital ?? data.startingCapital;
 
   return (
     <div className="flex flex-col gap-8">
       <div className="flex flex-col gap-2">
-        <HeroStat
-          // Keyed on range + dataAsOf for the same reason the
-          // intraday-daily branch above keys on activeDay.date: remount
-          // HeroStat (not just update its props) whenever the underlying
-          // result actually changes, so useCountUp's reveal animation
-          // fires fresh instead of leaving the visible figure frozen at a
-          // stale animated value. Today this is also accidentally covered
-          // by useResults always passing through a loading state between
-          // results (see use-results.ts), which unmounts HeroStat itself
-          // -- but that's an implementation detail of the current fetch
-          // state machine, not a guarantee; an explicit key here doesn't
-          // depend on it holding.
-          key={`${data.range}-${data.dataAsOf}`}
-          startingCapital={data.startingCapital}
-          endingBalance={data.endingBalance}
-        />
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <HeroStat
+            // Keyed on range + dataAsOf for the same reason the
+            // intraday-daily branch above keys on activeDay.date: remount
+            // HeroStat (not just update its props) whenever the underlying
+            // result actually changes, so useCountUp's reveal animation
+            // fires fresh instead of leaving the visible figure frozen at a
+            // stale animated value. Today this is also accidentally covered
+            // by useResults always passing through a loading state between
+            // results (see use-results.ts), which unmounts HeroStat itself
+            // -- but that's an implementation detail of the current fetch
+            // state machine, not a guarantee; an explicit key here doesn't
+            // depend on it holding. Deliberately not keyed on
+            // startingCapital too (issue #15) -- see the intraday-daily
+            // branch's identical comment above.
+            key={`${data.range}-${data.dataAsOf}`}
+            startingCapital={data.startingCapital}
+            endingBalance={data.endingBalance}
+            displayStartingCapital={effectiveStartingCapital}
+          />
+          {onStartingCapitalChange && (
+            <StartingCapitalInput
+              value={effectiveStartingCapital}
+              onChange={onStartingCapitalChange}
+            />
+          )}
+        </div>
         <p className="text-sm text-[var(--text-secondary)]">
           Best possible outcome over {RANGE_COPY[range]}, with at most {data.maxTrades} sequential
           all-in trades across the S&amp;P 500, using only closed (EOD) prices. As of{" "}
@@ -263,7 +347,7 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
             No trade would have beaten holding cash over {RANGE_COPY[range]}.
           </div>
         ) : (
-          <TradeList trades={data.trades} startingCapital={data.startingCapital} />
+          <TradeList trades={data.trades} startingCapital={effectiveStartingCapital} />
         )}
       </div>
     </div>

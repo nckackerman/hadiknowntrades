@@ -132,6 +132,86 @@ describe("HeroStat", () => {
     });
   });
 
+  describe("displayStartingCapital rescaling (issue #15)", () => {
+    it("defaults to no-op (displayStartingCapital omitted): rendering is pixel-identical to before this prop existed", () => {
+      stubPrefersReducedMotion(true);
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+        cb(performance.now());
+        return 1;
+      });
+
+      render(<HeroStat startingCapital={20} endingBalance={6876.86} />);
+
+      expect(
+        screen.getByText("$20.00", { selector: "span:not([aria-hidden])" }),
+      ).toBeInTheDocument();
+      expect(screen.getAllByText("$6.9K")).toHaveLength(2);
+      expect(screen.getByText("(344x)")).toBeInTheDocument();
+    });
+
+    it("rescales the starting-capital and settled ending-balance figures to displayStartingCapital, leaving the multiplier unaffected", () => {
+      stubPrefersReducedMotion(true);
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+        cb(performance.now());
+        return 1;
+      });
+
+      render(
+        <HeroStat startingCapital={20} endingBalance={6876.86} displayStartingCapital={500} />,
+      );
+
+      expect(
+        screen.getByText("$500.00", { selector: "span:not([aria-hidden])" }),
+      ).toBeInTheDocument();
+      // 500 * (6876.86 / 20) = 171,921.5 -> compact "$172K".
+      expect(screen.getAllByText("$172K")).toHaveLength(2);
+      // The multiplier is unaffected by the rescale -- still 344x.
+      expect(screen.getByText("(344x)")).toBeInTheDocument();
+    });
+
+    it("rescales the mid-tween animated figure proportionally too, not just the settled value", () => {
+      stubPrefersReducedMotion(false);
+      // Never invoke the callback -- observe the figure still stuck at
+      // its starting value mid-tween.
+      vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+
+      render(
+        <HeroStat startingCapital={20} endingBalance={6876.86} displayStartingCapital={500} />,
+      );
+
+      // Mid-tween the animated value still equals `startingCapital`
+      // (20) -- rescaled by 500/20 that's exactly displayStartingCapital
+      // itself (500), same as the static starting-capital figure.
+      expect(screen.getAllByText("$500.00").length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("exercises the existing large-number formatting path at a Max-range-scale multiplier combined with a large user-entered starting capital", () => {
+      stubPrefersReducedMotion(true);
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+        cb(performance.now());
+        return 1;
+      });
+
+      // ~35.8Mx multiplier (packages/core/CLAUDE.md's ~$716M-from-$20
+      // case), rescaled to a $1,000,000 user-entered starting capital.
+      render(
+        <HeroStat
+          startingCapital={20}
+          endingBalance={716_000_000}
+          displayStartingCapital={1_000_000}
+        />,
+      );
+
+      // The starting-capital figure itself goes through the same
+      // large-number formatting ladder once the user enters a large
+      // enough value: "$1M", not a wall of digits.
+      expect(screen.getByText("$1M", { selector: "span:not([aria-hidden])" })).toBeInTheDocument();
+      // 1,000,000 * (716,000,000 / 20) = 35,800,000,000,000 -> "$35.8T".
+      expect(screen.getAllByText("$35.8T")).toHaveLength(2);
+      expect(screen.getByText("(35.8Mx)")).toBeInTheDocument();
+    });
+  });
+
   describe("celebration burst (issue #36)", () => {
     it("fires once the count-up lands on a gain", () => {
       stubPrefersReducedMotion(false);

@@ -781,3 +781,215 @@ its content would otherwise render.
   tests within one file (one jsdom `window` per test file, not per test),
   so this describe block clears it in an `afterEach` to keep tests from
   leaking guesses into each other.
+
+## Configurable starting capital (issue #15)
+
+A pure-frontend feature, no `packages/core`/`apps/pipeline` change --
+`optimizer.ts`'s `endingBalance = startingCapital * finalMultiplier`,
+and `finalMultiplier` is derived entirely from price ratios, never from
+`startingCapital` itself, so the optimal trade sequence and its
+multiplier are identical regardless of what a user enters; only the
+displayed dollar amounts scale linearly. Confirmed by reading
+`optimizer.ts` end to end before scoping this issue this way, not
+assumed.
+
+- **`lib/rescale-starting-capital.ts`'s `rescaleFromStartingCapital`**
+  is the one general-purpose rescale (`value * (to / from)`), but the
+  portfolio chart doesn't actually call it: `derivePortfolioSeries`/
+  `deriveIntradayPortfolioSeries` (`portfolio-series.ts`) are already
+  pure linear scalings of whatever `startingCapital` they're handed, so
+  `ResultsPanel` gets a correctly-rescaled chart for free by just
+  passing the user's chosen capital into those functions directly
+  instead of the precomputed one -- no second rescale call needed
+  there. See `portfolio-series.test.ts`'s own rescaling tests for that
+  equivalence spelled out explicitly.
+- **`HeroStat`'s rescale is deliberately layered on top of, not fed
+  into, `useCountUp`/`shouldCelebrate`.** A new `displayStartingCapital`
+  prop (default `startingCapital`, a no-op ratio of 1) scales the
+  already-tweened `animatedEndingBalance` and the final `endingBalance`
+  for display only; `startingCapital`/`endingBalance` themselves are
+  untouched and keep driving the count-up tween and the gain check
+  exactly as before. The alternative -- feeding the user's chosen
+  capital straight into `startingCapital`/`endingBalance` -- would
+  either leave the _visible_ (non-sr-only) figure frozen stale after a
+  capital edit (`useCountUp` is deliberately mount-only, see issue #35's
+  own note above, so a prop change alone never re-tweens it) or require
+  keying `HeroStat` on the capital too, which would replay the 1.2s
+  reveal animation and the celebration burst on every edit -- neither
+  acceptable for what should be an instant rescale.
+- **`use-starting-capital.ts` persists to localStorage -- this app's
+  first use of browser storage** (`"hikt:startingCapital"`), going
+  through `lib/local-storage.ts`'s `readLocalStorage`/`writeLocalStorage`
+  rather than calling `window.localStorage` directly -- see this file's
+  own "localStorage pattern" section above, which #34 (built after this
+  issue's original implementation, then rebased past it) established as
+  the one place this app should ever touch `window.localStorage`
+  directly. **This issue's own first draft got this wrong** (called
+  `window.localStorage.getItem`/`setItem` straight from
+  `use-starting-capital.ts`, duplicating the try/catch/SSR-guard logic)
+  -- caught in code review during a rebase past #34 and fixed to build on
+  the shared helper instead, per that section's own instruction for any
+  future localStorage feature. `#34`'s own key namespacing note still
+  applies unchanged: `"hikt:startingCapital"` and `daily-guess-storage.ts`'s
+  `"hikt:daily-guess:"` prefix don't collide, no coordination needed.
+- **Hydration safety for the localStorage read (the same tradeoff
+  `use-count-up.ts`/`prefers-reduced-motion.ts` already accept for
+  `matchMedia`, see above):** the hook always starts at
+  `DEFAULT_STARTING_CAPITAL` (20) on every render including the first
+  client render during hydration, correcting to whatever's actually
+  stored only after mount -- reading `localStorage` during render would
+  make a returning visitor's client-hydration render disagree with the
+  server-rendered HTML. The one wrinkle here versus the `matchMedia`
+  precedent: the natural "read storage, then setState" shape at the top
+  of a mount effect trips `react-hooks/set-state-in-effect` (a direct,
+  unconditional-looking `setState` as the effect's first statement) --
+  fixed by deferring the read+setState into a `queueMicrotask` callback
+  instead of calling it as the effect's own first statement, mirroring
+  how `use-count-up.ts` folds its own conditional `setValue` into the
+  `requestAnimationFrame` callback rather than calling it synchronously
+  in the effect body.
+- **`StartingCapitalInput` needed the same lint fix a second time, for
+  a different reason, and the fix that worked wasn't a `useEffect` at
+  all.** It keeps a local `draft` string (so the user can freely
+  clear/retype without every keystroke being clamped), but a real bug
+  surfaced only by live-reloading the page (not the unit tests): the
+  draft was seeded once via `useState(String(value))` at mount, so when
+  `use-starting-capital.ts`'s post-mount hydration correction changed
+  the committed `value` out from under it, the field kept showing its
+  stale initial text forever. The fix is **not** a
+  `useEffect(() => setDraft(String(value)), [value])` -- that shape
+  trips `react-hooks/set-state-in-effect` too, for the more usual reason
+  this rule exists (mirroring a prop into state is exactly what the
+  rule wants done during render instead). The actual fix: a
+  `trackedValue` companion state and an `if (value !== trackedValue)`
+  check evaluated during render, the identical "adjusting state when a
+  prop changes" shape `use-results.ts`'s own `trackedRange` already
+  uses -- re-syncing `draft` this way doesn't fight free typing of a
+  blank/invalid mid-edit draft, since `value` only actually changes when
+  `onChange` fires (never on every keystroke).
+- **That `trackedValue` resync had a second, more subtle bug of its own
+  (found in `high` code review, fixed): it couldn't tell "`value` changed
+  because I just committed my own edit" apart from "`value` changed for
+  some genuinely external reason," and unconditionally resynced `draft`
+  in both cases.** Concretely: typing `"020"` character-by-character
+  commits `onChange(2)` after the second character (`parseStartingCapital("02")`
+  parses to `2`), which round-trips back into this controlled component's
+  `value` prop on the very next render -- and the old code snapped
+  `draft` from `"02"` back to `"2"` right then, silently eating the
+  leading zero the user had just typed, on nearly every keystroke that
+  happened to change the _parsed_ number, not just some rare edge case.
+  Fixed with a second companion state, `lastEmitted` (the parsed value
+  from this component's own most recent `onChange` call, set in
+  `handleChange` the same event-handler tick as `onChange` itself, so
+  React's automatic batching guarantees it's already updated by the time
+  the resulting `value`-prop-changed render runs) -- the `trackedValue`
+  branch only actually calls `setDraft` when `value !== lastEmitted`,
+  i.e. only for a value change this input didn't itself just cause.
+  **Deliberately plain `useState`, not a `useRef`**, even though a ref
+  would also happen to work given the batching guarantee above: the
+  `react-hooks/refs` lint (a real one, not hypothetical -- it fired
+  immediately when this was first tried as a ref) flags reading
+  `ref.current` during render at all, since refs are documented as not
+  meant to drive rendering output; state doesn't have that restriction.
+  A regression test for the exact `"020"` scenario lives in
+  `StartingCapitalInput.test.tsx`, driven by `fireEvent.change` per
+  keystroke rather than `userEvent.type` -- `userEvent.type` has its own
+  documented quirks simulating text entry into `<input type="number">`
+  in jsdom that happened to paper over this exact bug, so it doesn't
+  reproduce it even on the unfixed code.
+- Verified live (not just unit tests) via a throwaway route per the
+  "Screenshotting a component locally" convention above, in both
+  directions: typing a large starting capital (`$1,000,000`) against a
+  Max-range-scale multiplier renders `$1M -> $35.8T`, correctly through
+  the existing large-number formatting ladder rather than overflowing
+  or breaking layout; and a full page reload after setting a non-default
+  value correctly restores both the input field's own text and the
+  rescaled hero/chart figures from localStorage -- this second check is
+  exactly what caught the `StartingCapitalInput` staleness bug above,
+  which no unit test happened to exercise.
+- **Every dollar-figure-displaying component `ResultsPanel` renders must
+  be threaded the same `effectiveStartingCapital` (`startingCapital ??
+<precomputed>`) local variable it already computes for `HeroStat`/
+  `StartingCapitalInput`/the chart's `points` -- never the raw
+  precomputed `data.startingCapital`/`activeDay.startingCapital`
+  directly.** This was gotten wrong twice by real merges/rebases past
+  this issue, not just once, both caught in code review rather than by a
+  test (the tests that would have caught them didn't exist yet at the
+  time):
+  - `TradeList` (issue #32's prose narration, landed after this issue's
+    original implementation): the merge auto-resolved with **no
+    conflict** and silently left `<TradeList trades={data.trades}
+startingCapital={data.startingCapital} />` -- the hero stat above it
+    showed rescaled figures while the trade narration below it still
+    said "turning your $20.00 into ...". No-conflict auto-merges are
+    exactly the case to double check by hand after any rebase that
+    crosses this issue, not just the hunks git actually flags.
+  - `DailyGuessForm` (issue #34's guess-before-reveal prompt, also landed
+    after this issue's original implementation): its prompt read
+    `activeDay.startingCapital` directly. Unlike `TradeList` above, this
+    _was_ a real conflicting hunk (both issues touch the same top row of
+    the intraday branch), but resolving a conflict by picking a side (or
+    naively unioning both) doesn't re-derive the correct value on its
+    own -- the fix still had to explicitly swap in
+    `effectiveStartingCapital`.
+  - Regression tests for both now live in `ResultsPanel.test.tsx`
+    (rendering with a non-default `startingCapital` prop and asserting
+    the rescaled figure appears in `TradeList`'s narration /
+    `DailyGuessForm`'s prompt, and that the raw `$20.00` does not) --
+    the kind of test that would have caught either bug at merge time.
+- **A third `effectiveStartingCapital` miss, this time in the "You
+  guessed $X" line itself (found in a second-round `high` code review,
+  fixed)**: `ResultsPanel.tsx`'s intraday-daily branch renders that line
+  from `useDailyGuess`'s `guess` -- the raw dollar amount the user typed
+  into `DailyGuessForm` -- which used to render unrescaled even after a
+  post-reveal starting-capital edit, while `HeroStat`/the chart right
+  next to it rescaled live via the same `effectiveStartingCapital` this
+  file already threads everywhere else. Unlike the two misses above, the
+  fix isn't just "swap in `effectiveStartingCapital`" -- rescaling `guess`
+  correctly needs to know _what starting capital it was guessed against_,
+  which nothing captured before this fix. `daily-guess-storage.ts`'s
+  `StoredGuess` now carries `startingCapital` alongside `guess` (and
+  `saveDailyGuess`/`useDailyGuess`'s `submitGuess` both take an explicit
+  `startingCapital` argument -- `ResultsPanel.tsx` passes its own
+  `effectiveStartingCapital` at the moment of submission, the same value
+  `DailyGuessForm`'s prompt was showing), and the display line rescales
+  via `rescaleFromStartingCapital(guess, guessStartingCapital,
+effectiveStartingCapital)` -- the same general-purpose helper this
+  file's own top section already documents, applied to a dollar figure
+  that (unlike the chart/TradeList/HeroStat) genuinely needs its _origin_
+  capital tracked explicitly rather than always being re-derived fresh
+  from the current one. Regression test in `ResultsPanel.test.tsx`:
+  submit a guess under one starting capital, `rerender` with a different
+  one, assert the guessed figure rescales (and the stale unrescaled
+  figure is gone) the same way `HeroStat` already does.
+- **A microtask-window race in `use-starting-capital.ts`'s mount-time
+  hydration read (found in the same review pass, fixed)**: the "hydrate
+  from storage after mount" correction (see the hydration-safety
+  paragraph above) is deferred into a `queueMicrotask` callback to dodge
+  `react-hooks/set-state-in-effect`, which leaves a window between mount
+  and that microtask actually running where nothing stopped a real
+  `setStartingCapital` call from landing -- and, without a guard, the
+  microtask would still apply the stale persisted value on top of it
+  once it finally ran, silently discarding the update with no error.
+  Fixed with a `userSetRef` (`useRef(false)`, flipped `true` synchronously
+  inside `setStartingCapital` before its own `setStartingCapitalState`
+  call) that the microtask checks before applying the stored value,
+  bailing out if a real update already happened. Deliberately a `useRef`
+  here, not a second `useState` the way `StartingCapitalInput`'s own
+  `trackedValue`/`lastEmitted` resync (documented above) uses -- the
+  distinction that section's own paragraph draws still holds: a ref is
+  only unsafe for state that's _read during render_ (`react-hooks/refs`
+  really does flag that, confirmed there), and this ref is read
+  exclusively inside the microtask callback, never during render.
+  **Honest note on reproducing this as a test**: under this app's actual
+  `local-storage.ts` backing, the write from an in-window
+  `setStartingCapital` call is synchronous, so by the time the deferred
+  microtask actually reads storage, it normally already sees that same
+  fresh value -- no observable clobber, coincidentally, since read and
+  write share one synchronous, always-fresh backing store. The regression
+  test in `use-starting-capital.test.ts` forces the race window open
+  anyway by mocking `readLocalStorage` to keep returning a fixed stale
+  value regardless of what's actually written (standing in for a future
+  storage backing where a read can genuinely lag behind a very recent
+  write -- a cache, a network-backed store), confirmed to fail without
+  the `userSetRef` guard and pass with it.

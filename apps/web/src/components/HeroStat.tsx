@@ -1,6 +1,7 @@
 "use client";
 
 import { formatHeroCurrency, formatMultiplier } from "@/lib/format-currency";
+import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { shouldCelebrate } from "@/lib/should-celebrate";
 import { useCountUp } from "@/lib/use-count-up";
 import { CelebrationBurst } from "@/components/CelebrationBurst";
@@ -8,6 +9,22 @@ import { CelebrationBurst } from "@/components/CelebrationBurst";
 interface HeroStatProps {
   startingCapital: number;
   endingBalance: number;
+  /**
+   * The dollar amount to actually display everything scaled to (issue
+   * #15) -- defaults to `startingCapital` when omitted, which is a
+   * no-op rescale (ratio of 1) and keeps default rendering pixel-
+   * identical to before this prop existed.
+   *
+   * Deliberately *not* fed into `startingCapital`/`endingBalance`
+   * (or a remount) directly: those two still drive useCountUp's reveal
+   * tween and shouldCelebrate's gain check exactly as before, so
+   * changing this prop alone -- e.g. a user editing the starting-capital
+   * input -- rescales every displayed figure instantly without
+   * re-triggering the count-up animation or the celebration burst,
+   * both of which should only ever fire once per actual new result, not
+   * once per capital edit.
+   */
+  displayStartingCapital?: number;
 }
 
 // Long enough to read as a deliberate count rather than a flicker, short
@@ -54,13 +71,31 @@ const COUNT_UP_DURATION_MS = 1200;
  * strict `>` because it gates the celebration burst, where "exactly
  * broke even" should never fire confetti.
  */
-export function HeroStat({ startingCapital, endingBalance }: HeroStatProps) {
+export function HeroStat({
+  startingCapital,
+  endingBalance,
+  displayStartingCapital = startingCapital,
+}: HeroStatProps) {
   const animatedEndingBalance = useCountUp(startingCapital, endingBalance, COUNT_UP_DURATION_MS);
   const isGain = endingBalance > startingCapital;
   const settled = animatedEndingBalance === endingBalance;
   const celebrate = shouldCelebrate(isGain, settled);
   const multiplier = endingBalance / startingCapital;
   const isMultiplierGain = multiplier >= 1;
+  // Rescale the two displayed dollar figures (the animating one and its
+  // always-final sr-only twin) from the underlying precomputed
+  // startingCapital to whatever the caller wants displayed -- see
+  // rescale-starting-capital.ts and this prop's own doc comment above.
+  const displayedAnimatedEndingBalance = rescaleFromStartingCapital(
+    animatedEndingBalance,
+    startingCapital,
+    displayStartingCapital,
+  );
+  const displayedEndingBalance = rescaleFromStartingCapital(
+    endingBalance,
+    startingCapital,
+    displayStartingCapital,
+  );
 
   return (
     <div className="flex flex-col items-start gap-1">
@@ -70,12 +105,12 @@ export function HeroStat({ startingCapital, endingBalance }: HeroStatProps) {
           around the figure itself, not the caption. */}
       <div className="relative">
         <p className="flex flex-wrap items-baseline gap-3 text-[clamp(2.5rem,6vw,4rem)] font-semibold leading-none tracking-tight text-[var(--text-primary)]">
-          <span>{formatHeroCurrency(startingCapital)}</span>
+          <span>{formatHeroCurrency(displayStartingCapital)}</span>
           <span aria-hidden="true" className="text-[var(--text-muted)]">
             →
           </span>
-          <span aria-hidden="true">{formatHeroCurrency(animatedEndingBalance)}</span>
-          <span className="sr-only">{formatHeroCurrency(endingBalance)}</span>
+          <span aria-hidden="true">{formatHeroCurrency(displayedAnimatedEndingBalance)}</span>
+          <span className="sr-only">{formatHeroCurrency(displayedEndingBalance)}</span>
           <span
             className="text-xl font-semibold sm:text-2xl"
             style={{ color: isMultiplierGain ? "var(--status-good)" : "var(--status-critical)" }}
