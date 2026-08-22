@@ -436,7 +436,7 @@ its content would otherwise render.
   found in code review, fixed) - `daily-guess-storage.ts`'s key includes
   `range` (`ResultsPanel` passes its own `range` prop into
   `useDailyGuess(range, activeDay.date)`), and both functions'
-  signatures take `range` first. This matters because the *same*
+  signatures take `range` first. This matters because the _same_
   calendar date can carry a genuinely different result depending on
   which range you're viewing it under: 1M and 3M each layer their own
   granularity override (1-minute and 5-minute bars respectively) on the
