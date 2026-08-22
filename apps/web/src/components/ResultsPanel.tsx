@@ -120,7 +120,7 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
   // storage in that case, since the guess UI below only ever renders once
   // `activeDay` exists. See use-daily-guess.ts for why reading storage
   // directly here (rather than deferring to an effect) is safe.
-  const { guess, submitGuess } = useDailyGuess(activeDay?.date ?? "");
+  const { guess, submitGuess } = useDailyGuess(range, activeDay?.date ?? "");
 
   if (state.status === "loading") {
     return <LoadingSkeleton />;

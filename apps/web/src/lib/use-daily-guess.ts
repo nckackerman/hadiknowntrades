@@ -1,17 +1,19 @@
 "use client";
 
-// Tracks whether the user has already guessed a given intraday day's
-// result (issue #34), backed by daily-guess-storage.ts so a guess
-// persists across a reload.
+// Tracks whether the user has already guessed a given (range, date)
+// intraday day's result (issue #34), backed by daily-guess-storage.ts
+// so a guess persists across a reload.
 
 import { useState } from "react";
+
+import type { PresetRange } from "@hadiknowntrades/core";
 
 import { getDailyGuess, saveDailyGuess } from "./daily-guess-storage";
 
 interface UseDailyGuessResult {
-  /** The user's stored guess for `date`, or `null` if they haven't guessed it yet. */
+  /** The user's stored guess for `date` under `range`, or `null` if they haven't guessed it yet. */
   guess: number | null;
-  /** Records `value` as the guess for `date` and reflects it immediately, without waiting for a re-read from storage. */
+  /** Records `value` as the guess for `date` under `range` and reflects it immediately, without waiting for a re-read from storage. */
   submitGuess: (value: number) => void;
 }
 
@@ -28,23 +30,27 @@ interface UseDailyGuessResult {
  * loading skeleton that never touched storage. Don't reuse this hook from
  * a tree that can render during SSR without re-checking that assumption.
  *
- * `date` changing (the user picked a different day via DaySelector) is
- * handled with the same "adjust state during render when a prop changes"
- * pattern use-results.ts already established for range changes: switching
- * days must re-check *that* day's own stored guess, not keep showing
- * whatever the previously-selected day's guess state was.
+ * `range` or `date` changing (the user picked a different day via
+ * DaySelector, or switched range tabs) is handled with the same "adjust
+ * state during render when a prop changes" pattern use-results.ts
+ * already established for range changes: switching either must re-check
+ * that exact (range, date) pair's own stored guess, not keep showing
+ * whatever the previous pair's guess state was -- a range switch that
+ * lands on the same calendar date can still carry a genuinely different
+ * underlying result (see daily-guess-storage.ts's own note), so it must
+ * re-prompt just as much as a date change would.
  */
-export function useDailyGuess(date: string): UseDailyGuessResult {
-  const [trackedDate, setTrackedDate] = useState(date);
-  const [guess, setGuess] = useState<number | null>(() => getDailyGuess(date));
+export function useDailyGuess(range: PresetRange, date: string): UseDailyGuessResult {
+  const [tracked, setTracked] = useState({ range, date });
+  const [guess, setGuess] = useState<number | null>(() => getDailyGuess(range, date));
 
-  if (date !== trackedDate) {
-    setTrackedDate(date);
-    setGuess(getDailyGuess(date));
+  if (range !== tracked.range || date !== tracked.date) {
+    setTracked({ range, date });
+    setGuess(getDailyGuess(range, date));
   }
 
   function submitGuess(value: number) {
-    saveDailyGuess(date, value);
+    saveDailyGuess(range, date, value);
     setGuess(value);
   }
 

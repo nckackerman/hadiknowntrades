@@ -454,6 +454,34 @@ describe("ResultsPanel", () => {
         expect(screen.getByRole("button", { name: /reveal/i })).toBeInTheDocument();
         expect(screen.queryByText(/AAPL/)).not.toBeInTheDocument();
       });
+
+      it("re-prompts for a guess on the same date when the range changes, instead of skipping straight to reveal (1M and 3M/1Y can genuinely differ on the same calendar date)", async () => {
+        // Regression test for a real bug: guesses used to be keyed by
+        // calendar date alone, so a guess submitted while on one range's
+        // tab silently satisfied the guess-gate for the *same date* under
+        // a different range too -- even though the underlying result for
+        // that date can genuinely differ across 1M/3M/1Y's independent
+        // granularity overrides (see daily-guess-storage.ts).
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+        const { rerender } = render(
+          <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />,
+        );
+        await submitAnyGuess(user);
+        expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
+
+        rerender(<ResultsPanel range="3M" state={state} selectedDay="2026-08-21" />);
+        expect(screen.getByRole("button", { name: /reveal/i })).toBeInTheDocument();
+        expect(screen.queryByText(/MSFT/)).not.toBeInTheDocument();
+
+        rerender(<ResultsPanel range="1Y" state={state} selectedDay="2026-08-21" />);
+        expect(screen.getByRole("button", { name: /reveal/i })).toBeInTheDocument();
+
+        // Switching back to 1M still remembers the original guess.
+        rerender(<ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />);
+        expect(screen.queryByRole("button", { name: /reveal/i })).not.toBeInTheDocument();
+        expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
+      });
     });
   });
 });
