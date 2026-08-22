@@ -480,3 +480,83 @@ every range this run if SPY's fetch fails outright.
   (`AAPL`+`MSFT`) produced a valid, schema-passing `benchmark` for every
   one of the 5 written ranges, with MAX correctly `truncated: true` at
   `startDate: "1993-01-29"` and every bounded range `truncated: false`.
+- **`computeBenchmark` was generalized (issue #11) to take
+  `rangeStartString: string | null` directly instead of a
+  `range: PresetRange` + `asOf` pair it derived one from internally** --
+  every existing call site (the `benchmarksByRange` construction loop)
+  now computes its own `rangeStartString` via `presetRangeStartDate`
+  first, the same computation that used to live inside `computeBenchmark`
+  itself. This is what lets the exact same function also serve
+  `buildCustomWindowResults`'s per-anchor benchmark (see below) with no
+  PresetRange-specific branching anywhere in the function.
+
+## Custom date-range anchors (issue #11)
+
+`buildCustomWindowResults` computes one `CustomWindowResult` per
+requested anchor (`packages/core`'s `AnchorMonth`, see that package's own
+CLAUDE.md for the full anchor-scheme design), reusing a new
+`computeWindowOptimization` helper factored out of `buildWindowResults`
+specifically so the 5Y/MAX preset path and the custom-anchor path share
+one windowed-slice-plus-`optimizeBothDirections` implementation instead
+of two that could drift. See `docs/plans/issue-11-plan.md`'s section 1
+for the full design writeup.
+
+- **Reuses the window path's own already-fetched `windowFetch.history`
+  -- zero new Yahoo requests, zero new fetch pool.** `buildCustomWindowResults`
+  is gated behind `windowFetch.failureReason` the exact same way
+  `windowResults` itself is: if the window path has no usable history,
+  there's nothing to slice for any anchor either.
+- **`RunPipelineOptions.customRangeAnchors` defaults to empty (`[]`), not
+  `customRangeAnchors(asOf)` computed internally** -- deliberately unlike
+  every other option this file defaults itself. `src/run.ts` (the real
+  nightly entry point) is the one place that explicitly passes
+  `customRangeAnchors(asOf)` (`packages/core`) to turn this on for the
+  real deployed pipeline. This was a pragmatic call, not an oversight: it
+  keeps every pre-existing test in `pipeline.test.ts` (which never passes
+  this option) completely unaffected by this feature's introduction --
+  retrofitting ~250 extra anchor-result assertions into every unrelated
+  existing test would have been pure test-maintenance churn with zero
+  correctness value. `pipeline.custom-range.test.ts` is a small, dedicated
+  file (mirroring `pipeline.write-validation.test.ts`'s own precedent for
+  a focused fixture set) covering the feature itself.
+- **A custom-anchor write failure is held to the exact same "must fail
+  the run" standard a preset range's write failure already gets, not the
+  looser best-effort standard a granularity override's failure gets.**
+  Both preset and custom-anchor results now flow through one combined
+  `WriteJob` list / one `Promise.allSettled` write loop (previously just
+  `results.map(...)`) -- a failure in either family aggregates into the
+  same thrown error, this pipeline's only alerting mechanism. Reasoning:
+  unlike a granularity override (a genuinely different, independently-
+  fetched data source that gracefully degrades to already-correct
+  60-minute bars on failure), a custom anchor is derived from the _same_
+  already-required-to-succeed window-path history, so there's no lesser
+  standard that makes sense for it. The final aggregated error message's
+  denominator (`wrote N of M expected result(s)`) is the _ideal_ total
+  for a fully-healthy run (`PRESET_RANGES.length` + every requested
+  anchor), not just how many results were actually built and attempted --
+  a real, deliberate choice (found while updating this file's own
+  pre-existing tests that asserted on the old message text): using the
+  smaller "actually attempted" denominator would understate the gap
+  whenever a whole path failed before any of its results were even built
+  (e.g. "wrote 2 of 2" reads as a clean 100%, hiding that a failed path
+  meant only 2 were ever attempted out of an expected 5).
+- **This is the answer to the cache/invalidation-gap an independent
+  reviewer flagged on the original plan**: there is no separate
+  "permanent cache" for custom-anchor results, and therefore no separate
+  invalidation logic anywhere. Every one of the 252 anchors is recomputed
+  from scratch every nightly run, exactly like the 5 preset ranges
+  already are -- a bug fix or schema change to the optimizer fixes every
+  stored anchor automatically on the next nightly run.
+- **Live-verified, real numbers, no S3 write** (full 503-ticker universe,
+  real Yahoo network calls, all 252 real anchors via a throwaway Vitest
+  file, deleted before commit): full run (every fetch pool + solving all
+  5 preset ranges + all 252 custom anchors) completed in **154.0s (~2.6
+  minutes)**, 0 of 503 tickers skipped, 257 total result objects (5
+  preset + 252 custom-anchor), **431.5KB** total across all 252
+  custom-anchor result objects' serialized JSON -- comfortably inside the
+  15-minute Lambda timeout (over 12 minutes of headroom) and negligible
+  new S3 storage. See `docs/plans/issue-11-plan.md` section 1.6 for the
+  full writeup; this run's total includes real network fetch time (not
+  isolated from pure compute), so it's an upper bound on the
+  custom-anchor compute addition specifically, not a clean marginal
+  delta.

@@ -1076,3 +1076,78 @@ secondary context rather than competing with the hero figures.
   badge or `TradeRow`'s per-trade return badge -- deliberate simplicity:
   this is a comparison figure, not itself a "did the optimizer win"
   signal.
+
+## Custom start-date anchor picker (issue #11)
+
+`GET /api/results?anchor=YYYY-MM` is the same route as `?range=...`
+(`app/api/results/route.ts` branches on which query param is present),
+not a second route file -- see `docs/plans/issue-11-plan.md`'s section
+1.5 for why this differs from the (deferred) live-compute design's own
+recommendation of a genuinely separate route: once a custom anchor is
+_also_ just a precomputed S3 read (the coarsened design this issue
+actually shipped), there's no backing-logic/cache-semantics difference
+left to justify a second route.
+
+- **`results-api.ts`'s `getCustomResultsResponse`** is a sibling of
+  `getResultsResponse`, not a branch merged into it -- reuses the exact
+  same error-response shape/`Cache-Control` header, deliberately kept
+  separate so this addition can't risk the existing, well-tested
+  `?range=` path's own logic. `parseAnchorMonth` validates shape only
+  (via `packages/core`'s `anchorMonthToDate`) -- it does **not** also
+  check the parsed anchor against `customRangeAnchors(asOf)`'s current
+  252-month window, since this route's own server-side "now" and the
+  pipeline's last-run "now" can disagree by up to one anchor right around
+  a month boundary; an anchor outside the actually-published set just
+  falls through to the ordinary `not_found` 404 instead, same as any
+  preset range not yet computed on a first-ever pipeline run.
+- **`CustomRangeSelector.tsx`** is a plain `<select>` next to
+  `RangeSelector`, same reasoning `DaySelector` already established (see
+  "Two result models" above): up to 252 anchor options is far too many
+  for pill buttons. Its leading, disabled placeholder option ("Choose a
+  start month...") is deliberate, not decorative -- it's what makes "you
+  can only pick from this fixed list, not any date" discoverable just by
+  opening the dropdown, rather than a silent limitation a user only
+  discovers after picking something that 404s. Calls
+  `customRangeAnchors(new Date())` fresh on every render (a cheap,
+  252-iteration pure function of calendar time) rather than memoizing --
+  the tiny SSR/hydration-mismatch risk (both sides call `new Date()`
+  independently, a few hundred ms apart) only matters if a render
+  straddles the exact millisecond a month boundary rolls over; accepted,
+  not engineered around further, for this low-stakes learning project.
+- **Range mode and custom-anchor mode are mutually exclusive URL state**
+  (`?range=` xor `?anchor=`, `ResultsPage.tsx`) -- selecting one clears
+  the other, mirroring how `?day=` is already cleared on a range switch.
+  A new `useCustomResults(anchor: AnchorMonth | null)` hook
+  (`lib/use-custom-results.ts`) mirrors `useResults`'s own fetch state
+  machine as a deliberate sibling, not a merge into it -- both return
+  `null` (no fetch at all) when their own selector is `null`, so exactly
+  one of the two is ever actually in flight, never both and never
+  neither. `useResults` itself grew a `range: PresetRange | null`
+  parameter for this (previously required, non-null) -- every _existing_
+  caller still passes a real range, so this is purely additive; only
+  `ResultsPage`'s own anchor-mode branch ever passes `null`.
+- **`ResultsPanel.tsx` gained a third render branch** (`data.model ===
+"custom-window"`, alongside the existing `"window"`/`"intraday-daily"`)
+  sharing a new extracted `WindowResultBody` component with the
+  `"window"` branch, rather than a second copy of that ~50-line JSX
+  block -- the two models are the identical underlying computation (same
+  `optimizeBothDirections` over a daily-close window), differing only in
+  which field identifies the result (`range` vs. `anchorMonth`), so
+  `WindowResultBody` takes a structural `WindowLikeResult` (the fields it
+  actually reads -- neither `range` nor `anchorMonth`) plus a
+  caller-supplied `descriptionPhrase`/`heroKey`/`emptyCopy`, derived
+  differently by each of the two call sites (`RANGE_COPY[range]` for
+  presets; `` `since ${formatDate(data.startDate)}` `` for a custom
+  anchor). The `range` prop `ResultsPanel` still requires is a harmless
+  placeholder in custom-anchor mode -- never actually read on that render
+  path.
+- **`CustomWindowResult.startDate` is the anchor's own literal calendar
+  boundary** (e.g. `"2019-03-01"`), not forward-snapped to the nearest
+  real trading day -- same convention `WindowResult.startDate` already
+  follows for presets. The forward-snap is only ever visible in the
+  actual `trades`/`benchmark` data (via the ordinary slicing filter every
+  window already goes through), never a separate displayed field or UI
+  affordance -- there was no missing/holiday-date UI work needed for this
+  feature at all, unlike what the deferred live-compute design's own
+  section 2 had planned for. See `packages/core/CLAUDE.md`'s "Custom
+  date-range anchors" section for the full reasoning.

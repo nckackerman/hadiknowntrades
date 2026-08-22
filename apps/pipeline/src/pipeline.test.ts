@@ -255,7 +255,7 @@ describe("runPipeline", () => {
           store,
           asOf,
         }),
-      ).rejects.toThrow(/wrote 3 of 5 ranges/);
+      ).rejects.toThrow(/wrote 3 of 5 expected result/);
 
       // The intraday path's real results were still written -- a single
       // failed path doesn't hold the other path's good data hostage --
@@ -397,7 +397,7 @@ describe("runPipeline", () => {
           store,
           asOf,
         }),
-      ).rejects.toThrow(/wrote 2 of 5 ranges/);
+      ).rejects.toThrow(/wrote 2 of 5 expected result/);
 
       expect(store.objects.has("results/1M.json")).toBe(false);
       expect(store.objects.has("results/3M.json")).toBe(false);
@@ -1196,7 +1196,7 @@ describe("runPipeline", () => {
         store,
         asOf,
       }),
-    ).rejects.toThrow(/wrote 3 of 5 ranges/);
+    ).rejects.toThrow(/wrote 3 of 5 expected result/);
 
     expect(store.objects.has("results/5Y.json")).toBe(false);
     expect(store.objects.has("results/MAX.json")).toBe(false);
@@ -1218,7 +1218,7 @@ describe("runPipeline", () => {
         store,
         asOf,
       }),
-    ).rejects.toThrow(/wrote 2 of 5 ranges/);
+    ).rejects.toThrow(/wrote 2 of 5 expected result/);
 
     expect(store.objects.has("results/1M.json")).toBe(false);
     expect(store.objects.has("results/3M.json")).toBe(false);

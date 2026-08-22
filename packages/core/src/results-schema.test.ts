@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   RESULTS_SCHEMA_VERSION,
+  customResultKey,
   resultKey,
   ResultValidationError,
+  validateCustomWindowResult,
   validatePrecomputedResult,
   type BenchmarkResult,
+  type CustomWindowResult,
   type IntradayResult,
   type WindowResult,
 } from "./results-schema";
@@ -382,5 +385,146 @@ describe("validatePrecomputedResult", () => {
       result.benchmark = { ...validBenchmark(), truncated: "yes" as unknown as boolean };
       expect(() => validatePrecomputedResult(result)).toThrow(/benchmark\.truncated/);
     });
+  });
+});
+
+describe("customResultKey", () => {
+  it("builds the results/custom/{anchorMonth}.json key", () => {
+    expect(customResultKey("2019-03")).toBe("results/custom/2019-03.json");
+  });
+});
+
+/** A well-formed CustomWindowResult (issue #11), cloned and mutated by individual tests below rather than shared by reference. */
+function validCustomWindowResult(): CustomWindowResult {
+  return {
+    schemaVersion: RESULTS_SCHEMA_VERSION,
+    model: "custom-window",
+    anchorMonth: "2019-03",
+    generatedAt: "2024-06-15T00:00:00.000Z",
+    dataAsOf: "2024-06-14",
+    startDate: "2019-03-01",
+    endDate: "2024-06-15",
+    maxTrades: 3,
+    startingCapital: 20,
+    endingBalance: 60,
+    trades: [
+      {
+        ticker: "AAPL",
+        buyDate: "2019-03-01",
+        buyPrice: 10,
+        sellDate: "2024-06-14",
+        sellPrice: 30,
+      },
+    ],
+    worstCase: {
+      endingBalance: 10,
+      trades: [
+        {
+          ticker: "AAPL",
+          buyDate: "2019-03-04",
+          buyPrice: 30,
+          sellDate: "2024-06-14",
+          sellPrice: 15,
+        },
+      ],
+    },
+    universeSize: 1,
+    skippedTickers: [],
+    benchmark: null,
+  };
+}
+
+describe("validateCustomWindowResult", () => {
+  it("passes a well-formed CustomWindowResult", () => {
+    expect(() => validateCustomWindowResult(validCustomWindowResult())).not.toThrow();
+  });
+
+  it("passes a well-formed CustomWindowResult with no trades (an empty window)", () => {
+    const result = validCustomWindowResult();
+    result.trades = [];
+    result.endingBalance = 20;
+    result.worstCase = { endingBalance: 20, trades: [] };
+    expect(() => validateCustomWindowResult(result)).not.toThrow();
+  });
+
+  it("passes a well-formed CustomWindowResult with a real benchmark", () => {
+    const result = validCustomWindowResult();
+    result.benchmark = validBenchmark();
+    expect(() => validateCustomWindowResult(result)).not.toThrow();
+  });
+
+  it("rejects a result missing a required field", () => {
+    const result = validCustomWindowResult() as unknown as Record<string, unknown>;
+    delete result.dataAsOf;
+    expect(() => validateCustomWindowResult(result as unknown as CustomWindowResult)).toThrow(
+      ResultValidationError,
+    );
+    expect(() => validateCustomWindowResult(result as unknown as CustomWindowResult)).toThrow(
+      /dataAsOf/,
+    );
+  });
+
+  it("rejects a result whose model isn't custom-window", () => {
+    const result = validCustomWindowResult() as unknown as Record<string, unknown>;
+    result.model = "window";
+    expect(() => validateCustomWindowResult(result as unknown as CustomWindowResult)).toThrow(
+      /model must be "custom-window"/,
+    );
+  });
+
+  it("rejects a result whose schemaVersion doesn't exactly match RESULTS_SCHEMA_VERSION", () => {
+    const result = validCustomWindowResult();
+    result.schemaVersion = RESULTS_SCHEMA_VERSION - 1;
+    expect(() => validateCustomWindowResult(result)).toThrow(/schemaVersion/);
+  });
+
+  it("rejects a result with a malformed anchorMonth", () => {
+    const result = validCustomWindowResult() as unknown as Record<string, unknown>;
+    result.anchorMonth = "2019-13";
+    expect(() => validateCustomWindowResult(result as unknown as CustomWindowResult)).toThrow(
+      /anchorMonth/,
+    );
+  });
+
+  it("rejects a result with a non-finite endingBalance", () => {
+    const result = validCustomWindowResult();
+    result.endingBalance = NaN;
+    expect(() => validateCustomWindowResult(result)).toThrow(/endingBalance/);
+  });
+
+  it("rejects a result with a malformed trade", () => {
+    const result = validCustomWindowResult();
+    result.trades = [{ ...result.trades[0]!, buyPrice: NaN }];
+    expect(() => validateCustomWindowResult(result)).toThrow(/trades\[0\]\.buyPrice/);
+  });
+
+  it("rejects a result whose worstCase.endingBalance exceeds the optimal-case endingBalance", () => {
+    const result = validCustomWindowResult();
+    result.endingBalance = 60;
+    result.worstCase.endingBalance = 61;
+    expect(() => validateCustomWindowResult(result)).toThrow(
+      /worstCase\.endingBalance \(61\) must not exceed its optimal-case counterpart \(60\)/,
+    );
+  });
+
+  it("rejects a result with a malformed benchmark", () => {
+    const result = validCustomWindowResult();
+    result.benchmark = { ...validBenchmark(), ticker: "" };
+    expect(() => validateCustomWindowResult(result)).toThrow(/benchmark\.ticker/);
+  });
+
+  it("reports every problem found, not just the first", () => {
+    const result = validCustomWindowResult();
+    result.endingBalance = NaN;
+    result.trades = [{ ...result.trades[0]!, sellPrice: -5 }];
+    try {
+      validateCustomWindowResult(result);
+      throw new Error("expected validateCustomWindowResult to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ResultValidationError);
+      const message = (error as Error).message;
+      expect(message).toMatch(/endingBalance/);
+      expect(message).toMatch(/trades\[0\]\.sellPrice/);
+    }
   });
 });

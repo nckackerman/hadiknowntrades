@@ -545,3 +545,70 @@ by calendar day (the date-part of each bar's `date`), then call
   (`sixtyMinuteDays`, `mergeDaysByGranularity`, the final `days` array),
   so `worstCase` flows through every one of those call sites for free
   once `IntradayDayResult` itself carries it.
+
+## Custom date-range anchors (issue #11)
+
+`src/custom-range-anchors.ts` is the coarsened answer to "arbitrary
+date-range picker" -- see `docs/plans/issue-11-plan.md`'s section 1 for
+the full design writeup and section 3 (of the deferred original
+research) for why the issue's _literal_ ask (day-granularity, both
+endpoints free) isn't nightly-recomputable at any real scale (~14
+million pairs). `customRangeAnchors(asOf)` returns the 1st of every
+calendar month for `CUSTOM_RANGE_ANCHOR_YEARS_BACK` (21) years back from
+`asOf`, newest first -- 252 `AnchorMonth` (`YYYY-MM`) strings, the single
+source of truth both `apps/pipeline` (computes+writes a result for every
+one, nightly) and `apps/web` (the date-picker only ever offers this exact
+list) import.
+
+- **21 years, not MAX's own true unbounded reach** -- deliberately chosen
+  to match the depth this package's own optimizer benchmark already uses
+  ("Optimizer algorithm" section above, ~330ms for a 21-year window), a
+  concretely cost-modeled number rather than an attempt to match every
+  individual ticker's real (sometimes much deeper) Yahoo history. Bump
+  the constant later if a deeper reach is ever wanted -- nothing else
+  hardcodes 252 or 21 a second time.
+- **No missing/holiday-date snapping logic needed here at all** -- a real
+  surprise relative to how much design effort the deferred live-compute
+  research (section 2 of the plan) spent working this out. Each anchor's
+  start is always a _calendar_ month boundary (the 1st), and the ordinary
+  `p.date >= startDateString` slicing filter every preset range's own
+  `startDate` already goes through (`apps/pipeline/src/pipeline.ts`'s
+  `computeWindowOptimization`) already forward-snaps to the nearest real
+  trading day on or after it, with zero new code. The end date is always
+  "today," handled identically to how every preset range already handles
+  it. Live-verified end to end (a real fixture with a gap right at an
+  anchor's own boundary correctly snaps forward to the next real bar --
+  see `apps/pipeline/src/pipeline.custom-range.test.ts`).
+- `anchorMonthToDate`/`toAnchorMonth` round-trip an `AnchorMonth` string
+  to/from a UTC `Date` at the 1st of that month -- the regex
+  (`^\d{4}-(0[1-9]|1[0-2])$`) itself is what rejects an out-of-range month
+  like `"2019-13"`, no separate runtime range check needed.
+- **`results-schema.ts`'s `CustomWindowResult`** is a sibling of
+  `PrecomputedResult`, not a third union member -- see that type's own
+  doc comment for why (folding a 252-member anchor set into `PresetRange`
+  would mean loosening that closed 5-member union everywhere it's
+  exhaustively iterated). Still gated by the same `RESULTS_SCHEMA_VERSION`
+  as every `PrecomputedResult`, unlike the live-compute design's own
+  original judgment call to exempt an on-demand result from that check --
+  a `CustomWindowResult` here _is_ written by a separate process
+  (`apps/pipeline`, nightly) from the one that reads it (`apps/web`), the
+  same writer/reader-drift risk that constant exists to catch everywhere
+  else, so it reuses the same protection.
+- `customResultKey(anchorMonth)` -> `results/custom/{anchorMonth}.json`,
+  namespaced under its own prefix so the two result families (5 presets,
+  252 custom anchors) are trivially distinguishable by key prefix alone.
+- `validateCustomWindowResult` reuses every one of
+  `validatePrecomputedResult`'s own private field-level validators
+  (`isPositiveFiniteNumber`, `validateTrade`, `validateWorstCaseResultWith`,
+  `validateBenchmark`) rather than re-deriving a second copy -- the two
+  validators can't drift on what counts as e.g. a valid `Trade`.
+- **Live-verified, real numbers, no S3 write** (full 503-ticker S&P 500
+  universe, real Yahoo network calls, all 252 real anchors, throwaway
+  Vitest file deleted before commit -- same technique issue #31's own
+  live verification used): full run (every fetch pool + solving all 5
+  preset ranges + all 252 custom anchors) completed in **154.0s (~2.6
+  minutes)**, 0 of 503 tickers skipped, **431.5KB** total across all 252
+  custom-anchor result objects' serialized JSON -- comfortably inside the
+  pipeline Lambda's 15-minute timeout, and S3 storage growth is
+  negligible against the $20/month budget. See
+  `docs/plans/issue-11-plan.md` section 1.6 for the full run's numbers.

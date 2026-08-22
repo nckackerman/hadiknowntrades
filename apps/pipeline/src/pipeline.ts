@@ -67,21 +67,27 @@
 // comment.
 
 import {
+  anchorMonthToDate,
   BlockedError,
   optimizeIntradayDays,
   optimizeBothDirections,
   PRESET_RANGES,
   presetRangeStartDate,
   resultKey,
+  customResultKey,
   RESULTS_SCHEMA_VERSION,
   toDateString,
   UnexpectedResponseError,
   validatePrecomputedResult,
+  validateCustomWindowResult,
+  type AnchorMonth,
   type BenchmarkResult,
+  type CustomWindowResult,
   type DailyClose,
   type IntradayBar,
   type IntradayDayResult,
   type IntradayResult,
+  type OptimizationResult,
   type PrecomputedResult,
   type PresetRange,
   type WindowResult,
@@ -143,6 +149,8 @@ export interface ResultStore {
 
 export interface PipelineRunSummary {
   results: PrecomputedResult[];
+  /** One entry per successfully-written custom-range anchor (issue #11) -- kept separate from `results` (which stays exactly the 5 preset ranges, matching every prior release's shape) rather than merged into it. Empty whenever RunPipelineOptions.customRangeAnchors was omitted or empty (the default). */
+  customResults: CustomWindowResult[];
   /** Union of tickers skipped by any fetch path -- window, intraday, or any granularity override (issue #30 added the first override, #29 a second) -- a ticker can be skipped from one path's fetch but not another's, but this summary doesn't distinguish which. */
   skippedTickers: string[];
 }
@@ -165,6 +173,25 @@ export interface RunPipelineOptions {
   maxTradesPerDay?: number;
   earliestDate?: Date;
   fetchConcurrency?: number;
+  /**
+   * Custom start-date anchor points (issue #11's coarsened design -- see
+   * docs/plans/issue-11-plan.md) to compute+write a CustomWindowResult
+   * for, alongside the 5 preset ranges -- reuses the exact same
+   * already-fetched window-path history (windowFetch.history below), no
+   * separate fetch. Defaults to empty (no custom anchors computed at
+   * all) -- deliberately, unlike every other RunPipelineOptions default
+   * above (which are sourced inside this file): src/run.ts (the real
+   * nightly entry point) is the one place that opts in for real, passing
+   * customRangeAnchors(asOf) (packages/core). This keeps every existing
+   * test of this file that doesn't care about this feature completely
+   * unaffected by its introduction -- retrofitting ~250 extra anchor
+   * results' worth of assertions into every unrelated existing test
+   * would have been pure test-maintenance churn with no correctness
+   * value; see apps/pipeline/CLAUDE.md's "Custom date-range anchors"
+   * section for the full reasoning and the real nightly-cost numbers
+   * behind CUSTOM_RANGE_ANCHOR_YEARS_BACK.
+   */
+  customRangeAnchors?: readonly AnchorMonth[];
 }
 
 interface UniverseFetchResult<TBar> {
@@ -451,13 +478,23 @@ async function fetchBenchmarkHistory(
 
 /**
  * Computes the whole-window SPY buy-and-hold comparison (issue #12) for
- * one range from the single shared SPY `closes` array -- called once per
- * range from both buildWindowResults and buildIntradayResults, not
- * re-derived per model.
+ * one range or custom anchor from the single shared SPY `closes` array --
+ * called once per range from both buildWindowResults and
+ * buildIntradayResults, and once per custom anchor from
+ * buildCustomWindowResults (issue #11), not re-derived per model.
+ *
+ * Takes `rangeStartString` directly (a plain YYYY-MM-DD string or null
+ * for "unbounded") rather than a `PresetRange` + `asOf` pair to derive it
+ * from internally -- generalized (issue #11) so the exact same function
+ * serves both a preset range's own `presetRangeStartDate` output and a
+ * custom anchor's month-start date, with no PresetRange-specific
+ * branching inside this function at all. Every caller computes its own
+ * `rangeStartString` the same way `presetRangeStartDate` already did
+ * internally here before this generalization.
  *
  * Returns `null` only when there's no usable SPY data at all inside this
- * range's window (either the fetch failed entirely -- `closes` is empty
- * -- or, hypothetically, SPY simply has no bars overlapping this specific
+ * window (either the fetch failed entirely -- `closes` is empty -- or,
+ * hypothetically, SPY simply has no bars overlapping this specific
  * window). This is deliberately distinct from the MAX/1993 case below,
  * where a real, honest (if truncated) comparison is still returned.
  *
@@ -467,44 +504,43 @@ async function fetchBenchmarkHistory(
  * is still non-empty here (it has all of SPY's real history up to
  * `endDateString`), so this returns a real comparison, just one whose
  * `startDate`/`startPrice` reflect SPY's own actual earliest available
- * close rather than the range's nominal (nonexistent, for MAX) start.
+ * close rather than the range's nominal (nonexistent, for MAX) start. A
+ * custom anchor's `rangeStartString` is never null (see custom-range-
+ * anchors.ts), so this null-start case is MAX-only in practice today.
  *
  * `truncated` is true whenever SPY's history genuinely doesn't reach
- * back to the range's own requested start -- for MAX this is
- * unconditionally true (`rangeStartString` is always `null` for an
- * unbounded window, and SPY's real, finite inception is always "later"
- * than "as far back as anything has data"). For every other bounded
- * range, this is deliberately checked against SPY's *overall* earliest
- * fetched date (`earliestOverall`, across the whole `closes` array), not
- * against `start.date` (the actual first bar found *inside* the
- * window). Those two differ in a real, non-hypothetical way: a range's
- * nominal `rangeStartString` is a plain calendar date with no guarantee
- * of being a real trading day -- weekends/holidays land there routinely
- * (empirically, ~28% of days across a 2-year sample for every bounded
- * range, checked live rather than assumed), so `start.date` (the
- * nearest actual trading day at-or-after it) is *routinely* a few days
- * later than `rangeStartString` even when SPY's history reaches back
- * decades further -- exactly the same "use whichever data is actually
- * available inside the window" behavior buildWindowResults' own
- * optimizer input already relies on with no "truncated" concept at all.
- * Comparing `start.date` directly against `rangeStartString` (an earlier
- * draft of this function did exactly that) would flag `truncated: true`
- * on a large fraction of days for every bounded range, not just MAX --
- * defeating the whole point of a flag meant to catch a genuine
- * historical-depth gap. `earliestOverall` isolates that real case
- * instead: it only exceeds `rangeStartString` when SPY's data doesn't
- * reach back that far *at all*, regardless of which specific day inside
- * the window happened to have the first trading-day bar.
+ * back to the window's own requested start -- for a null start
+ * (MAX) this is unconditionally true (SPY's real, finite inception is
+ * always "later" than "as far back as anything has data"). For every
+ * other bounded window, this is deliberately checked against SPY's
+ * *overall* earliest fetched date (`earliestOverall`, across the whole
+ * `closes` array), not against `start.date` (the actual first bar found
+ * *inside* the window). Those two differ in a real, non-hypothetical
+ * way: a nominal `rangeStartString` is a plain calendar date with no
+ * guarantee of being a real trading day -- weekends/holidays land there
+ * routinely (empirically, ~28% of days across a 2-year sample for every
+ * bounded preset range, checked live rather than assumed), so
+ * `start.date` (the nearest actual trading day at-or-after it) is
+ * *routinely* a few days later than `rangeStartString` even when SPY's
+ * history reaches back decades further -- exactly the same "use
+ * whichever data is actually available inside the window" behavior
+ * computeWindowOptimization's own slicing filter already relies on with
+ * no "truncated" concept at all. Comparing `start.date` directly against
+ * `rangeStartString` (an earlier draft of this function did exactly
+ * that) would flag `truncated: true` on a large fraction of days for
+ * every bounded window, not just MAX -- defeating the whole point of a
+ * flag meant to catch a genuine historical-depth gap. `earliestOverall`
+ * isolates that real case instead: it only exceeds `rangeStartString`
+ * when SPY's data doesn't reach back that far *at all*, regardless of
+ * which specific day inside the window happened to have the first
+ * trading-day bar.
  */
 function computeBenchmark(
   closes: readonly DailyClose[],
-  range: PresetRange,
-  asOf: Date,
+  rangeStartString: string | null,
   endDateString: string,
   startingCapital: number,
 ): BenchmarkResult | null {
-  const rangeStart = presetRangeStartDate(range, asOf);
-  const rangeStartString = rangeStart ? toDateString(rangeStart) : null;
   const inWindow = closes.filter(
     (c) => (!rangeStartString || c.date >= rangeStartString) && c.date <= endDateString,
   );
@@ -541,6 +577,39 @@ function computeBenchmark(
   };
 }
 
+/**
+ * The windowed-slice + optimizeBothDirections computation shared by every
+ * whole-window result -- both the 5Y/MAX preset ranges (buildWindowResults)
+ * and every custom start-date anchor (buildCustomWindowResults, issue
+ * #11). Factored out so the two call sites can't drift on how a window's
+ * best/worst-case trade sequence is derived from the shared, already-
+ * fetched history -- there is exactly one place this slicing + DP call
+ * happens for the whole-window model.
+ */
+function computeWindowOptimization(
+  history: Map<string, DailyClose[]>,
+  startDateString: string | null,
+  endDateString: string,
+  startingCapital: number,
+  maxTrades: number,
+): { windowed: Map<string, DailyClose[]>; best: OptimizationResult; worst: OptimizationResult } {
+  const windowed = new Map<string, DailyClose[]>();
+  for (const [ticker, series] of history) {
+    const sliced = series.filter(
+      (p) => (!startDateString || p.date >= startDateString) && p.date <= endDateString,
+    );
+    if (sliced.length > 0) windowed.set(ticker, sliced);
+  }
+
+  // Same windowed history, same startingCapital/maxTrades for both the
+  // best- and worst-case (min-direction, issue #31) searches, so
+  // optimizeBothDirections builds this window's calendar/ticker-sort
+  // once and reuses it for both instead of the two separate
+  // optimizeTrades/optimizeWorstTrades calls this used to be.
+  const { best, worst } = optimizeBothDirections(windowed, { startingCapital, maxTrades });
+  return { windowed, best, worst };
+}
+
 interface BuildWindowResultsOptions {
   history: Map<string, DailyClose[]>;
   dataAsOf: string;
@@ -569,23 +638,17 @@ function buildWindowResults({
     const startDate = presetRangeStartDate(range, asOf);
     const startDateString = startDate ? toDateString(startDate) : null;
 
-    const windowed = new Map<string, DailyClose[]>();
-    for (const [ticker, series] of history) {
-      const sliced = series.filter(
-        (p) => (!startDateString || p.date >= startDateString) && p.date <= endDateString,
-      );
-      if (sliced.length > 0) windowed.set(ticker, sliced);
-    }
-
-    // Same windowed history, same startingCapital/maxTrades for both the
-    // best- and worst-case (min-direction, issue #31) searches, so
-    // optimizeBothDirections builds this range's calendar/ticker-sort
-    // once and reuses it for both instead of the two separate
-    // optimizeTrades/optimizeWorstTrades calls this used to be.
-    const { best: optimized, worst } = optimizeBothDirections(windowed, {
+    const {
+      windowed,
+      best: optimized,
+      worst,
+    } = computeWindowOptimization(
+      history,
+      startDateString,
+      endDateString,
       startingCapital,
       maxTrades,
-    });
+    );
 
     return {
       schemaVersion: RESULTS_SCHEMA_VERSION,
@@ -605,6 +668,92 @@ function buildWindowResults({
       benchmark: benchmarksByRange.get(range) ?? null,
     };
   });
+}
+
+interface BuildCustomWindowResultsOptions {
+  /** Reuses the window path's own already-fetched history (issue #11) -- no separate fetch for this feature at all. */
+  history: Map<string, DailyClose[]>;
+  dataAsOf: string;
+  endDateString: string;
+  generatedAt: string;
+  startingCapital: number;
+  maxTrades: number;
+  skipped: readonly string[];
+  /** SPY's raw fetched closes (issue #12) -- computeBenchmark is called once per anchor here, mirroring buildWindowResults/buildIntradayResults's per-range calls, since a custom anchor's own start date isn't one of the 5 PRESET_RANGES benchmarksByRange is keyed by. */
+  benchmarkCloses: readonly DailyClose[];
+  /** The anchor points to compute a result for -- see RunPipelineOptions.customRangeAnchors's own doc comment for why this defaults to empty at the runPipeline level. */
+  anchors: readonly AnchorMonth[];
+}
+
+/**
+ * Computes one CustomWindowResult per requested anchor (issue #11's
+ * coarsened design) -- structurally the same per-window computation as
+ * buildWindowResults above (same computeWindowOptimization call, same
+ * DailyClose history), just keyed by AnchorMonth instead of PresetRange
+ * and with no "MAX-style unbounded start" case (every anchor's start is
+ * always a real, bounded calendar month -- see custom-range-anchors.ts).
+ */
+function buildCustomWindowResults({
+  history,
+  dataAsOf,
+  endDateString,
+  generatedAt,
+  startingCapital,
+  maxTrades,
+  skipped,
+  benchmarkCloses,
+  anchors,
+}: BuildCustomWindowResultsOptions): CustomWindowResult[] {
+  const results: CustomWindowResult[] = [];
+
+  for (const anchorMonth of anchors) {
+    const anchorDate = anchorMonthToDate(anchorMonth);
+    if (!anchorDate) {
+      // Defensive only -- customRangeAnchors (packages/core) never
+      // produces a malformed anchor itself, but a caller could in
+      // principle pass an arbitrary list (e.g. a test). Skip rather than
+      // crash the whole nightly run over one bad string.
+      console.warn(`[pipeline] skipping malformed custom-range anchor "${anchorMonth}"`);
+      continue;
+    }
+    const startDateString = toDateString(anchorDate);
+    // Defensive only, not expected in practice: customRangeAnchors's
+    // newest anchor is always "the current month," which can never be
+    // later than endDateString (today) -- but a caller-supplied anchor
+    // list (tests, or a future asOf/anchor-list mismatch) could in
+    // principle include one. A future-dated anchor has literally nothing
+    // to compute (there's no data past endDateString), so skip it rather
+    // than writing a degenerate always-empty CustomWindowResult.
+    if (startDateString > endDateString) continue;
+
+    const { windowed, best, worst } = computeWindowOptimization(
+      history,
+      startDateString,
+      endDateString,
+      startingCapital,
+      maxTrades,
+    );
+
+    results.push({
+      schemaVersion: RESULTS_SCHEMA_VERSION,
+      model: "custom-window",
+      anchorMonth,
+      generatedAt,
+      dataAsOf,
+      startDate: startDateString,
+      endDate: endDateString,
+      maxTrades,
+      startingCapital,
+      endingBalance: best.endingBalance,
+      trades: best.trades,
+      worstCase: { endingBalance: worst.endingBalance, trades: worst.trades },
+      universeSize: windowed.size,
+      skippedTickers: [...skipped],
+      benchmark: computeBenchmark(benchmarkCloses, startDateString, endDateString, startingCapital),
+    });
+  }
+
+  return results;
 }
 
 /**
@@ -951,10 +1100,14 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // regardless of which trading model (window vs. intraday-daily) a
   // given range uses.
   const benchmarksByRange = new Map<PresetRange, BenchmarkResult | null>(
-    PRESET_RANGES.map((range) => [
-      range,
-      computeBenchmark(benchmarkFetch.closes, range, asOf, endDateString, startingCapital),
-    ]),
+    PRESET_RANGES.map((range) => {
+      const rangeStart = presetRangeStartDate(range, asOf);
+      const rangeStartString = rangeStart ? toDateString(rangeStart) : null;
+      return [
+        range,
+        computeBenchmark(benchmarkFetch.closes, rangeStartString, endDateString, startingCapital),
+      ];
+    }),
   );
 
   // Compute everything before writing anything, so a failure in the
@@ -999,6 +1152,28 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         // for every day" with no special-casing needed here.
         overrides: overrideInputs,
         benchmarksByRange,
+      });
+
+  // Custom start-date anchors (issue #11's coarsened design) -- purely
+  // derived compute over the window path's *already-fetched* history, no
+  // separate fetch, so this is gated behind windowFetch.failureReason the
+  // exact same way windowResults itself is above: if the window path has
+  // no usable history, there's nothing to slice for any anchor either.
+  // Defaults to zero anchors unless the caller opts in (see
+  // RunPipelineOptions.customRangeAnchors's own doc comment) -- src/run.ts
+  // is the one real caller that does, for the actual nightly run.
+  const customResults = windowFetch.failureReason
+    ? []
+    : buildCustomWindowResults({
+        history: windowFetch.history,
+        dataAsOf: windowFetch.dataAsOf!,
+        endDateString,
+        generatedAt,
+        startingCapital,
+        maxTrades,
+        skipped: windowFetch.skipped,
+        benchmarkCloses: benchmarkFetch.closes,
+        anchors: options.customRangeAnchors ?? [],
       });
 
   if (windowResults.length === 0 && intradayResults.length === 0) {
@@ -1053,30 +1228,62 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // allSettled waits for every write to finish, succeed or fail, before
   // this function decides anything -- see failedWrites below for how a
   // rejection is turned into part of the aggregated error instead.
+  //
+  // Custom-range anchor results (issue #11) are folded into this exact
+  // same write loop/aggregation rather than getting a separate lifecycle
+  // -- a WriteJob abstracts over "which validator, which key" so both
+  // families share one Promise.allSettled and one failedWrites list.
+  // This is deliberate, not incidental: an anchor result is derived from
+  // the *same already-required-to-succeed* windowFetch.history as the
+  // 5Y/MAX ranges, so there's no reason to hold it to a looser standard
+  // the way a granularity override's own best-effort failure is (see
+  // that section's own comment above) -- a write failure for a custom
+  // anchor gets exactly the same "fail the whole run, this is the only
+  // alerting mechanism" treatment as a preset range's write failure.
+  interface WriteJob {
+    key: string;
+    label: string;
+    validate: () => void;
+    body: string;
+  }
+  const presetWriteJobs: WriteJob[] = results.map((result) => ({
+    key: resultKey(result.range),
+    label: result.range,
+    validate: () => validatePrecomputedResult(result),
+    body: JSON.stringify(result, null, 2),
+  }));
+  const customWriteJobs: WriteJob[] = customResults.map((result) => ({
+    key: customResultKey(result.anchorMonth),
+    label: `custom:${result.anchorMonth}`,
+    validate: () => validateCustomWindowResult(result),
+    body: JSON.stringify(result, null, 2),
+  }));
+  const writeJobs = [...presetWriteJobs, ...customWriteJobs];
+
   const writeOutcomes = await Promise.allSettled(
-    results.map(async (result) => {
-      validatePrecomputedResult(result);
-      await options.store.putObject(resultKey(result.range), JSON.stringify(result, null, 2));
-      return result.range;
+    writeJobs.map(async (job) => {
+      job.validate();
+      await options.store.putObject(job.key, job.body);
+      return job.label;
     }),
   );
   // Every rejection, not just the first -- plain Promise.all (and a
   // naive "throw on the first rejected settlement" loop) would only
-  // ever surface one range's problem even when multiple ranges are
-  // independently broken in the same run, hiding real information from
-  // whoever reads the thrown error. Paired with the range it belongs to
-  // (rather than just the bare error message) since a putObject failure
-  // -- unlike a ResultValidationError, which already names its own range
-  // -- has no other way to say which range it was.
+  // ever surface one job's problem even when multiple are independently
+  // broken in the same run, hiding real information from whoever reads
+  // the thrown error. Paired with the job's own label (rather than just
+  // the bare error message) since a putObject failure -- unlike a
+  // ResultValidationError, which already names its own range/anchor --
+  // has no other way to say which one it was.
   const failedWrites = writeOutcomes
-    .map((outcome, i) => ({ outcome, range: results[i]!.range }))
+    .map((outcome, i) => ({ outcome, label: writeJobs[i]!.label }))
     .filter(
       (entry): entry is typeof entry & { outcome: PromiseRejectedResult } =>
         entry.outcome.status === "rejected",
     )
-    .map(({ outcome, range }) => {
+    .map(({ outcome, label }) => {
       const reason = outcome.reason;
-      return `${range}: ${reason instanceof Error ? reason.message : String(reason)}`;
+      return `${label}: ${reason instanceof Error ? reason.message : String(reason)}`;
     });
   const writtenCount = writeOutcomes.filter((outcome) => outcome.status === "fulfilled").length;
 
@@ -1121,11 +1328,21 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     const benchmarkStatusLine = `Benchmark (${BENCHMARK_TICKER}, non-fatal): ${benchmarkFetch.error ?? "ok"}.`;
     const writeFailureLines =
       failedWrites.length > 0
-        ? ` Write failures (${failedWrites.length} of ${results.length} computed result(s)):\n` +
+        ? ` Write failures (${failedWrites.length} of ${writeJobs.length} computed result(s)):\n` +
           failedWrites.map((message) => `  - ${message}`).join("\n")
         : "";
+    // The denominator here is the *ideal* total for a fully-healthy run
+    // (every preset range, plus every requested custom anchor) -- not
+    // just writeJobs.length (how many results were actually built and
+    // attempted), which would understate the gap whenever a whole path
+    // failed before any of its results were even built (e.g. "wrote 2 of
+    // 2" reads as a clean 100%, hiding that a failed path meant only 2
+    // were ever attempted out of an expected 5). Preserves this
+    // message's original "wrote N of 5 ranges" framing (pre-issue #11)
+    // while generalizing to also count custom anchors.
+    const expectedResultCount = PRESET_RANGES.length + (options.customRangeAnchors?.length ?? 0);
     throw new Error(
-      `pipeline: wrote ${writtenCount} of ${PRESET_RANGES.length} ranges, but at least one path or write failed -- ` +
+      `pipeline: wrote ${writtenCount} of ${expectedResultCount} expected result(s) (${PRESET_RANGES.length} preset range(s), ${options.customRangeAnchors?.length ?? 0} custom anchor(s) requested; ${writeJobs.length} actually computed), but at least one path or write failed -- ` +
         `failing this run so it doesn't silently succeed while that path goes stale. ` +
         `Window (5Y/MAX) path: ${windowFetch.failureReason ?? "ok"}. ` +
         `Intraday (1M/3M/1Y) path: ${intradayFetch.failureReason ?? "ok"}. ` +
@@ -1138,5 +1355,5 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
 
   // Every write succeeded -- if any had failed, the block above would
   // already have thrown before reaching here.
-  return { results, skippedTickers };
+  return { results, customResults, skippedTickers };
 }
