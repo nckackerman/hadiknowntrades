@@ -67,6 +67,12 @@ describe("formatHeroCurrency", () => {
     // scientific instead of showing "$1000T".
     expect(formatHeroCurrency(999_960_000_000_000)).toBe("$1.00×10¹⁵");
   });
+
+  it("steps up to the compact ladder instead of rounding a sub-$1,000 value up to $1,000.00 (issue #45's known-but-unfixed bug, now fixed)", () => {
+    // 999.995 rounds to "1000.00" at 2 decimals (the cents branch) --
+    // must step up to "$1K" rather than ever displaying "$1,000.00".
+    expect(formatHeroCurrency(999.995)).toBe("$1K");
+  });
 });
 
 describe("formatAxisCurrency", () => {
@@ -76,6 +82,12 @@ describe("formatAxisCurrency", () => {
 
   it("still uses compact suffixes above $1,000", () => {
     expect(formatAxisCurrency(6876.86)).toBe("$6.9K");
+  });
+
+  it("steps up to the compact ladder instead of rounding a sub-$1,000 value up to $1,000 (issue #45's known-but-unfixed bug, now fixed)", () => {
+    // 999.6 rounds to "1000" at 0 decimals (the no-cents branch) -- must
+    // step up to "$1K" rather than ever displaying "$1,000".
+    expect(formatAxisCurrency(999.6)).toBe("$1K");
   });
 });
 

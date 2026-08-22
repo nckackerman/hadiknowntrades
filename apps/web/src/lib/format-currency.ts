@@ -157,6 +157,19 @@ const plainCurrencyWhole = new Intl.NumberFormat("en-US", {
  * Handles non-finite input defensively (NaN/Infinity can't come from a
  * well-formed PrecomputedResult, but this is display code at the edge of
  * the app, not internal plumbing that gets to assume a clean upstream).
+ *
+ * The sub-$1,000 branch has the same rounding-overflow guard
+ * `formatMultiplier` needed (issue #45, found in code review): a value in
+ * roughly `[999.5, 1000)` (with cents, `[999.995, 1000)`) rounds *up* to
+ * "1000"/"1000.00" at this branch's own display precision --
+ * `Intl.NumberFormat` would otherwise hand back a bare "$1,000"/
+ * "$1,000.00" instead of stepping up to the compact ladder's "$1K". This
+ * was originally left unfixed here as "confirmed but out of scope" for
+ * #45 (which only touched `formatMultiplier`); it's in scope now that
+ * issue #32's prose trade narration formats a genuinely new value (each
+ * leg's intermediate running balance) through this exact function, so
+ * the previously-theoretical case is reachable in a spot users read
+ * closely.
  */
 function formatCurrency(value: number, { cents }: { cents: boolean }): string {
   if (!Number.isFinite(value)) {
@@ -167,7 +180,12 @@ function formatCurrency(value: number, { cents }: { cents: boolean }): string {
   const abs = Math.abs(value);
 
   if (abs < 1000) {
-    return sign + (cents ? plainCurrencyWithCents : plainCurrencyWhole).format(abs);
+    const digits = cents ? 2 : 0;
+    if (Number(abs.toFixed(digits)) < 1000) {
+      return sign + (cents ? plainCurrencyWithCents : plainCurrencyWhole).format(abs);
+    }
+    // Rounding overflowed to 1000 at this precision -- fall through to
+    // the compact ladder below instead of returning "$1,000"/"$1,000.00".
   }
 
   return formatCompactOrScientific(sign, abs, { prefix: "$" });

@@ -1,4 +1,5 @@
 import { formatHeroCurrency, formatPercent } from "@/lib/format-currency";
+import { computeTradeReturn } from "@/lib/trade-math";
 
 interface TradeRowProps {
   index: number;
@@ -30,8 +31,7 @@ export function TradeRow({
   sellLabel,
   sellPrice,
 }: TradeRowProps) {
-  const returnFraction = sellPrice / buyPrice - 1;
-  const isGain = returnFraction >= 0;
+  const { returnFraction, isGain } = computeTradeReturn(buyPrice, sellPrice);
   return (
     <li className="flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-3 text-sm">
       <span className="font-medium text-[var(--text-muted)]">#{index + 1}</span>
