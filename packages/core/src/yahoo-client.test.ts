@@ -4,6 +4,7 @@ import {
   BlockedError,
   fetchDailyCloses,
   fetchFiveMinuteBars,
+  fetchIntraday1mBars,
   fetchIntradayBars,
   TickerNotFoundError,
   toYahooSymbol,
@@ -506,5 +507,214 @@ describe("fetchFiveMinuteBars", () => {
 
     expect(error).toBeInstanceOf(UnexpectedResponseError);
     expect(fetchImpl).toHaveBeenCalledTimes(1); // 422 isn't a retryable status
+  });
+});
+
+describe("fetchIntraday1mBars (issue #29)", () => {
+  // A ~30-day range: 29 days from `from` to `to`, plus the 1-day
+  // end-padding every intraday fetch adds, gives a total 30-day span --
+  // chunked into 8+8+8+6 days (4 chunks), matching this issue's own
+  // worked example (Yahoo caps a single interval=1m request at 8 days).
+  const from = new Date("2024-01-01T00:00:00Z");
+  const to = new Date("2024-01-30T00:00:00Z");
+  const ONE_DAY_SECONDS = 24 * 60 * 60;
+  const ONE_MINUTE_CHUNK_DAYS = 8; // mirrors the module-private constant of the same name
+
+  function chunkBoundaries(fromDate: Date, toDate: Date): { period1: number; period2: number }[] {
+    const period1Total = Math.floor(fromDate.getTime() / 1000);
+    const period2Total = Math.floor(toDate.getTime() / 1000) + ONE_DAY_SECONDS;
+    const chunkSeconds = ONE_MINUTE_CHUNK_DAYS * ONE_DAY_SECONDS;
+    const chunks: { period1: number; period2: number }[] = [];
+    let start = period1Total;
+    while (start < period2Total) {
+      const end = Math.min(start + chunkSeconds, period2Total);
+      chunks.push({ period1: start, period2: end });
+      start = end;
+    }
+    return chunks;
+  }
+
+  it("parses a valid response into full local-datetime/close pairs, same shape as fetchIntradayBars/fetchFiveMinuteBars", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => jsonResponse(200, validChartBody()));
+
+    const result = await fetchIntraday1mBars("AAPL", from, to, { fetchImpl });
+
+    // The first chunk's response wins for these two dates (every later
+    // chunk's mocked response repeats the same fixture dates, deduped
+    // away) -- see the dedup test below for that behavior in isolation.
+    expect(result).toEqual([
+      { date: "2024-01-02T10:30:00", close: 183.4 },
+      { date: "2024-01-03T10:30:00", close: 182.03 },
+    ]);
+  });
+
+  it("requests interval=1m", async () => {
+    // A fresh Response per call -- a mockResolvedValue'd single Response
+    // instance would have its body consumed by the first of 4 chunk
+    // fetches and throw "Body is unusable" on the rest.
+    const fetchImpl = vi.fn().mockImplementation(async () => jsonResponse(200, validChartBody()));
+
+    await fetchIntraday1mBars("AAPL", from, to, { fetchImpl });
+
+    const [url] = fetchImpl.mock.calls[0] as [string];
+    expect(new URL(url).searchParams.get("interval")).toBe("1m");
+  });
+
+  it("splits a ~30-day range into 4 chunks of at most 8 days each, only the final chunk padded", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => jsonResponse(200, validChartBody()));
+
+    await fetchIntraday1mBars("AAPL", from, to, { fetchImpl });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    const expected = chunkBoundaries(from, to);
+    expect(expected).toHaveLength(4);
+    // 8+8+8+6 days.
+    expect(expected.map((c) => (c.period2 - c.period1) / ONE_DAY_SECONDS)).toEqual([8, 8, 8, 6]);
+
+    fetchImpl.mock.calls.forEach((call, i) => {
+      const [url] = call as [string];
+      const params = new URL(url).searchParams;
+      expect(Number(params.get("period1"))).toBe(expected[i]!.period1);
+      expect(Number(params.get("period2"))).toBe(expected[i]!.period2);
+    });
+
+    // Non-overlapping: each chunk's end is exactly the next chunk's start.
+    for (let i = 0; i < expected.length - 1; i++) {
+      expect(expected[i]!.period2).toBe(expected[i + 1]!.period1);
+    }
+    // Only the last chunk's period2 carries the day-padding (i.e. sits
+    // strictly past the requested `to`, converted to seconds).
+    const requestedToSeconds = Math.floor(to.getTime() / 1000);
+    expect(expected[expected.length - 1]!.period2).toBeGreaterThanOrEqual(
+      requestedToSeconds + ONE_DAY_SECONDS,
+    );
+    for (let i = 0; i < expected.length - 1; i++) {
+      expect(expected[i]!.period2).toBeLessThan(requestedToSeconds + ONE_DAY_SECONDS);
+    }
+  });
+
+  it("issues exactly 1 chunk request for a range within a single 8-day window", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, validChartBody()));
+    const shortFrom = new Date("2024-01-01T00:00:00Z");
+    const shortTo = new Date("2024-01-03T00:00:00Z"); // 2 days + 1 day padding = 3 days, well under 8.
+
+    await fetchIntraday1mBars("AAPL", shortFrom, shortTo, { fetchImpl });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches chunks sequentially, not concurrently", async () => {
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const fetchImpl = vi.fn().mockImplementation(async () => {
+      concurrent++;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      concurrent--;
+      return jsonResponse(200, validChartBody());
+    });
+
+    await fetchIntraday1mBars("AAPL", from, to, { fetchImpl });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(maxConcurrent).toBe(1);
+  });
+
+  it("concatenates chunks in order, deduping any bar with a repeated `date` across a chunk seam", async () => {
+    // 15 days from -> to, plus 1 day of end-padding = 16-day total span,
+    // exactly 2 chunks of 8 days each (no remainder), so the two mocked
+    // responses below map 1:1 to the two chunks.
+    const twoChunkFrom = new Date("2024-01-01T00:00:00Z");
+    const twoChunkTo = new Date("2024-01-16T00:00:00Z");
+
+    // Chunk 1: two bars. Chunk 2: a duplicate of the second bar's date
+    // (simulating a boundary artifact) plus one genuinely new bar.
+    const chunk1 = validChartBody({
+      timestamp: [1704205800, 1704292200], // 2024-01-02T10:30:00, 2024-01-03T10:30:00
+      adjclose: [183.4, 182.03],
+    });
+    const chunk2 = validChartBody({
+      timestamp: [1704292200, 1704378600], // 2024-01-03T10:30:00 (dup), 2024-01-04T10:30:00
+      adjclose: [999, 179.72],
+    });
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, chunk1))
+      .mockResolvedValueOnce(jsonResponse(200, chunk2));
+
+    const result = await fetchIntraday1mBars("AAPL", twoChunkFrom, twoChunkTo, { fetchImpl });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result).toEqual([
+      { date: "2024-01-02T10:30:00", close: 183.4 },
+      { date: "2024-01-03T10:30:00", close: 182.03 }, // first occurrence wins, not chunk 2's 999
+      { date: "2024-01-04T10:30:00", close: 179.72 },
+    ]);
+  });
+
+  it.each([
+    ["first", 0],
+    ["middle", 1],
+    ["last", 2],
+  ])(
+    "propagates a BlockedError from the %s chunk immediately, discarding earlier chunks' bars and skipping later ones",
+    async (_label, failAt) => {
+      // A 24-day range -> exactly 3 chunks of 8 days each.
+      const threeChunkTo = new Date("2024-01-24T00:00:00Z");
+      let callIndex = 0;
+      const fetchImpl = vi.fn().mockImplementation(async () => {
+        const isFailingChunk = callIndex === failAt;
+        callIndex++;
+        if (isFailingChunk) return jsonResponse(403, {});
+        return jsonResponse(200, validChartBody());
+      });
+
+      const error = await fetchIntraday1mBars("AAPL", from, threeChunkTo, { fetchImpl }).catch(
+        (e: unknown) => e,
+      );
+
+      expect(error).toBeInstanceOf(BlockedError);
+      // No requests fired past the failing chunk.
+      expect(fetchImpl).toHaveBeenCalledTimes(failAt + 1);
+    },
+  );
+
+  it("discards all fetched bars for the ticker when a later chunk's TransientFetchError exhausts retries (no partial-month result)", async () => {
+    vi.useFakeTimers();
+    try {
+      // A 16-day range -> exactly 2 chunks. First chunk succeeds; second
+      // chunk fails every attempt.
+      const twoChunkTo = new Date("2024-01-15T00:00:00Z");
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(200, validChartBody()))
+        .mockResolvedValue(jsonResponse(503, {}));
+
+      const promise = fetchIntraday1mBars("AAPL", from, twoChunkTo, { fetchImpl });
+      const expectation = expect(promise).rejects.toThrow(TransientFetchError);
+      await vi.runAllTimersAsync();
+      await expectation;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("surfaces an out-of-retention chunk as UnexpectedResponseError, not TickerNotFoundError -- same 422 short-circuit as fetchFiveMinuteBars (issue #29's 30-day retention wall)", async () => {
+    const outOfRetention = {
+      chart: {
+        result: null,
+        error: {
+          code: "Unprocessable Entity",
+          description:
+            "1m data not available for startTime=1700000000 and endTime=1700604800. The requested range must be within the last 30 days.",
+        },
+      },
+    };
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(422, outOfRetention));
+
+    const error = await fetchIntraday1mBars("AAPL", from, to, { fetchImpl }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(UnexpectedResponseError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1); // 422 isn't a retryable status, and the first chunk already fails
   });
 });

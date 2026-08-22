@@ -173,7 +173,20 @@ export class HadIKnownTradesStack extends Stack {
       // (apps/pipeline/CLAUDE.md) then runs the DP optimizer 5x
       // (one per preset range) -- comfortably needs more than the
       // default 3s/128MB, well under Lambda's 15-minute ceiling.
-      memorySize: 1024,
+      // Bumped 1024 -> 2048 for issue #29 (1-minute bars for 1M): a real
+      // measured invocation already showed 903MB/1024MB used *before*
+      // this issue (apps/pipeline/CLAUDE.md), and #29's back-of-envelope
+      // estimate (corrected during its plan review -- see
+      // docs/plans/issue-29-plan.md's addendum) puts the new 1-minute
+      // fetch's added memory at roughly ~350-450MB on top of that
+      // baseline, on a Lambda that already had only ~121MB of headroom
+      // -- very likely to exceed 1024MB without a bump. 2048MB is a
+      // proactive starting point (2x current), not yet confirmed against
+      // a real measured run with this issue's code -- see the PR for
+      // issue #29. This is a code-only change: deploying it is a
+      // separate, explicit-go-ahead action per this repo's real-AWS
+      // working agreement, not performed as part of landing this code.
+      memorySize: 2048,
       timeout: Duration.minutes(15),
       environment: {
         RESULTS_BUCKET: resultsBucket.bucketName,

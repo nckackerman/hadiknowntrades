@@ -8,6 +8,7 @@ export {
   fetchDailyCloses,
   fetchIntradayBars,
   fetchFiveMinuteBars,
+  fetchIntraday1mBars,
   toYahooSymbol,
   BlockedError,
   TickerNotFoundError,

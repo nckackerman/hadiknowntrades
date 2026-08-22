@@ -32,8 +32,18 @@
 // startTime=... The requested range must be within the last 60 days.").
 // A single request per ticker is enough here too -- 60 days of 5-minute
 // bars is well within what one chart-endpoint response returns, no
-// chunking needed (unlike a hypothetical 1-minute path, deferred to
-// #29).
+// chunking needed.
+//
+// Verified empirically for 1m bars (issue #29, upgrading 1M -- see
+// packages/core/CLAUDE.md's "1-minute intraday bars" section): unlike
+// 60m/5m, `interval=1m` needs TWO independent limits respected, not one:
+// retention is a hard 30-day wall (29 days back succeeds, 30 fails with
+// a 422 -- "N-1, not N" again, same pattern as 60m/5m), AND a single
+// request may span at most 8 calendar days regardless of how recent it
+// is (a request spanning exactly 8 days succeeds, 9 fails with a
+// different 422). Covering a full ~29-day window therefore needs
+// multiple chunked requests per ticker, unlike every other granularity
+// here -- see fetchIntraday1mBars below.
 
 import { isValidPrice } from "./is-valid-price";
 
@@ -51,18 +61,30 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const ONE_DAY_SECONDS = 24 * 60 * 60;
 // Interval string for the 60-minute intraday fetch added in issue #28.
 // Hardcoded (not a parameter) on purpose -- a real "interval" parameter
-// would only be worth adding if a caller needed to choose between more
-// than these two fixed granularities at runtime, which none currently
-// do (each granularity has its own fetch function; see
-// fetchFiveMinuteBars below for the 5-minute one added in issue #30). A
-// still-finer 1-minute granularity for 1M is deliberately deferred to
-// issue #29.
+// would only be worth adding if a caller needed to choose between
+// several fixed granularities at runtime, which none currently do (each
+// granularity has its own fetch function; see fetchFiveMinuteBars and
+// fetchIntraday1mBars below for the 5-minute/1-minute ones added in
+// issues #30/#29).
 const INTRADAY_INTERVAL = "60m";
 // Interval string for the 5-minute intraday fetch added in issue #30
 // (upgrades the 3M range's most recent ~60 days -- see
 // fetchFiveMinuteBars below and packages/core/CLAUDE.md's "5-minute
 // intraday bars" section for the verified retention window).
 const FIVE_MINUTE_INTERVAL = "5m";
+// Interval string for the 1-minute intraday fetch added in issue #29
+// (upgrades the 1M range -- see fetchIntraday1mBars below and
+// packages/core/CLAUDE.md's "1-minute intraday bars" section for the
+// verified retention window and chunk-span cap).
+const ONE_MINUTE_INTERVAL = "1m";
+// Largest span, in calendar days, a single interval=1m request may
+// cover (verified live -- see the module header comment above).
+// fetchIntraday1mBars splits any wider [from, to] into consecutive,
+// non-overlapping windows of at most this many days. Purely internal to
+// this module -- unlike the retention window (a caller-facing contract,
+// documented on fetchIntraday1mBars itself), chunking is an
+// implementation detail no caller needs to know about.
+const ONE_MINUTE_CHUNK_DAYS = 8;
 // HTTP status Yahoo has been empirically confirmed (see issue #3) to use
 // for a genuinely nonexistent symbol.
 const NOT_FOUND_STATUS = 404;
@@ -405,7 +427,7 @@ export async function fetchIntradayBars(
  * to see chart.error, not a "this symbol has no data" TickerNotFoundError.
  * That matters operationally: UnexpectedResponseError is a systemic-abort
  * signal to apps/pipeline's fetchUniverseHistory, not a per-ticker skip --
- * see apps/pipeline/CLAUDE.md's "5-minute path" section for how the
+ * see apps/pipeline/CLAUDE.md's "Granularity overrides" section for how the
  * pipeline avoids that ever mattering in practice (it requests a
  * conservative 59-day-back window, one day inside the verified wall, and
  * treats the whole 5-minute path as best-effort/gracefully-degradable
@@ -435,6 +457,109 @@ export async function fetchFiveMinuteBars(
   const url =
     `${CHART_BASE_URL}/${encodeURIComponent(yahooSymbol)}` +
     `?period1=${period1}&period2=${period2}&interval=${FIVE_MINUTE_INTERVAL}&includeAdjustedClose=true`;
+
+  return fetchChartSeries(symbol, url, parseIntradayChartResult, options);
+}
+
+/**
+ * Fetches 1-minute intraday price bars for a symbol over a date range
+ * (issue #29 -- upgrades the 1M range from 60-minute to 1-minute
+ * granularity, following the same GranularityOverride pattern
+ * fetchFiveMinuteBars established for 3M). Two independent limits on
+ * `interval=1m`, both verified live (see packages/core/CLAUDE.md's
+ * "1-minute intraday bars" section) and both different from every other
+ * granularity this client fetches:
+ *
+ * - **Retention is a hard 30-day wall**, the same "N-1 succeeds, N
+ *   fails" pattern as 5m's 60-day / 60m's 730-day limits: a request 29
+ *   days back succeeds, 30 days back gets a 422 with
+ *   `chart.error.description` reading "1m data not available for
+ *   startTime=... The requested range must be within the last 30
+ *   days." Same operational gotcha as fetchFiveMinuteBars: this status
+ *   is 422 (`!response.ok`), so fetchChartSeries throws
+ *   `UnexpectedResponseError` from the status-code branch, not
+ *   `TickerNotFoundError` from `chart.error` -- the caller is
+ *   responsible for staying inside the window (apps/pipeline requests a
+ *   conservative 29-day-back window, one day inside the verified wall,
+ *   and treats the whole 1-minute path as best-effort/
+ *   gracefully-degradable regardless of which error class trips it, same
+ *   as the 5-minute path).
+ * - **A single request may span at most 8 calendar days**
+ *   (ONE_MINUTE_CHUNK_DAYS), regardless of how recent it is -- a
+ *   *separate* limit from retention: a request spanning exactly 8 days
+ *   succeeds, 9 days fails with a *different* 422
+ *   (`chart.error.description`: "Only 8 days worth of 1m granularity
+ *   data are allowed to be fetched per request."). Unlike every other
+ *   fetch function in this file, this means one logical `[from, to]`
+ *   request here can require **multiple sequential HTTP requests**:
+ *   this function transparently splits the (already end-padded) total
+ *   range into consecutive, non-overlapping <=8-day chunks and awaits
+ *   them one at a time (not concurrently -- this fetch isn't
+ *   latency-sensitive, and firing every chunk at once per ticker would
+ *   multiply peak simultaneous connections for no benefit; see
+ *   apps/pipeline/CLAUDE.md's "Granularity overrides" section), concatenating
+ *   the results. Only the conceptual *last* chunk carries the padded
+ *   end -- computing the padded total range once and chunking *that*
+ *   (rather than padding every chunk independently) means intermediate
+ *   chunk seams can't overlap and double-count a bar by construction.
+ *   A defensive dedup-by-`date` pass still runs when concatenating,
+ *   cheap insurance against that invariant ever regressing. If any
+ *   chunk's request ultimately fails (after its own retries, or
+ *   immediately for BlockedError/TickerNotFoundError/
+ *   UnexpectedResponseError), that error propagates and this function's
+ *   caller gets nothing for this ticker -- earlier chunks' already-
+ *   fetched bars are discarded rather than returning a partial month,
+ *   matching every other fetch function's all-or-nothing per-ticker
+ *   contract.
+ *
+ * @param symbol Ticker as commonly quoted, e.g. "AAPL", "BRK.B". Mapped
+ *   internally to Yahoo's symbol format.
+ * @param from Start of the range (inclusive) -- must be within the last
+ *   30 days of "now" at request time (see above).
+ * @param to End of the range (inclusive) -- like fetchFiveMinuteBars,
+ *   internally padded by a day so the requested day's market-hours bars
+ *   are fully covered regardless of what time-of-day `to` carries; the
+ *   padding is applied once to the whole range, then chunked (see
+ *   above), not re-applied per chunk.
+ * @param options.fetchImpl Override for the fetch implementation (tests).
+ */
+export async function fetchIntraday1mBars(
+  symbol: string,
+  from: Date,
+  to: Date,
+  options: { fetchImpl?: typeof fetch } = {},
+): Promise<IntradayBar[]> {
+  const period1Total = Math.floor(from.getTime() / 1000);
+  const period2Total = Math.floor(to.getTime() / 1000) + ONE_DAY_SECONDS;
+  const chunkSeconds = ONE_MINUTE_CHUNK_DAYS * ONE_DAY_SECONDS;
+
+  const out: IntradayBar[] = [];
+  const seenDates = new Set<string>();
+  let chunkStart = period1Total;
+  while (chunkStart < period2Total) {
+    const chunkEnd = Math.min(chunkStart + chunkSeconds, period2Total);
+    // Sequential, not Promise.all'd -- see the doc comment above.
+    const bars = await fetchOneMinuteChunk(symbol, chunkStart, chunkEnd, options);
+    for (const bar of bars) {
+      if (seenDates.has(bar.date)) continue;
+      seenDates.add(bar.date);
+      out.push(bar);
+    }
+    chunkStart = chunkEnd;
+  }
+  return out;
+}
+
+function fetchOneMinuteChunk(
+  symbol: string,
+  period1: number,
+  period2: number,
+  options: { fetchImpl?: typeof fetch },
+): Promise<IntradayBar[]> {
+  const yahooSymbol = toYahooSymbol(symbol);
+  const url =
+    `${CHART_BASE_URL}/${encodeURIComponent(yahooSymbol)}` +
+    `?period1=${period1}&period2=${period2}&interval=${ONE_MINUTE_INTERVAL}&includeAdjustedClose=true`;
 
   return fetchChartSeries(symbol, url, parseIntradayChartResult, options);
 }
