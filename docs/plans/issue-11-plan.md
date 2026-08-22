@@ -1,26 +1,274 @@
 # Plan: issue #11 - arbitrary date-range picker
 
-Status: **plan only, not implemented**. Written against `main` at
-`2d2e48f` (post-#57, buy-and-hold benchmark). Per this repo's working
-agreement, this issue names a real architecture fork with infra/cost
-implications and gets a plan-first, review-before-implementation pass,
-matching `docs/plans/issue-28-plan.md`, `docs/plans/issue-31-plan.md`,
-and `docs/plans/issue-12-plan.md`.
+Status: **implemented** (this branch, `feat/11-arbitrary-date-range`).
+Originally written as a plan-only document against `main` at `2d2e48f`
+(post-#57, buy-and-hold benchmark) recommending live compute + a
+permanent result cache (section 7.1's "Option A"). **The human user
+instead chose the plan's own cheaper alternative, Option B: a coarsened
+precompute matrix** -- month-granularity start date, end pinned to
+"today," served from an expanded but bounded set of nightly-precomputed
+anchor results, no new infrastructure, no dependency on the still-
+placeholder web Lambda. Section 1 below is the primary, as-implemented
+design for that choice, worked out to the same level of rigor the
+original live-compute recommendation got. The original live-compute
+research (under "## 2. Deferred..." below, at its own original internal
+section numbers `## 0.` through `## 9.`, deliberately not renumbered --
+see that section's own intro note for why) is kept in full as
+documented-but-deferred research for a future round, not deleted, along
+with one correction to its own numbers found during independent review.
 
-**Headline finding, read this first**: the live-compute vs.
-precompute-matrix choice the issue frames as binary turns out not to be
-clean once real numbers are run (section 3). A bounded, nightly-safe
-precompute matrix can only support a _coarsened_ version of "arbitrary"
-(e.g. month-granularity start, end pinned to today) -- not literal
-day-granularity, both-endpoints-arbitrary picking, which the issue's own
-Scope text asks for. Getting the literal acceptance criteria means live
-compute. But live compute has a real, non-optional infra prerequisite
-this codebase doesn't have yet (section 3.4), and introduces this app's
-first-ever attack surface where AWS cost scales with adversarial user
-input (section 8). **This plan recommends live compute + a permanent
-result cache (section 4), but flags the scope question -- literal
-arbitrary vs. a coarser "good enough" version -- as a real product call
-for the human, not something resolved unilaterally here** (section 7.1).
+## 1. Implemented design: coarsened precompute (Option B)
+
+### 1.1 Anchor scheme
+
+**Month-anchored start, end pinned to `asOf` ("today"), going back
+`CUSTOM_RANGE_ANCHOR_YEARS_BACK` = 21 years** -- the same Scheme A the
+original plan's section 3.2 worked out the real numbers for, adopted
+here as the actual implementation rather than left as one of three
+sketched options. Concretely (`packages/core/src/custom-range-
+anchors.ts`):
+
+- `customRangeAnchors(asOf)` returns 21 x 12 = **252 anchor points**, the
+  1st of every calendar month from the current (possibly partial) month
+  back 21 years, newest first -- a plain `YYYY-MM` string (`AnchorMonth`)
+  identifies each one, e.g. `"2019-03"`.
+- **21 years chosen to match the depth already used to benchmark the
+  optimizer's own "Max" range** (`packages/core/CLAUDE.md`'s "Optimizer
+  algorithm" section, ~330ms for a 21-year window) -- not MAX's own true,
+  unbounded, ticker-inception-dependent reach (some individual S&P 500
+  constituents' real Yahoo history goes back further than 21 years), just
+  a concretely cost-modeled depth this feature's nightly compute/storage
+  budget is sized against. Bumping this constant later is a one-line
+  change -- every consumer (pipeline, API, UI picker) derives its own
+  bounds from it, nothing hardcodes 252 or 21 a second time.
+- **No missing/holiday-date snapping logic was needed**, unlike the
+  live-compute design's section 2 (below) spent real design effort
+  working out: each anchor's start is always a _calendar_ month
+  boundary, and the exact same slicing filter every preset range's own
+  `startDate` already goes through (`p.date >= startDateString`,
+  `apps/pipeline/src/pipeline.ts`'s `computeWindowOptimization`) already
+  forward-snaps to the nearest real trading day on or after it -- with no
+  new code. The end date is always "today," handled identically to how
+  every preset range already handles it (`dataAsOf` vs. `endDate`).
+  `CustomWindowResult.startDate` stores the anchor's own literal calendar
+  boundary (e.g. `"2019-03-01"`), not the snapped date -- the exact same
+  convention `WindowResult.startDate` already follows for presets; the
+  snap is only ever visible in the resulting `trades`/`benchmark` data,
+  never a separate field. Live-verified end to end, not just reasoned
+  about -- see section 1.6.
+
+### 1.2 Nightly cost: real numbers, not re-estimated
+
+Real, live-measured numbers from this implementation (not re-derived
+from the original plan's synthetic benchmarks) -- see section 1.6 for
+methodology:
+
+- **A full real run** (full 503-ticker universe, real Yahoo network
+  calls, all 4 concurrent fetch pools -- window/intraday/5-minute/
+  1-minute -- plus the SPY benchmark fetch, plus solving all 5 preset
+  ranges and all 252 custom anchors) **completed in 154.0s (~2.6
+  minutes)** -- see section 1.6 for the exact run. Comfortably inside the
+  pipeline Lambda's 15-minute timeout and current 2048MB memory
+  allocation (`infra/CLAUDE.md`'s "Current deployment state") -- no infra
+  change needed for this feature. This figure includes real network fetch
+  time (which dominates and isn't isolated from pure compute time in this
+  measurement), so it's an upper bound on the custom-anchor compute
+  addition specifically, not a clean marginal delta -- but it's the
+  number that actually matters for "does this fit in the Lambda timeout,"
+  which it does with over 12 minutes of headroom to spare.
+- **New S3 storage: 431.5KB total across all 252 custom-anchor result
+  objects** -- even smaller than the original plan's own ~750KB-1MB
+  estimate (section 3.2 below), a rounding error against the $20/month
+  budget.
+- **Zero new Yahoo requests**: every custom-anchor result is computed
+  from the window path's own already-fetched `windowFetch.history`
+  (`apps/pipeline/src/pipeline.ts`'s `buildCustomWindowResults`), the
+  same daily-close history the 5Y/MAX ranges already require. This is
+  the single biggest reason this feature is cheap: it's pure additional
+  compute over data already resident in memory, not a new I/O path.
+
+### 1.3 Schema: `CustomWindowResult`, a sibling of `PrecomputedResult`
+
+`packages/core/src/results-schema.ts` adds `CustomWindowResult` --
+structurally the same whole-window model as `WindowResult` (same
+optimizer, same `startingCapital`/`endingBalance`/`trades`/`worstCase`/
+`benchmark` shape), keyed by `anchorMonth: AnchorMonth` instead of
+`range: PresetRange`.
+
+- **Deliberately a type separate from `PrecomputedResult`, not a third
+  union member** -- `PresetRange` is a closed, exhaustively-iterated
+  5-member union throughout this codebase (`PRESET_RANGES` itself,
+  `WINDOW_RANGES`/`INTRADAY_RANGES`, `isCanonicalRange`/`parseRange`).
+  Folding a 252-member anchor set into that same `range` field would mean
+  loosening `PresetRange` everywhere it appears, not just here.
+- **Still gated by the same `RESULTS_SCHEMA_VERSION`** as every
+  `PrecomputedResult` -- a deliberate difference from the deferred
+  live-compute design's own judgment call (section 5.3 below), whose
+  reasoning ("no separate writer to drift from the reader") doesn't apply
+  here: a `CustomWindowResult` _is_ written by a separate process
+  (`apps/pipeline`, nightly) from the one that reads it (`apps/web`'s API
+  route) -- the exact writer/reader-drift risk `RESULTS_SCHEMA_VERSION`
+  exists to catch for every other result, so it reuses that same
+  protection rather than inventing a parallel one.
+- `customResultKey(anchorMonth)` -> `results/custom/{anchorMonth}.json`,
+  namespaced under its own prefix (not flat alongside the 5 preset keys)
+  so the two families are trivially distinguishable by key prefix alone.
+- `validateCustomWindowResult` mirrors `validatePrecomputedResult`'s own
+  write-time self-validation (issue #47) -- same hand-rolled, "check
+  every field, report every problem" discipline, reusing every one of
+  the same private field-level validators (`isPositiveFiniteNumber`,
+  `validateTrade`, `validateWorstCaseResultWith`, `validateBenchmark`)
+  so the two validators can't drift on what counts as e.g. a valid
+  `Trade`.
+
+### 1.4 Pipeline: every anchor recomputed fresh, every nightly run
+
+`apps/pipeline/src/pipeline.ts`'s `buildCustomWindowResults` computes one
+`CustomWindowResult` per requested anchor, reusing
+`computeWindowOptimization` -- a helper factored out of the pre-existing
+`buildWindowResults` specifically so the 5Y/MAX preset path and the
+custom-anchor path share one windowed-slice-plus-`optimizeBothDirections`
+implementation, not two copies that could drift.
+
+- **This is the answer to the cache/invalidation-gap finding an
+  independent reviewer raised on the original plan**: there is no
+  separate "permanent cache" for custom-anchor results at all, and
+  therefore no separate invalidation logic to build or forget. Every one
+  of the 252 anchors is recomputed from scratch on every nightly run,
+  exactly like the 5 preset ranges already are -- a bug fix or schema
+  change to the optimizer fixes every stored anchor automatically on the
+  next nightly run, with zero bespoke cache-busting code anywhere. This
+  was only viable _because_ the coarsened design's anchors are cheap,
+  bounded, pipeline-computed values (section 1.2) -- the exact opposite
+  of the live-compute design's arbitrary-any-date cache (section 8
+  below), whose permanent-cache complexity was specific to that
+  approach and doesn't apply here.
+- **Defaults to zero custom anchors unless the caller opts in**
+  (`RunPipelineOptions.customRangeAnchors`, default `[]`) -- deliberately
+  _not_ wired to always run inside `runPipeline` itself, unlike every
+  other option this file defaults internally. `src/run.ts` (the real
+  nightly entry point) is the one place that explicitly passes
+  `customRangeAnchors(asOf)` to turn this on for the real deployed
+  pipeline. This was a pragmatic call to avoid retrofitting ~250 extra
+  anchor-result assertions into every pre-existing preset-range test in
+  `pipeline.test.ts` that has nothing to do with this feature -- a
+  dedicated `pipeline.custom-range.test.ts` covers the feature itself
+  with a small, focused fixture set instead.
+- **A custom-anchor write failure is held to the same "must fail the
+  run" standard as a preset range's**, not the looser best-effort
+  standard a granularity override's failure gets -- both preset and
+  custom-anchor results are validated and written through one combined
+  `Promise.allSettled` write loop, and a failure in either family
+  aggregates into the same thrown error (this pipeline's only alerting
+  mechanism). Reasoning: unlike a granularity override (a genuinely
+  different, independently-fetched data source that gracefully degrades
+  to already-correct 60-minute bars on failure), a custom anchor is
+  derived from the _same_ already-required-to-succeed window-path
+  history -- there's no lesser standard that makes sense for it.
+
+### 1.5 Web: API route and UI picker
+
+- **`GET /api/results?anchor=YYYY-MM`** is the same route as
+  `GET /api/results?range=...`, branching on which query param is
+  present (`apps/web/src/app/api/results/route.ts`) -- not a second route
+  file. This differs from the deferred live-compute design's own section
+  5.2, which recommended a genuinely separate route because live compute
+  and a precomputed S3 read have different backing logic, cache
+  semantics, and error vocabularies. None of that applies once the
+  custom-anchor path is _also_ just a precomputed S3 read: same
+  `getResultsResponse`-style logic (`getCustomResultsResponse`, a sibling
+  function reusing the exact same error-response shape and
+  `Cache-Control` header), same reader, same route.
+- **Anchor validation is shape-only, not bounds-checked against a
+  live-computed "currently valid" list** -- `parseAnchorMonth` rejects a
+  malformed string (400 `invalid_anchor`) but does not separately check
+  whether the anchor falls inside `customRangeAnchors(asOf)`'s current
+  252-month window. A syntactically well-formed but never-computed anchor
+  (out of range, or simply not published yet) falls through to the
+  ordinary `not_found` 404 instead, exactly like any preset range not yet
+  computed on a first-ever pipeline run. This sidesteps a real clock-skew
+  edge case: the web server's own "now" and the pipeline's last-run "now"
+  can disagree by up to one anchor right around a month boundary, and
+  re-validating against a live-computed bound here would risk rejecting a
+  genuinely still-published anchor.
+- **`CustomRangeSelector.tsx`** is a plain `<select>` next to
+  `RangeSelector` -- same reasoning `DaySelector` already established
+  (`apps/web/CLAUDE.md`'s "Two result models" section): up to 252 options
+  is far too many for a row of pill buttons. A disabled placeholder
+  option ("Choose a start month...") makes "you can only pick from this
+  fixed list, not any date" discoverable by opening the dropdown, rather
+  than a silent limitation a user would otherwise only discover after
+  picking something that 404s -- directly satisfying this task's own
+  instruction that the constraint be discoverable, not silent. A native
+  `<input type="date">` was deliberately not used for exactly this
+  reason: it would invite picking a day the pipeline never actually
+  computed a result for.
+- **Range mode and custom-anchor mode are mutually exclusive URL state**
+  (`?range=` xor `?anchor=`, `ResultsPage.tsx`) -- selecting one clears
+  the other, mirroring how `?day=` is already cleared on a range switch.
+  `useResults(range)` and the new `useCustomResults(anchor)` both accept
+  `null` and idle without fetching when their own mode isn't active, so
+  exactly one network request is in flight at a time, never both.
+- **`ResultsPanel.tsx` gained a third render branch** (`"custom-window"`,
+  alongside the existing `"window"`/`"intraday-daily"`), sharing a new
+  extracted `WindowResultBody` component with the `"window"` branch --
+  the two models are the identical underlying computation (just keyed
+  differently), so the JSX renders through one shared component rather
+  than two copies that could drift on wording/layout over time.
+
+### 1.6 Live verification (real Yahoo data, no S3 write)
+
+A real pipeline run against the full 503-ticker S&P 500 universe, real
+Yahoo network calls, `customRangeAnchors(new Date())` (252 real anchors),
+an in-memory store (no real S3 write) -- same "verify live at least once
+per feature" standard every prior plan in this repo has followed, and the
+same no-S3-write technique issue #31's own live verification used
+(`packages/core/CLAUDE.md`'s "Worst-case search" section). Run via a
+throwaway Vitest file (`apps/pipeline/src/live-verify-custom-range.temp.test.ts`,
+deleted before this PR's final commit -- same convention this plan's own
+section 4 documents).
+
+Real results:
+
+- **Total elapsed: 153,986ms (154.0s / ~2.6 minutes)** for the entire
+  run -- every fetch pool (window, intraday, 5-minute, 1-minute, SPY
+  benchmark) plus solving all 5 preset ranges and all 252 custom anchors.
+- **0 of 503 tickers skipped.**
+- **5 preset results + 252 custom-anchor results = 257 total result
+  objects** that would have been written to S3.
+- **431.5KB total** across all 252 custom-anchor result objects'
+  serialized JSON.
+
+Confirms section 1.2's cost estimate was, if anything, conservative --
+comfortably inside the 15-minute Lambda timeout with substantial margin,
+and S3 storage growth is negligible.
+
+## 2. Deferred: original live-compute research (not implemented)
+
+Everything below this point is the **original plan-only research**
+written before the human's Option B decision above -- kept in full as
+documented-but-deferred research for a future round (e.g. if this
+feature's scope ever needs to grow past month-granularity/end-pinned-to-
+today), not deleted. **Deliberately left at its own original internal
+section numbers (`## 0.` through `## 9.`), not renumbered to nest under
+this document's new top-level "## 1."/"## 2." sections above** -- every
+cross-reference inside this original research (e.g. "see section 3.2")
+refers to that original numbering, and renumbering ~600 lines of
+cross-references to shift by +2 would risk introducing a real error for
+a purely cosmetic fix. Read "## 0." below as "this plan's own section 0,"
+not "the third H2 heading in the file."
+
+**One correction, made during independent review of this plan before
+implementation began**: section 0 (`## 0. Numbers actually measured for
+this plan, and how`, immediately below)'s raw price-history size
+benchmark (58.6MB) was run against an inconsistent/lower-density dataset
+than claimed -- a reviewer's own re-run found the real figure is closer
+to **~97-100MB** at realistic trading-day density. This doesn't change
+any conclusion in section 1 above (the coarsened path needs no raw
+price-history store at all), and the original 58.6MB-based numbers below
+are left as-is (not silently edited) since they're a historical record of
+what was actually measured in that session -- treat every "58.6MB" figure
+below as superseded by ~97-100MB if this research is ever revived.
 
 ## 0. Numbers actually measured for this plan, and how
 
