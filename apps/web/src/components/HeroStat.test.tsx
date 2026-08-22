@@ -74,4 +74,68 @@ describe("HeroStat", () => {
     expect(screen.getAllByText("$6.9K")).toHaveLength(2); // visible + sr-only, both final
     expect(screen.getAllByText("$20.00")).toHaveLength(1); // only the static starting-capital figure
   });
+
+  describe("celebration burst (issue #36)", () => {
+    it("fires once the count-up lands on a gain", () => {
+      stubPrefersReducedMotion(false);
+      // Land on the final value in a single frame, same technique as
+      // the reduced-motion test above -- just without reduced motion
+      // itself, so this exercises the "landed via the real tween" path.
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+        cb(performance.now() + 100_000);
+        return 1;
+      });
+
+      render(<HeroStat startingCapital={20} endingBalance={6876.86} />);
+
+      expect(screen.getByTestId("celebration-burst")).toBeInTheDocument();
+    });
+
+    it("does not fire when the reveal is not a gain", () => {
+      stubPrefersReducedMotion(false);
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+        cb(performance.now() + 100_000);
+        return 1;
+      });
+
+      render(<HeroStat startingCapital={20} endingBalance={20} />);
+
+      expect(screen.queryByTestId("celebration-burst")).not.toBeInTheDocument();
+    });
+
+    it("does not fire when the ending balance is below starting capital", () => {
+      stubPrefersReducedMotion(false);
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+        cb(performance.now() + 100_000);
+        return 1;
+      });
+
+      render(<HeroStat startingCapital={20} endingBalance={5} />);
+
+      expect(screen.queryByTestId("celebration-burst")).not.toBeInTheDocument();
+    });
+
+    it("does not fire on a gain when the user prefers reduced motion", () => {
+      stubPrefersReducedMotion(true);
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+        cb(performance.now());
+        return 1;
+      });
+
+      render(<HeroStat startingCapital={20} endingBalance={6876.86} />);
+
+      expect(screen.queryByTestId("celebration-burst")).not.toBeInTheDocument();
+    });
+
+    it("has not fired yet mid-count, before the reveal lands", () => {
+      stubPrefersReducedMotion(false);
+      // Never invoke the callback -- the count-up is stuck at `from`, so
+      // the reveal hasn't "landed" yet even though the result is a gain.
+      vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+
+      render(<HeroStat startingCapital={20} endingBalance={6876.86} />);
+
+      expect(screen.queryByTestId("celebration-burst")).not.toBeInTheDocument();
+    });
+  });
 });

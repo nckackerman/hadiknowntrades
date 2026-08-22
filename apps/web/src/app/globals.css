@@ -56,3 +56,41 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/*
+ * HeroStat's celebration burst (issue #36): each `.confetti-piece` span
+ * falls and rotates away while fading out, driven by per-piece
+ * `--confetti-fall`/`--confetti-rotation` custom properties set inline
+ * (see CelebrationBurst.tsx) so one shared keyframe covers every piece
+ * with different distances/rotations/timings.
+ *
+ * The reduced-motion media query below is defense-in-depth, not the
+ * primary gate -- shouldCelebrate (lib/should-celebrate.ts) already
+ * keeps CelebrationBurst from rendering at all when the user prefers
+ * reduced motion, the same way the count-up reveal skips its own tween.
+ * This just guarantees no motion plays even if a future caller ever
+ * renders a piece without going through that check.
+ */
+@keyframes confetti-fall {
+  from {
+    transform: translateY(0) rotate(0deg);
+    opacity: 1;
+  }
+  to {
+    transform: translateY(var(--confetti-fall, 90px)) rotate(var(--confetti-rotation, 360deg));
+    opacity: 0;
+  }
+}
+
+.confetti-piece {
+  animation-name: confetti-fall;
+  animation-timing-function: ease-out;
+  animation-fill-mode: forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .confetti-piece {
+    animation: none;
+    opacity: 0;
+  }
+}

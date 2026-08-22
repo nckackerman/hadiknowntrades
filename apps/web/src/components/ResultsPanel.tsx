@@ -195,7 +195,22 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
   return (
     <div className="flex flex-col gap-8">
       <div className="flex flex-col gap-2">
-        <HeroStat startingCapital={data.startingCapital} endingBalance={data.endingBalance} />
+        <HeroStat
+          // Keyed on range + dataAsOf for the same reason the
+          // intraday-daily branch above keys on activeDay.date: remount
+          // HeroStat (not just update its props) whenever the underlying
+          // result actually changes, so useCountUp's reveal animation
+          // fires fresh instead of leaving the visible figure frozen at a
+          // stale animated value. Today this is also accidentally covered
+          // by useResults always passing through a loading state between
+          // results (see use-results.ts), which unmounts HeroStat itself
+          // -- but that's an implementation detail of the current fetch
+          // state machine, not a guarantee; an explicit key here doesn't
+          // depend on it holding.
+          key={`${data.range}-${data.dataAsOf}`}
+          startingCapital={data.startingCapital}
+          endingBalance={data.endingBalance}
+        />
         <p className="text-sm text-[var(--text-secondary)]">
           Best possible outcome over {RANGE_COPY[range]}, with at most {data.maxTrades} sequential
           all-in trades across the S&amp;P 500, using only closed (EOD) prices. As of{" "}

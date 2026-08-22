@@ -26,19 +26,40 @@ case. If you ever touch this function, keep (or add to) the test that
 asserts every returned tick is within `[min, max]` -- the original test
 suite didn't check that and let the bug ship.
 
-## No headless-browser screenshot verification in this dev environment
+## Headless-browser screenshot verification: possible without sudo (issue #36)
 
-Playwright's Chromium binary is cached locally
-(`~/.cache/ms-playwright/chromium-*`), but launching it fails on missing
-OS-level shared libs (`libnss3`, `libnspr4`, `libasound2`) -- verified
-live, not assumed. Fixing it needs `sudo npx playwright install-deps` (or
-`sudo apt-get install` the specific libs), which needs an interactive
-sudo password neither an agent nor a subagent has in this environment.
-UI changes here are currently verified via component tests (real API
-response shapes as fixtures) and live data traced through the actual
-source functions (see git history for examples), not an actual rendered
-screenshot -- ask the user to run the `sudo` install themselves if real
-screenshot-based visual QA is ever needed.
+Earlier note here said Playwright's Chromium fails to launch on missing
+OS-level shared libs (`libnss3`, `libnspr4`, `libnssutil3`,
+`libasound.so.2`) and needs a `sudo apt-get install`/`playwright
+install-deps` that no agent has an interactive password for. That's
+still true, but there's a no-root workaround, verified live (issue #36):
+`apt-get download` (unlike `install`) doesn't need root and fetches the
+`.deb`s straight into the cwd; `dpkg-deb -x <pkg>.deb <dir>` extracts one
+without installing it system-wide; then point `LD_LIBRARY_PATH` at the
+extracted `usr/lib/x86_64-linux-gnu` when launching Chromium:
+
+```bash
+apt-get download libnspr4 libnss3 libasound2t64   # libnssutil3.so ships inside the libnss3 .deb, no separate package
+dpkg-deb -x libnspr4_*.deb extracted
+dpkg-deb -x libnss3_*.deb extracted
+dpkg-deb -x libasound2t64_*.deb extracted
+LD_LIBRARY_PATH=$PWD/extracted/usr/lib/x86_64-linux-gnu node your-script.js
+```
+
+The cached browser binary itself (`~/.cache/ms-playwright/chromium-*`)
+may also be a stale revision if `playwright` (the npm package, not just
+the browser) gets freshly installed at a newer version than whatever
+last downloaded it -- `npx playwright install chromium` re-fetches the
+matching build the same way `pnpm add`/`pnpm install` already reaches
+the network for packages, no extra setup needed. `playwright` isn't a
+project dependency (no reason to ship a browser automation library in
+this app); add it with `pnpm add -D -w playwright` for one verification
+session and revert `package.json`/`pnpm-lock.yaml` afterward rather than
+leaving it installed.
+
+UI changes can now get an actual rendered screenshot, not just component
+tests and traced fixture data -- worth reaching for on any visual/layout
+change, not only decorative ones.
 
 ## Client-side animation (`useCountUp`, issue #35)
 
@@ -74,6 +95,60 @@ milestone (#36):
   robust: mark the visible animating element `aria-hidden="true"` and
   render a second, static `sr-only` element holding the final value the
   whole time -- no dependency on aria-live announcement timing at all.
+
+HeroStat's celebration burst (`lib/should-celebrate.ts`,
+`components/CelebrationBurst.tsx`, issue #36) layers on top of the same
+count-up: fires once the tween lands on an actual gain
+(`endingBalance > startingCapital`, a live prop comparison -- not an
+assumption every reveal is a win), a plain CSS keyframe animation on a
+couple dozen absolutely-positioned `<span>`s, no canvas/library
+(~+0.4KB gzip on the page's JS chunk, measured by diffing
+`.next/static/chunks` against a `main` build byte-for-byte).
+
+- The obvious `useEffect` + `setState` version of "trigger once the
+  reveal lands" (`useEffect(() => { if (condition) setTriggered(true)
+}, [condition])`) trips `react-hooks/set-state-in-effect` --
+  unconditionally, not just for the "branch-and-jump at the top of the
+  effect body" shape `useCountUp` already worked around (see above).
+  The fix here was different: skip the effect+state entirely and
+  compute the gate as a plain derived value during render
+  (`isGain && settled && !prefersReducedMotion()`), which sidesteps
+  both the lint and a whole hook. This is only hydration-safe because
+  `settled` is provably `false` on the SSR-matching first render for
+  any real gain (it can't become `true` before useCountUp's RAF loop
+  ticks at least once, which never happens before mount) -- `&&`
+  short-circuits before `prefersReducedMotion()` (the only part that
+  touches `window`) ever runs during that render. A derived value that
+  _could_ be true on the very first render wouldn't get this same
+  safety for free.
+- The burst overlay is scoped to just the number row (a `relative` div
+  wrapping only the `<p>` with the figures), not the whole `HeroStat`
+  flex column -- an earlier version wrapped the outer container and the
+  confetti spawned overlapping the small "Starting from" caption above
+  the numbers instead of the numbers themselves (caught by an actual
+  screenshot, not by the unit tests, which only assert the burst
+  renders somewhere).
+- **Known, accepted fragility (found in #36's `high` code review, not
+  fixed -- decorative feature, not worth a bigger refactor yet):**
+  `shouldCelebrate.ts`'s doc comment claims no one-shot latch is needed
+  because "the props that feed it don't change after the reveal lands,"
+  but `prefersReducedMotion()` is a live `window.matchMedia` read, not a
+  prop -- if the OS-level reduced-motion setting is toggled mid-tween or
+  mid-burst on a render that happens to re-run (HeroStat isn't
+  `React.memo`'d), `shouldCelebrate`'s result can genuinely flip after
+  the burst has already fired, either suppressing a celebration that
+  already landed on a real gain or unmounting an in-progress burst
+  mid-fall. Relatedly, `settled` (`HeroStat.tsx`) is derived via strict
+  `animatedEndingBalance === endingBalance` float equality against
+  `useCountUp`'s private "lands on the exact target" behavior rather
+  than an explicit flag the hook exposes -- fragile to a future tween
+  change, but not wired up to break today. If either of these actually
+  bites (flaky celebration reports, or `useCountUp`'s tick logic
+  changes), the real fix is `useCountUp` returning an explicit
+  `{ value, settled }` pair instead of a bare number, and
+  `shouldCelebrate` latching `prefersReducedMotion()` once at the
+  render where `isGain && settled` first goes true rather than
+  re-reading it every render.
 
 ## Two result models since issue #28: window vs. intraday-daily
 
