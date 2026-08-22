@@ -22,7 +22,7 @@ import type { IntradayDayResult } from "./intraday-optimizer";
 import { isValidPrice } from "./is-valid-price";
 
 /** Bumped whenever the shape of PrecomputedResult changes in a way a reader needs to know about. */
-export const RESULTS_SCHEMA_VERSION = 3;
+export const RESULTS_SCHEMA_VERSION = 4;
 
 /**
  * The S3 key a precomputed result is stored/read under for a given range.
@@ -47,6 +47,44 @@ interface PrecomputedResultBase {
   startingCapital: number;
   universeSize: number;
   skippedTickers: string[];
+  /**
+   * SPY buy-and-hold comparison over the same window (issue #12). Null
+   * only when no benchmark data could be fetched at all this run (see
+   * BenchmarkResult / apps/pipeline's computeBenchmark) -- a
+   * present-but-truncated result is a real, honestly-scoped comparison,
+   * not a degraded/missing one; see BenchmarkResult.truncated.
+   */
+  benchmark: BenchmarkResult | null;
+}
+
+/**
+ * A SPY buy-and-hold comparison over the same window a PrecomputedResult
+ * covers (issue #12) -- see apps/pipeline's computeBenchmark for how this
+ * is derived, and this interface's own field comments for what
+ * `truncated` means.
+ */
+export interface BenchmarkResult {
+  /** Hardcoded to "SPY" -- no user-chosen ticker (issue #12's own scope). Present as a real field, not assumed by every reader, in case that ever changes. */
+  ticker: string;
+  /** Actual first date of benchmark data used -- may be later than this result's own requested start date; see `truncated`. */
+  startDate: string;
+  startPrice: number;
+  /** Actual last date of benchmark data used -- <= this result's endDate, same "fact about the data" framing as dataAsOf. */
+  endDate: string;
+  endPrice: number;
+  endingBalance: number;
+  /**
+   * True when `startDate` had to be pulled forward from this result's own
+   * requested start date because the benchmark's own history doesn't
+   * reach back that far (concretely: the MAX range vs. SPY's 1993-01-29
+   * inception -- MAX's own requested start is unbounded/null, which is
+   * always later than SPY's real, finite inception, so this is
+   * unconditionally true for MAX). A reader MUST reflect this in
+   * displayed copy when true -- see packages/core/CLAUDE.md's benchmark
+   * section for why silently showing the number without this caveat
+   * misrepresents what window it covers.
+   */
+  truncated: boolean;
 }
 
 /**
@@ -317,6 +355,52 @@ function describe(value: unknown): string {
   return String(value);
 }
 
+/**
+ * Validates one `benchmark` field (issue #12) -- `null` is a valid,
+ * distinct state ("no benchmark data was available this run", see
+ * BenchmarkResult's own doc comment), deliberately checked *before* the
+ * `typeof value !== "object"` branch below so it doesn't fall into it.
+ *
+ * **Deliberately distinguishes `undefined` from `null`**: since the
+ * first check here is `value === null` (passes) and
+ * `typeof undefined !== "object"` (fails the second check, correctly
+ * flagged), an entirely-missing `benchmark` field -- e.g. a stale pre-#12
+ * stored object, or a future refactor bug that forgets to set it -- is
+ * caught as a real validation failure, not silently treated the same as
+ * the valid "no benchmark data this run" empty state. Same care issue
+ * #47's own `schemaVersion` check already takes for an analogous
+ * "any non-negative integer" vs. "exactly this value" distinction -- see
+ * packages/core/CLAUDE.md.
+ */
+function validateBenchmark(value: unknown, problems: string[]): void {
+  if (value === null) return; // valid: no benchmark data was available this run
+  if (typeof value !== "object") {
+    problems.push(`benchmark must be null or an object, got ${describe(value)}`);
+    return;
+  }
+  const b = value as Record<string, unknown>;
+  if (!isNonEmptyString(b.ticker))
+    problems.push(`benchmark.ticker must be a non-empty string, got ${describe(b.ticker)}`);
+  if (!isNonEmptyString(b.startDate))
+    problems.push(`benchmark.startDate must be a non-empty string, got ${describe(b.startDate)}`);
+  if (!isPositiveFiniteNumber(b.startPrice))
+    problems.push(
+      `benchmark.startPrice must be a positive finite number, got ${describe(b.startPrice)}`,
+    );
+  if (!isNonEmptyString(b.endDate))
+    problems.push(`benchmark.endDate must be a non-empty string, got ${describe(b.endDate)}`);
+  if (!isPositiveFiniteNumber(b.endPrice))
+    problems.push(
+      `benchmark.endPrice must be a positive finite number, got ${describe(b.endPrice)}`,
+    );
+  if (!isPositiveFiniteNumber(b.endingBalance))
+    problems.push(
+      `benchmark.endingBalance must be a positive finite number, got ${describe(b.endingBalance)}`,
+    );
+  if (typeof b.truncated !== "boolean")
+    problems.push(`benchmark.truncated must be a boolean, got ${describe(b.truncated)}`);
+}
+
 /** Validates the fields every PrecomputedResult shares, regardless of `model`. */
 function validateBase(result: Record<string, unknown>, problems: string[]): void {
   if (result.schemaVersion !== RESULTS_SCHEMA_VERSION) {
@@ -354,6 +438,7 @@ function validateBase(result: Record<string, unknown>, problems: string[]): void
       }
     });
   }
+  validateBenchmark(result.benchmark, problems);
 }
 
 /**

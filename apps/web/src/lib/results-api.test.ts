@@ -1,11 +1,15 @@
-import { PRESET_RANGES, type PrecomputedResult } from "@hadiknowntrades/core";
+import {
+  PRESET_RANGES,
+  RESULTS_SCHEMA_VERSION,
+  type PrecomputedResult,
+} from "@hadiknowntrades/core";
 import { describe, expect, it, vi } from "vitest";
 
 import { getResultsResponse, isCanonicalRange, parseRange, type ResultReader } from "./results-api";
 
 function fixtureResult(range: (typeof PRESET_RANGES)[number]): PrecomputedResult {
   return {
-    schemaVersion: 3,
+    schemaVersion: RESULTS_SCHEMA_VERSION,
     model: "window",
     range,
     generatedAt: "2024-06-15T00:00:00.000Z",
@@ -19,6 +23,7 @@ function fixtureResult(range: (typeof PRESET_RANGES)[number]): PrecomputedResult
     worstCase: { endingBalance: 20, trades: [] },
     universeSize: 500,
     skippedTickers: [],
+    benchmark: null,
   };
 }
 

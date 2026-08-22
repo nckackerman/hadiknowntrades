@@ -1,4 +1,8 @@
-import type { PrecomputedResult, PresetRange } from "@hadiknowntrades/core";
+import {
+  RESULTS_SCHEMA_VERSION,
+  type PrecomputedResult,
+  type PresetRange,
+} from "@hadiknowntrades/core";
 import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -6,7 +10,7 @@ import { useResults } from "./use-results";
 
 function fixtureResult(): PrecomputedResult {
   return {
-    schemaVersion: 3,
+    schemaVersion: RESULTS_SCHEMA_VERSION,
     model: "window",
     range: "1Y",
     generatedAt: "2026-08-21T19:50:21.468Z",
@@ -20,6 +24,7 @@ function fixtureResult(): PrecomputedResult {
     worstCase: { endingBalance: 20, trades: [] },
     universeSize: 503,
     skippedTickers: [],
+    benchmark: null,
   };
 }
 

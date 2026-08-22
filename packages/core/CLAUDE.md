@@ -420,6 +420,35 @@ it only ever reads the 60-minute day-result array.
   depends on doesn't meet that bar. Revisit if `apps/web` ever starts
   branching on this field's presence.
 
+## Buy-and-hold (SPY) benchmark field (issue #12)
+
+`results-schema.ts`'s `BenchmarkResult` (a `benchmark: BenchmarkResult |
+null` field on `PrecomputedResultBase`, so every `WindowResult`/
+`IntradayResult` carries it) is a whole-window SPY buy-and-hold
+comparison -- see `apps/pipeline/CLAUDE.md`'s own "Buy-and-hold (SPY)
+comparison stat" section for how it's computed, and specifically for a
+real, live-checked bug (~28% of days false-positive a `truncated` flag
+under the plan's original, more obvious expression) that a naive port of
+that field wouldn't have caught.
+
+- **`RESULTS_SCHEMA_VERSION` bumped 3 -> 4** (issue #31's own 2 -> 3
+  landed first, in parallel; #12 rebased its own version bump on top
+  rather than colliding with it -- exactly the merge-order reconciliation
+  this constant's own bump history keeps needing, see #28/#30/#29's own
+  notes above).
+- **`validateBenchmark` deliberately distinguishes `undefined` from
+  `null`** -- same care as `schemaVersion`'s own exact-equality check
+  (see "Write-time result self-validation" below): `value === null`
+  passes (a valid "no benchmark data this run" state), but an
+  entirely-missing field fails `typeof value !== "object"`, catching a
+  stale pre-#12 stored object or a future refactor bug that forgets to
+  set the field -- rather than a looser `value == null` blurring the two.
+- Exported from `index.ts` alongside the other `results-schema.ts`
+  types -- the plan this issue was built from originally missed this
+  (its own UI code imported `BenchmarkResult` from
+  `@hadiknowntrades/core` without ever adding the export), caught before
+  implementation started, not after a build failure.
+
 ## Write-time result self-validation (issue #47)
 
 `src/results-schema.ts`'s `validatePrecomputedResult` is a runtime,

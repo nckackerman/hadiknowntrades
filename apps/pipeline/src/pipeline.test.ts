@@ -95,7 +95,7 @@ describe("runPipeline", () => {
       const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
       generatedAts.add(parsed.generatedAt);
       expect(parsed).toMatchObject({
-        schemaVersion: 3,
+        schemaVersion: 4,
         model: "window",
         range,
         maxTrades: 3,
@@ -109,7 +109,7 @@ describe("runPipeline", () => {
       const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
       generatedAts.add(parsed.generatedAt);
       expect(parsed).toMatchObject({
-        schemaVersion: 3,
+        schemaVersion: 4,
         model: "intraday-daily",
         range,
         maxTradesPerDay: 3,
@@ -925,6 +925,176 @@ describe("runPipeline", () => {
       // ...but 3M never reads 1-minute data, so it stays anchored to the
       // 60-minute fetch's own (older) most-recent date.
       expect(threeMonth.dataAsOf).toBe(toDateString(daysBack(3)(asOf)));
+    });
+  });
+
+  describe("benchmark (issue #12)", () => {
+    // Reused across most of this describe block -- just enough AAPL data
+    // to keep both the window and intraday paths writing real results,
+    // since a benchmark-only fixture with nothing else would make the
+    // whole run fail before ever reaching a written range to assert on.
+    const aaplDaily = new Map<string, DailyClose[]>([
+      ["AAPL", [daily(daysBack(2000), 1), daily(daysBack(200), 8), daily(daysBack(10), 50)]],
+    ]);
+    const aaplIntraday = new Map<string, IntradayBar[]>([
+      ["AAPL", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 20)]],
+    ]);
+
+    it("attaches a benchmark to every range, both window and intraday-daily models alike", async () => {
+      const dailyFixture = new Map<string, DailyClose[]>([
+        ...aaplDaily,
+        // Only the second point falls inside any bounded range's window
+        // (1M/3M/1Y/5Y) -- the first predates even 5Y's own start by a
+        // wide margin, so it's only ever picked up by MAX's unbounded
+        // window.
+        ["SPY", [daily(daysBack(2500), 100), daily(daysBack(1), 400)]],
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
+        fetchIntradayBars: async (symbol) => aaplIntraday.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
+        store,
+        asOf,
+      });
+
+      for (const range of PRESET_RANGES) {
+        const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
+        expect(parsed.benchmark).toMatchObject({ ticker: "SPY" });
+        expect(parsed.benchmark.endDate).toBe(toDateString(daysBack(1)(asOf)));
+        expect(parsed.benchmark.endPrice).toBe(400);
+      }
+
+      // MAX reaches all the way back to the earliest SPY point at all,
+      // and is unconditionally truncated (an unbounded window can never
+      // be fully covered by SPY's own finite history -- see
+      // computeBenchmark's own doc comment).
+      const max = JSON.parse(store.objects.get("results/MAX.json")!);
+      expect(max.benchmark.startDate).toBe(toDateString(daysBack(2500)(asOf)));
+      expect(max.benchmark.startPrice).toBe(100);
+      expect(max.benchmark.endingBalance).toBeCloseTo(20 * (400 / 100), 5);
+      expect(max.benchmark.truncated).toBe(true);
+
+      // Every bounded range's own window only overlaps the recent SPY
+      // point (the far-back one falls outside all of their windows), and
+      // none of them are truncated -- SPY's overall earliest fetched
+      // date (2500 days back) comfortably predates every bounded range's
+      // own requested start.
+      for (const range of ["1M", "3M", "1Y", "5Y"]) {
+        const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
+        expect(parsed.benchmark.startDate).toBe(toDateString(daysBack(1)(asOf)));
+        expect(parsed.benchmark.truncated).toBe(false);
+      }
+    });
+
+    it("does not flag truncated for a bounded range whose nominal start lands on a non-trading day, even though the actually-used start is later (regression: a naive start.date-vs-rangeStart comparison false-positives here)", async () => {
+      // asOf (2024-06-15) is itself a Saturday, and 5Y back from it
+      // (2019-06-15) is *also* a Saturday -- not a real trading day, so
+      // no SPY bar exists exactly on that date; live-checked that this
+      // "nominal boundary lands on a weekend" case hits roughly 28% of
+      // days across a 2-year sample for every bounded range, not some
+      // rare edge case.
+      const dailyFixture = new Map<string, DailyClose[]>([
+        ...aaplDaily,
+        [
+          "SPY",
+          [
+            { date: "1993-01-29", close: 43.5 }, // SPY's real inception -- decades before 5Y's requested start
+            { date: "2019-06-17", close: 280 }, // the nearest real trading day at-or-after 2019-06-15 (Sat) -- the Monday after
+            daily(daysBack(1), 500),
+          ],
+        ],
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
+        fetchIntradayBars: async (symbol) => aaplIntraday.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
+        store,
+        asOf,
+      });
+
+      const fiveYear = JSON.parse(store.objects.get("results/5Y.json")!);
+      // Pulled forward from the nominal 2019-06-15 (a Saturday) to the
+      // nearest actual trading day...
+      expect(fiveYear.benchmark.startDate).toBe("2019-06-17");
+      // ...but NOT truncated: SPY's overall history reaches back to
+      // 1993, decades before 5Y's own requested start, so this is just a
+      // weekend, not a genuine historical-depth gap.
+      expect(fiveYear.benchmark.truncated).toBe(false);
+    });
+
+    it("flags truncated for a bounded range when SPY's own history genuinely doesn't reach back to the range's requested start (a hypothetical data gap, not the routine MAX case)", async () => {
+      const dailyFixture = new Map<string, DailyClose[]>([
+        ...aaplDaily,
+        // SPY's own earliest fetched data (100 days back) is well inside
+        // 1Y's own requested start (~365 days back) -- a genuine gap,
+        // not a weekend/holiday misalignment.
+        ["SPY", [daily(daysBack(100), 300), daily(daysBack(1), 400)]],
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
+        fetchIntradayBars: async (symbol) => aaplIntraday.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
+        store,
+        asOf,
+      });
+
+      const oneYear = JSON.parse(store.objects.get("results/1Y.json")!);
+      expect(oneYear.benchmark.startDate).toBe(toDateString(daysBack(100)(asOf)));
+      expect(oneYear.benchmark.truncated).toBe(true);
+    });
+
+    it("attaches benchmark: null to every range when SPY has no fetched data at all", async () => {
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: async (symbol) => aaplDaily.get(symbol) ?? [],
+        fetchIntradayBars: async (symbol) => aaplIntraday.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
+        store,
+        asOf,
+      });
+
+      for (const range of PRESET_RANGES) {
+        const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
+        expect(parsed.benchmark).toBeNull();
+      }
+    });
+
+    it("a benchmark fetch failure (SPY throws) is non-fatal -- the run still succeeds and writes benchmark: null for every range", async () => {
+      const store = memoryStore();
+
+      const summary = await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: async (symbol) => {
+          if (symbol === "SPY") throw new Error("simulated SPY fetch failure");
+          return aaplDaily.get(symbol) ?? [];
+        },
+        fetchIntradayBars: async (symbol) => aaplIntraday.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
+        store,
+        asOf,
+      });
+
+      expect(summary.results).toHaveLength(5);
+      for (const range of PRESET_RANGES) {
+        const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
+        expect(parsed.benchmark).toBeNull();
+      }
     });
   });
 

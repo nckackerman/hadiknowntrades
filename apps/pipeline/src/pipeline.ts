@@ -55,6 +55,16 @@
 // not a new hand-duplicated block (issue #29's own code review found and
 // fixed a real case of this promise not being kept -- see the comment on
 // GranularityOverrideSpec).
+//
+// Issue #12 added a third, much simpler kind of addition: a SPY
+// buy-and-hold comparison figure, computed once per range (all 5, not
+// just window ranges -- it's a single well-defined whole-window figure
+// regardless of trading model) from one extra, non-fatal daily-close
+// fetch -- see fetchBenchmarkHistory/computeBenchmark below. Unlike a
+// granularity override, this needs no worker pool at all (it's exactly
+// one ticker, not ~503), and unlike the window/intraday split, its
+// failure never fails the run -- see fetchBenchmarkHistory's own doc
+// comment.
 
 import {
   BlockedError,
@@ -67,6 +77,7 @@ import {
   toDateString,
   UnexpectedResponseError,
   validatePrecomputedResult,
+  type BenchmarkResult,
   type DailyClose,
   type IntradayBar,
   type IntradayDayResult,
@@ -109,6 +120,13 @@ const FIVE_MINUTE_LOOKBACK_DAYS = 59;
 // arithmetic -- Yahoo's error text literally says "30 days," which
 // reads as "30 is safe," but the wall is actually AT 30, not past it.
 const ONE_MINUTE_LOOKBACK_DAYS = 29;
+// The buy-and-hold comparison ticker (issue #12) -- hardcoded, matching
+// the issue's explicit out-of-scope note (no user-chosen ticker). SPY's
+// own real inception (1993-01-29) naturally bounds what a fetch from
+// DEFAULT_EARLIEST_DATE actually returns -- no special-casing needed at
+// the fetch layer; see computeBenchmark's `truncated` handling for where
+// that gap is surfaced instead.
+const BENCHMARK_TICKER = "SPY";
 
 // The "window" (whole-window, daily-close) ranges vs. the "intraday"
 // (per-day, 60m-bar) ranges introduced by issue #28. Together these must
@@ -393,6 +411,136 @@ async function fetchPathHistory<TBar>(
   return { history, skipped, dataAsOf, failureReason: null };
 }
 
+/**
+ * Fetches SPY's daily closes for the buy-and-hold comparison stat (issue
+ * #12) -- reuses the same `fetchDailyCloses` function the window path
+ * already carries (RunPipelineOptions), just called once more for a
+ * different symbol, rather than the ~503-ticker `fetchUniverseHistory`
+ * worker-pool-plus-abort-classification machinery: that machinery exists
+ * to distinguish "this one ticker failed" from "something systemic is
+ * wrong" across hundreds of tickers, a distinction that's meaningless
+ * for exactly one ticker (there's no "skip this ticker, keep going"
+ * option when it's the only ticker). A flat try/catch that turns *any*
+ * failure into "no benchmark this run" is simpler and equally correct
+ * here.
+ *
+ * Non-fatal by design: a benchmark fetch failure never contributes to
+ * runPipeline's "at least one path failed" throw condition (see the
+ * final check in runPipeline) -- same reasoning as a granularity
+ * override's failure (see this file's module header comment): losing
+ * the benchmark stat for a run means every range's comparison figure is
+ * simply absent (`benchmark: null`), not that a range serves stale or
+ * broken *primary* data.
+ */
+async function fetchBenchmarkHistory(
+  fetchFn: RunPipelineOptions["fetchDailyCloses"],
+  from: Date,
+  to: Date,
+): Promise<{ closes: DailyClose[]; error: string | null }> {
+  try {
+    const closes = await fetchFn(BENCHMARK_TICKER, from, to);
+    return { closes, error: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `[pipeline] benchmark (${BENCHMARK_TICKER}) fetch failed, comparison stat omitted this run: ${message}`,
+    );
+    return { closes: [], error: message };
+  }
+}
+
+/**
+ * Computes the whole-window SPY buy-and-hold comparison (issue #12) for
+ * one range from the single shared SPY `closes` array -- called once per
+ * range from both buildWindowResults and buildIntradayResults, not
+ * re-derived per model.
+ *
+ * Returns `null` only when there's no usable SPY data at all inside this
+ * range's window (either the fetch failed entirely -- `closes` is empty
+ * -- or, hypothetically, SPY simply has no bars overlapping this specific
+ * window). This is deliberately distinct from the MAX/1993 case below,
+ * where a real, honest (if truncated) comparison is still returned.
+ *
+ * **The MAX/1993 case**: MAX's own window is unbounded
+ * (`presetRangeStartDate("MAX", asOf)` returns `null` -- "as far back as
+ * anything has data"), but SPY's own inception is 1993-01-29. `inWindow`
+ * is still non-empty here (it has all of SPY's real history up to
+ * `endDateString`), so this returns a real comparison, just one whose
+ * `startDate`/`startPrice` reflect SPY's own actual earliest available
+ * close rather than the range's nominal (nonexistent, for MAX) start.
+ *
+ * `truncated` is true whenever SPY's history genuinely doesn't reach
+ * back to the range's own requested start -- for MAX this is
+ * unconditionally true (`rangeStartString` is always `null` for an
+ * unbounded window, and SPY's real, finite inception is always "later"
+ * than "as far back as anything has data"). For every other bounded
+ * range, this is deliberately checked against SPY's *overall* earliest
+ * fetched date (`earliestOverall`, across the whole `closes` array), not
+ * against `start.date` (the actual first bar found *inside* the
+ * window). Those two differ in a real, non-hypothetical way: a range's
+ * nominal `rangeStartString` is a plain calendar date with no guarantee
+ * of being a real trading day -- weekends/holidays land there routinely
+ * (empirically, ~28% of days across a 2-year sample for every bounded
+ * range, checked live rather than assumed), so `start.date` (the
+ * nearest actual trading day at-or-after it) is *routinely* a few days
+ * later than `rangeStartString` even when SPY's history reaches back
+ * decades further -- exactly the same "use whichever data is actually
+ * available inside the window" behavior buildWindowResults' own
+ * optimizer input already relies on with no "truncated" concept at all.
+ * Comparing `start.date` directly against `rangeStartString` (an earlier
+ * draft of this function did exactly that) would flag `truncated: true`
+ * on a large fraction of days for every bounded range, not just MAX --
+ * defeating the whole point of a flag meant to catch a genuine
+ * historical-depth gap. `earliestOverall` isolates that real case
+ * instead: it only exceeds `rangeStartString` when SPY's data doesn't
+ * reach back that far *at all*, regardless of which specific day inside
+ * the window happened to have the first trading-day bar.
+ */
+function computeBenchmark(
+  closes: readonly DailyClose[],
+  range: PresetRange,
+  asOf: Date,
+  endDateString: string,
+  startingCapital: number,
+): BenchmarkResult | null {
+  const rangeStart = presetRangeStartDate(range, asOf);
+  const rangeStartString = rangeStart ? toDateString(rangeStart) : null;
+  const inWindow = closes.filter(
+    (c) => (!rangeStartString || c.date >= rangeStartString) && c.date <= endDateString,
+  );
+  if (inWindow.length === 0) return null;
+
+  // Explicit min/max by date comparison, not array position
+  // (inWindow[0]/inWindow.at(-1)) -- defensive against fetchDailyCloses's
+  // return order, which isn't a documented contract anywhere in
+  // packages/core (see packages/core/CLAUDE.md's benchmark section).
+  let start = inWindow[0]!;
+  let end = inWindow[0]!;
+  for (const close of inWindow) {
+    if (close.date < start.date) start = close;
+    if (close.date > end.date) end = close;
+  }
+
+  // closes is non-empty here (inWindow is a non-empty subset of it), so
+  // this initial value is always overwritten by a real element at least
+  // once below -- see the doc comment above for why this is compared
+  // against rangeStartString instead of start.date.
+  let earliestOverall = closes[0]!.date;
+  for (const close of closes) {
+    if (close.date < earliestOverall) earliestOverall = close.date;
+  }
+
+  return {
+    ticker: BENCHMARK_TICKER,
+    startDate: start.date,
+    startPrice: start.close,
+    endDate: end.date,
+    endPrice: end.close,
+    endingBalance: startingCapital * (end.close / start.close),
+    truncated: rangeStartString === null || earliestOverall > rangeStartString,
+  };
+}
+
 interface BuildWindowResultsOptions {
   history: Map<string, DailyClose[]>;
   dataAsOf: string;
@@ -402,6 +550,8 @@ interface BuildWindowResultsOptions {
   startingCapital: number;
   maxTrades: number;
   skipped: readonly string[];
+  /** SPY buy-and-hold comparison (issue #12), precomputed once per range by runPipeline -- see computeBenchmark. */
+  benchmarksByRange: Map<PresetRange, BenchmarkResult | null>;
 }
 
 function buildWindowResults({
@@ -413,6 +563,7 @@ function buildWindowResults({
   startingCapital,
   maxTrades,
   skipped,
+  benchmarksByRange,
 }: BuildWindowResultsOptions): WindowResult[] {
   return WINDOW_RANGES.map((range) => {
     const startDate = presetRangeStartDate(range, asOf);
@@ -451,6 +602,7 @@ function buildWindowResults({
       worstCase: { endingBalance: worst.endingBalance, trades: worst.trades },
       universeSize: windowed.size,
       skippedTickers: [...skipped],
+      benchmark: benchmarksByRange.get(range) ?? null,
     };
   });
 }
@@ -581,6 +733,8 @@ interface BuildIntradayResultsOptions {
    * override's failure doesn't fail the run.
    */
   overrides: readonly GranularityOverrideInput[];
+  /** SPY buy-and-hold comparison (issue #12), precomputed once per range by runPipeline -- see computeBenchmark. */
+  benchmarksByRange: Map<PresetRange, BenchmarkResult | null>;
 }
 
 function buildIntradayResults({
@@ -593,6 +747,7 @@ function buildIntradayResults({
   maxTradesPerDay,
   skipped,
   overrides,
+  benchmarksByRange,
 }: BuildIntradayResultsOptions): IntradayResult[] {
   // Solve every trading day once, over the full fetched history (capped
   // only at endDateString, same "don't trust data past what was
@@ -700,6 +855,7 @@ function buildIntradayResults({
       days,
       universeSize: tickersInRange.size,
       skippedTickers: rangeSkipped,
+      benchmark: benchmarksByRange.get(range) ?? null,
     };
   });
 }
@@ -730,7 +886,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // array (in `granularityOverrideSpecs` order) instead of separate named
   // bindings, since the whole point of that list is that its length
   // isn't hardcoded here.
-  const [windowFetch, intradayFetch, overrideOutcomes] = await Promise.all([
+  const [windowFetch, intradayFetch, overrideOutcomes, benchmarkFetch] = await Promise.all([
     fetchPathHistory(
       "daily-close",
       options.tickers,
@@ -774,11 +930,32 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         ),
       ),
     ),
+    // The buy-and-hold benchmark (issue #12) -- a single extra HTTP
+    // request per run (one ticker, not a ~503-ticker pool), negligible
+    // next to the paths above; see fetchBenchmarkHistory's own doc
+    // comment for why it deliberately skips fetchUniverseHistory's
+    // heavier machinery.
+    fetchBenchmarkHistory(options.fetchDailyCloses, earliestDate, asOf),
   ]);
   const overrideInputs: GranularityOverrideInput[] = granularityOverrideSpecs.map((spec, i) => ({
     spec,
     outcome: overrideOutcomes[i]!,
   }));
+
+  // Computed once per range from the single shared SPY closes array (or
+  // an empty array if the fetch failed entirely -- computeBenchmark's
+  // own inWindow.length === 0 guard then returns null for every range
+  // uniformly) -- see computeBenchmark for the MAX/1993-truncation
+  // handling. All 5 PRESET_RANGES get an entry, not just the two window
+  // ranges: the benchmark is a single well-defined whole-window figure
+  // regardless of which trading model (window vs. intraday-daily) a
+  // given range uses.
+  const benchmarksByRange = new Map<PresetRange, BenchmarkResult | null>(
+    PRESET_RANGES.map((range) => [
+      range,
+      computeBenchmark(benchmarkFetch.closes, range, asOf, endDateString, startingCapital),
+    ]),
+  );
 
   // Compute everything before writing anything, so a failure in the
   // optimizer (e.g. an unexpected data shape) can't leave some ranges'
@@ -801,6 +978,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         startingCapital,
         maxTrades,
         skipped: windowFetch.skipped,
+        benchmarksByRange,
       });
 
   const intradayResults = intradayFetch.failureReason
@@ -820,6 +998,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         // already handles as "this range falls back to 60-minute bars
         // for every day" with no special-casing needed here.
         overrides: overrideInputs,
+        benchmarksByRange,
       });
 
   if (windowResults.length === 0 && intradayResults.length === 0) {
@@ -939,6 +1118,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
           `${spec.label} path (${spec.range} only, non-fatal): ${outcome.failureReason ?? "ok"}.`,
       )
       .join(" ");
+    const benchmarkStatusLine = `Benchmark (${BENCHMARK_TICKER}, non-fatal): ${benchmarkFetch.error ?? "ok"}.`;
     const writeFailureLines =
       failedWrites.length > 0
         ? ` Write failures (${failedWrites.length} of ${results.length} computed result(s)):\n` +
@@ -950,6 +1130,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         `Window (5Y/MAX) path: ${windowFetch.failureReason ?? "ok"}. ` +
         `Intraday (1M/3M/1Y) path: ${intradayFetch.failureReason ?? "ok"}. ` +
         `${overrideStatusLines} ` +
+        `${benchmarkStatusLine} ` +
         `Skipped tickers: ${skippedTickers.length > 0 ? skippedTickers.join(", ") : "(none)"}.` +
         writeFailureLines,
     );
