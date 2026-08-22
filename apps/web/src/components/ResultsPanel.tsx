@@ -5,6 +5,9 @@ import type { PresetRange } from "@hadiknowntrades/core";
 import type { ClientErrorCode, ResultsState } from "@/lib/use-results";
 import { deriveIntradayPortfolioSeries, derivePortfolioSeries } from "@/lib/portfolio-series";
 import { formatDate } from "@/lib/format-date";
+import { formatHeroCurrency } from "@/lib/format-currency";
+import { useDailyGuess } from "@/lib/use-daily-guess";
+import { DailyGuessForm } from "@/components/DailyGuessForm";
 import { DaySelector } from "@/components/DaySelector";
 import { HeroStat } from "@/components/HeroStat";
 import { IntradayTradeList } from "@/components/IntradayTradeList";
@@ -112,6 +115,13 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
     );
   }, [state, activeDay]);
 
+  // Called unconditionally (Rules of Hooks) even when there's no active
+  // intraday day yet -- an empty-string date is never actually read from
+  // storage in that case, since the guess UI below only ever renders once
+  // `activeDay` exists. See use-daily-guess.ts for why reading storage
+  // directly here (rather than deferring to an effect) is safe.
+  const { guess, submitGuess } = useDailyGuess(range, activeDay?.date ?? "");
+
   if (state.status === "loading") {
     return <LoadingSkeleton />;
   }
@@ -146,19 +156,34 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
       <div className="flex flex-col gap-8">
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-end justify-between gap-4">
-            <HeroStat
-              // Keyed on the active day so switching days (via
-              // DaySelector) remounts HeroStat instead of just updating
-              // its props in place -- useCountUp's reveal animation only
-              // fires on mount (see HeroStat's own doc comment), so
-              // without this key the visible figure would stay frozen
-              // at the previous day's animated value while the sr-only
-              // figure (driven directly by the prop) correctly updated,
-              // silently disagreeing with each other.
-              key={activeDay.date}
-              startingCapital={activeDay.startingCapital}
-              endingBalance={activeDay.endingBalance}
-            />
+            {guess === null ? (
+              // Guess-then-reveal (issue #34): the actual result stays
+              // hidden behind this prompt until the user guesses (or a
+              // stored guess for this exact date is already found -- see
+              // use-daily-guess.ts) -- at which point the branch below
+              // mounts the real HeroStat for the first time, so its
+              // existing count-up/celebration choreography fires right
+              // at the moment of reveal instead of on page load.
+              <DailyGuessForm
+                date={activeDay.date}
+                startingCapital={activeDay.startingCapital}
+                onSubmit={submitGuess}
+              />
+            ) : (
+              <HeroStat
+                // Keyed on the active day so switching days (via
+                // DaySelector) remounts HeroStat instead of just updating
+                // its props in place -- useCountUp's reveal animation only
+                // fires on mount (see HeroStat's own doc comment), so
+                // without this key the visible figure would stay frozen
+                // at the previous day's animated value while the sr-only
+                // figure (driven directly by the prop) correctly updated,
+                // silently disagreeing with each other.
+                key={activeDay.date}
+                startingCapital={activeDay.startingCapital}
+                endingBalance={activeDay.endingBalance}
+              />
+            )}
             {onSelectDay && (
               <DaySelector
                 days={data.days.map((d) => d.date)}
@@ -167,25 +192,36 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
               />
             )}
           </div>
-          <p className="text-sm text-[var(--text-secondary)]">
-            Best possible outcome on {formatDate(activeDay.date)}, with at most{" "}
-            {data.maxTradesPerDay} same-day all-in trades across the S&amp;P 500, using real
-            60-minute intraday prices. As of {data.dataAsOf}.
-          </p>
-        </div>
-
-        <PortfolioChart points={points} />
-
-        <div className="flex flex-col gap-3">
-          <h2 className="text-lg font-semibold text-[var(--text-primary)]">Trades</h2>
-          {isEmptyDay ? (
-            <div className="rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
-              No trade would have beaten holding cash on {formatDate(activeDay.date)}.
-            </div>
-          ) : (
-            <IntradayTradeList trades={activeDay.trades} />
+          {guess !== null && (
+            <>
+              <p className="text-sm text-[var(--text-secondary)]">
+                Best possible outcome on {formatDate(activeDay.date)}, with at most{" "}
+                {data.maxTradesPerDay} same-day all-in trades across the S&amp;P 500, using real
+                60-minute intraday prices. As of {data.dataAsOf}.
+              </p>
+              <p className="text-sm text-[var(--text-muted)]">
+                You guessed {formatHeroCurrency(guess)}.
+              </p>
+            </>
           )}
         </div>
+
+        {guess !== null && (
+          <>
+            <PortfolioChart points={points} />
+
+            <div className="flex flex-col gap-3">
+              <h2 className="text-lg font-semibold text-[var(--text-primary)]">Trades</h2>
+              {isEmptyDay ? (
+                <div className="rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
+                  No trade would have beaten holding cash on {formatDate(activeDay.date)}.
+                </div>
+              ) : (
+                <IntradayTradeList trades={activeDay.trades} />
+              )}
+            </div>
+          </>
+        )}
       </div>
     );
   }
