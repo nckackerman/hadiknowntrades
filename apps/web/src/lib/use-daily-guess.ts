@@ -47,17 +47,29 @@ interface UseDailyGuessResult {
  * lands on the same calendar date can still carry a genuinely different
  * underlying result (see daily-guess-storage.ts's own note), so it must
  * re-prompt just as much as a date change would.
+ *
+ * `range === null` means "custom-range mode is active, not a preset
+ * range" (issue #11 -- see ResultsPanel.tsx's own `range` prop, now
+ * `PresetRange | null`): this hook is still called unconditionally
+ * (Rules of Hooks) from ResultsPanel, but its result is never actually
+ * consumed in that mode (the guess UI only ever renders inside the
+ * "intraday-daily" branch, which requires a real preset range). Rather
+ * than invent a placeholder PresetRange to satisfy daily-guess-storage's
+ * own signature, this reads/writes nothing and always reports "never
+ * guessed" when `range` is null -- there is no (range, date) pair to key
+ * a guess under in that mode anyway.
  */
-export function useDailyGuess(range: PresetRange, date: string): UseDailyGuessResult {
+export function useDailyGuess(range: PresetRange | null, date: string): UseDailyGuessResult {
   const [tracked, setTracked] = useState({ range, date });
-  const [stored, setStored] = useState(() => getDailyGuess(range, date));
+  const [stored, setStored] = useState(() => (range === null ? null : getDailyGuess(range, date)));
 
   if (range !== tracked.range || date !== tracked.date) {
     setTracked({ range, date });
-    setStored(getDailyGuess(range, date));
+    setStored(range === null ? null : getDailyGuess(range, date));
   }
 
   function submitGuess(value: number, startingCapital: number) {
+    if (range === null) return; // no-op: nothing to key a guess under outside a preset range
     saveDailyGuess(range, date, value, startingCapital);
     setStored({ guess: value, startingCapital });
   }

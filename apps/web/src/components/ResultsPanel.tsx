@@ -252,14 +252,18 @@ function WindowResultBody({
 
 interface ResultsPanelProps {
   /**
-   * The active preset range -- only meaningful when `state.data.model`
-   * turns out to be "window" or "intraday-daily" (i.e. custom-range mode
-   * isn't active). When a custom anchor (issue #11) is active instead,
-   * the caller (ResultsPage) passes a harmless placeholder here (it's
-   * never read on the "custom-window" render path, which derives its own
-   * label from the anchor's own startDate instead of RANGE_COPY).
+   * The active preset range, or `null` when a custom start-date anchor
+   * (issue #11) is active instead -- reflects the real invariant
+   * directly in the type rather than forcing the caller (ResultsPage) to
+   * pass a placeholder PresetRange that's silently never read (a real
+   * code-review finding, fixed): `range` is only ever actually read
+   * below once `state.data.model` has narrowed to "window" or
+   * "intraday-daily", at which point it's asserted non-null (see those
+   * branches) rather than assumed so via type-widening/comments alone --
+   * a real invariant violation there throws instead of silently reading
+   * `RANGE_COPY[null]`.
    */
-  range: PresetRange;
+  range: PresetRange | null;
   /**
    * Generic over the success payload so this same component can render
    * either a preset-range result (PrecomputedResult) or a custom
@@ -373,6 +377,17 @@ export function ResultsPanel({
   const { data } = state;
 
   if (data.model === "intraday-daily") {
+    if (range === null) {
+      // Invariant violation, not a reachable product state: an
+      // "intraday-daily" result only ever comes from useResults(range)
+      // (see ResultsPage.tsx), which requires a non-null PresetRange --
+      // there is no code path that fetches this model under custom-range
+      // mode. Throwing surfaces a real bug loudly via this app's own
+      // render-crash boundaries (app/error.tsx / app/global-error.tsx,
+      // issue #46) instead of silently indexing RANGE_COPY[null].
+      throw new Error("intraday-daily result rendered without an active preset range");
+    }
+
     if (data.days.length === 0 || !activeDay) {
       return (
         <div className="rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
@@ -536,6 +551,12 @@ export function ResultsPanel({
   // to WindowResult here since every other PrecomputedResult |
   // CustomWindowResult member has already been handled by an earlier
   // return above.
+  if (range === null) {
+    // Same invariant as the "intraday-daily" branch above: a "window"
+    // result only ever comes from useResults(range), never custom-range
+    // mode -- see that branch's own comment for the full reasoning.
+    throw new Error("window result rendered without an active preset range");
+  }
   return (
     <WindowResultBody
       data={data}

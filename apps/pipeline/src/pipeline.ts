@@ -106,6 +106,19 @@ const DEFAULT_MAX_TRADES_PER_DAY = 3;
 // range, so this just means "give me everything you have."
 const DEFAULT_EARLIEST_DATE = new Date("1970-01-01T00:00:00Z");
 const DEFAULT_FETCH_CONCURRENCY = 10;
+// Caps how many S3 putObject calls (issue #47's write loop) run at once
+// -- same value/spirit as DEFAULT_FETCH_CONCURRENCY, mirrored rather
+// than reused outright since fetch concurrency and write concurrency are
+// conceptually independent knobs (Yahoo's own request-volume tolerance
+// vs. S3's), even though they happen to default to the same number today
+// (code review finding, issue #11): before this, the write loop fired
+// every job's putObject via one unbounded Promise.allSettled, unlike
+// every fetch pool's own bounded worker count -- up to 257 concurrent
+// S3 writes (5 preset ranges + up to 252 custom anchors) with no cap,
+// never exercised against real S3 (this PR's own live verification
+// explicitly excluded S3 writes -- see packages/core/CLAUDE.md's
+// "Custom date-range anchors" section).
+const DEFAULT_WRITE_CONCURRENCY = 10;
 // How far back to fetch 5-minute bars for (issue #30, upgrading 3M's
 // most recent days -- see packages/core/CLAUDE.md's "5-minute intraday
 // bars" section). Yahoo's real retention wall for interval=5m is
@@ -173,6 +186,8 @@ export interface RunPipelineOptions {
   maxTradesPerDay?: number;
   earliestDate?: Date;
   fetchConcurrency?: number;
+  /** Caps concurrent S3 putObject calls in the final write loop -- see DEFAULT_WRITE_CONCURRENCY's own comment for why this is a separate knob from fetchConcurrency despite sharing its default value. */
+  writeConcurrency?: number;
   /**
    * Custom start-date anchor points (issue #11's coarsened design -- see
    * docs/plans/issue-11-plan.md) to compute+write a CustomWindowResult
@@ -266,6 +281,54 @@ async function fetchUniverseHistory<TBar>(
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
   return { history, skipped, abortError };
+}
+
+/**
+ * Runs `worker` over `items` with at most `concurrency` running at once,
+ * collecting every outcome (success or failure) as a
+ * Promise.allSettled-shaped result array -- the same "N workers each
+ * pulling the next index off a shared cursor" bounded-concurrency shape
+ * fetchUniverseHistory's own `worker`/`workerCount` loop above already
+ * uses for every fetch pool, mirrored here (not reinvented as a second,
+ * differently-shaped mechanism) for the pipeline's own S3 write loop
+ * (issue #11 code review finding): before this, the write loop fired
+ * every WriteJob's putObject via one unbounded `Promise.allSettled`, the
+ * only place in this file with no concurrency cap at all, unlike every
+ * fetch pool's own DEFAULT_FETCH_CONCURRENCY.
+ *
+ * A generic, item-order-preserving cousin of fetchUniverseHistory's own
+ * worker loop rather than a literal call-through to it: that function is
+ * daily-close/intraday-bar-fetch-specific (BlockedError/
+ * UnexpectedResponseError abort classification, a `history`
+ * Map<string, TBar[]> return shape) in a way that doesn't generalize to
+ * "run an arbitrary async job over an arbitrary item list," which is all
+ * the write loop actually needs.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function run(): Promise<void> {
+    for (;;) {
+      const i = nextIndex++;
+      if (i >= items.length) return;
+      try {
+        const value = await worker(items[i]!, i);
+        results[i] = { status: "fulfilled", value };
+      } catch (reason) {
+        results[i] = { status: "rejected", reason };
+      }
+    }
+  }
+
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => run()));
+
+  return results;
 }
 
 /**
@@ -577,6 +640,97 @@ function computeBenchmark(
   };
 }
 
+// computeWindowOptimization's own binary-search slicing (issue #11 code
+// review finding) -- see sortedHistory's own doc comment for the full
+// reasoning; these two are its plain array-index helpers.
+
+/**
+ * The first index in a date-ascending-sorted DailyClose[] whose `date` is
+ * >= `startDateString` (i.e. `series.length` if every entry is before
+ * it). Assumes `series` is already sorted ascending by date -- see
+ * sortedHistory, which is what guarantees that here.
+ */
+function lowerBoundByDate(series: readonly DailyClose[], startDateString: string): number {
+  let lo = 0;
+  let hi = series.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (series[mid]!.date < startDateString) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
+/**
+ * The exclusive upper bound (first index whose `date` is > `endDateString`,
+ * i.e. `series.length` if every entry qualifies) in a date-ascending-
+ * sorted DailyClose[] -- the `<=` counterpart to lowerBoundByDate above.
+ */
+function upperBoundByDate(series: readonly DailyClose[], endDateString: string): number {
+  let lo = 0;
+  let hi = series.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (series[mid]!.date <= endDateString) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
+// computeWindowOptimization is called once per preset window range (2x,
+// buildWindowResults) and up to 252 times against the *exact same*
+// `history` Map reference (buildCustomWindowResults, issue #11's custom
+// anchors -- see runPipeline, which builds windowFetch.history once and
+// passes it to both callers unmodified). A WeakMap keyed by that Map's
+// own object identity means the one-time cost of sorting every ticker's
+// series is paid at most once per pipeline run, however many times
+// computeWindowOptimization runs against it -- and a WeakMap (not a
+// plain Map) so this never holds a history Map alive past whatever the
+// caller itself keeps referenced.
+const sortedHistoryCache = new WeakMap<Map<string, DailyClose[]>, Map<string, DailyClose[]>>();
+
+/**
+ * Returns `history` with every ticker's DailyClose[] sorted ascending by
+ * date, cached by `history`'s own object identity (see
+ * sortedHistoryCache above) so the sort only ever runs once per distinct
+ * history Map.
+ *
+ * **Why sort explicitly rather than trust the fetch client's own return
+ * order (issue #11 code review finding)**: computeWindowOptimization
+ * used to slice each ticker's window via a plain `Array.prototype.filter`
+ * scan -- correct regardless of array order, but O(days) per call, which
+ * buildCustomWindowResults pays up to 252 times per ticker per run.
+ * Replacing that with a binary search (lowerBoundByDate/upperBoundByDate
+ * above) cuts each call to O(log days), but a binary search is only
+ * correct over a genuinely sorted array -- and this codebase deliberately
+ * does NOT treat fetchDailyCloses's return order as a trusted contract
+ * elsewhere (computeBenchmark's own explicit min/max scan, findMaxDate
+ * above; see apps/pipeline/CLAUDE.md's own note that Yahoo's order is
+ * "date-ascending in practice," not documented). Sorting once here (an
+ * O(tickers x days log days) cost paid at most once per run, not per
+ * call) guarantees the property lowerBoundByDate/upperBoundByDate need,
+ * rather than assuming it.
+ */
+function sortedHistory(history: Map<string, DailyClose[]>): Map<string, DailyClose[]> {
+  const cached = sortedHistoryCache.get(history);
+  if (cached) return cached;
+  const sorted = new Map<string, DailyClose[]>();
+  for (const [ticker, series] of history) {
+    sorted.set(
+      ticker,
+      [...series].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
+    );
+  }
+  sortedHistoryCache.set(history, sorted);
+  return sorted;
+}
+
 /**
  * The windowed-slice + optimizeBothDirections computation shared by every
  * whole-window result -- both the 5Y/MAX preset ranges (buildWindowResults)
@@ -593,12 +747,12 @@ function computeWindowOptimization(
   startingCapital: number,
   maxTrades: number,
 ): { windowed: Map<string, DailyClose[]>; best: OptimizationResult; worst: OptimizationResult } {
+  const sorted = sortedHistory(history);
   const windowed = new Map<string, DailyClose[]>();
-  for (const [ticker, series] of history) {
-    const sliced = series.filter(
-      (p) => (!startDateString || p.date >= startDateString) && p.date <= endDateString,
-    );
-    if (sliced.length > 0) windowed.set(ticker, sliced);
+  for (const [ticker, series] of sorted) {
+    const startIndex = startDateString ? lowerBoundByDate(series, startDateString) : 0;
+    const endIndex = upperBoundByDate(series, endDateString);
+    if (endIndex > startIndex) windowed.set(ticker, series.slice(startIndex, endIndex));
   }
 
   // Same windowed history, same startingCapital/maxTrades for both the
@@ -705,8 +859,25 @@ function buildCustomWindowResults({
   anchors,
 }: BuildCustomWindowResultsOptions): CustomWindowResult[] {
   const results: CustomWindowResult[] = [];
+  // Defensive de-dup guard (code review finding, issue #11): customResultKey
+  // is a pure function of anchorMonth alone, so two anchors list entries
+  // sharing the same anchorMonth would otherwise silently collide on the
+  // same S3 key with no error surfaced -- not reachable via the one real
+  // caller today (customRangeAnchors, packages/core, which never
+  // produces a duplicate -- see that function's own "has no duplicates"
+  // test), but nothing stops a future/test caller from passing a
+  // caller-supplied `anchors` list that does.
+  const seenAnchors = new Set<AnchorMonth>();
 
   for (const anchorMonth of anchors) {
+    if (seenAnchors.has(anchorMonth)) {
+      console.warn(
+        `[pipeline] skipping duplicate custom-range anchor "${anchorMonth}" (already computed a result for it this run)`,
+      );
+      continue;
+    }
+    seenAnchors.add(anchorMonth);
+
     const anchorDate = anchorMonthToDate(anchorMonth);
     if (!anchorDate) {
       // Defensive only -- customRangeAnchors (packages/core) never
@@ -1016,6 +1187,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   const maxTradesPerDay = options.maxTradesPerDay ?? DEFAULT_MAX_TRADES_PER_DAY;
   const earliestDate = options.earliestDate ?? DEFAULT_EARLIEST_DATE;
   const fetchConcurrency = options.fetchConcurrency ?? DEFAULT_FETCH_CONCURRENCY;
+  const writeConcurrency = options.writeConcurrency ?? DEFAULT_WRITE_CONCURRENCY;
   const endDateString = toDateString(asOf);
   // The intraday fetch covers exactly the widest intraday range (1Y),
   // then gets sliced locally for 3M/1M below -- same "fetch once, slice
@@ -1202,17 +1374,19 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // network latency for them. Each result is self-validated (issue #47)
   // immediately before its own putObject call, so a malformed result
   // (e.g. a refactor bug producing a NaN endingBalance) fails loudly
-  // instead of shipping silently to S3. The callback must stay `async`
-  // -- a synchronous throw from validatePrecomputedResult inside a
-  // non-async .map() callback would propagate out of .map() itself and
-  // abort the whole loop before later, still-valid results ever get a
-  // chance to write; wrapping in `async` turns that throw into this one
-  // result's own rejected promise instead, so every other result's write
-  // still gets a chance to start -- see apps/pipeline/CLAUDE.md's "write
-  // whatever succeeded, then still throw" guarantee, which this must
-  // not break.
+  // instead of shipping silently to S3. Each job's own validate-then-
+  // putObject callback must stay `async` -- a synchronous throw from
+  // validatePrecomputedResult inside a non-async callback would
+  // propagate out of mapWithConcurrency's own `worker(...)` call
+  // (outside its try/catch) and abort that worker's whole loop instead
+  // of becoming this one job's own recorded rejection; wrapping in
+  // `async` turns that throw into an ordinary rejected promise `await`
+  // catches, so every other job's write still gets a chance to start --
+  // see apps/pipeline/CLAUDE.md's "write whatever succeeded, then still
+  // throw" guarantee, which this must not break.
   //
-  // Promise.allSettled, not Promise.all: validation is synchronous and
+  // mapWithConcurrency (Promise.allSettled semantics under a bounded
+  // worker pool), not a bare Promise.all: validation is synchronous and
   // effectively instant, but putObject is real S3 I/O taking real time.
   // With Promise.all, one range's validation failure rejects almost
   // immediately, and Promise.all rejects the whole thing as soon as ANY
@@ -1225,21 +1399,31 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // guarantee this comment claims to preserve (the in-memory test store
   // can't catch this: it has no real I/O delay, so every write there
   // resolves before the rejection even has a chance to race it).
-  // allSettled waits for every write to finish, succeed or fail, before
-  // this function decides anything -- see failedWrites below for how a
-  // rejection is turned into part of the aggregated error instead.
+  // mapWithConcurrency waits for every write to finish, succeed or fail,
+  // before this function decides anything -- see failedWrites below for
+  // how a rejection is turned into part of the aggregated error instead.
+  //
+  // Bounded by writeConcurrency (issue #11 code review finding) rather
+  // than firing all writeJobs.length (up to 257: 5 preset + up to 252
+  // custom anchors) putObject calls at once -- this had never been
+  // tested against real S3 (this feature's own live verification
+  // explicitly excluded S3 writes, see packages/core/CLAUDE.md's "Custom
+  // date-range anchors" section), and every other network-bound loop in
+  // this file (every fetch pool) already bounds its own concurrency the
+  // same way.
   //
   // Custom-range anchor results (issue #11) are folded into this exact
   // same write loop/aggregation rather than getting a separate lifecycle
   // -- a WriteJob abstracts over "which validator, which key" so both
-  // families share one Promise.allSettled and one failedWrites list.
-  // This is deliberate, not incidental: an anchor result is derived from
-  // the *same already-required-to-succeed* windowFetch.history as the
-  // 5Y/MAX ranges, so there's no reason to hold it to a looser standard
-  // the way a granularity override's own best-effort failure is (see
-  // that section's own comment above) -- a write failure for a custom
-  // anchor gets exactly the same "fail the whole run, this is the only
-  // alerting mechanism" treatment as a preset range's write failure.
+  // families share one mapWithConcurrency call and one failedWrites
+  // list. This is deliberate, not incidental: an anchor result is
+  // derived from the *same already-required-to-succeed*
+  // windowFetch.history as the 5Y/MAX ranges, so there's no reason to
+  // hold it to a looser standard the way a granularity override's own
+  // best-effort failure is (see that section's own comment above) -- a
+  // write failure for a custom anchor gets exactly the same "fail the
+  // whole run, this is the only alerting mechanism" treatment as a
+  // preset range's write failure.
   interface WriteJob {
     key: string;
     label: string;
@@ -1260,13 +1444,11 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   }));
   const writeJobs = [...presetWriteJobs, ...customWriteJobs];
 
-  const writeOutcomes = await Promise.allSettled(
-    writeJobs.map(async (job) => {
-      job.validate();
-      await options.store.putObject(job.key, job.body);
-      return job.label;
-    }),
-  );
+  const writeOutcomes = await mapWithConcurrency(writeJobs, writeConcurrency, async (job) => {
+    job.validate();
+    await options.store.putObject(job.key, job.body);
+    return job.label;
+  });
   // Every rejection, not just the first -- plain Promise.all (and a
   // naive "throw on the first rejected settlement" loop) would only
   // ever surface one job's problem even when multiple are independently

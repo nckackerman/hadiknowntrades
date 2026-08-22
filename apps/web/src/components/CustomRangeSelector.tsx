@@ -1,12 +1,22 @@
 "use client";
 
-import { customRangeAnchors, type AnchorMonth } from "@hadiknowntrades/core";
+import { anchorMonthToDate, customRangeAnchors, type AnchorMonth } from "@hadiknowntrades/core";
 
-/** Formats a YYYY-MM anchor identifier as "March 2019" for the picker's option labels. */
+/**
+ * Formats a YYYY-MM anchor identifier as "March 2019" for the picker's
+ * option labels -- calls anchorMonthToDate (packages/core) for the
+ * actual parse rather than re-deriving the same slice+Date.UTC logic a
+ * second time (a real duplication, caught in code review: this file's
+ * own copy predated anchorMonthToDate's year-range sanity check, so it
+ * was silently exposed to the same "0099" two-digit-year bug that fix
+ * closed -- see that function's own doc comment). Every anchor passed in
+ * here always comes from customRangeAnchors() below, which never
+ * produces a malformed one, so the `null` fallback is defensive only.
+ */
 function formatAnchorLabel(anchor: AnchorMonth): string {
-  const year = Number(anchor.slice(0, 4));
-  const month = Number(anchor.slice(5, 7));
-  return new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString("en-US", {
+  const date = anchorMonthToDate(anchor);
+  if (!date) return anchor;
+  return date.toLocaleDateString("en-US", {
     year: "numeric",
     month: "long",
     timeZone: "UTC",

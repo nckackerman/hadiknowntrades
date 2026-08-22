@@ -179,42 +179,75 @@ of shipping silently to S3. This is this system's only alerting
 mechanism (see the top of this file) -- a thrown error here plugs into
 existing behavior with no new plumbing needed.
 
-- **The `results.map(...)` callback around the write loop must stay
-  `async`, not a bare arrow returning `store.putObject(...)` directly --
-  a real, easy-to-get-wrong subtlety, not a style choice.** `.map()`
-  invokes its callback _synchronously_ for every element before
-  `Promise.allSettled` ever starts awaiting; if `validatePrecomputedResult`
+- **The write loop's per-job callback must stay `async`, not a bare
+  arrow returning `store.putObject(...)` directly -- a real,
+  easy-to-get-wrong subtlety, not a style choice.** As of issue #11
+  (custom-range anchors), the write loop is `mapWithConcurrency(writeJobs,
+writeConcurrency, async (job) => { job.validate(); await
+options.store.putObject(job.key, job.body); return job.label; })` --
+  `writeJobs` concatenates `presetWriteJobs` (5 preset ranges) and
+  `customWriteJobs` (up to 252 custom anchors, issue #11), and
+  `mapWithConcurrency` is a bounded-concurrency worker pool (see below)
+  that `await`s this callback per job inside a `try`/`catch`, not a bare
+  `.map()` anymore (an earlier version of this section described a
+  `results.map(...)`/`Promise.allSettled` shape that issue #11's
+  concurrency-cap fix replaced -- see the next bullet). The `async`
+  requirement itself is unchanged from before that refactor: if
+  `job.validate()` (which calls `validatePrecomputedResult` or
+  `validateCustomWindowResult`, `packages/core/src/results-schema.ts`)
   threw synchronously inside a _non_-`async` callback, that throw would
-  propagate straight out of `.map()` itself and abort the whole loop
-  before later elements' `putObject` calls ever got a chance to start --
-  silently breaking the "write whatever succeeded, then still throw if
-  either path failed" guarantee (see "Two independent paths" below) for
-  every range after the first invalid one in iteration order, not just
-  the invalid one. Making the callback `async` fixes this: a synchronous
-  throw inside an `async` function body is caught by the function's own
-  machinery and turned into that one element's rejected promise instead
-  of a synchronous exception out of `.map()`, so every other element's
-  `async` callback still runs (and its `putObject` still starts)
-  independently. If this callback is ever refactored back to a bare
-  arrow function around `store.putObject(...)`, re-add `async` (or
-  otherwise ensure the validation call can't throw synchronously out of
-  `.map()`).
-- **The write loop uses `Promise.allSettled`, not `Promise.all` -- an
-  early version of this used `Promise.all`, and that was a real, subtle
-  bug caught in code review, not a style preference.** `validatePrecomputedResult`
-  is synchronous and effectively instantaneous; a sibling range's
-  `store.putObject(...)` call is real network I/O (a real S3 `PUT` in
-  production) taking real time. With `Promise.all`, one range's
-  validation failure rejects almost immediately -- well before other
-  ranges' in-flight `putObject` calls have finished -- and `Promise.all`
-  settles (rejected) as soon as **any** input promise rejects; it does
-  not wait for the others. That rejection propagates out of `runPipeline`
-  to the Lambda handler, and AWS can freeze/recycle the execution
-  environment as soon as the handler's returned promise settles --
-  potentially cutting off other, valid ranges' still-in-flight S3 writes
-  before they land. That directly undermines the "write whatever
-  succeeded, then still throw if something failed" guarantee this
-  section (and this file's tests) claims to preserve -- the earlier
+  propagate straight out of `mapWithConcurrency`'s own `worker(...)` call
+  -- outside its `try`/`catch` -- and abort that whole worker's loop
+  instead of becoming just this one job's own recorded rejection, risking
+  the same "later jobs never get a chance to write" failure mode the
+  original `.map()`-era bug had. Making the callback `async` turns a
+  synchronous throw into an ordinary rejected promise the `try`/`catch`
+  already handles, so every other job's write still gets a chance to
+  start independently. If this callback is ever refactored again, keep
+  it `async` (or otherwise ensure `job.validate()` can't throw
+  synchronously out of the worker loop).
+- **The write loop is bounded by `writeConcurrency`
+  (`DEFAULT_WRITE_CONCURRENCY = 10`), via `mapWithConcurrency`, not an
+  unbounded `Promise.allSettled(writeJobs.map(...))` (issue #11 code
+  review finding, fixed).** Before this, every `WriteJob`'s `putObject`
+  fired at once with no cap -- unlike every fetch pool in this file
+  (`fetchConcurrency`, default 10), which was never tested against real
+  S3 write volume at the custom-anchor feature's own scale (up to 257
+  write jobs: 5 preset + up to 252 custom anchors -- this feature's own
+  live verification explicitly excluded S3 writes, see
+  `packages/core/CLAUDE.md`'s "Custom date-range anchors" section).
+  `mapWithConcurrency` (this file) mirrors `fetchUniverseHistory`'s own
+  "N workers pulling the next index off a shared cursor" bounded-pool
+  shape rather than inventing a second, differently-structured
+  concurrency mechanism, but returns a `PromiseSettledResult<R>[]`
+  (fulfilled/rejected per item, in original item order) instead of
+  `fetchUniverseHistory`'s own `{ history, skipped, abortError }` shape
+  -- the two loops have genuinely different semantics (abort-on-systemic-
+  failure vs. "run every job to completion regardless"), so
+  `mapWithConcurrency` is a separate, more generic function, not a call
+  into `fetchUniverseHistory` itself. `writeConcurrency` defaults to the
+  same value as `fetchConcurrency` but is its own `RunPipelineOptions`
+  field -- deliberately not reusing `fetchConcurrency` directly, since
+  Yahoo's own request-volume tolerance and S3's are independent
+  concerns that could reasonably need different caps later even though
+  they happen to agree today.
+- **The write loop uses `Promise.allSettled`-equivalent semantics (every
+  job settles, success or failure, before the loop decides anything),
+  not `Promise.all` -- an early version of this used `Promise.all`, and
+  that was a real, subtle bug caught in code review, not a style
+  preference.** `job.validate()` is synchronous and effectively
+  instantaneous; a sibling job's `store.putObject(...)` call is real
+  network I/O (a real S3 `PUT` in production) taking real time. With
+  `Promise.all`, one job's validation failure rejects almost immediately
+  -- well before other jobs' in-flight `putObject` calls have finished --
+  and `Promise.all` settles (rejected) as soon as **any** input promise
+  rejects; it does not wait for the others. That rejection propagates
+  out of `runPipeline` to the Lambda handler, and AWS can freeze/recycle
+  the execution environment as soon as the handler's returned promise
+  settles -- potentially cutting off other, valid jobs' still-in-flight
+  S3 writes before they land. That directly undermines the "write
+  whatever succeeded, then still throw if something failed" guarantee
+  this section (and this file's tests) claims to preserve -- the earlier
   "the other, still-valid writes aren't prevented from completing in
   the background" claim this bullet used to make was true only in a
   same-process, no-real-I/O sense, not once a real Lambda freeze after
@@ -223,15 +256,16 @@ existing behavior with no new plumbing needed.
   resolves before a rejection ever has a chance to race it; the fix
   (`src/pipeline.write-validation.test.ts`) added a configurable
   per-key write delay to the test store specifically so a slower,
-  valid write can be shown to still land even though a sibling range's
-  validation rejects first. Fixed by switching to `Promise.allSettled`:
-  every write is given the chance to finish, succeed or fail, before
-  `runPipeline` decides anything. A related finding from the same
-  review: plain `Promise.all` (or a naive "throw on the first rejected
-  settlement" loop) only ever surfaces the **first** validation/write
-  failure even when multiple ranges are independently broken in the
-  same run -- `runPipeline` now collects every `rejected` outcome and
-  folds all of them, one line per failed range, into the same
+  valid write can be shown to still land even though a sibling job's
+  validation rejects first. `mapWithConcurrency` preserves this property
+  under a bounded worker pool: every job is given the chance to finish,
+  succeed or fail, before `runPipeline` decides anything -- it never
+  short-circuits the way `Promise.all` does. A related finding from the
+  same review: plain `Promise.all` (or a naive "throw on the first
+  rejected settlement" loop) only ever surfaces the **first**
+  validation/write failure even when multiple jobs are independently
+  broken in the same run -- `runPipeline` now collects every `rejected`
+  outcome and folds all of them, one line per failed job, into the same
   aggregated error the "at least one path failed" check below already
   builds (see "Two independent paths" below), rather than throwing a
   second, separate error for write-time problems.
@@ -506,6 +540,34 @@ for the full design writeup.
   is gated behind `windowFetch.failureReason` the exact same way
   `windowResults` itself is: if the window path has no usable history,
   there's nothing to slice for any anchor either.
+- **`computeWindowOptimization` binary-searches each ticker's window
+  boundaries instead of a linear `Array.prototype.filter` scan (code
+  review finding, fixed)** -- `buildCustomWindowResults` calls it once
+  per anchor (up to 252x per run), and a full O(days) re-scan of each
+  ticker's entire multi-decade history on every single call was real,
+  needless cost at that scale. Fixed via `lowerBoundByDate`/
+  `upperBoundByDate` (`pipeline.ts`), which need a genuinely
+  date-ascending-sorted array to be correct -- rather than trust
+  `fetchDailyCloses`'s return order (documented elsewhere as "ascending
+  in practice," not a guaranteed contract -- see
+  `packages/core/CLAUDE.md`), `sortedHistory` explicitly sorts each
+  ticker's series once and caches the result in a `WeakMap` keyed by the
+  `history` Map's own object identity, so the O(tickers x days log days)
+  sort cost is paid at most once per pipeline run regardless of how many
+  times `computeWindowOptimization` is called against the same
+  `windowFetch.history` reference. If a future caller ever passes a
+  _fresh_ history Map per call (rather than the one shared reference
+  `runPipeline` builds today), this cache buys nothing -- worth revisiting
+  if that assumption ever changes.
+- **`buildCustomWindowResults` de-dups its `anchors` input by
+  `anchorMonth` before building any result (code review finding, fixed)**
+  -- `customResultKey` is a pure function of `anchorMonth` alone, so two
+  anchors sharing the same month would otherwise silently collide on the
+  same S3 key with no error surfaced. Not reachable via the one real
+  caller (`customRangeAnchors`, `packages/core`, which is tested to never
+  produce a duplicate), but a caller-supplied `anchors` list (a test, or
+  a future second caller) could in principle include one -- a repeat is
+  now skipped with a `console.warn`, not silently computed-and-overwritten.
 - **`RunPipelineOptions.customRangeAnchors` defaults to empty (`[]`), not
   `customRangeAnchors(asOf)` computed internally** -- deliberately unlike
   every other option this file defaults itself. `src/run.ts` (the real
@@ -523,9 +585,12 @@ for the full design writeup.
   the run" standard a preset range's write failure already gets, not the
   looser best-effort standard a granularity override's failure gets.**
   Both preset and custom-anchor results now flow through one combined
-  `WriteJob` list / one `Promise.allSettled` write loop (previously just
-  `results.map(...)`) -- a failure in either family aggregates into the
-  same thrown error, this pipeline's only alerting mechanism. Reasoning:
+  `WriteJob` list / one bounded-concurrency write loop (`mapWithConcurrency`,
+  see the "Write-time result self-validation" section above -- previously
+  just `results.map(...)` over a single `Promise.allSettled`, before this
+  same issue's own code review added the concurrency cap) -- a failure in
+  either family aggregates into the same thrown error, this pipeline's
+  only alerting mechanism. Reasoning:
   unlike a granularity override (a genuinely different, independently-
   fetched data source that gracefully degrades to already-correct
   60-minute bars on failure), a custom anchor is derived from the _same_

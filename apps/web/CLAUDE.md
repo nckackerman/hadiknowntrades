@@ -1089,10 +1089,20 @@ actually shipped), there's no backing-logic/cache-semantics difference
 left to justify a second route.
 
 - **`results-api.ts`'s `getCustomResultsResponse`** is a sibling of
-  `getResultsResponse`, not a branch merged into it -- reuses the exact
-  same error-response shape/`Cache-Control` header, deliberately kept
+  `getResultsResponse`, not a branch merged into it -- deliberately kept
   separate so this addition can't risk the existing, well-tested
-  `?range=` path's own logic. `parseAnchorMonth` validates shape only
+  `?range=` path's own logic. **Both are now thin config objects passed
+  to one shared `getPrecomputedResultResponse` (code review finding,
+  fixed)**: the two functions used to independently re-type the entire
+  reader-configured check / `getObject` try-catch / JSON.parse try-catch
+  / schemaVersion check / `model` check / `Cache-Control` response
+  skeleton, differing only in which identifier they parse, which S3 key
+  they build, and which `model` value(s) they accept -- now a single
+  generic function parameterized by a `ResultRouteConfig<TParsed>` (plus
+  a `TResult` type param on the call, not the config interface itself --
+  ESLint's `no-unused-vars` otherwise flags an unused type param on the
+  interface, since nothing in its fields actually mentions `TResult`).
+  `parseAnchorMonth` validates shape only
   (via `packages/core`'s `anchorMonthToDate`) -- it does **not** also
   check the parsed anchor against `customRangeAnchors(asOf)`'s current
   252-month window, since this route's own server-side "now" and the
@@ -1125,7 +1135,13 @@ left to justify a second route.
   neither. `useResults` itself grew a `range: PresetRange | null`
   parameter for this (previously required, non-null) -- every _existing_
   caller still passes a real range, so this is purely additive; only
-  `ResultsPage`'s own anchor-mode branch ever passes `null`.
+  `ResultsPage`'s own anchor-mode branch ever passes `null`. **The two
+  hooks' entire fetch/loading/error machinery is now one shared
+  `useFetchResultsState<T>(url: string | null)` in `use-results.ts`
+  (code review finding, fixed)** -- they used to be two independent,
+  near-line-for-line copies of the same tracked-value/effect/cancellation
+  logic; `useResults`/`useCustomResults` are now thin wrappers that just
+  build their own URL string and hand it to the shared hook.
 - **`ResultsPanel.tsx` gained a third render branch** (`data.model ===
 "custom-window"`, alongside the existing `"window"`/`"intraday-daily"`)
   sharing a new extracted `WindowResultBody` component with the
@@ -1138,9 +1154,24 @@ left to justify a second route.
   caller-supplied `descriptionPhrase`/`heroKey`/`emptyCopy`, derived
   differently by each of the two call sites (`RANGE_COPY[range]` for
   presets; `` `since ${formatDate(data.startDate)}` `` for a custom
-  anchor). The `range` prop `ResultsPanel` still requires is a harmless
-  placeholder in custom-anchor mode -- never actually read on that render
-  path.
+  anchor). **`ResultsPanel`'s own `range` prop is `PresetRange | null`
+  (code review finding, fixed -- it used to be required/non-null, forcing
+  `ResultsPage` to pass a harmless-but-fake placeholder `PresetRange` in
+  custom-anchor mode).** The two places `range` is actually read
+  (`RANGE_COPY[range]`, in the `"intraday-daily"` and `"window"`
+  branches) each assert it non-null first and `throw` if it somehow
+  isn't, rather than silently trusting a comment that it can't happen --
+  a real invariant (only `useResults(range)`-sourced data ever reaches
+  those two branches, and that hook requires a non-null `range`), now
+  enforced in code and caught by this app's own render-crash boundaries
+  (`app/error.tsx`/`app/global-error.tsx`, issue #46) if it's ever
+  violated, instead of assumed via comments/branch order alone.
+  `useDailyGuess` (`lib/use-daily-guess.ts`), called unconditionally
+  before these branches (Rules of Hooks), also grew a nullable `range`
+  parameter for the same reason -- when `range` is `null` it never reads
+  or writes storage and always reports "never guessed," since there's no
+  (range, date) pair to key a guess under in custom-anchor mode and the
+  guess UI never renders there anyway.
 - **`CustomWindowResult.startDate` is the anchor's own literal calendar
   boundary** (e.g. `"2019-03-01"`), not forward-snapped to the nearest
   real trading day -- same convention `WindowResult.startDate` already

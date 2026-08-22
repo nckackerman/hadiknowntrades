@@ -14,12 +14,6 @@ import { RangeSelector } from "@/components/RangeSelector";
 import { ResultsPanel } from "@/components/ResultsPanel";
 
 const DEFAULT_RANGE: PresetRange = "1Y";
-// Passed to ResultsPanel's `range` prop whenever custom-range mode is
-// active -- never actually read on that render path (see
-// ResultsPanelProps' own doc comment), just a value satisfying the
-// required PresetRange type without a null-handling special case in
-// ResultsPanel itself.
-const RANGE_PLACEHOLDER: PresetRange = DEFAULT_RANGE;
 
 /**
  * Owns the selected range (?range=1Y, case-insensitive on read) or
@@ -112,7 +106,7 @@ export function ResultsPage() {
       </header>
 
       <ResultsPanel
-        range={range ?? RANGE_PLACEHOLDER}
+        range={range}
         state={state}
         selectedDay={selectedDay}
         onSelectDay={selectDay}

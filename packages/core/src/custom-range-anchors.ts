@@ -44,17 +44,53 @@ export type AnchorMonth = string;
 const ANCHOR_MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 /**
+ * Sanity floor for a parsed anchor's year (code review finding, issue
+ * #11): matches apps/pipeline's own DEFAULT_EARLIEST_DATE floor (no real
+ * ticker's history goes back further than 1970), and -- more importantly
+ * -- sits comfortably above JS's legacy `Date.UTC`/`new Date(year, ...)`
+ * two-digit-year reinterpretation range (years 0-99 silently become
+ * 1900-1999). Without this floor, a 4-digit-but-small anchor like
+ * "0099-06" passes ANCHOR_MONTH_PATTERN (it's exactly 4 digits) but
+ * `Date.UTC(99, 5, 1)` silently returns 1999-06-01, not a date in the
+ * year 99 -- a real, silent misinterpretation, not a hypothetical one.
+ */
+const MIN_ANCHOR_YEAR = 1970;
+
+/**
  * Parses a YYYY-MM anchor identifier back to a UTC Date at the 1st of
- * that month, or null if it isn't well-formed (wrong shape, or a month
+ * that month, or null if it isn't well-formed (wrong shape, a month
  * outside 01-12 -- the regex's own `(0[1-9]|1[0-2])` alternation already
- * rejects "13" etc. at the syntax level, so there's no separate runtime
- * range check needed beyond the regex match itself).
+ * rejects "13" etc. at the syntax level -- or a year outside a sane
+ * range).
+ *
+ * **The regex alone is NOT sufficient validation (a real bug, found in
+ * code review, fixed here)**: a syntactically well-formed 4-digit year
+ * like "0099" still hits `Date.UTC`'s legacy two-digit-year
+ * reinterpretation rule (see MIN_ANCHOR_YEAR's own doc comment) and
+ * silently resolves to a completely different year (1999, not 99) --
+ * `GET /api/results?anchor=0099-06` would otherwise pass
+ * ANCHOR_MONTH_PATTERN and apps/web's parseAnchorMonth (results-api.ts)
+ * unrejected. The explicit `year < MIN_ANCHOR_YEAR` check below (plus a
+ * generous upper bound so a clearly-future year doesn't slip through
+ * either) closes that gap; a caller should never rely on the regex match
+ * alone implying a well-formed result.
  */
 export function anchorMonthToDate(anchor: string): Date | null {
   const match = ANCHOR_MONTH_PATTERN.exec(anchor);
   if (!match) return null;
   const year = Number(anchor.slice(0, 4));
   const month = Number(anchor.slice(5, 7));
+  // Upper bound is "next calendar year" rather than an exact match
+  // against customRangeAnchors(asOf)'s own current bound -- deliberately
+  // generous, same reasoning parseAnchorMonth (apps/web/src/lib/
+  // results-api.ts) already documents for why it doesn't range-check
+  // against the live anchor list: this server's "now" and a caller's own
+  // "now" can disagree by up to a day around a year/month boundary, and
+  // this is a sanity floor/ceiling against genuinely bogus input (like
+  // the two-digit-year bug above), not a re-derivation of the real
+  // bounded anchor list.
+  const maxYear = new Date().getUTCFullYear() + 1;
+  if (year < MIN_ANCHOR_YEAR || year > maxYear) return null;
   return new Date(Date.UTC(year, month - 1, 1));
 }
 

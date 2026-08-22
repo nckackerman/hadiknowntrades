@@ -475,16 +475,30 @@ function validateBenchmark(value: unknown, problems: string[]): void {
     problems.push(`benchmark.truncated must be a boolean, got ${describe(b.truncated)}`);
 }
 
-/** Validates the fields every PrecomputedResult shares, regardless of `model`. */
-function validateBase(result: Record<string, unknown>, problems: string[]): void {
+/**
+ * Validates the fields shared by *every* whole-result shape this file
+ * validates, regardless of whether it's identified by `range`
+ * (PrecomputedResult) or `anchorMonth` (CustomWindowResult, issue #11) --
+ * schemaVersion, generatedAt, dataAsOf, startingCapital, universeSize,
+ * skippedTickers, benchmark. Called by both validateBase (below, which
+ * additionally validates `range`) and validateCustomWindowResult (which
+ * additionally validates `anchorMonth`) so the two can't independently
+ * drift on what these shared fields require.
+ *
+ * **Extracted from what used to be two ~50-line-overlapping copies of
+ * these same checks (code review finding, issue #11)**: validateBase
+ * originally did all of this plus the `range` check inline, and
+ * validateCustomWindowResult had re-typed an equivalent block by hand --
+ * a future rule change to one of these checks made only in validateBase
+ * (e.g. a stricter dataAsOf format) would have silently left
+ * validateCustomWindowResult's copy unprotected, defeating the whole
+ * point of a write-time validation safety net (issue #47) that's
+ * supposed to cover every result family.
+ */
+function validateSharedResultFields(result: Record<string, unknown>, problems: string[]): void {
   if (result.schemaVersion !== RESULTS_SCHEMA_VERSION) {
     problems.push(
       `schemaVersion must be exactly ${RESULTS_SCHEMA_VERSION}, got ${describe(result.schemaVersion)}`,
-    );
-  }
-  if (!(PRESET_RANGES as readonly string[]).includes(result.range as string)) {
-    problems.push(
-      `range must be one of ${PRESET_RANGES.join(", ")}, got ${describe(result.range)}`,
     );
   }
   if (!isNonEmptyString(result.generatedAt)) {
@@ -516,6 +530,50 @@ function validateBase(result: Record<string, unknown>, problems: string[]): void
 }
 
 /**
+ * Validates the fields every whole-window *trades-and-worst-case*-shaped
+ * result shares -- WindowResult's own fields beyond PrecomputedResultBase
+ * (endDate, maxTrades, endingBalance, trades, worstCase) and
+ * CustomWindowResult's identical sibling set (issue #11). Shared for the
+ * exact same "can't independently drift" reason validateSharedResultFields
+ * above is -- see that function's own doc comment.
+ */
+function validateWindowLikeFields(r: Record<string, unknown>, problems: string[]): void {
+  if (!isNonEmptyString(r.endDate)) {
+    problems.push(`endDate must be a non-empty string, got ${describe(r.endDate)}`);
+  }
+  if (!isNonNegativeInteger(r.maxTrades)) {
+    problems.push(`maxTrades must be a non-negative integer, got ${describe(r.maxTrades)}`);
+  }
+  if (!isPositiveFiniteNumber(r.endingBalance)) {
+    problems.push(
+      `endingBalance must be a positive finite number, got ${describe(r.endingBalance)}`,
+    );
+  }
+  if (!Array.isArray(r.trades)) {
+    problems.push(`trades must be an array, got ${describe(r.trades)}`);
+  } else {
+    r.trades.forEach((trade, i) => validateTrade(trade, `trades[${i}]`, problems));
+  }
+  validateWorstCaseResultWith(r.worstCase, "worstCase", problems, validateTrade);
+  validateWorstNotExceedingOptimal(
+    (r.worstCase as Record<string, unknown> | undefined)?.endingBalance,
+    r.endingBalance,
+    "worstCase.endingBalance",
+    problems,
+  );
+}
+
+/** Validates the fields every PrecomputedResult shares, regardless of `model`: everything validateSharedResultFields covers, plus `range` (the one field CustomWindowResult doesn't have -- it has `anchorMonth` instead, validated separately by validateCustomWindowResult). */
+function validateBase(result: Record<string, unknown>, problems: string[]): void {
+  validateSharedResultFields(result, problems);
+  if (!(PRESET_RANGES as readonly string[]).includes(result.range as string)) {
+    problems.push(
+      `range must be one of ${PRESET_RANGES.join(", ")}, got ${describe(result.range)}`,
+    );
+  }
+}
+
+/**
  * Validates that `result` actually satisfies its own declared shape
  * (`WindowResult` or `IntradayResult`, per its `model` discriminant) at
  * runtime -- required fields present, prices/balances finite numbers,
@@ -540,29 +598,7 @@ export function validatePrecomputedResult(result: PrecomputedResult): void {
     if (r.startDate !== null && !isNonEmptyString(r.startDate)) {
       problems.push(`startDate must be a non-empty string or null, got ${describe(r.startDate)}`);
     }
-    if (!isNonEmptyString(r.endDate)) {
-      problems.push(`endDate must be a non-empty string, got ${describe(r.endDate)}`);
-    }
-    if (!isNonNegativeInteger(r.maxTrades)) {
-      problems.push(`maxTrades must be a non-negative integer, got ${describe(r.maxTrades)}`);
-    }
-    if (!isPositiveFiniteNumber(r.endingBalance)) {
-      problems.push(
-        `endingBalance must be a positive finite number, got ${describe(r.endingBalance)}`,
-      );
-    }
-    if (!Array.isArray(r.trades)) {
-      problems.push(`trades must be an array, got ${describe(r.trades)}`);
-    } else {
-      r.trades.forEach((trade, i) => validateTrade(trade, `trades[${i}]`, problems));
-    }
-    validateWorstCaseResultWith(r.worstCase, "worstCase", problems, validateTrade);
-    validateWorstNotExceedingOptimal(
-      (r.worstCase as Record<string, unknown> | undefined)?.endingBalance,
-      r.endingBalance,
-      "worstCase.endingBalance",
-      problems,
-    );
+    validateWindowLikeFields(r, problems);
   } else if (r.model === "intraday-daily") {
     if (!isNonEmptyString(r.endDate)) {
       problems.push(`endDate must be a non-empty string, got ${describe(r.endDate)}`);
@@ -596,11 +632,16 @@ export function validatePrecomputedResult(result: PrecomputedResult): void {
  * as a separate function (rather than folded into
  * validatePrecomputedResult itself) since CustomWindowResult is a
  * deliberately separate type, not a third PrecomputedResult union member
- * (see that type's own doc comment for why). Reuses every one of the
- * same private field-level validators (isPositiveFiniteNumber,
- * validateTrade, validateWorstCaseResultWith, validateBenchmark, ...)
- * this file already defines for validatePrecomputedResult, so the two
- * validators can't quietly drift on what counts as e.g. "a valid Trade."
+ * (see that type's own doc comment for why). Shares
+ * validateSharedResultFields and validateWindowLikeFields with
+ * validatePrecomputedResult's own "window" branch (a code-review-driven
+ * refactor -- see each of those functions' own doc comments for why this
+ * used to be ~50 lines of independently hand-typed, drift-prone
+ * duplication), and reuses every one of the same private field-level
+ * validators (isPositiveFiniteNumber, validateTrade,
+ * validateWorstCaseResultWith, validateBenchmark, ...) underneath those,
+ * so the two validators can't quietly drift on what counts as e.g. "a
+ * valid Trade."
  */
 export function validateCustomWindowResult(result: CustomWindowResult): void {
   const problems: string[] = [];
@@ -609,11 +650,7 @@ export function validateCustomWindowResult(result: CustomWindowResult): void {
   }
   const r = result as unknown as Record<string, unknown>;
 
-  if (r.schemaVersion !== RESULTS_SCHEMA_VERSION) {
-    problems.push(
-      `schemaVersion must be exactly ${RESULTS_SCHEMA_VERSION}, got ${describe(r.schemaVersion)}`,
-    );
-  }
+  validateSharedResultFields(r, problems);
   if (r.model !== "custom-window") {
     problems.push(`model must be "custom-window", got ${describe(r.model)}`);
   }
@@ -622,56 +659,10 @@ export function validateCustomWindowResult(result: CustomWindowResult): void {
       `anchorMonth must be a well-formed YYYY-MM string, got ${describe(r.anchorMonth)}`,
     );
   }
-  if (!isNonEmptyString(r.generatedAt)) {
-    problems.push(`generatedAt must be a non-empty string, got ${describe(r.generatedAt)}`);
-  }
-  if (!isNonEmptyString(r.dataAsOf)) {
-    problems.push(`dataAsOf must be a non-empty string, got ${describe(r.dataAsOf)}`);
-  }
   if (!isNonEmptyString(r.startDate)) {
     problems.push(`startDate must be a non-empty string, got ${describe(r.startDate)}`);
   }
-  if (!isNonEmptyString(r.endDate)) {
-    problems.push(`endDate must be a non-empty string, got ${describe(r.endDate)}`);
-  }
-  if (!isNonNegativeInteger(r.maxTrades)) {
-    problems.push(`maxTrades must be a non-negative integer, got ${describe(r.maxTrades)}`);
-  }
-  if (!isPositiveFiniteNumber(r.startingCapital)) {
-    problems.push(
-      `startingCapital must be a positive finite number, got ${describe(r.startingCapital)}`,
-    );
-  }
-  if (!isNonNegativeInteger(r.universeSize)) {
-    problems.push(`universeSize must be a non-negative integer, got ${describe(r.universeSize)}`);
-  }
-  if (!Array.isArray(r.skippedTickers)) {
-    problems.push(`skippedTickers must be an array, got ${describe(r.skippedTickers)}`);
-  } else {
-    r.skippedTickers.forEach((ticker, i) => {
-      if (!isNonEmptyString(ticker)) {
-        problems.push(`skippedTickers[${i}] must be a non-empty string, got ${describe(ticker)}`);
-      }
-    });
-  }
-  validateBenchmark(r.benchmark, problems);
-  if (!isPositiveFiniteNumber(r.endingBalance)) {
-    problems.push(
-      `endingBalance must be a positive finite number, got ${describe(r.endingBalance)}`,
-    );
-  }
-  if (!Array.isArray(r.trades)) {
-    problems.push(`trades must be an array, got ${describe(r.trades)}`);
-  } else {
-    r.trades.forEach((trade, i) => validateTrade(trade, `trades[${i}]`, problems));
-  }
-  validateWorstCaseResultWith(r.worstCase, "worstCase", problems, validateTrade);
-  validateWorstNotExceedingOptimal(
-    (r.worstCase as Record<string, unknown> | undefined)?.endingBalance,
-    r.endingBalance,
-    "worstCase.endingBalance",
-    problems,
-  );
+  validateWindowLikeFields(r, problems);
 
   if (problems.length > 0) {
     throw new ResultValidationError(

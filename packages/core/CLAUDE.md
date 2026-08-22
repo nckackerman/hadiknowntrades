@@ -581,8 +581,22 @@ list) import.
   see `apps/pipeline/src/pipeline.custom-range.test.ts`).
 - `anchorMonthToDate`/`toAnchorMonth` round-trip an `AnchorMonth` string
   to/from a UTC `Date` at the 1st of that month -- the regex
-  (`^\d{4}-(0[1-9]|1[0-2])$`) itself is what rejects an out-of-range month
-  like `"2019-13"`, no separate runtime range check needed.
+  (`^\d{4}-(0[1-9]|1[0-2])$`) is what rejects an out-of-range month like
+  `"2019-13"`, but is **NOT** sufficient on its own for the year (a real
+  bug, found in code review, fixed): a syntactically well-formed 4-digit
+  year like `"0099"` still triggers JS's legacy `Date.UTC`/`new
+Date(year, ...)` two-digit-year reinterpretation rule (years 0-99
+  silently become 1900-1999), so `anchorMonthToDate("0099-06")` used to
+  silently return a `Date` for 1999-06, not year 99 -- `GET
+/api/results?anchor=0099-06` would have passed both the regex and
+  `apps/web`'s `parseAnchorMonth` (`results-api.ts`) unrejected.
+  `anchorMonthToDate` now also rejects a year outside a generous sane
+  range (`MIN_ANCHOR_YEAR = 1970` through "next calendar year") -- see
+  that constant's own doc comment. `CustomRangeSelector.tsx`
+  (`apps/web`) had independently re-implemented this same
+  slice+`Date.UTC` parse (its `formatAnchorLabel`) and was exposed to
+  the identical bug; fixed to call `anchorMonthToDate` instead of
+  re-deriving the parse a second time.
 - **`results-schema.ts`'s `CustomWindowResult`** is a sibling of
   `PrecomputedResult`, not a third union member -- see that type's own
   doc comment for why (folding a 252-member anchor set into `PresetRange`
@@ -602,6 +616,20 @@ list) import.
   (`isPositiveFiniteNumber`, `validateTrade`, `validateWorstCaseResultWith`,
   `validateBenchmark`) rather than re-deriving a second copy -- the two
   validators can't drift on what counts as e.g. a valid `Trade`.
+  **This used to stop at just those low-level validators, leaving the
+  higher-level field lists (schemaVersion, generatedAt, dataAsOf,
+  startingCapital, universeSize, skippedTickers, benchmark, endDate,
+  maxTrades, endingBalance, trades, worstCase) independently hand-typed
+  in both functions -- a real, code-review-caught duplication (~50
+  overlapping lines) since fixed**: `validateBase` (the `range`-bearing
+  half) and `validateCustomWindowResult` now both call two extracted
+  helpers, `validateSharedResultFields` (everything but `range`/
+  `anchorMonth`) and `validateWindowLikeFields` (endDate/maxTrades/
+  endingBalance/trades/worstCase, also shared with
+  `validatePrecomputedResult`'s own "window" branch) -- so a future rule
+  change to any of these shared checks can no longer land in one
+  validator's copy and silently miss the other, which is exactly the
+  risk this write-time safety net (issue #47) exists to close.
 - **Live-verified, real numbers, no S3 write** (full 503-ticker S&P 500
   universe, real Yahoo network calls, all 252 real anchors, throwaway
   Vitest file deleted before commit -- same technique issue #31's own
