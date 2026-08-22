@@ -9,6 +9,7 @@
 import {
   fetchDailyCloses,
   fetchFiveMinuteBars,
+  fetchIntraday1mBars,
   fetchIntradayBars,
   SP500_CONSTITUENTS,
 } from "@hadiknowntrades/core";
@@ -27,6 +28,7 @@ export async function runNightlyPipeline(): Promise<void> {
     fetchDailyCloses,
     fetchIntradayBars,
     fetchFiveMinuteBars,
+    fetchIntraday1mBars,
     store: new S3ResultStore(bucket),
   });
 

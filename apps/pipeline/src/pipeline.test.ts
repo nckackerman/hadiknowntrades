@@ -82,6 +82,7 @@ describe("runPipeline", () => {
       fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
       fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
       fetchFiveMinuteBars: noIntradayData,
+      fetchIntraday1mBars: noIntradayData,
       store,
       asOf,
     });
@@ -153,6 +154,7 @@ describe("runPipeline", () => {
         fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
         fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
         fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       });
@@ -196,6 +198,7 @@ describe("runPipeline", () => {
         fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
         fetchIntradayBars: noIntradayData,
         fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       }).catch(() => {});
@@ -226,6 +229,7 @@ describe("runPipeline", () => {
         fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
         fetchIntradayBars: noIntradayData,
         fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       }).catch(() => {});
@@ -247,6 +251,7 @@ describe("runPipeline", () => {
           fetchDailyCloses: noDailyData,
           fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
           fetchFiveMinuteBars: noIntradayData,
+          fetchIntraday1mBars: noIntradayData,
           store,
           asOf,
         }),
@@ -291,6 +296,7 @@ describe("runPipeline", () => {
         fetchDailyCloses: noDailyData,
         fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
         fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       }).catch(() => {});
@@ -332,6 +338,7 @@ describe("runPipeline", () => {
         fetchDailyCloses: noDailyData,
         fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
         fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       }).catch(() => {});
@@ -355,6 +362,7 @@ describe("runPipeline", () => {
           fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
           fetchIntradayBars: noIntradayData,
           fetchFiveMinuteBars: noIntradayData,
+          fetchIntraday1mBars: noIntradayData,
           store,
           asOf,
         }),
@@ -406,6 +414,7 @@ describe("runPipeline", () => {
         fetchDailyCloses: noDailyData,
         fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
         fetchFiveMinuteBars: async (symbol) => fiveMinuteFixture.get(symbol) ?? [],
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       }).catch(() => {
@@ -447,6 +456,7 @@ describe("runPipeline", () => {
         fetchDailyCloses: noDailyData,
         fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
         fetchFiveMinuteBars: async (symbol) => fiveMinuteFixture.get(symbol) ?? [],
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       }).catch(() => {});
@@ -472,6 +482,7 @@ describe("runPipeline", () => {
           froms.push(from);
           return [];
         },
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       }).catch(() => {});
@@ -498,6 +509,7 @@ describe("runPipeline", () => {
         fetchFiveMinuteBars: async () => {
           throw new BlockedError("AAPL", 403);
         },
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       });
@@ -525,6 +537,7 @@ describe("runPipeline", () => {
         fetchFiveMinuteBars: async () => {
           throw new TickerNotFoundError("AAPL", "no 5-minute data");
         },
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       }).catch(() => {});
@@ -558,6 +571,7 @@ describe("runPipeline", () => {
         fetchDailyCloses: noDailyData,
         fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
         fetchFiveMinuteBars: async (symbol) => fiveMinuteFixture.get(symbol) ?? [],
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       }).catch(() => {});
@@ -593,6 +607,7 @@ describe("runPipeline", () => {
         fetchDailyCloses: noDailyData,
         fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
         fetchFiveMinuteBars: async (symbol) => fiveMinuteFixture.get(symbol) ?? [],
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       }).catch(() => {});
@@ -605,6 +620,250 @@ describe("runPipeline", () => {
       // ...but 1M never reads 5-minute data, so it stays anchored to the
       // 60-minute fetch's own (older) most-recent date.
       expect(oneMonth.dataAsOf).toBe(toDateString(daysBack(3)(asOf)));
+    });
+  });
+
+  describe("1-minute path (1M, issue #29)", () => {
+    it("mixes granularities within 1M across the retention boundary between the two fetches: a recent day (within the 1-minute lookback) uses 1-minute bars, an older day within 1M's own (slightly wider) window falls back to 60-minute bars", async () => {
+      const intradayFixture = new Map<string, IntradayBar[]>([
+        [
+          "AAPL",
+          [
+            // Recent day: within both the 60-minute intraday fetch and
+            // the 1-minute fetch's ~29-day lookback window. 60-minute
+            // version: 2x.
+            bar(daysBack(5), "09:30:00", 10),
+            bar(daysBack(5), "10:30:00", 20),
+            // Oldest day still inside 1M's own ~31-day window (asOf is
+            // 2024-06-15, 1M's own start date is 2024-05-15, so
+            // daysBack(30) = 2024-05-16 is still >= that start date) but
+            // one day past the 1-minute fetch's own ~29-day lookback --
+            // 1-minute data was never fetched (let alone found) for it,
+            // so it can only ever come from here. This is the exact
+            // retention-mismatch case this issue's plan review flagged:
+            // 1M's own window can outreach the 1-minute retention wall.
+            bar(daysBack(30), "09:30:00", 10),
+            bar(daysBack(30), "10:30:00", 15),
+          ],
+        ],
+      ]);
+      const oneMinuteFixture = new Map<string, IntradayBar[]>([
+        [
+          "AAPL",
+          [
+            // Same recent day, deliberately different price -> 5x, not
+            // the 60-minute fixture's 2x.
+            bar(daysBack(5), "09:30:00", 10),
+            bar(daysBack(5), "10:30:00", 50),
+          ],
+        ],
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: noDailyData,
+        fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: async (symbol) => oneMinuteFixture.get(symbol) ?? [],
+        store,
+        asOf,
+      }).catch(() => {
+        // The window path has no data here and independently fails the
+        // run -- irrelevant to this test, which only cares about the
+        // intraday/1-minute paths' own assembly.
+      });
+
+      const oneMonth = JSON.parse(store.objects.get("results/1M.json")!);
+      expect(oneMonth.days).toHaveLength(2);
+
+      const recentDay = oneMonth.days.find(
+        (d: { date: string }) => d.date === toDateString(daysBack(5)(asOf)),
+      );
+      const olderDay = oneMonth.days.find(
+        (d: { date: string }) => d.date === toDateString(daysBack(30)(asOf)),
+      );
+
+      expect(recentDay.barIntervalMinutes).toBe(1);
+      expect(recentDay.trades[0].sellPrice).toBe(50); // from the 1-minute fixture, not the 60-minute one's 20
+      expect(recentDay.endingBalance / recentDay.startingCapital).toBeCloseTo(5, 6);
+
+      expect(olderDay.barIntervalMinutes).toBe(60);
+      expect(olderDay.trades[0].sellPrice).toBe(15);
+      expect(olderDay.endingBalance / olderDay.startingCapital).toBeCloseTo(1.5, 6);
+    });
+
+    it("3M and 1Y are unaffected by 1-minute data -- they always read the pure 60-minute day results, even for a day the 1-minute fetch also covers", async () => {
+      const intradayFixture = new Map<string, IntradayBar[]>([
+        ["AAPL", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 20)]], // 2x
+      ]);
+      const oneMinuteFixture = new Map<string, IntradayBar[]>([
+        ["AAPL", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 50)]], // 5x -- must not leak into 3M/1Y
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: noDailyData,
+        fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: async (symbol) => oneMinuteFixture.get(symbol) ?? [],
+        store,
+        asOf,
+      }).catch(() => {});
+
+      for (const range of ["3M", "1Y"]) {
+        const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
+        expect(parsed.days).toHaveLength(1);
+        expect(parsed.days[0].barIntervalMinutes).toBe(60);
+        expect(parsed.days[0].trades[0].sellPrice).toBe(20); // the 60-minute price, not the 1-minute fixture's 50
+        expect(parsed.days[0].endingBalance / parsed.days[0].startingCapital).toBeCloseTo(2, 6);
+      }
+    });
+
+    it('requests the 1-minute fetch from exactly ONE_MINUTE_LOOKBACK_DAYS (29) days before asOf, not presetRangeStartDate("1M", asOf) (which can land 31 days back)', async () => {
+      const froms: Date[] = [];
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: noDailyData,
+        fetchIntradayBars: noIntradayData,
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: async (_symbol, from) => {
+          froms.push(from);
+          return [];
+        },
+        store,
+        asOf,
+      }).catch(() => {});
+
+      expect(froms).toHaveLength(1);
+      expect(toDateString(froms[0]!)).toBe(toDateString(daysBack(29)(asOf)));
+      // Regression check for the real bug this issue's plan review
+      // caught: presetRangeStartDate("1M", asOf) for this exact asOf
+      // (2024-06-15) lands on 2024-05-15 -- 31 days back, one day past
+      // the retention wall -- so the 1-minute fetch must NOT be using
+      // that unclamped value.
+      expect(toDateString(froms[0]!)).not.toBe(toDateString(daysBack(31)(asOf)));
+    });
+
+    it("gracefully degrades when the 1-minute fetch aborts (BlockedError): does NOT fail the run over it, and 1M falls back to 60-minute bars for every day, identical to 1M's pre-#29 behavior", async () => {
+      const dailyFixture = new Map<string, DailyClose[]>([
+        ["AAPL", [daily(daysBack(2000), 5), daily(daysBack(10), 50)]],
+      ]);
+      const intradayFixture = new Map<string, IntradayBar[]>([
+        ["AAPL", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 20)]],
+      ]);
+      const store = memoryStore();
+
+      // Window, daily-intraday, and 5-minute all succeed (5-minute
+      // trivially, since it fetches nothing here); only the 1-minute
+      // fetch is blocked -- the whole run must still succeed.
+      const summary = await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
+        fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: async () => {
+          throw new BlockedError("AAPL", 403);
+        },
+        store,
+        asOf,
+      });
+
+      expect(summary.results).toHaveLength(5);
+      const oneMonth = JSON.parse(store.objects.get("results/1M.json")!);
+      expect(oneMonth.days).toHaveLength(1);
+      expect(oneMonth.days[0].barIntervalMinutes).toBe(60);
+      expect(oneMonth.days[0].endingBalance / oneMonth.days[0].startingCapital).toBeCloseTo(2, 6);
+    });
+
+    it("a ticker skipped only on the 1-minute fetch surfaces in 1M's skippedTickers, but not 3M/1Y's", async () => {
+      const intradayFixture = new Map<string, IntradayBar[]>([
+        ["AAPL", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 20)]],
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: noDailyData,
+        fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: async () => {
+          throw new TickerNotFoundError("AAPL", "no 1-minute data");
+        },
+        store,
+        asOf,
+      }).catch(() => {});
+
+      const oneMonth = JSON.parse(store.objects.get("results/1M.json")!);
+      const threeMonth = JSON.parse(store.objects.get("results/3M.json")!);
+      expect(oneMonth.skippedTickers).toEqual(["AAPL"]);
+      expect(threeMonth.skippedTickers).toEqual([]);
+    });
+
+    it("keeps whichever granularity's day result is actually better -- does NOT blindly prefer 1-minute data when it has worse ticker coverage than 60-minute for the same day", async () => {
+      const intradayFixture = new Map<string, IntradayBar[]>([
+        ["A", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 20)]], // 2x
+        ["B", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 100)]], // 10x -- the best trade, 60-minute only
+      ]);
+      const oneMinuteFixture = new Map<string, IntradayBar[]>([
+        // A's 1-minute number is even better than its own 60-minute one
+        // (2.5x vs 2x) -- but B is entirely missing from this fetch, so
+        // the 1-minute day's *best achievable* outcome (2.5x) is still
+        // far worse than the 60-minute day's (10x, via B).
+        ["A", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 25)]],
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["A", "B"],
+        fetchDailyCloses: noDailyData,
+        fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: async (symbol) => oneMinuteFixture.get(symbol) ?? [],
+        store,
+        asOf,
+      }).catch(() => {});
+
+      const oneMonth = JSON.parse(store.objects.get("results/1M.json")!);
+      const day = oneMonth.days.find(
+        (d: { date: string }) => d.date === toDateString(daysBack(5)(asOf)),
+      );
+
+      expect(day.barIntervalMinutes).toBe(60);
+      expect(day.trades[0].ticker).toBe("B");
+      expect(day.endingBalance / day.startingCapital).toBeCloseTo(10, 6);
+    });
+
+    it("1M's dataAsOf reflects the more recent of the 60-minute and 1-minute fetches, not just the 60-minute one", async () => {
+      const intradayFixture = new Map<string, IntradayBar[]>([
+        ["AAPL", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(3), "09:30:00", 20)]],
+      ]);
+      const oneMinuteFixture = new Map<string, IntradayBar[]>([
+        ["AAPL", [bar(daysBack(0), "09:30:00", 10), bar(daysBack(0), "10:30:00", 15)]],
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: noDailyData,
+        fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: async (symbol) => oneMinuteFixture.get(symbol) ?? [],
+        store,
+        asOf,
+      }).catch(() => {});
+
+      const oneMonth = JSON.parse(store.objects.get("results/1M.json")!);
+      const threeMonth = JSON.parse(store.objects.get("results/3M.json")!);
+
+      // 1M folds in the 1-minute fetch's freshness...
+      expect(oneMonth.dataAsOf).toBe(toDateString(daysBack(0)(asOf)));
+      // ...but 3M never reads 1-minute data, so it stays anchored to the
+      // 60-minute fetch's own (older) most-recent date.
+      expect(threeMonth.dataAsOf).toBe(toDateString(daysBack(3)(asOf)));
     });
   });
 
@@ -622,6 +881,7 @@ describe("runPipeline", () => {
         return [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 40)];
       },
       fetchFiveMinuteBars: noIntradayData,
+      fetchIntraday1mBars: noIntradayData,
       store,
       asOf,
     });
@@ -646,6 +906,7 @@ describe("runPipeline", () => {
         return [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 40)];
       },
       fetchFiveMinuteBars: noIntradayData,
+      fetchIntraday1mBars: noIntradayData,
       store,
       asOf,
     });
@@ -667,6 +928,7 @@ describe("runPipeline", () => {
           bar(daysBack(5), "10:30:00", 40),
         ],
         fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       }),
@@ -699,6 +961,7 @@ describe("runPipeline", () => {
           bar(daysBack(5), "10:30:00", 40),
         ],
         fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       }),
@@ -720,6 +983,7 @@ describe("runPipeline", () => {
           throw new UnexpectedResponseError("AAPL", 400);
         },
         fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       }),
@@ -744,6 +1008,7 @@ describe("runPipeline", () => {
           throw new BlockedError("AAPL", 403);
         },
         fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       }),
@@ -772,6 +1037,7 @@ describe("runPipeline", () => {
           bar(daysBack(5), "10:30:00", 40),
         ],
         fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       }),
@@ -802,6 +1068,7 @@ describe("runPipeline", () => {
       },
       fetchIntradayBars: noIntradayData,
       fetchFiveMinuteBars: noIntradayData,
+      fetchIntraday1mBars: noIntradayData,
       store,
       asOf,
     }).catch(() => {
@@ -831,6 +1098,7 @@ describe("runPipeline", () => {
           throw new TickerNotFoundError(symbol, "no data");
         },
         fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
         store,
         asOf,
       }),

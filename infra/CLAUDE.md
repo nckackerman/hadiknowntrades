@@ -163,3 +163,14 @@ and how to actually get anything deployed here at all.
   guess at "safely after EOD data settles", not tuned against any real
   Yahoo data-availability SLA. Revisit once the pipeline has actually
   run on a schedule.
+- **Pipeline Lambda `memorySize` bumped 1024MB -> 2048MB in code (issue
+  #29, 1-minute bars for 1M), not yet deployed.** Proactive, not
+  reactive to an observed OOM -- see `apps/pipeline/CLAUDE.md`'s
+  "1-minute path" section and `packages/core/CLAUDE.md`'s "1-minute
+  intraday bars" section for the corrected memory estimate behind the
+  number. Same "code lands, real-AWS deploy needs the user's separate
+  go-ahead" pattern as #28's still-pending schema-bump rollout above --
+  don't deploy this without asking first, and once it is deployed,
+  confirm the real measured memory usage against this estimate (same
+  discipline as how 903MB was itself established, not just trusted from
+  an estimate).

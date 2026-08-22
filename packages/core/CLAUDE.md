@@ -151,7 +151,7 @@ startTime=... The requested range must be within the last 730 days."`
 
 `fetchFiveMinuteBars` in `src/yahoo-client.ts` fetches `interval=5m` bars
 from the same chart endpoint, upgrading the 3M range's most recent days
-to finer granularity (see "Mixed-granularity 3M assembly" below).
+to finer granularity (see "Mixed-granularity 1M/3M assembly" below).
 Shares `fetchChartSeries`/`parseIntradayChartResult` with
 `fetchIntradayBars` -- same envelope, same single-request-no-chunking
 shape, only the interval string differs. Facts below verified
@@ -187,78 +187,175 @@ startTime=... The requested range must be within the last 60 days."`
   (`parseIntradayChartResult`/`extractCloses`) is shared code already
   covered by the 60m verification above.
 
-## Mixed-granularity 3M assembly (issue #30)
+## 1-minute intraday bars (issue #29)
 
-3M's per-day results (`IntradayResult.days`) are assembled from **two
-separate `optimizeIntradayDays` calls, merged**, not from a single
-mixed-granularity fetch or DP: one over the existing 60-minute-bar
-history (same fetch already used for 1M/1Y), one over a second
-5-minute-bar fetch scoped to the last 59 days. `apps/pipeline`'s
-`buildIntradayResults` merges the two day-result arrays keyed by date
-via `mergeDaysByGranularity`: for a date only one array covers, that
-one wins by default; for a date **both** cover, it's NOT an
-unconditional "5-minute wins" -- it keeps whichever day's
-`endingBalance` is actually higher (both solved with the same
-`startingCapital`, so directly comparable). This matters because the
-two granularities' fetches can see different ticker universes for the
-same day (a ticker's 5-minute fetch can fail for a day its 60-minute
-fetch succeeded on), so the 5-minute day can legitimately be the
-_worse_ one -- a real correctness bug caught in code review before this
-comparison existed: unconditionally preferring 5-minute regardless of
-outcome could make 3M's result strictly worse than what 60-minute-only
-data would have shown, which cuts against this app's whole "best
-possible outcome" premise. 1M and 1Y are untouched -- they only ever
-read the 60-minute day-result array, never the 5-minute one.
+`fetchIntraday1mBars` in `src/yahoo-client.ts` fetches `interval=1m`
+bars, upgrading the 1M range's days to finer granularity -- same
+`GranularityOverride`/best-effort pattern issue #30 established for 3M
+(see "Mixed-granularity 1M/3M assembly" below), landed just after #30 in
+this codebase's history. Shares `fetchChartSeries`/
+`parseIntradayChartResult` with every other intraday fetch function, but
+**unlike 60m/5m, needs internal chunking** -- `interval=1m` has two
+independent limits, both verified live against the real endpoint
+(2026-08-21), neither assumed from the 60m/5m cases:
 
+- **Retention is a hard 30-day wall**, the same "N-1 succeeds, N fails"
+  pattern as 5m's 60-day / 60m's 730-day limits: a request with
+  `period1` 29 days back from the real request time succeeds (391 bars,
+  a full trading day); one 30 days back fails with a 422
+  (`chart.error.description`: `"1m data not available for startTime=...
+The requested range must be within the last 30 days."`). Yahoo's own
+  error text says "30 days" -- don't read that as "30 is safe"; the wall
+  is _at_ 30, so 29 is the largest genuinely safe value.
+  `apps/pipeline`'s `ONE_MINUTE_LOOKBACK_DAYS = 29` encodes this (one
+  full day inside the verified boundary, same "N-1" convention as
+  `FIVE_MINUTE_LOOKBACK_DAYS`). Same operational gotcha as 5m: this 422
+  is `!response.ok`, so `fetchChartSeries` throws
+  `UnexpectedResponseError` from the status-code branch, not
+  `TickerNotFoundError` from `chart.error` -- see 5m's own bullet above
+  for why that distinction matters and how the pipeline avoids ever
+  depending on which one fires (the whole path degrades gracefully
+  regardless).
+- **A single request may span at most 8 calendar days**
+  (`ONE_MINUTE_CHUNK_DAYS`, module-private -- unlike the retention
+  window, chunking is an implementation detail no caller needs to know
+  about), a _separate_ limit from retention: a request spanning exactly
+  8 days succeeds (2,341 bars), one spanning 9 days fails with a
+  _different_ 422 (`chart.error.description`: `"Only 8 days worth of 1m
+granularity data are allowed to be fetched per request."`). Because of
+  this, `fetchIntraday1mBars` is the only fetch function in this file
+  that can issue **multiple HTTP requests for one logical call**: it
+  splits the (already end-padded) total range into consecutive,
+  non-overlapping <=8-day chunks and awaits them **sequentially**, not
+  concurrently -- see `apps/pipeline/CLAUDE.md`'s "1-minute path"
+  section for why sequential chunking means this path doesn't need its
+  own lower concurrency knob the way an earlier draft of this plan
+  assumed it would. Only the conceptual _last_ chunk carries the padded
+  end (the total range is padded once, then chunked, rather than padding
+  every chunk independently, which would let chunk seams overlap and
+  double-count a bar) -- a defensive dedup-by-`date` pass still runs
+  when concatenating chunks regardless. A chunk that ultimately fails
+  (after its own retries, or immediately for `BlockedError`/
+  `TickerNotFoundError`/`UnexpectedResponseError`) discards that
+  ticker's earlier chunks rather than returning a partial month --
+  matches every other fetch function's all-or-nothing per-ticker
+  contract, at the cost of each ticker's 1m fetch having ~4 independent
+  chances to fail where 60m/5m have 1. Not yet observed to meaningfully
+  raise 1M's `skippedTickers` in practice as of this issue's
+  implementation -- worth watching after a real pipeline run.
+- **Memory (corrected during this issue's plan review)**: the original
+  draft plan's back-of-envelope estimate had an arithmetic error in its
+  own component figures (its "~120-160 bytes/bar" assumption didn't
+  match the ~24-32 + ~16-24 + ~35-40 byte components it listed, which
+  sum to ~75-96 bytes/bar) -- corrected to **~350-450MB** of added
+  memory for the 1-minute fetch specifically (not the draft's original
+  ~618MB estimate). The qualitative conclusion held regardless: a real
+  measured baseline of 903MB/1024MB (pre-#29, see
+  `apps/pipeline/CLAUDE.md`) leaves only ~121MB of headroom, and even
+  the corrected, smaller estimate is roughly 3-4x that headroom --
+  hence the proactive `memorySize` bump to 2048MB in
+  `infra/cdk/lib/hadiknowntrades-stack.ts` alongside this issue's code
+  (not yet deployed -- see `infra/CLAUDE.md`). `optimizeIntradayDays`'s
+  own per-ticker timestamp-array structures add further, unquantified
+  memory beyond the raw fetched bars (~56x denser for 1-minute vs.
+  60-minute data) -- flagged by the review as a real secondary
+  contributor, not addressed by a code change here.
+
+## Mixed-granularity 1M/3M assembly (issues #30, #29)
+
+3M's and 1M's per-day results (`IntradayResult.days`) are each assembled
+from **two separate `optimizeIntradayDays` calls, merged**, not from a
+single mixed-granularity fetch or DP: one over the existing 60-minute-bar
+history (shared across 1M/3M/1Y), one over a second, finer-granularity
+fetch scoped to a shorter lookback (5-minute for 3M, last 59 days;
+1-minute for 1M, last ~29 days -- see the "5-minute"/"1-minute intraday
+bars" sections above for the exact retention walls behind each number).
+`apps/pipeline`'s `buildIntradayResults` merges each range's two
+day-result arrays keyed by date via the same, granularity-agnostic
+`mergeDaysByGranularity`: for a date only one array covers, that one
+wins by default; for a date **both** cover, it's NOT an unconditional
+"finer granularity wins" -- it keeps whichever day's `endingBalance` is
+actually higher (both solved with the same `startingCapital`, so
+directly comparable). This matters because the two granularities'
+fetches can see different ticker universes for the same day (a ticker's
+finer-granularity fetch can fail for a day its 60-minute fetch succeeded
+on), so the finer day can legitimately be the _worse_ one -- a real
+correctness bug caught in #30's code review before this comparison
+existed: unconditionally preferring the finer granularity regardless of
+outcome could make a range's result strictly worse than what
+60-minute-only data would have shown, which cuts against this app's
+whole "best possible outcome" premise. 1Y is untouched by both issues --
+it only ever reads the 60-minute day-result array.
+
+- **1M's own window can genuinely outreach its finer-granularity
+  fetch's lookback, unlike 3M's** -- a real, non-hypothetical
+  consequence of the numbers involved, not just a theoretical edge case:
+  1M's own start date (`presetRangeStartDate("1M", asOf)`) can land up
+  to 31 calendar days back (a 31-day source month), one day past the
+  1-minute fetch's ~29-day retention wall -- so it's normal, not a bug,
+  for 1M's oldest day or two to have no 1-minute data at all and fall
+  back to 60-minute via the same merge mechanism 3M's older (>59-day)
+  days already use. 3M's own window (up to ~92 days) so comfortably
+  exceeds its 5-minute fetch's 59-day lookback that this "does the
+  override's own window fully cover the range's window" question never
+  came up as sharply during #30 -- #29's plan review is what surfaced it
+  explicitly, and the fix is: don't try to make the fetch's lookback
+  match the range's window exactly, just clamp to the fetch's own safe
+  retention limit and let the existing merge/fallback machinery handle
+  the gap, exactly as it already does for 3M's older days.
 - `IntradayDayResult.barIntervalMinutes` (stamped by
   `optimizeIntradayDays` from `OptimizeIntradayOptions.barIntervalMinutes`,
   required, not inferred) makes this visible **in the output itself**,
   per-day -- deliberately not left as something a reader has to infer
-  from a day's date relative to "now," since the issue text called that
-  out explicitly as non-obvious. 1M/1Y days always carry `60`; 3M's
-  recent ~59 days carry `5`, its older days carry `60` -- genuinely
-  mixed within one range's `days` array.
-- **The 5-minute path is deliberately best-effort, not held to the same
-  alerting standard as the window/intraday path split** (see
+  from a day's date relative to "now," since issue #30's own text called
+  that out explicitly as non-obvious. 1Y days always carry `60`; 3M's
+  recent ~59 days carry `5` (older days carry `60`); 1M's days carry `1`
+  wherever the 1-minute fetch reached, `60` for the day or two (if any)
+  it didn't -- genuinely mixed within both 1M's and 3M's `days` arrays.
+- **Both override paths are deliberately best-effort, not held to the
+  same alerting standard as the window/intraday path split** (see
   `apps/pipeline/CLAUDE.md`'s "Two independent paths since issue #28"
-  section for that standard): a 5-minute fetch that aborts or comes back
-  empty makes 3M's recent days silently fall back to 60-minute bars --
-  i.e. exactly 3M's pre-#30 behavior -- rather than failing the whole
-  pipeline run. This was a deliberate judgment call, not an oversight:
-  the window-vs-intraday split's strict "must still fail the run" rule
+  section for that standard): a 5-minute or 1-minute fetch that aborts
+  or comes back empty makes that range's affected days silently fall
+  back to 60-minute bars -- i.e. exactly that range's pre-#30/pre-#29
+  behavior -- rather than failing the whole pipeline run. This was a
+  deliberate judgment call for #30, not an oversight, and #29 follows
+  the identical reasoning rather than re-litigating it: the
+  window-vs-intraday split's strict "must still fail the run" rule
   exists because a silent failure there means a whole range serves
-  frozen/stale JSON forever with nothing to notice it; a 5-minute-path
-  failure instead means 3M reverts to already-shipped, fully-correct
-  (just coarser) 60-minute data -- qualitatively different from serving
-  stale or broken output. Re-litigate this if 5-minute-granularity 3M
-  data ever becomes something the product depends on rather than a
-  bonus precision upgrade.
-- Per-ticker skips accumulated by the 5-minute fetch are still merged
-  into 3M's own `skippedTickers` (and the pipeline-wide summary) even
-  though a 5-minute-only failure doesn't fail the run -- a ticker that
-  fails only the 5-minute fetch but succeeds the 60-minute one can still
-  be missing from a day it would otherwise have won on, since a day's
-  winning granularity is picked wholesale (see the merge-correctness
-  point above), not spliced per-ticker within a day -- worth surfacing
-  as a skip even though that ticker's older 3M days and its 1M/1Y
-  results are unaffected.
-- 3M's `dataAsOf` folds in the 5-minute fetch's own freshness via
-  `maxDateString`, not just the 60-minute fetch's -- another real bug
-  caught in the same code-review pass: since 3M's merged days can
-  include one sourced only from the 5-minute fetch, using only the
-  60-minute fetch's `dataAsOf` could understate how fresh 3M's data
-  actually is, contradicting that field's own documented meaning ("the
-  actual last trading date found in the fetched data" -- see
-  `apps/pipeline/CLAUDE.md`). 1M/1Y have no such override and are
-  unaffected.
+  frozen/stale JSON forever with nothing to notice it; a granularity-
+  override failure instead means that range reverts to already-shipped,
+  fully-correct (just coarser) 60-minute data -- qualitatively different
+  from serving stale or broken output. Re-litigate this if
+  finer-granularity data for either range ever becomes something the
+  product depends on rather than a bonus precision upgrade.
+- Per-ticker skips accumulated by a finer-granularity fetch are still
+  merged into that range's own `skippedTickers` (and the pipeline-wide
+  summary) even though that failure doesn't fail the run -- a ticker
+  that fails only the finer-granularity fetch but succeeds the
+  60-minute one can still be missing from a day it would otherwise have
+  won on, since a day's winning granularity is picked wholesale (see the
+  merge-correctness point above), not spliced per-ticker within a day --
+  worth surfacing as a skip even though that ticker's other days/ranges
+  are unaffected.
+- Each range's `dataAsOf` folds in its own override fetch's freshness
+  via `maxDateString`, not just the 60-minute fetch's -- a real bug
+  caught in #30's code review, since a range's merged days can include
+  one sourced only from its override fetch, and using only the
+  60-minute fetch's `dataAsOf` could understate how fresh that range's
+  data actually is, contradicting that field's own documented meaning
+  ("the actual last trading date found in the fetched data" -- see
+  `apps/pipeline/CLAUDE.md`). 1Y has no override and is unaffected.
 - The per-range override (which extra history/skips/dataAsOf a range
   folds in beyond the base 60-minute data) is centralized in one
   `granularityOverrides: Map<PresetRange, GranularityOverride>` lookup
-  in `buildIntradayResults`, not a hardcoded `range === "3M"` branch --
-  see `apps/pipeline/CLAUDE.md`'s "5-minute path" section for why (a
-  future override, e.g. issue #29's 1-minute bars for 1M, should add a
-  map entry there rather than a parallel branch).
-- `RESULTS_SCHEMA_VERSION` was **not** bumped for this issue --
+  in `buildIntradayResults`, not a hardcoded `range === "3M"`/
+  `range === "1M"` branch -- #30's own code comment anticipated exactly
+  this: "a future granularity override (e.g. issue #29's 1-minute bars
+  for 1M) adds one map entry instead of a third bespoke branch," and
+  #29 followed that instruction literally rather than reintroducing a
+  parallel branch structure.
+- `RESULTS_SCHEMA_VERSION` was **not** bumped for either issue --
   `barIntervalMinutes` is a purely additive field on an already-versioned
   shape (`IntradayDayResult`, introduced at schema version 2 by #28), and
   nothing in `apps/web` reads it yet. The version-bump criterion
