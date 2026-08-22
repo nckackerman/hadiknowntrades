@@ -405,6 +405,27 @@ below).
     offline-safe here (confirmed: `next build`'s route summary lists
     `/api/og/[range]` as `○ (Static)`, `/api/results` as `ƒ (Dynamic)`,
     exactly the intended split).
+    - **Confirmed live (not just inferred from docs) that this isn't
+      just a sandbox-convenience workaround -- it would be a real
+      regression against this app's actual deployment split.** Adding
+      `generateStaticParams` (returning all of `PRESET_RANGES`) plus
+      `export const dynamicParams = false` and rebuilding: `next build`
+      eagerly invoked this route's own `GET` once per range (confirmed
+      with a temporary `console.error` inside the handler, printed
+      during "Generating static pages"), baking in the
+      `server_misconfigured` 500 (no `RESULTS_BUCKET` at build time) as
+      each range's _initial_ cached entry -- and surprisingly also
+      flipped the build summary from `○ (Static)` to `ƒ (Dynamic)` for
+      this route. Since this app's real deploy topology has S3 access
+      at _runtime_ (the deployed Lambda) but not at _build_ time (no
+      `RESULTS_BUCKET` in CI/local builds -- see `infra/CLAUDE.md`'s env
+      var contract note, which is pipeline-specific, not web-build-time),
+      this would ship every deploy with a guaranteed-broken card for a
+      full 24h post-deploy even though the real bucket is reachable the
+      whole time. Reverted; this is why route param validation (below)
+      is a plain in-handler check instead of Next's
+      `generateStaticParams`/`dynamicParams` mechanism, despite that
+      being the more textbook-idiomatic way to bound a dynamic segment.
   - **Known, accepted rough edge**: an _error_ response (misconfigured
     bucket, a range not published yet, corrupt data) gets cached by
     Next's Full Route Cache the same as a successful render, for the
@@ -415,6 +436,40 @@ below).
     these are rare, operational failure modes, and a stale error for up
     to a day is no worse than the staleness the rest of this
     precomputed-nightly app already accepts everywhere else.
+  - **Route-param validation (found in code review, fixed)**: the raw
+    `[range]` segment used to reach `getResultsResponse` (which
+    case-folds via `parseRange`) with no earlier check at all. Combined
+    with `force-static` + default `dynamicParams: true`, every distinct
+    string under `[range]` -- a case variant of a valid range
+    (`/api/og/max`), or pure garbage (`/api/og/not-a-range`) -- got its
+    own separate Satori render (for case variants of a real range) or S3
+    round-trip (for garbage), each becoming its own separately-cached
+    24h entry for what's ultimately either duplicate or useless content.
+    Fixed with `results-api.ts`'s `isCanonicalRange` (an _exact-case_
+    membership check against `PRESET_RANGES`, deliberately not
+    case-folding like `parseRange` does for `/api/results`' query
+    param), called first thing in the route handler, before
+    `getResultsResponse` or any rendering. Rejects with 404 +
+    `Cache-Control: no-store`.
+    - **Verified live (`next build` + `next start` + curl) exactly what
+      this guard does and doesn't fix**: a case variant (`/api/og/max`)
+      and garbage (`/api/og/not-a-range`) both now 404 immediately, with
+      no S3 read and no Satori render -- confirmed by the response
+      returning instantly with no `[api/results]` log line. **But** the
+      guard does _not_ stop Next's Full Route Cache from still creating
+      a cache entry for that exact rejected path -- `x-nextjs-cache` was
+      `MISS` then `HIT` on a second request to the same rejected path,
+      identical to a legitimate range. This is the same "no carve-out
+      for non-2xx" limitation as the rough edge documented above, just
+      for a 404 instead of a 5xx/502. Accepted: the fix's actual value is
+      eliminating the _wasted expensive work_ (duplicate renders, S3
+      round-trips) per rejected path, not eliminating cache-slot growth
+      from someone enumerating garbage strings -- the only mechanism
+      that would fully close that (`generateStaticParams` +
+      `dynamicParams = false`) was tried and reverted for the reason
+      above. Low real-world severity for this project (a small learning
+      app, not a target for that kind of enumeration), not engineered
+      around further.
   - This route reuses `getResultsResponse` (`/api/results`'s own logic)
     in-process rather than re-implementing S3-read-plus-validate a
     second time, so both routes can't drift on what counts as a
@@ -449,3 +504,18 @@ message }` JSON -- this route reads the `message` field back out
      `x-nextjs-cache: MISS`/`HIT` evidence above. Reverted immediately
      after -- `git diff`/`git status` should show none of this in the
      final commit.
+- **The astronomical-number (scientific-notation) formatting branch
+  actually was live-verified against Satori (found missing in code
+  review, then checked)**: the PR's original live verification covered
+  a gain/modest-gain/loss, but never a MAX-range-scale result large
+  enough to trip `format-currency.ts`'s `formatScientific` (the
+  `×`/superscript-digit branch, past `SCIENTIFIC_THRESHOLD` = 1e15) --
+  a real risk since Satori renders through its own bundled font, which
+  might lack glyphs for `×` or the Unicode superscript digits
+  (`¹`/`⁹`/etc.) and either render tofu or throw. Checked via technique
+  1 above with `endingBalance = 4.2e19` (`startingCapital` fixed at
+  `$20`, so this drives both the dollar figure _and_ the
+  `endingBalance/startingCapital` multiplier well past the threshold):
+  rendered cleanly as `$4.20×10¹⁹` and `(2.10×10¹⁸x)`, no tofu, no
+  throw, no fallback needed. Satori's bundled font does have these
+  glyphs -- `og-card.ts`/`OgCard.tsx` needed no changes for this case.
