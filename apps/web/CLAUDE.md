@@ -363,3 +363,110 @@ during a build, don't add a `.js` extension or a workaround here first -
 see `packages/core/CLAUDE.md`'s "Internal imports" note: the fix belongs
 in `packages/core`'s own relative-import style, not in how this app
 imports the package.
+
+## localStorage pattern (issue #34, first use of browser storage in this app)
+
+`lib/local-storage.ts` is the one place this app ever touches
+`window.localStorage` directly - `readLocalStorage`/`writeLocalStorage`
+wrap every call in a `typeof window === "undefined"` guard (no `window`
+during any server render) plus a `try`/`catch` (a real read/write can
+still throw even with `window` present - Safari's private-browsing mode
+historically forced quota to 0 so every _write_ threw, and a user/
+enterprise policy can disable site storage entirely, which throws on
+_reads_ too). Both functions degrade to "acts as if nothing was ever
+saved" (`null` / `false`) rather than propagating the exception - a
+`localStorage`-backed feature should never be able to crash the page.
+
+**Any future feature that wants localStorage should build on
+`local-storage.ts`, not call `window.localStorage` itself**, and follow
+the same two-layer shape `lib/daily-guess-storage.ts` establishes:
+
+- A thin, feature-specific module (`daily-guess-storage.ts`) that owns
+  one namespaced key prefix (`hikt:daily-guess:` here) and JSON-encodes/
+  decodes its own small shape, treating a parse failure or a
+  wrong-shaped value as "nothing stored" rather than throwing - a
+  hand-edited or stale-format value in storage is exactly as untrusted
+  as a value that was never written. Namespace your own prefix distinctly
+  (e.g. `hikt:<feature>:`) so two features' keys can never collide;
+  no coordination beyond that is needed between independent features.
+- A `"use client"` hook (`use-daily-guess.ts`) that reads the current
+  value once via a `useState` initializer and exposes a setter that
+  writes through to storage before updating state - see that file for
+  why reading storage directly in the initializer (not deferred to an
+  effect the way `use-count-up.ts`/`should-celebrate.ts` defer their own
+  `window.matchMedia` reads) is safe _only_ because it's used exclusively
+  from `ResultsPanel`'s `success` branch, which never renders during SSR
+  (see `use-results.ts`: the fetch state machine always starts
+  `"loading"` and only reaches `"success"` after a client-only effect
+  resolves) - reusing this shortcut from a tree that _can_ render on the
+  server would reintroduce the hydration-mismatch risk those other hooks
+  deliberately avoid.
+- Keyed per some natural identifier the feature already has (a
+  `(range, date)` pair here, not just the date - see below) via the same
+  "adjust state during render when a prop changes" idiom `use-results.ts`
+  established for range changes - a changed key must re-read storage
+  fresh, not carry over the previous key's in-memory state.
+
+## Daily guessing game (issue #34)
+
+`ResultsPanel.tsx`'s intraday-daily branch (see "Two result models"
+above) gates `HeroStat`, `PortfolioChart`, and the trade list behind a
+`DailyGuessForm` prompt ("what do you think $20 turned into on
+{date}?") for whichever day is currently active - the window model
+(5Y/MAX) is untouched, since a whole-window result barely changes day to
+day and was never a meaningful thing to guess against (see the issue's
+own rationale). `DaySelector` and the day-picker row itself stay visible
+throughout - browsing to a different day never requires guessing the day
+you're passing through, only whichever day is currently selected when
+its content would otherwise render.
+
+- `guess === null` (`useDailyGuess`, backed by `daily-guess-storage.ts`)
+  is the single gate: `null` renders `DailyGuessForm` in `HeroStat`'s
+  slot in the top row; non-null renders the real `HeroStat` there
+  instead, plus the methodology paragraph, a "You guessed $X" line, the
+  chart, and the trade list, all below. Submitting a guess (or finding
+  one already stored for this exact `(range, date)` pair on mount) is
+  what causes `HeroStat` to mount for the first time - which is also,
+  for free, the moment its existing count-up/celebration choreography
+  fires (see the "Client-side animation" section above). No animation
+  code needed touching for this feature at all: controlling _when_
+  `HeroStat` mounts was enough to make the reveal line up with the
+  guess.
+- **Guesses are keyed by `(range, date)`, not just `date`** (a real bug
+  found in code review, fixed) - `daily-guess-storage.ts`'s key includes
+  `range` (`ResultsPanel` passes its own `range` prop into
+  `useDailyGuess(range, activeDay.date)`), and both functions'
+  signatures take `range` first. This matters because the _same_
+  calendar date can carry a genuinely different result depending on
+  which range you're viewing it under: 1M and 3M each layer their own
+  granularity override (1-minute and 5-minute bars respectively) on the
+  shared 60-minute base, merged independently per date (see
+  `apps/pipeline/src/pipeline.ts`'s `buildIntradayResults`/
+  `mergeDaysByGranularity`), so `endingBalance`/`trades`/
+  `barIntervalMinutes` for one date can differ across 1M/3M/1Y. Since
+  `selectedDay` resets to "most recent day" on a range switch (usually
+  the same calendar date across ranges), a date-only key would let a
+  guess made on the 1M tab silently satisfy the guess-gate for the same
+  date on 3M/1Y too - skipping straight to a reveal the user never
+  actually guessed against. Any future change to this feature must keep
+  passing `range` through, not just `date`.
+- `DailyGuessForm` accepts any non-negative number, including exactly
+  `0` (a plausible guess: "the trade went to zero") - validity is
+  `draft.trim() !== "" && Number.isFinite(parsed) && parsed >= 0`, not
+  just a truthy check on the parsed number, since `Number("")` coerces
+  to `0` and would otherwise let an empty field silently submit as a
+  valid zero guess. `daily-guess-storage.ts`'s `isStoredGuess` mirrors
+  this same `>= 0` check (a gap found in code review, fixed) - a
+  negative value can only reach storage via a hand-edited/corrupt entry
+  (no real form submission produces one), and is treated the same as
+  "never guessed" rather than rendering as a nonsense "You guessed
+  -$5.00".
+- Tests that assert on a day's actual revealed content
+  (`ResultsPanel.test.tsx`'s "intraday-daily model" describe block) all
+  submit a guess first via a shared `submitAnyGuess` helper - the
+  original pre-#34 versions of several of these tests asserted on
+  `HeroStat`/chart/trade-list content directly on render, which no
+  longer holds now that content is gated. `localStorage` persists across
+  tests within one file (one jsdom `window` per test file, not per test),
+  so this describe block clears it in an `afterEach` to keep tests from
+  leaking guesses into each other.
