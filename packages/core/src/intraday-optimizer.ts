@@ -40,19 +40,22 @@ export interface IntradayDayResult {
   endingBalance: number;
   /**
    * Which bar granularity produced this day's numbers, in minutes (e.g.
-   * 60 for 60-minute bars, 5 for 5-minute bars) -- stamped from
-   * OptimizeIntradayOptions.barIntervalMinutes onto every day a given
-   * optimizeIntradayDays() call produces. Added in issue #30, which
-   * introduced a second granularity: the 3M range's per-day results are
-   * now assembled from *two separate optimizeIntradayDays() calls* (one
-   * over 60-minute bars, one over 5-minute bars for the most recent ~60
-   * days) merged together by apps/pipeline's buildIntradayResults, so a
-   * ticker's 3M day list can genuinely mix 5 and 60 here depending on
-   * how old each day is. This field exists specifically so that's
-   * visible in the output itself rather than only inferable from a
-   * day's date relative to "now" -- not obvious otherwise, per issue
-   * #30's own scope note. 1M and 1Y are unaffected by #30 and always
-   * carry 60 here.
+   * 60 for 60-minute bars, 5 for 5-minute bars, 1 for 1-minute bars) --
+   * stamped from OptimizeIntradayOptions.barIntervalMinutes onto every
+   * day a given optimizeIntradayDays() call produces. Added in issue
+   * #30, which introduced a second granularity: a range's per-day
+   * results can be assembled from *two separate optimizeIntradayDays()
+   * calls* (one over 60-minute bars, one over a finer granularity scoped
+   * to a shorter lookback) merged together by apps/pipeline's
+   * buildIntradayResults, so a ticker's day list can genuinely mix
+   * granularities depending on how old each day is. This field exists
+   * specifically so that's visible in the output itself rather than
+   * only inferable from a day's date relative to "now" -- not obvious
+   * otherwise, per issue #30's own scope note. As of issue #29, both 3M
+   * (mixing 5 and 60) and 1M (mixing 1 and 60) genuinely have mixed
+   * granularities within one range's day list -- only 1Y is unaffected
+   * and always carries 60 here. See packages/core/CLAUDE.md's
+   * "Mixed-granularity 1M/3M assembly" section for the full mechanism.
    */
   barIntervalMinutes: number;
   trades: IntradayTrade[];

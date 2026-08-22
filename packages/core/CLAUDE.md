@@ -179,9 +179,9 @@ startTime=... The requested range must be within the last 60 days."`
   60-day wall would abort the entire 5-minute fetch, not just skip a
   few tickers. `apps/pipeline` avoids ever hitting this in practice by
   requesting a conservative 59-day-back window (one full day inside the
-  verified boundary) -- see `apps/pipeline/CLAUDE.md`'s "5-minute path"
-  section for why that's fine either way (the whole path degrades
-  gracefully regardless of which error class trips it).
+  verified boundary) -- see `apps/pipeline/CLAUDE.md`'s "Granularity
+  overrides" section for why that's fine either way (the whole path
+  degrades gracefully regardless of which error class trips it).
 - `adjclose` is absent from real 5-minute responses too, same as 60m --
   not re-verified bar-by-bar here since the parsing path
   (`parseIntradayChartResult`/`extractCloses`) is shared code already
@@ -227,10 +227,11 @@ granularity data are allowed to be fetched per request."`). Because of
   that can issue **multiple HTTP requests for one logical call**: it
   splits the (already end-padded) total range into consecutive,
   non-overlapping <=8-day chunks and awaits them **sequentially**, not
-  concurrently -- see `apps/pipeline/CLAUDE.md`'s "1-minute path"
-  section for why sequential chunking means this path doesn't need its
-  own lower concurrency knob the way an earlier draft of this plan
-  assumed it would. Only the conceptual _last_ chunk carries the padded
+  concurrently -- see `apps/pipeline/CLAUDE.md`'s "Granularity overrides"
+  section (the "Per-override specifics" part) for why sequential
+  chunking means this override doesn't need its own lower concurrency
+  knob the way an earlier draft of this plan assumed it would. Only the
+  conceptual _last_ chunk carries the padded
   end (the total range is padded once, then chunked, rather than padding
   every chunk independently, which would let chunk seams overlap and
   double-count a bar) -- a defensive dedup-by-`date` pass still runs

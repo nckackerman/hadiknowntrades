@@ -427,7 +427,7 @@ export async function fetchIntradayBars(
  * to see chart.error, not a "this symbol has no data" TickerNotFoundError.
  * That matters operationally: UnexpectedResponseError is a systemic-abort
  * signal to apps/pipeline's fetchUniverseHistory, not a per-ticker skip --
- * see apps/pipeline/CLAUDE.md's "5-minute path" section for how the
+ * see apps/pipeline/CLAUDE.md's "Granularity overrides" section for how the
  * pipeline avoids that ever mattering in practice (it requests a
  * conservative 59-day-back window, one day inside the verified wall, and
  * treats the whole 5-minute path as best-effort/gracefully-degradable
@@ -497,7 +497,7 @@ export async function fetchFiveMinuteBars(
  *   them one at a time (not concurrently -- this fetch isn't
  *   latency-sensitive, and firing every chunk at once per ticker would
  *   multiply peak simultaneous connections for no benefit; see
- *   apps/pipeline/CLAUDE.md's "1-minute path" section), concatenating
+ *   apps/pipeline/CLAUDE.md's "Granularity overrides" section), concatenating
  *   the results. Only the conceptual *last* chunk carries the padded
  *   end -- computing the padded total range once and chunking *that*
  *   (rather than padding every chunk independently) means intermediate

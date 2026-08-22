@@ -166,9 +166,9 @@ and how to actually get anything deployed here at all.
 - **Pipeline Lambda `memorySize` bumped 1024MB -> 2048MB in code (issue
   #29, 1-minute bars for 1M), not yet deployed.** Proactive, not
   reactive to an observed OOM -- see `apps/pipeline/CLAUDE.md`'s
-  "1-minute path" section and `packages/core/CLAUDE.md`'s "1-minute
-  intraday bars" section for the corrected memory estimate behind the
-  number. Same "code lands, real-AWS deploy needs the user's separate
+  "Granularity overrides" section and `packages/core/CLAUDE.md`'s
+  "1-minute intraday bars" section for the corrected memory estimate
+  behind the number. Same "code lands, real-AWS deploy needs the user's separate
   go-ahead" pattern as #28's still-pending schema-bump rollout above --
   don't deploy this without asking first, and once it is deployed,
   confirm the real measured memory usage against this estimate (same
