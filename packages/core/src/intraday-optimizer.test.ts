@@ -34,11 +34,41 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, { startingCapital: 20, maxTradesPerDay: 1 });
+    const days = optimizeIntradayDays(barsByTicker, {
+      startingCapital: 20,
+      maxTradesPerDay: 1,
+      barIntervalMinutes: 60,
+    });
 
     expect(days.map((d) => d.date)).toEqual(["2024-01-02", "2024-01-03"]);
     expect(multiplier(20, days[0]!.endingBalance)).toBeCloseTo(2, 6);
     expect(multiplier(20, days[1]!.endingBalance)).toBeCloseTo(5, 6);
+  });
+
+  it("stamps barIntervalMinutes from the options onto every day it produces (issue #30)", () => {
+    const barsByTicker = new Map<string, IntradayBar[]>([
+      [
+        "A",
+        bars("2024-01-02", [
+          ["09:30:00", 10],
+          ["10:30:00", 20],
+        ]),
+      ],
+    ]);
+
+    const sixtyMinute = optimizeIntradayDays(barsByTicker, {
+      startingCapital: 20,
+      maxTradesPerDay: 1,
+      barIntervalMinutes: 60,
+    });
+    const fiveMinute = optimizeIntradayDays(barsByTicker, {
+      startingCapital: 20,
+      maxTradesPerDay: 1,
+      barIntervalMinutes: 5,
+    });
+
+    expect(sixtyMinute[0]!.barIntervalMinutes).toBe(60);
+    expect(fiveMinute[0]!.barIntervalMinutes).toBe(5);
   });
 
   it("does not compound across days -- every day starts from the same startingCapital", () => {
@@ -58,7 +88,11 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, { startingCapital: 20, maxTradesPerDay: 1 });
+    const days = optimizeIntradayDays(barsByTicker, {
+      startingCapital: 20,
+      maxTradesPerDay: 1,
+      barIntervalMinutes: 60,
+    });
 
     // Day 2's startingCapital is the same $20 constant, not day 1's
     // (much larger) endingBalance.
@@ -97,7 +131,11 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, { startingCapital: 20, maxTradesPerDay: 1 });
+    const days = optimizeIntradayDays(barsByTicker, {
+      startingCapital: 20,
+      maxTradesPerDay: 1,
+      barIntervalMinutes: 60,
+    });
 
     expect(days[0]!.trades).toEqual([
       {
@@ -141,10 +179,12 @@ describe("optimizeIntradayDays", () => {
     const oneTrade = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 1,
+      barIntervalMinutes: 60,
     });
     const twoTrades = optimizeIntradayDays(barsByTicker, {
       startingCapital: 20,
       maxTradesPerDay: 2,
+      barIntervalMinutes: 60,
     });
 
     expect(oneTrade[0]!.trades).toHaveLength(1);
@@ -165,7 +205,11 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, { startingCapital: 20, maxTradesPerDay: 3 });
+    const days = optimizeIntradayDays(barsByTicker, {
+      startingCapital: 20,
+      maxTradesPerDay: 3,
+      barIntervalMinutes: 60,
+    });
 
     expect(days).toHaveLength(1);
     expect(days[0]!.date).toBe("2024-01-02");
@@ -190,7 +234,11 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, { startingCapital: 20, maxTradesPerDay: 1 });
+    const days = optimizeIntradayDays(barsByTicker, {
+      startingCapital: 20,
+      maxTradesPerDay: 1,
+      barIntervalMinutes: 60,
+    });
 
     expect(days.map((d) => d.date)).toEqual(["2024-01-02", "2024-01-03"]);
     expect(days[0]!.trades[0]!.ticker).toBe("A");
@@ -208,7 +256,11 @@ describe("optimizeIntradayDays", () => {
       ],
     ]);
 
-    const days = optimizeIntradayDays(barsByTicker, { startingCapital: 20, maxTradesPerDay: 3 });
+    const days = optimizeIntradayDays(barsByTicker, {
+      startingCapital: 20,
+      maxTradesPerDay: 3,
+      barIntervalMinutes: 60,
+    });
 
     expect(days[0]!.trades).toEqual([]);
     expect(days[0]!.endingBalance).toBe(20);

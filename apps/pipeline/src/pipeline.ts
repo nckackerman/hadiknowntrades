@@ -37,6 +37,15 @@
 // throw *without* writing anything, generalizing the original "refuse
 // to overwrite good results with an empty run" guarantee. See
 // docs/plans/issue-28-plan.md for the design rationale.
+//
+// Issue #30 added a third fetch (5-minute bars, retention-bounded to
+// the last ~59 days) that upgrades ONLY the 3M range's most recent days
+// to finer granularity -- older 3M days, and all of 1M/1Y, stay on
+// 60-minute bars. Unlike the window/intraday split above, this third
+// path is deliberately NOT held to the same "must still fail the run"
+// standard: see buildIntradayResults and packages/core/CLAUDE.md's
+// "Mixed-granularity 3M assembly" section for why a 5-minute-path
+// failure gracefully degrades 3M back to its pre-#30 behavior instead.
 
 import {
   BlockedError,
@@ -50,6 +59,7 @@ import {
   UnexpectedResponseError,
   type DailyClose,
   type IntradayBar,
+  type IntradayDayResult,
   type IntradayResult,
   type PrecomputedResult,
   type PresetRange,
@@ -69,6 +79,16 @@ const DEFAULT_MAX_TRADES_PER_DAY = 3;
 // range, so this just means "give me everything you have."
 const DEFAULT_EARLIEST_DATE = new Date("1970-01-01T00:00:00Z");
 const DEFAULT_FETCH_CONCURRENCY = 10;
+// How far back to fetch 5-minute bars for (issue #30, upgrading 3M's
+// most recent days -- see packages/core/CLAUDE.md's "5-minute intraday
+// bars" section). Yahoo's real retention wall for interval=5m is
+// exactly 60 days back (verified live: 59 days back succeeds, 60 fails
+// with a 422); requesting 59 keeps every request a full day inside that
+// wall rather than right at the boundary. Deliberately NOT reusing
+// presetRangeStartDate here -- that function only subtracts whole
+// months/years, and this needs a plain days-back offset instead (see
+// daysBeforeUtc below).
+const FIVE_MINUTE_LOOKBACK_DAYS = 59;
 
 // The "window" (whole-window, daily-close) ranges vs. the "intraday"
 // (per-day, 60m-bar) ranges introduced by issue #28. Together these must
@@ -85,7 +105,7 @@ export interface ResultStore {
 
 export interface PipelineRunSummary {
   results: PrecomputedResult[];
-  /** Union of tickers skipped by either fetch path (a ticker can be skipped from one path's fetch but not the other's, but this summary doesn't distinguish which). */
+  /** Union of tickers skipped by any of the three fetch paths (window, 60-minute intraday, or 5-minute -- issue #30 added the third) -- a ticker can be skipped from one path's fetch but not another's, but this summary doesn't distinguish which. */
   skippedTickers: string[];
 }
 
@@ -93,6 +113,8 @@ export interface RunPipelineOptions {
   tickers: readonly string[];
   fetchDailyCloses: (symbol: string, from: Date, to: Date) => Promise<DailyClose[]>;
   fetchIntradayBars: (symbol: string, from: Date, to: Date) => Promise<IntradayBar[]>;
+  /** 5-minute bars (issue #30) -- upgrades the 3M range's most recent days; see buildIntradayResults/"Mixed-granularity 3M assembly" in packages/core/CLAUDE.md. */
+  fetchFiveMinuteBars: (symbol: string, from: Date, to: Date) => Promise<IntradayBar[]>;
   store: ResultStore;
   /** Defaults to now. */
   asOf?: Date;
@@ -216,6 +238,79 @@ function localDatePart(datetime: string): string {
   return datetime.slice(0, 10);
 }
 
+/** `date` minus a plain number of calendar days, in UTC (issue #30) -- used only for the 5-minute fetch's lookback window; presetRangeStartDate's month/year subtraction doesn't cover a plain days-back offset. */
+function daysBeforeUtc(date: Date, days: number): Date {
+  const result = new Date(date);
+  result.setUTCDate(result.getUTCDate() - days);
+  return result;
+}
+
+/**
+ * Drops any bar past `endDateString` (same "don't trust data past what
+ * was requested" reasoning as findMaxDate above) and any ticker left
+ * with zero bars afterward. Shared between the 60-minute and 5-minute
+ * histories in buildIntradayResults (issue #30 -- factored out of what
+ * was originally two copy-pasted copies of this loop, one per
+ * granularity, caught in code review).
+ */
+function capHistoryToEndDate(
+  history: Map<string, IntradayBar[]>,
+  endDateString: string,
+): Map<string, IntradayBar[]> {
+  const capped = new Map<string, IntradayBar[]>();
+  for (const [ticker, series] of history) {
+    const sliced = series.filter((bar) => localDatePart(bar.date) <= endDateString);
+    if (sliced.length > 0) capped.set(ticker, sliced);
+  }
+  return capped;
+}
+
+/**
+ * The later (or equal) of two YYYY-MM-DD date strings, treating `null`
+ * as "no value" -- used to fold a granularity override's own data
+ * freshness into a range's `dataAsOf` (issue #30). Plain string
+ * comparison is safe here since both operands are already
+ * zero-padded ISO date strings.
+ */
+function maxDateString(a: string, b: string | null): string {
+  return b !== null && b > a ? b : a;
+}
+
+/**
+ * Merges two IntradayDayResult arrays produced by separate
+ * optimizeIntradayDays calls over different bar granularities (issue
+ * #30, used only for the 3M range -- see "Mixed-granularity 3M
+ * assembly" in packages/core/CLAUDE.md). For a date only one array
+ * covers, that array's day wins by default. For a date **both** cover,
+ * this does NOT unconditionally prefer the finer (5-minute) granularity
+ * -- a real bug caught in code review: the two granularities can see
+ * different ticker universes for the same day (e.g. a ticker's
+ * 5-minute fetch failed while its 60-minute fetch succeeded), so the
+ * 5-minute day can legitimately have *worse* coverage, and therefore a
+ * worse achievable outcome, than the 60-minute day for that same date
+ * -- silently taking the 5-minute version regardless would make 3M's
+ * result strictly worse than what pre-#30 (60-minute-only) would have
+ * shown for that day, undermining this app's whole "best possible
+ * outcome" premise. Instead: when both cover a date, keep whichever
+ * day's `endingBalance` is actually higher (both were run with the
+ * same `startingCapital`, so ending balance is directly comparable as
+ * "the better outcome").
+ */
+function mergeDaysByGranularity(
+  primaryDays: IntradayDayResult[],
+  overrideDays: IntradayDayResult[],
+): IntradayDayResult[] {
+  const byDate = new Map<string, IntradayDayResult>();
+  for (const day of primaryDays) byDate.set(day.date, day);
+  for (const day of overrideDays) {
+    const existing = byDate.get(day.date);
+    if (!existing || day.endingBalance > existing.endingBalance) {
+      byDate.set(day.date, day);
+    }
+  }
+  return [...byDate.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
 interface PathFetchOutcome<TBar> {
   history: Map<string, TBar[]>;
   skipped: string[];
@@ -327,26 +422,65 @@ function buildWindowResults({
   });
 }
 
+/**
+ * A per-range override of the pure 60-minute day results, keyed by
+ * PresetRange (issue #30 -- 3M is the first entry; see the comment on
+ * `granularityOverrides` in buildIntradayResults for why this is a
+ * lookup rather than a hardcoded `range === "3M"` check). Everything a
+ * range needs beyond the base 60-minute data lives together here so
+ * adding another range's override later (e.g. issue #29's 1-minute
+ * bars for 1M, landing concurrently with this PR -- check for a
+ * conflict in this exact area if both exist) means adding one map
+ * entry, not a third bespoke branch alongside this one.
+ */
+interface GranularityOverride {
+  /** This range's actual per-day results, replacing the pure 60-minute array wholesale (not merged per-range further -- mergeDaysByGranularity already resolved day-by-day which granularity's result is better). */
+  days: IntradayDayResult[];
+  /** Additional history map(s), alongside the base 60-minute one, whose tickers should count toward this range's universeSize. */
+  extraHistories: Map<string, IntradayBar[]>[];
+  /** Additional per-ticker skips, alongside the base intraday fetch's, that should count toward this range's skippedTickers. */
+  extraSkipped: readonly string[];
+  /** The most recent date found in the extra data source(s), if any -- folded into this range's dataAsOf via maxDateString so a day sourced only from the override data can't make dataAsOf understate this range's actual freshness. */
+  extraDataAsOf: string | null;
+}
+
 interface BuildIntradayResultsOptions {
   history: Map<string, IntradayBar[]>;
+  /**
+   * 5-minute bars (issue #30), used only to upgrade 3M's most recent
+   * days -- see "Mixed-granularity 3M assembly" in
+   * packages/core/CLAUDE.md. Can legitimately be empty (that fetch
+   * aborted, or found no usable data): 3M then falls back to 60-minute
+   * bars for every day, identical to its pre-#30 behavior, rather than
+   * failing anything -- see fiveMinuteSkipped below and runPipeline's
+   * own comment on why a 5-minute-path failure doesn't fail the run.
+   */
+  fiveMinuteHistory: Map<string, IntradayBar[]>;
   dataAsOf: string;
+  /** The most recent date found in the 5-minute history specifically, or null -- see GranularityOverride.extraDataAsOf. */
+  fiveMinuteDataAsOf: string | null;
   asOf: Date;
   endDateString: string;
   generatedAt: string;
   startingCapital: number;
   maxTradesPerDay: number;
   skipped: readonly string[];
+  /** Tickers skipped by the 5-minute fetch specifically -- merged into 3M's own skippedTickers (not 1M/1Y's, which never touch 5-minute data). */
+  fiveMinuteSkipped: readonly string[];
 }
 
 function buildIntradayResults({
   history,
+  fiveMinuteHistory,
   dataAsOf,
+  fiveMinuteDataAsOf,
   asOf,
   endDateString,
   generatedAt,
   startingCapital,
   maxTradesPerDay,
   skipped,
+  fiveMinuteSkipped,
 }: BuildIntradayResultsOptions): IntradayResult[] {
   // Solve every trading day once, over the full fetched history (capped
   // only at endDateString, same "don't trust data past what was
@@ -357,12 +491,45 @@ function buildIntradayResults({
   // running the DP separately per range (as an earlier version of this
   // function did) redundantly re-solved the same day up to 3 times,
   // since each range is a strict subset of the next.
-  const cappedHistory = new Map<string, IntradayBar[]>();
-  for (const [ticker, series] of history) {
-    const sliced = series.filter((bar) => localDatePart(bar.date) <= endDateString);
-    if (sliced.length > 0) cappedHistory.set(ticker, sliced);
-  }
-  const allDays = optimizeIntradayDays(cappedHistory, { startingCapital, maxTradesPerDay });
+  const cappedHistory = capHistoryToEndDate(history, endDateString);
+  const sixtyMinuteDays = optimizeIntradayDays(cappedHistory, {
+    startingCapital,
+    maxTradesPerDay,
+    barIntervalMinutes: 60,
+  });
+
+  // 5-minute bars (issue #30) only ever inform the 3M range -- 1M/1Y
+  // always read sixtyMinuteDays directly, via the default (no override)
+  // case below. Capped the same way as the 60-minute history.
+  const cappedFiveMinuteHistory = capHistoryToEndDate(fiveMinuteHistory, endDateString);
+  const fiveMinuteDays = optimizeIntradayDays(cappedFiveMinuteHistory, {
+    startingCapital,
+    maxTradesPerDay,
+    barIntervalMinutes: 5,
+  });
+  // 3M's actual per-day results: whichever of the two granularities
+  // produced the better outcome for each day (see mergeDaysByGranularity
+  // -- NOT an unconditional "5-minute always wins"). If fiveMinuteDays is
+  // empty (fetch failure or no data), this is just sixtyMinuteDays
+  // unchanged -- the graceful-degradation path.
+  const threeMonthDays = mergeDaysByGranularity(sixtyMinuteDays, fiveMinuteDays);
+
+  // Centralizes every range's deviation from the base 60-minute data in
+  // one lookup instead of repeated `range === "3M"` branches (code
+  // review feedback on issue #30) -- a future granularity override
+  // (e.g. 1-minute bars for 1M, issue #29) adds one entry here rather
+  // than a third bespoke branch.
+  const granularityOverrides = new Map<PresetRange, GranularityOverride>([
+    [
+      "3M",
+      {
+        days: threeMonthDays,
+        extraHistories: [cappedFiveMinuteHistory],
+        extraSkipped: fiveMinuteSkipped,
+        extraDataAsOf: fiveMinuteDataAsOf,
+      },
+    ],
+  ]);
 
   return INTRADAY_RANGES.map((range) => {
     // Never null: presetRangeStartDate only returns null for "MAX",
@@ -370,33 +537,61 @@ function buildIntradayResults({
     const startDate = presetRangeStartDate(range, asOf)!;
     const startDateString = toDateString(startDate);
 
-    const days = allDays.filter((day) => day.date >= startDateString && day.date <= endDateString);
+    const override = granularityOverrides.get(range);
+    const sourceDays = override?.days ?? sixtyMinuteDays;
+    const days = sourceDays.filter(
+      (day) => day.date >= startDateString && day.date <= endDateString,
+    );
 
     // universeSize for this specific range: tickers with at least one
     // bar inside this range's window -- recomputed per range (cheap, no
     // DP) since it does legitimately vary by range even though `days`
-    // itself is now shared/sliced rather than recomputed.
-    let universeSize = 0;
-    for (const series of cappedHistory.values()) {
-      const hasBarInRange = series.some((bar) => {
-        const date = localDatePart(bar.date);
-        return date >= startDateString && date <= endDateString;
-      });
-      if (hasBarInRange) universeSize++;
+    // itself is now shared/sliced rather than recomputed. A range with
+    // an override unions across its extra history source(s) too: a
+    // ticker present in only one of the datasets (e.g. it failed the
+    // 5-minute fetch but succeeded the 60-minute one) still legitimately
+    // contributed to some of that range's days.
+    const historiesForRange = [cappedHistory, ...(override?.extraHistories ?? [])];
+    const tickersInRange = new Set<string>();
+    for (const source of historiesForRange) {
+      for (const [ticker, series] of source) {
+        const hasBarInRange = series.some((bar) => {
+          const date = localDatePart(bar.date);
+          return date >= startDateString && date <= endDateString;
+        });
+        if (hasBarInRange) tickersInRange.add(ticker);
+      }
     }
+
+    // An override's own skips only count toward that range's
+    // skippedTickers -- a ticker missing only from the 5-minute fetch
+    // doesn't affect 1M/1Y (which never read 5-minute data), but it is
+    // genuinely absent from 3M's recent (5-minute-sourced) days (see
+    // mergeDaysByGranularity's doc comment on why a day's whole
+    // tickers-considered set can shift, not a per-ticker splice), so
+    // it's worth surfacing there.
+    const rangeSkipped = [...new Set([...skipped, ...(override?.extraSkipped ?? [])])];
+
+    // dataAsOf for this range: the later of the base intraday fetch's
+    // freshness and this range's own override data source, if any --
+    // a real bug caught in code review: 3M's days can include one
+    // sourced only from the 5-minute fetch, so dataAsOf must reflect
+    // that fetch's freshness too, not just the 60-minute one's, or it
+    // can understate how fresh this range's own data actually is.
+    const rangeDataAsOf = maxDateString(dataAsOf, override?.extraDataAsOf ?? null);
 
     return {
       schemaVersion: RESULTS_SCHEMA_VERSION,
       model: "intraday-daily",
       range,
       generatedAt,
-      dataAsOf,
+      dataAsOf: rangeDataAsOf,
       endDate: endDateString,
       maxTradesPerDay,
       startingCapital,
       days,
-      universeSize,
-      skippedTickers: [...skipped],
+      universeSize: tickersInRange.size,
+      skippedTickers: rangeSkipped,
     };
   });
 }
@@ -416,11 +611,17 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // constant. Comfortably within Yahoo's 730-day retention for
   // interval=60m (verified -- see packages/core/CLAUDE.md).
   const intradayFrom = presetRangeStartDate("1Y", asOf)!;
+  // The 5-minute fetch (issue #30) covers only its own retention-bounded
+  // lookback window, comfortably inside Yahoo's verified 60-day wall for
+  // interval=5m (see FIVE_MINUTE_LOOKBACK_DAYS above and
+  // packages/core/CLAUDE.md).
+  const fiveMinuteFrom = daysBeforeUtc(asOf, FIVE_MINUTE_LOOKBACK_DAYS);
 
-  // The two paths' fetches are independent (see module header comment):
-  // run concurrently, and neither's failure prevents the other's
-  // results from being computed and written.
-  const [windowFetch, intradayFetch] = await Promise.all([
+  // The three fetches are independent (see module header comment, and
+  // "5-minute path" below for how the third one specifically differs):
+  // run concurrently, and no one's failure prevents another's results
+  // from being computed and written.
+  const [windowFetch, intradayFetch, fiveMinuteFetch] = await Promise.all([
     fetchPathHistory(
       "daily-close",
       options.tickers,
@@ -437,6 +638,25 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
       intradayFrom,
       asOf,
       options.fetchIntradayBars,
+      fetchConcurrency,
+      endDateString,
+      (bar: IntradayBar) => localDatePart(bar.date),
+    ),
+    // 5-minute path (issue #30): only ever upgrades 3M's most recent
+    // days (see buildIntradayResults) -- deliberately NOT treated as a
+    // third path that can fail the whole run the way window/intraday
+    // are (see the comment below where its failureReason is
+    // intentionally left out of that check, and
+    // packages/core/CLAUDE.md's "Mixed-granularity 3M assembly" section
+    // for the full reasoning): a failure here just means 3M's recent
+    // days fall back to 60-minute bars, identical to 3M's pre-#30
+    // behavior, not a loss of previously-working data.
+    fetchPathHistory(
+      "5-minute",
+      options.tickers,
+      fiveMinuteFrom,
+      asOf,
+      options.fetchFiveMinuteBars,
       fetchConcurrency,
       endDateString,
       (bar: IntradayBar) => localDatePart(bar.date),
@@ -470,13 +690,24 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     ? []
     : buildIntradayResults({
         history: intradayFetch.history,
+        // Passed through regardless of fiveMinuteFetch.failureReason --
+        // on abort/no-data, fiveMinuteFetch.history is empty (or has no
+        // usable bars), which buildIntradayResults already handles as
+        // "3M falls back to 60-minute bars for every day" with no
+        // special-casing needed here.
+        fiveMinuteHistory: fiveMinuteFetch.history,
         dataAsOf: intradayFetch.dataAsOf!,
+        // Also passed through regardless of fiveMinuteFetch.failureReason
+        // -- on abort/no-data this is null, and maxDateString(dataAsOf,
+        // null) is just dataAsOf unchanged.
+        fiveMinuteDataAsOf: fiveMinuteFetch.dataAsOf,
         asOf,
         endDateString,
         generatedAt,
         startingCapital,
         maxTradesPerDay,
         skipped: intradayFetch.skipped,
+        fiveMinuteSkipped: fiveMinuteFetch.skipped,
       });
 
   if (windowResults.length === 0 && intradayResults.length === 0) {
@@ -509,7 +740,9 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     ),
   );
 
-  const skippedTickers = [...new Set([...windowFetch.skipped, ...intradayFetch.skipped])];
+  const skippedTickers = [
+    ...new Set([...windowFetch.skipped, ...intradayFetch.skipped, ...fiveMinuteFetch.skipped]),
+  ];
 
   if (windowFetch.failureReason || intradayFetch.failureReason) {
     // At least one path produced real, useful results and those have
@@ -524,11 +757,20 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     // the run "succeed" indefinitely while that path's ranges silently
     // serve increasingly stale data with nothing beyond a console.warn
     // buried in CloudWatch to notice it.
+    //
+    // Deliberately excludes fiveMinuteFetch.failureReason (issue #30):
+    // that path's failure never leaves anything silently stale -- it
+    // just means 3M's recent days fall back to already-shipped,
+    // fully-correct 60-minute bars, the same as 3M's pre-#30 behavior --
+    // so it doesn't need to meet this same "must still fail the run"
+    // bar. Its status is still included in the message below purely for
+    // operational visibility.
     throw new Error(
       `pipeline: wrote ${results.length} of ${PRESET_RANGES.length} ranges, but at least one path failed -- ` +
         `failing this run so it doesn't silently succeed while that path goes stale. ` +
         `Window (5Y/MAX) path: ${windowFetch.failureReason ?? "ok"}. ` +
         `Intraday (1M/3M/1Y) path: ${intradayFetch.failureReason ?? "ok"}. ` +
+        `5-minute path (3M recent days only, non-fatal): ${fiveMinuteFetch.failureReason ?? "ok"}. ` +
         `Skipped tickers: ${skippedTickers.length > 0 ? skippedTickers.join(", ") : "(none)"}.`,
     );
   }

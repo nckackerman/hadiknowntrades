@@ -117,16 +117,22 @@ bar type, not daily-close-specific):
   the whole run and nothing downstream ever looked at partial data
   anyway), but matters now that a single path's failure can coexist with
   a written, partially-successful run.
-- **Doubled Yahoo request volume risk (flagged during planning, not yet
-  hit in practice)**: this issue doubles per-run request volume -- the
-  window and intraday fetches each hit the full ~503-ticker universe,
-  running concurrently. `packages/core/CLAUDE.md` already documents this
-  endpoint as unofficial and liable to start blocking without notice;
-  no throttling/rate-limiting was added to mitigate this, just flagged
-  as something to watch if blocking behavior is ever observed in a real
-  run (see "Current deployment state" in `infra/CLAUDE.md` for how a
-  real run's memory/timing has been tracked before -- the same kind of
-  real-run observation is worth doing here once this is deployed).
+- **Tripled Yahoo request volume risk (flagged during planning, not yet
+  hit in practice)**: issue #28 doubled per-run request volume (window +
+  intraday, each hitting the full ~503-ticker universe, running
+  concurrently); issue #30's 5-minute fetch added a _third_ concurrent
+  full-universe pool on top of that (its per-ticker requests are smaller
+  -- 59 days of 5-minute bars vs. the intraday fetch's ~365 days of
+  60-minute bars -- but it's still up to ~503 more concurrent requests
+  per run, at the same default concurrency of 10 as the other two
+  pools). `packages/core/CLAUDE.md` already documents this endpoint as
+  unofficial and liable to start blocking without notice; no
+  throttling/rate-limiting or shared concurrency budget across the three
+  pools was added to mitigate this, just flagged as something to watch
+  if blocking behavior is ever observed in a real run (see "Current
+  deployment state" in `infra/CLAUDE.md` for how a real run's
+  memory/timing has been tracked before -- the same kind of real-run
+  observation is worth doing here once this is deployed).
 - `RESULTS_SCHEMA_VERSION` bumped to 2 for this issue (see
   `packages/core/src/results-schema.ts`) -- a global version number
   across a discriminated union (`WindowResult` | `IntradayResult`), not
@@ -140,3 +146,98 @@ bar type, not daily-close-specific):
   the next nightly run. Real-AWS action, needs the user's go-ahead per
   this repo's standing working agreement -- not yet performed as of this
   issue's implementation; see the PR for issue #28.
+
+## 5-minute path: 3M's mixed granularity (issue #30)
+
+A third fetch, run concurrently with the window and intraday fetches
+via the same `fetchPathHistory`/`fetchUniverseHistory` machinery, but
+scoped only to `FIVE_MINUTE_LOOKBACK_DAYS` (59) days back from `asOf` --
+Yahoo's real retention for `interval=5m` is a hard 60-day wall (verified
+live: 59 days back succeeds, 60 fails with a 422 that surfaces as
+`UnexpectedResponseError`, _not_ `TickerNotFoundError` -- see
+`packages/core/CLAUDE.md`'s "5-minute intraday bars" section for why
+that distinction matters operationally). `buildIntradayResults` runs
+`optimizeIntradayDays` a _second_ time over this 5-minute history
+(separately from the existing 60-minute call), then merges the two
+per-day arrays for 3M specifically via `mergeDaysByGranularity`. 1M and
+1Y are untouched -- they only ever read the pure 60-minute day-result
+array.
+
+- **The merge is NOT "5-minute always wins wherever it exists"** -- an
+  earlier version of this PR did exactly that, and it was a real
+  correctness bug caught in code review: the two granularities can see
+  different ticker universes for the same day (e.g. a ticker's
+  5-minute fetch failed for just that day while its 60-minute fetch
+  succeeded), so the 5-minute day can legitimately have _worse_
+  coverage -- and therefore a worse achievable outcome -- than the
+  60-minute day for that exact date. Blindly preferring 5-minute
+  regardless would silently make 3M's reported result strictly worse
+  than what pre-#30 (60-minute-only) would have shown for that day,
+  which cuts against this whole app's "best possible outcome" premise,
+  not just a granularity choice. Fixed: for a date both granularities
+  cover, `mergeDaysByGranularity` keeps whichever day's `endingBalance`
+  is actually higher (both were solved with the same `startingCapital`,
+  so ending balance is directly comparable). For a date only one
+  granularity covers, that one wins by default -- there's nothing to
+  compare.
+- **Per-range overrides are centralized in one `granularityOverrides:
+Map<PresetRange, GranularityOverride>` lookup in
+  `buildIntradayResults`**, not a hardcoded `range === "3M"` branch --
+  deliberately, so a future granularity override (issue #29's
+  1-minute bars for 1M, which may land concurrently with #30 touching
+  this exact function) adds one map entry instead of a third bespoke
+  branch alongside a second one. If both issues' branches touch this
+  area at the same time, expect a textual merge conflict in
+  `pipeline.ts`/`pipeline.test.ts` regardless -- resolve by adding
+  1M's entry to the same `granularityOverrides` map rather than
+  reintroducing a parallel `range === "1M"` branch structure.
+- **3M's `dataAsOf` folds in the 5-minute fetch's own freshness, not
+  just the 60-minute fetch's** -- another real bug caught in code
+  review: since 3M's merged days can include one sourced only from the
+  5-minute fetch, using only the 60-minute fetch's `dataAsOf` could
+  understate how fresh 3M's own data actually is, contradicting that
+  field's own documented meaning ("the actual last trading date found
+  in the fetched data" -- see the top of this file). Fixed via
+  `maxDateString(dataAsOf, override?.extraDataAsOf ?? null)`, generalized
+  the same way as the override mechanism above (any range with a
+  `GranularityOverride` folds in its `extraDataAsOf`; 1M/1Y have no
+  override, so their `dataAsOf` is untouched).
+- **Deliberately not held to the window/intraday split's "must still
+  fail the run" standard** (see the section above): a 5-minute-path
+  abort or empty-data outcome does not get added to the `if
+(windowFetch.failureReason || intradayFetch.failureReason)` throw
+  condition in `runPipeline` -- only reported in that error's message
+  for visibility, alongside the two required paths' statuses. The
+  reasoning is qualitatively different from why window/intraday _are_
+  held to that standard: their failure means a whole range silently
+  serves frozen/stale JSON forever, which is exactly what that
+  alerting exists to catch. A 5-minute-path failure instead means 3M's
+  recent days silently fall back to already-shipped, fully-correct
+  (just coarser) 60-minute bars -- functionally identical to 3M's
+  pre-#30 behavior, not a loss of previously-working data. Revisit this
+  distinction if 5-minute-granularity 3M data ever becomes something
+  the product actually depends on, rather than a bonus precision
+  upgrade layered on top of an already-complete 60-minute result.
+- `IntradayDayResult.barIntervalMinutes` (5 or 60) is stamped onto
+  every day, for every range, not just 3M -- makes which granularity
+  produced a given day's numbers visible in the JSON output itself
+  rather than only inferable from the day's date relative to "now,"
+  per the issue's own call-out that this isn't obvious otherwise. Not
+  worth a `RESULTS_SCHEMA_VERSION` bump: it's a purely additive field
+  on the already-versioned `IntradayDayResult` shape, and nothing in
+  `apps/web` reads it yet (see that constant's own "bump when a reader
+  needs to know" criterion).
+- 3M's `skippedTickers` merges in tickers skipped by the 5-minute fetch
+  specifically (1M/1Y's don't) -- a ticker that fails only the 5-minute
+  fetch but succeeds the 60-minute one can still be absent from a given
+  day it would otherwise have won on, since a day's winning granularity
+  is picked wholesale (see the merge-correctness bullet above), not
+  spliced per-ticker within a day. Same reasoning for 3M's
+  `universeSize`, which unions tickers across both the 60-minute and
+  5-minute histories rather than reading only one.
+- Full design writeup, including the live-verified 60-day retention
+  boundary and the out-of-retention error-classification gap this
+  surfaced in `fetchChartSeries`, lives in
+  `packages/core/CLAUDE.md`'s "5-minute intraday bars" and
+  "Mixed-granularity 3M assembly" sections -- read those first before
+  re-deriving any of this from scratch.

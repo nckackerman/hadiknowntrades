@@ -38,6 +38,23 @@ export interface IntradayDayResult {
   date: string;
   startingCapital: number;
   endingBalance: number;
+  /**
+   * Which bar granularity produced this day's numbers, in minutes (e.g.
+   * 60 for 60-minute bars, 5 for 5-minute bars) -- stamped from
+   * OptimizeIntradayOptions.barIntervalMinutes onto every day a given
+   * optimizeIntradayDays() call produces. Added in issue #30, which
+   * introduced a second granularity: the 3M range's per-day results are
+   * now assembled from *two separate optimizeIntradayDays() calls* (one
+   * over 60-minute bars, one over 5-minute bars for the most recent ~60
+   * days) merged together by apps/pipeline's buildIntradayResults, so a
+   * ticker's 3M day list can genuinely mix 5 and 60 here depending on
+   * how old each day is. This field exists specifically so that's
+   * visible in the output itself rather than only inferable from a
+   * day's date relative to "now" -- not obvious otherwise, per issue
+   * #30's own scope note. 1M and 1Y are unaffected by #30 and always
+   * carry 60 here.
+   */
+  barIntervalMinutes: number;
   trades: IntradayTrade[];
 }
 
@@ -46,6 +63,16 @@ export interface OptimizeIntradayOptions {
   startingCapital: number;
   /** Maximum number of same-day trades allowed per day (the optimizer may use fewer if that's better, though with real intraday data it essentially always uses the full budget -- same caveat as OptimizeOptions.maxTrades in optimizer.ts). */
   maxTradesPerDay: number;
+  /**
+   * The bar granularity (in minutes) of every bar passed in this call --
+   * stamped onto every IntradayDayResult.barIntervalMinutes this call
+   * produces (see that field's own doc comment). Required rather than
+   * inferred from the data, since optimizeIntradayDays has no way to
+   * measure a bar's own interval from a single { date, close } point --
+   * the caller already knows which fetch (fetchIntradayBars vs.
+   * fetchFiveMinuteBars) it got this data from.
+   */
+  barIntervalMinutes: number;
 }
 
 /** Splits an IntradayBar's `date` field ("2026-08-21T14:30:00") into its calendar-date and time-of-day parts. */
@@ -133,7 +160,7 @@ export function optimizeIntradayDays(
   barsByTicker: Map<string, IntradayBar[]>,
   options: OptimizeIntradayOptions,
 ): IntradayDayResult[] {
-  const { startingCapital, maxTradesPerDay } = options;
+  const { startingCapital, maxTradesPerDay, barIntervalMinutes } = options;
   const byDate = groupByDate(barsByTicker);
   const dates = [...byDate.keys()].sort();
 
@@ -144,6 +171,7 @@ export function optimizeIntradayDays(
       date,
       startingCapital,
       endingBalance: optimized.endingBalance,
+      barIntervalMinutes,
       trades: optimized.trades.map(toIntradayTrade),
     };
   });

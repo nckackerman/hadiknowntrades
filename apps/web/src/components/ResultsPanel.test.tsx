@@ -64,6 +64,7 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
         date: "2026-08-20",
         startingCapital: 20,
         endingBalance: 25,
+        barIntervalMinutes: 60,
         trades: [
           {
             ticker: "AAPL",
@@ -79,6 +80,7 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
         date: "2026-08-21",
         startingCapital: 20,
         endingBalance: 40,
+        barIntervalMinutes: 60,
         trades: [
           {
             ticker: "MSFT",
@@ -317,7 +319,15 @@ describe("ResultsPanel", () => {
       const state: ResultsState = {
         status: "success",
         data: fixtureIntradayResult({
-          days: [{ date: "2026-08-21", startingCapital: 20, endingBalance: 20, trades: [] }],
+          days: [
+            {
+              date: "2026-08-21",
+              startingCapital: 20,
+              endingBalance: 20,
+              barIntervalMinutes: 60,
+              trades: [],
+            },
+          ],
         }),
       };
       render(<ResultsPanel range="1M" state={state} />);

@@ -7,6 +7,7 @@ export type { SP500Constituent } from "./sp500-constituents";
 export {
   fetchDailyCloses,
   fetchIntradayBars,
+  fetchFiveMinuteBars,
   toYahooSymbol,
   BlockedError,
   TickerNotFoundError,
