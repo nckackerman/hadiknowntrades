@@ -265,4 +265,103 @@ describe("optimizeIntradayDays", () => {
     expect(days[0]!.trades).toEqual([]);
     expect(days[0]!.endingBalance).toBe(20);
   });
+
+  describe("worstCase (issue #31)", () => {
+    it("computes each day's worst achievable outcome alongside its optimal one", () => {
+      // Same day, two tickers: A rises (2x, the optimal trade), B falls
+      // (0.5x, the worst trade).
+      const barsByTicker = new Map<string, IntradayBar[]>([
+        [
+          "A",
+          bars("2024-01-02", [
+            ["09:30:00", 10],
+            ["10:30:00", 20],
+          ]),
+        ],
+        [
+          "B",
+          bars("2024-01-02", [
+            ["09:30:00", 20],
+            ["10:30:00", 10],
+          ]),
+        ],
+      ]);
+
+      const days = optimizeIntradayDays(barsByTicker, {
+        startingCapital: 20,
+        maxTradesPerDay: 1,
+        barIntervalMinutes: 60,
+      });
+
+      expect(multiplier(20, days[0]!.endingBalance)).toBeCloseTo(2, 6);
+      expect(days[0]!.trades[0]!.ticker).toBe("A");
+      expect(multiplier(20, days[0]!.worstCase.endingBalance)).toBeCloseTo(0.5, 6);
+      expect(days[0]!.worstCase.trades).toEqual([
+        {
+          ticker: "B",
+          date: "2024-01-02",
+          buyTime: "09:30:00",
+          buyPrice: 20,
+          sellTime: "10:30:00",
+          sellPrice: 10,
+        },
+      ]);
+    });
+
+    it("never reports a worst-case endingBalance higher than that same day's optimal endingBalance, across every day it produces", () => {
+      const barsByTicker = new Map<string, IntradayBar[]>([
+        [
+          "A",
+          [
+            ...bars("2024-01-02", [
+              ["09:30:00", 10],
+              ["10:30:00", 20],
+              ["11:30:00", 5],
+            ]),
+            ...bars("2024-01-03", [
+              ["09:30:00", 15],
+              ["10:30:00", 10],
+              ["11:30:00", 30],
+            ]),
+          ],
+        ],
+      ]);
+
+      const days = optimizeIntradayDays(barsByTicker, {
+        startingCapital: 20,
+        maxTradesPerDay: 2,
+        barIntervalMinutes: 60,
+      });
+
+      expect(days.length).toBeGreaterThan(0);
+      for (const day of days) {
+        expect(day.worstCase.endingBalance).toBeLessThanOrEqual(day.endingBalance);
+      }
+    });
+
+    it("stamps a flat day's worstCase.endingBalance at startingCapital when no losing trade is available (the rare 'still a gain' edge case)", () => {
+      const barsByTicker = new Map<string, IntradayBar[]>([
+        [
+          "A",
+          bars("2024-01-02", [
+            ["09:30:00", 10],
+            ["10:30:00", 20],
+            ["11:30:00", 30],
+          ]),
+        ],
+      ]);
+
+      const days = optimizeIntradayDays(barsByTicker, {
+        startingCapital: 20,
+        maxTradesPerDay: 3,
+        barIntervalMinutes: 60,
+      });
+
+      // Every possible trade on this day is a gain, so the worst-case
+      // search takes zero trades rather than force a gain into the
+      // "worst case" slot (see optimizeWorstTrades's own doc comment).
+      expect(days[0]!.worstCase.endingBalance).toBe(20);
+      expect(days[0]!.worstCase.trades).toEqual([]);
+    });
+  });
 });

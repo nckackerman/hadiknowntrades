@@ -5,7 +5,7 @@ import { getResultsResponse, isCanonicalRange, parseRange, type ResultReader } f
 
 function fixtureResult(range: (typeof PRESET_RANGES)[number]): PrecomputedResult {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     model: "window",
     range,
     generatedAt: "2024-06-15T00:00:00.000Z",
@@ -16,6 +16,7 @@ function fixtureResult(range: (typeof PRESET_RANGES)[number]): PrecomputedResult
     startingCapital: 20,
     endingBalance: 42,
     trades: [],
+    worstCase: { endingBalance: 20, trades: [] },
     universeSize: 500,
     skippedTickers: [],
   };
@@ -161,7 +162,7 @@ describe("getResultsResponse", () => {
     expect(body.error).toBe("schema_mismatch");
   });
 
-  it("returns a 502 when a schemaVersion-2 object has an unrecognized `model` (e.g. a partial/corrupted write)", async () => {
+  it("returns a 502 when a current-schemaVersion object has an unrecognized `model` (e.g. a partial/corrupted write)", async () => {
     // schemaVersion alone doesn't guarantee `model` is one of the two
     // real values -- issue #28 made PrecomputedResult a discriminated
     // union, and this is the check that catches a corrupted/wrong

@@ -22,7 +22,7 @@ import type { IntradayDayResult } from "./intraday-optimizer";
 import { isValidPrice } from "./is-valid-price";
 
 /** Bumped whenever the shape of PrecomputedResult changes in a way a reader needs to know about. */
-export const RESULTS_SCHEMA_VERSION = 2;
+export const RESULTS_SCHEMA_VERSION = 3;
 
 /**
  * The S3 key a precomputed result is stored/read under for a given range.
@@ -50,6 +50,22 @@ interface PrecomputedResultBase {
 }
 
 /**
+ * The worst achievable <=maxTrades outcome over the same window (issue
+ * #31) -- same shape as the sibling optimal-case fields
+ * (endingBalance/trades), minus startingCapital, which is identical to
+ * the already-present sibling value on WindowResult/IntradayDayResult
+ * and not worth duplicating (both the optimal- and worst-case search
+ * start from the same capital). Always
+ * `worstCase.endingBalance <= endingBalance` by construction -- the
+ * min-search explores a subset of the same trade-sequence space the
+ * max-search does -- checked below in validateWorstCaseResult's caller.
+ */
+export interface WorstCaseResult {
+  endingBalance: number;
+  trades: Trade[];
+}
+
+/**
  * The original whole-window model (every range, before issue #28; 5Y/MAX
  * only, after): at most `maxTrades` sequential, all-in trades across the
  * *entire* window, using daily closing prices.
@@ -63,6 +79,8 @@ export interface WindowResult extends PrecomputedResultBase {
   maxTrades: number;
   endingBalance: number;
   trades: Trade[];
+  /** The worst achievable <=maxTrades outcome over the same window (issue #31) -- see WorstCaseResult. */
+  worstCase: WorstCaseResult;
 }
 
 /**
@@ -189,6 +207,82 @@ function validateIntradayTrade(trade: unknown, path: string, problems: string[])
     );
 }
 
+/**
+ * Validates one `WorstCaseResult` (see results-schema.ts's own doc
+ * comment on that type) embedded in a `WindowResult.worstCase` field --
+ * same shape/style as validateTrade, reusing it for the nested `trades`
+ * array.
+ */
+function validateWorstCaseResult(value: unknown, path: string, problems: string[]): void {
+  if (value === null || typeof value !== "object") {
+    problems.push(`${path} must be an object, got ${describe(value)}`);
+    return;
+  }
+  const w = value as Record<string, unknown>;
+  if (!isPositiveFiniteNumber(w.endingBalance))
+    problems.push(
+      `${path}.endingBalance must be a positive finite number, got ${describe(w.endingBalance)}`,
+    );
+  if (!Array.isArray(w.trades)) {
+    problems.push(`${path}.trades must be an array, got ${describe(w.trades)}`);
+  } else {
+    w.trades.forEach((trade, i) => validateTrade(trade, `${path}.trades[${i}]`, problems));
+  }
+}
+
+/**
+ * Validates one `IntradayWorstCaseResult` (see intraday-optimizer.ts)
+ * embedded in an `IntradayDayResult.worstCase` field -- same shape/style
+ * as validateWorstCaseResult above, but reusing validateIntradayTrade for
+ * its nested `trades` array (buyTime/sellTime, not buyDate/sellDate).
+ */
+function validateIntradayWorstCaseResult(value: unknown, path: string, problems: string[]): void {
+  if (value === null || typeof value !== "object") {
+    problems.push(`${path} must be an object, got ${describe(value)}`);
+    return;
+  }
+  const w = value as Record<string, unknown>;
+  if (!isPositiveFiniteNumber(w.endingBalance))
+    problems.push(
+      `${path}.endingBalance must be a positive finite number, got ${describe(w.endingBalance)}`,
+    );
+  if (!Array.isArray(w.trades)) {
+    problems.push(`${path}.trades must be an array, got ${describe(w.trades)}`);
+  } else {
+    w.trades.forEach((trade, i) => validateIntradayTrade(trade, `${path}.trades[${i}]`, problems));
+  }
+}
+
+/**
+ * Cross-checks that a worst-case ending balance never exceeds its
+ * sibling optimal-case one (issue #31) -- a real, always-true invariant
+ * by construction (the min-search explores a subset of the same
+ * trade-sequence space the max-search does, so worst <= optimal always),
+ * and specifically valuable here because "worst case ends up higher than
+ * optimal case" is exactly the symptom a max/min inversion bug (an
+ * accidentally-unflipped comparison in optimizer.ts's computeLevel) would
+ * produce. Only checked once both values are already known-valid
+ * positive finite numbers -- an already-reported malformed value doesn't
+ * need a second, redundant problem appended for failing this comparison
+ * too.
+ */
+function validateWorstNotExceedingOptimal(
+  worstEndingBalance: unknown,
+  optimalEndingBalance: unknown,
+  path: string,
+  problems: string[],
+): void {
+  if (
+    isPositiveFiniteNumber(worstEndingBalance) &&
+    isPositiveFiniteNumber(optimalEndingBalance) &&
+    worstEndingBalance > optimalEndingBalance
+  ) {
+    problems.push(
+      `${path} (${worstEndingBalance}) must not exceed its optimal-case counterpart (${optimalEndingBalance})`,
+    );
+  }
+}
+
 /** Validates one `IntradayDayResult` (see intraday-optimizer.ts) embedded in an `IntradayResult.days` entry. */
 function validateIntradayDay(day: unknown, path: string, problems: string[]): void {
   if (day === null || typeof day !== "object") {
@@ -215,6 +309,13 @@ function validateIntradayDay(day: unknown, path: string, problems: string[]): vo
   } else {
     d.trades.forEach((trade, i) => validateIntradayTrade(trade, `${path}.trades[${i}]`, problems));
   }
+  validateIntradayWorstCaseResult(d.worstCase, `${path}.worstCase`, problems);
+  validateWorstNotExceedingOptimal(
+    (d.worstCase as Record<string, unknown> | undefined)?.endingBalance,
+    d.endingBalance,
+    `${path}.worstCase.endingBalance`,
+    problems,
+  );
 }
 
 /** A short, safe-to-embed-in-an-error-message description of an arbitrary value, for validation failure messages. */
@@ -308,6 +409,13 @@ export function validatePrecomputedResult(result: PrecomputedResult): void {
     } else {
       r.trades.forEach((trade, i) => validateTrade(trade, `trades[${i}]`, problems));
     }
+    validateWorstCaseResult(r.worstCase, "worstCase", problems);
+    validateWorstNotExceedingOptimal(
+      (r.worstCase as Record<string, unknown> | undefined)?.endingBalance,
+      r.endingBalance,
+      "worstCase.endingBalance",
+      problems,
+    );
   } else if (r.model === "intraday-daily") {
     if (!isNonEmptyString(r.endDate)) {
       problems.push(`endDate must be a non-empty string, got ${describe(r.endDate)}`);

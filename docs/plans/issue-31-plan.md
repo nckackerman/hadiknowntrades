@@ -9,7 +9,7 @@ and `docs/plans/issue-29-plan.md`.
 
 ## 0. One-paragraph summary
 
-Add a second, parallel optimizer run per range that finds the *worst*
+Add a second, parallel optimizer run per range that finds the _worst_
 achievable <=3-trade sequence (same DP, `min` instead of `max` at every
 step), store it as a new `worstCase` field alongside the existing
 optimal-case fields, bump `RESULTS_SCHEMA_VERSION` 2 -> 3, wire it through
@@ -31,34 +31,34 @@ already done for this plan; summarizing only what changes.
 ### 1.1 What actually needs to flip, mechanically (not a judgment call)
 
 `computeLevel` computes `bestValue[k]` from `bestValue[k-1]` via a
-suffix-max pass per ticker. Three things must invert for a suffix-*min*
+suffix-max pass per ticker. Three things must invert for a suffix-_min_
 pass to be correct, none of them optional:
 
 1. **The sentinel for "no trade possible here."** `g[i] = p === null ?
-   NEG_INFINITY : p * prevValue[i+1]`. `NEG_INFINITY` exists so a missing
-   price never wins a *max* search. For a *min* search, a missing price
+NEG_INFINITY : p * prevValue[i+1]`. `NEG_INFINITY` exists so a missing
+   price never wins a _max_ search. For a _min_ search, a missing price
    must never win either -- so the sentinel has to become
    `POSITIVE_INFINITY`, not stay `NEG_INFINITY` (which would trivially
    "win" every min-comparison and corrupt the whole result). This is the
    single most important correctness detail in this plan, and it's easy
    to get wrong by only skimming "replace max with min."
-2. **The suffix-pass and running-best comparisons** (`suffixMaxG`'s `g[i]
-   >= suffixMaxG[i+1]`, and `runningBestValue`'s `candidateRatio >=
-   runningBestValue`) need to become `<=` for a suffix-*min*/running-*min*
-   search, with their own starting sentinel also flipped to
-   `POSITIVE_INFINITY` (was `NEG_INFINITY`).
+2. **The suffix-pass and running-best comparisons** (`suffixMaxG`'s
+   `g[i] >= suffixMaxG[i+1]`, and `runningBestValue`'s
+   `candidateRatio >= runningBestValue`) need to become `<=` for a
+   suffix-_min_/running-_min_ search, with their own starting sentinel
+   also flipped to `POSITIVE_INFINITY` (was `NEG_INFINITY`).
 3. **The "does this trade replace the carry-forward baseline" check**
    (`runningBestValue > value[d]`, strict) needs to become strict `<`
    (`runningWorstValue < value[d]`) -- a trade is only taken if it's
-   *strictly worse* than not trading, mirroring the existing rule that a
-   trade is only taken if it's *strictly better* than not trading. See
+   _strictly worse_ than not trading, mirroring the existing rule that a
+   trade is only taken if it's _strictly better_ than not trading. See
    1.3 for why this needs to stay a strict inequality in both directions,
    not `<=`.
 
 **Rejected alternative, worth recording so it isn't re-proposed**:
 negating every value and reusing the max-direction code as-is (`min(a,b)
-== -max(-a,-b)`). This is the standard trick for *additive* scores, but
-`computeLevel`'s `value[d]` is a *multiplicative growth ratio*, not an
+== -max(-a,-b)`). This is the standard trick for _additive_ scores, but
+`computeLevel`'s `value[d]` is a _multiplicative growth ratio_, not an
 additive score, and it's also the actual number that flows downstream
 into `finalMultiplier`/`endingBalance` (`startingCapital *
 finalMultiplier`). Negating it would produce a nonsensical negative
@@ -138,32 +138,32 @@ visible of them.
 1. **Across tickers, on a tied best ratio for the same day (`d`):** the
    existing code iterates `sortedTickers` (alphabetical) and only
    overwrites `value[d]`/`choice[d]` on strict `>`, so the
-   alphabetically-*first* ticker processed keeps its slot on a tie.
+   alphabetically-_first_ ticker processed keeps its slot on a tie.
    **Recommendation: reuse verbatim, don't invert.** This rule's entire
    purpose in the max direction is determinism/reproducibility (same
    input -> same output every run), not a meaningful semantic preference
    -- a genuine float-precision tie between two different tickers'
    achieved ratio is vanishingly rare with real price data. There's no
-   principled reason "the worst case" should prefer a *different*
+   principled reason "the worst case" should prefer a _different_
    arbitrary tie-break identity than "the best case" does; inverting it
-   (e.g. alphabetically-*last* wins for min) would add a second rule to
+   (e.g. alphabetically-_last_ wins for min) would add a second rule to
    remember and document for zero behavioral benefit. Keeping the same
    `sortedTickers`/strict-`>`-to-overwrite structure for both directions
    naturally reuses this rule unchanged -- no separate code path needed.
 2. **Within one ticker, on a tied ratio across different buy/sell day
    pairs:** the suffix-min/running-min passes' `<=` (mirroring the
-   existing `>=`) means the *earliest* qualifying sell day and *earliest*
+   existing `>=`) means the _earliest_ qualifying sell day and _earliest_
    qualifying buy day win ties, in both directions. Same reasoning as
    (1): arbitrary but deterministic, no reason to reverse it, and it
    falls out "for free" from mechanically flipping `>=` to `<=` (the
-   *direction* of the operator relative to which index is examined first
+   _direction_ of the operator relative to which index is examined first
    in the backward loop is what preserves "earliest wins," not something
    that needs separate design).
 3. **Between "take a trade" and "carry forward" (use fewer trades), on an
    exact tie:** the existing strict `>` means ties go to "carry forward"
-   in the max direction -- a trade is only used if it's *strictly*
+   in the max direction -- a trade is only used if it's _strictly_
    better than not trading. The mechanical translation (section 1.1,
-   point 3) is strict `<`: a trade is only used if it's *strictly worse*
+   point 3) is strict `<`: a trade is only used if it's _strictly worse_
    than not trading, so ties again go to "carry forward" in the min
    direction too. **This is the one place where "keep it symmetric"
    isn't just an arbitrary-tie-break judgment call -- it falls directly
@@ -176,7 +176,7 @@ visible of them.
 
 **Conclusion the plan reaches**: none of the three tie-break rules should
 be inverted. All three carry over from the max direction to the min
-direction completely unchanged in *rule*, which is also why they don't
+direction completely unchanged in _rule_, which is also why they don't
 need separate code paths -- they fall out of reusing the same
 `sortedTickers` order, the same relative-operator shape (`>=`/`<=`
 paired with `>`/`<`), and the same strict-inequality-for-baseline-
@@ -191,9 +191,9 @@ objective, and that reasoning is direction-agnostic.
 
 Because "carry forward" (multiplier exactly `1`, i.e. holding cash) is
 always an available option and a strict inequality gates using a trade
-instead, the min-direction DP will only choose a trade if a *losing*
+instead, the min-direction DP will only choose a trade if a _losing_
 trade (ratio `< 1`) is available in the remaining search space for that
-slot; if every remaining ticker/day option in a slot only has *winning*
+slot; if every remaining ticker/day option in a slot only has _winning_
 trades, the worst-case DP will prefer not to trade at all (multiplier
 `1`, which is smaller than any ratio `> 1`). Concretely: **it is
 mathematically possible, for a sufficiently short/lucky window, for the
@@ -209,6 +209,7 @@ loss. **Open question, flagged for the implementer/reviewer, not
 resolved in this plan.**
 
 ## 2. Schema change (`packages/core/src/results-schema.ts`,
+
 `packages/core/src/intraday-optimizer.ts`)
 
 ### 2.1 Which result model(s) need this
@@ -230,7 +231,7 @@ Background prose illustrates with.
 Bumped per the issue's explicit instruction, and because this is exactly
 the kind of change the constant's own doc comment gates on ("a shape
 change a reader needs to know about") -- unlike issues #29/#30's
-additive, unread `barIntervalMinutes` field, `apps/web` *will* read
+additive, unread `barIntervalMinutes` field, `apps/web` _will_ read
 `worstCase` for its new UI, so the "not bumped" precedent those issues
 set does not apply here.
 
@@ -343,9 +344,9 @@ combined per-day record (`date`, `startingCapital`, `endingBalance`,
 `optimizeIntradayDays`'s existing `.map()` body is what constructs that
 one record. Unlike `optimizeTrades`/`optimizeWorstTrades` (kept fully
 separate, zero diff to the existing function), there's no way to attach
-a `worstCase` field to each day's *single* returned object without
+a `worstCase` field to each day's _single_ returned object without
 touching `optimizeIntradayDays`'s own body. The recommended approach:
-extend its per-day `.map()` callback to *also* call
+extend its per-day `.map()` callback to _also_ call
 `optimizeWorstTrades(dayBars, { startingCapital, maxTrades:
 maxTradesPerDay })` and fold `worstCase: { endingBalance: worst.endingBalance,
 trades: worst.trades.map(toIntradayTrade) }` into the returned object,
@@ -381,14 +382,14 @@ automatically with zero code change.
 `mergeDaysByGranularity` (`pipeline.ts`) merges a range's base 60-minute
 day results with a granularity override's (5-minute for 3M, 1-minute for
 1M) by keeping, for any date both cover, whichever day-record's
-`endingBalance` (the *optimal* figure) is higher -- see
+`endingBalance` (the _optimal_ figure) is higher -- see
 `packages/core/CLAUDE.md`'s "Mixed-granularity 1M/3M assembly" section
 for why this exists (the two granularities can see different ticker
 universes for the same day, so "finer always wins" was a real bug fixed
 before this plan was written).
 
 Once each day-record also carries a `worstCase` sub-result, is comparing
-only the *optimal* `endingBalance` still the right selection criterion?
+only the _optimal_ `endingBalance` still the right selection criterion?
 **Yes, and this plan recommends leaving `mergeDaysByGranularity`'s logic
 completely unchanged** -- worked through explicitly since the issue
 doesn't anticipate this interaction at all (it predates the
@@ -396,10 +397,10 @@ granularity-override mechanism even being relevant here):
 
 - The function already operates on whole `IntradayDayResult` objects
   (`byDate.set(day.date, day)`), not cherry-picked fields -- so whichever
-  day-record wins carries its *own* `worstCase` along for free, with no
+  day-record wins carries its _own_ `worstCase` along for free, with no
   code change needed to make that happen.
 - The alternative -- picking the optimal-case winner from one
-  granularity's day-record but the worst-case winner from the *other*
+  granularity's day-record but the worst-case winner from the _other_
   granularity's (whichever has the lower `worstCase.endingBalance`)
   -- would produce a self-inconsistent day-record: two figures computed
   over two different ticker universes/datasets glued together, where a
@@ -443,7 +444,7 @@ A small, deliberately de-emphasized sibling to `HeroStat` -- per the
 acceptance criteria ("a clear contrast... not competing for attention"):
 
 - No count-up animation (`useCountUp`) and no `CelebrationBurst` --
-  those exist specifically to make the *optimal* figure feel like a
+  those exist specifically to make the _optimal_ figure feel like a
   reveal/payoff; reusing them for the worst-case figure would work
   against "not competing for attention" and would need its own
   gain/loss-appropriate framing (a celebration burst on a loss figure
@@ -478,7 +479,7 @@ acceptance criteria ("a clear contrast... not competing for attention"):
 
 - Window-model branch (`data.model === "window"`): render
   `<WorstCaseStat startingCapital={data.startingCapital}
-  endingBalance={data.worstCase.endingBalance} />` immediately after the
+endingBalance={data.worstCase.endingBalance} />` immediately after the
   existing `<HeroStat .../>`.
 - Intraday-daily branch: render the same, immediately after the existing
   `<HeroStat key={activeDay.date} .../>`, using
@@ -527,7 +528,7 @@ of implementation either without that explicit go-ahead at that time.
     conclusion in code, not just in this document.
   - A property-style invariant test across several fixtures: for any
     given input, `optimizeWorstTrades(...).endingBalance <=
-    optimizeTrades(...).endingBalance` -- this is always true by
+optimizeTrades(...).endingBalance` -- this is always true by
     construction (see section 2.5's cross-check) and is a strong,
     cheap regression guard against a comparator-flip mistake in section
     1.1.
@@ -609,7 +610,7 @@ None of the above is performed as part of this plan-writing pass.
 - **Perf**: accepted by the issue itself as "roughly doubles nightly
   optimizer wall-clock, still cheap" for the window path (relying on the
   existing ~330ms/range benchmark). The intraday path's doubling is
-  *not* separately benchmarked anywhere in this codebase's existing
+  _not_ separately benchmarked anywhere in this codebase's existing
   notes -- flagged in section 7 as needing a real measurement, not
   assumed safe by analogy alone, even though there's good reason to
   expect it's also cheap (small per-day `T`).

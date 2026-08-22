@@ -17,8 +17,14 @@
 // (see yahoo-client.ts), which sorts correctly within a day and is
 // unique per bar -- exactly what optimizeTrades needs from it, without
 // modification.
+//
+// Issue #31 folds a second call, optimizeWorstTrades() (the same DP's
+// min-direction search, see optimizer.ts), into this same per-day loop:
+// each day's IntradayDayResult carries a worstCase field alongside its
+// own optimal-case endingBalance/trades, solved over the exact same
+// day's bars.
 
-import { optimizeTrades, type Trade } from "./optimizer";
+import { optimizeTrades, optimizeWorstTrades, type Trade } from "./optimizer";
 import type { IntradayBar } from "./yahoo-client";
 
 export interface IntradayTrade {
@@ -58,6 +64,30 @@ export interface IntradayDayResult {
    * "Mixed-granularity 1M/3M assembly" section for the full mechanism.
    */
   barIntervalMinutes: number;
+  trades: IntradayTrade[];
+  /**
+   * The worst achievable up-to-`maxTradesPerDay` outcome for this same
+   * day (issue #31) -- same shape as this day's own endingBalance/trades,
+   * solved via optimizeWorstTrades over the exact same day's bars. Always
+   * `worstCase.endingBalance <= endingBalance` by construction (the
+   * min-search explores a subset of the same trade-sequence space the
+   * max-search does).
+   */
+  worstCase: IntradayWorstCaseResult;
+}
+
+/**
+ * Per-day worst-case counterpart to IntradayDayResult's own
+ * endingBalance/trades (issue #31) -- deliberately not a nested
+ * OptimizationResult, which would also carry its own startingCapital;
+ * that value is always identical to the sibling IntradayDayResult.
+ * startingCapital (both searches start from the same capital), so
+ * storing it twice would just be a value that could drift out of sync
+ * with nothing enforcing it matches. Same flattening convention
+ * IntradayDayResult itself already uses for endingBalance/trades.
+ */
+export interface IntradayWorstCaseResult {
+  endingBalance: number;
   trades: IntradayTrade[];
 }
 
@@ -170,12 +200,24 @@ export function optimizeIntradayDays(
   return dates.map((date) => {
     const dayBars = byDate.get(date)!;
     const optimized = optimizeTrades(dayBars, { startingCapital, maxTrades: maxTradesPerDay });
+    // Same day's bars, same startingCapital/maxTrades -- just the min-
+    // direction search (issue #31), so this day's worst-case figure is
+    // solved over the identical trade-sequence space its optimal-case
+    // figure is.
+    const worst = optimizeWorstTrades(dayBars, {
+      startingCapital,
+      maxTrades: maxTradesPerDay,
+    });
     return {
       date,
       startingCapital,
       endingBalance: optimized.endingBalance,
       barIntervalMinutes,
       trades: optimized.trades.map(toIntradayTrade),
+      worstCase: {
+        endingBalance: worst.endingBalance,
+        trades: worst.trades.map(toIntradayTrade),
+      },
     };
   });
 }

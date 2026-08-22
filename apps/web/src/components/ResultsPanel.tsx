@@ -13,6 +13,7 @@ import { HeroStat } from "@/components/HeroStat";
 import { IntradayTradeList } from "@/components/IntradayTradeList";
 import { PortfolioChart } from "@/components/PortfolioChart";
 import { TradeList } from "@/components/TradeList";
+import { WorstCaseStat } from "@/components/WorstCaseStat";
 
 const RANGE_COPY: Record<PresetRange, string> = {
   "1M": "the past month",
@@ -170,19 +171,30 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
                 onSubmit={submitGuess}
               />
             ) : (
-              <HeroStat
-                // Keyed on the active day so switching days (via
-                // DaySelector) remounts HeroStat instead of just updating
-                // its props in place -- useCountUp's reveal animation only
-                // fires on mount (see HeroStat's own doc comment), so
-                // without this key the visible figure would stay frozen
-                // at the previous day's animated value while the sr-only
-                // figure (driven directly by the prop) correctly updated,
-                // silently disagreeing with each other.
-                key={activeDay.date}
-                startingCapital={activeDay.startingCapital}
-                endingBalance={activeDay.endingBalance}
-              />
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:gap-8">
+                <HeroStat
+                  // Keyed on the active day so switching days (via
+                  // DaySelector) remounts HeroStat instead of just updating
+                  // its props in place -- useCountUp's reveal animation only
+                  // fires on mount (see HeroStat's own doc comment), so
+                  // without this key the visible figure would stay frozen
+                  // at the previous day's animated value while the sr-only
+                  // figure (driven directly by the prop) correctly updated,
+                  // silently disagreeing with each other.
+                  key={activeDay.date}
+                  startingCapital={activeDay.startingCapital}
+                  endingBalance={activeDay.endingBalance}
+                />
+                {/* Gated behind the same guess-then-reveal condition as
+                    the rest of this day's content (issue #34) -- showing
+                    the worst-case figure before the guess is submitted
+                    would partially spoil "the real answer" the guessing
+                    game is built around. */}
+                <WorstCaseStat
+                  startingCapital={activeDay.startingCapital}
+                  endingBalance={activeDay.worstCase.endingBalance}
+                />
+              </div>
             )}
             {onSelectDay && (
               <DaySelector
@@ -231,22 +243,28 @@ export function ResultsPanel({ range, state, selectedDay = null, onSelectDay }: 
   return (
     <div className="flex flex-col gap-8">
       <div className="flex flex-col gap-2">
-        <HeroStat
-          // Keyed on range + dataAsOf for the same reason the
-          // intraday-daily branch above keys on activeDay.date: remount
-          // HeroStat (not just update its props) whenever the underlying
-          // result actually changes, so useCountUp's reveal animation
-          // fires fresh instead of leaving the visible figure frozen at a
-          // stale animated value. Today this is also accidentally covered
-          // by useResults always passing through a loading state between
-          // results (see use-results.ts), which unmounts HeroStat itself
-          // -- but that's an implementation detail of the current fetch
-          // state machine, not a guarantee; an explicit key here doesn't
-          // depend on it holding.
-          key={`${data.range}-${data.dataAsOf}`}
-          startingCapital={data.startingCapital}
-          endingBalance={data.endingBalance}
-        />
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:gap-8">
+          <HeroStat
+            // Keyed on range + dataAsOf for the same reason the
+            // intraday-daily branch above keys on activeDay.date: remount
+            // HeroStat (not just update its props) whenever the underlying
+            // result actually changes, so useCountUp's reveal animation
+            // fires fresh instead of leaving the visible figure frozen at a
+            // stale animated value. Today this is also accidentally covered
+            // by useResults always passing through a loading state between
+            // results (see use-results.ts), which unmounts HeroStat itself
+            // -- but that's an implementation detail of the current fetch
+            // state machine, not a guarantee; an explicit key here doesn't
+            // depend on it holding.
+            key={`${data.range}-${data.dataAsOf}`}
+            startingCapital={data.startingCapital}
+            endingBalance={data.endingBalance}
+          />
+          <WorstCaseStat
+            startingCapital={data.startingCapital}
+            endingBalance={data.worstCase.endingBalance}
+          />
+        </div>
         <p className="text-sm text-[var(--text-secondary)]">
           Best possible outcome over {RANGE_COPY[range]}, with at most {data.maxTrades} sequential
           all-in trades across the S&amp;P 500, using only closed (EOD) prices. As of{" "}

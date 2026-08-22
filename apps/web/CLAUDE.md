@@ -781,3 +781,37 @@ its content would otherwise render.
   tests within one file (one jsdom `window` per test file, not per test),
   so this describe block clears it in an `afterEach` to keep tests from
   leaking guesses into each other.
+
+## Worst-case contrast stat (issue #31)
+
+`WorstCaseStat.tsx` is a small, deliberately de-emphasized sibling to
+`HeroStat` -- reuses `formatHeroCurrency`/`formatMultiplier` as-is, no
+count-up animation, no `CelebrationBurst`. Two product decisions
+confirmed by the human user before implementation (both were left open
+in `docs/plans/issue-31-plan.md` as judgment calls for the
+implementer/reviewer):
+
+- **Fixed muted tone (`--text-muted`), not dynamic gain/loss coloring**
+  -- unlike `HeroStat`'s multiplier badge (`--status-good`/
+  `--status-critical`). This is a secondary contrast stat, not meant to
+  compete visually with the hero figure or read as an alert; a fixed
+  tone also sidesteps the rare "worst case is still a net gain" edge
+  case (see `optimizeWorstTrades`'s own doc comment,
+  `packages/core/src/optimizer.ts`) ever rendering in celebratory green.
+- **Gated behind the same `guess !== null` reveal condition** as the
+  rest of a day's content in the intraday-daily model (issue #34) --
+  reuses that existing gate structurally (rendered inside the same
+  ternary's non-null branch in `ResultsPanel.tsx`, right alongside
+  `HeroStat`) rather than adding a second, parallel condition. Showing
+  the worst-case figure before the guess is submitted would partially
+  spoil "the real answer" the guessing game is built around. The window
+  model (5Y/MAX) has no guessing game at all, so its `WorstCaseStat`
+  renders ungated, immediately next to `HeroStat`.
+
+Screenshot-verified (same throwaway-debug-route technique documented
+above, no local `RESULTS_BUCKET`/AWS creds) in both light and dark themes
+across four scenarios -- a typical gain, Max-range astronomical scale, the
+rare "worst case is still a net gain" edge case, and an empty/no-trades
+day -- confirming the stat reads as smaller and visually muted relative
+to `HeroStat` in every case, per the acceptance criteria's "a clear
+contrast... not competing for attention."

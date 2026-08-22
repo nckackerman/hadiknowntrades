@@ -19,7 +19,7 @@ describe("resultKey", () => {
 /** A well-formed WindowResult, cloned and mutated by individual tests below rather than shared by reference. */
 function validWindowResult(): WindowResult {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     range: "5Y",
     generatedAt: "2024-06-15T00:00:00.000Z",
     dataAsOf: "2024-06-14",
@@ -40,13 +40,25 @@ function validWindowResult(): WindowResult {
         sellPrice: 30,
       },
     ],
+    worstCase: {
+      endingBalance: 10,
+      trades: [
+        {
+          ticker: "MSFT",
+          buyDate: "2019-06-15",
+          buyPrice: 30,
+          sellDate: "2024-06-14",
+          sellPrice: 15,
+        },
+      ],
+    },
   };
 }
 
 /** A well-formed IntradayResult, cloned and mutated by individual tests below rather than shared by reference. */
 function validIntradayResult(): IntradayResult {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     range: "1M",
     generatedAt: "2024-06-15T00:00:00.000Z",
     dataAsOf: "2024-06-14",
@@ -72,6 +84,19 @@ function validIntradayResult(): IntradayResult {
             sellPrice: 20,
           },
         ],
+        worstCase: {
+          endingBalance: 15,
+          trades: [
+            {
+              ticker: "AAPL",
+              date: "2024-06-14",
+              buyTime: "09:30:00",
+              buyPrice: 20,
+              sellTime: "10:30:00",
+              sellPrice: 15,
+            },
+          ],
+        },
       },
     ],
   };
@@ -190,6 +215,62 @@ describe("validatePrecomputedResult", () => {
     const result = validWindowResult() as unknown as Record<string, unknown>;
     result.range = "2Y";
     expect(() => validatePrecomputedResult(result as unknown as WindowResult)).toThrow(/range/);
+  });
+
+  it("rejects a WindowResult missing worstCase entirely (issue #31)", () => {
+    const result = validWindowResult() as unknown as Record<string, unknown>;
+    delete result.worstCase;
+    expect(() => validatePrecomputedResult(result as unknown as WindowResult)).toThrow(
+      /worstCase must be an object/,
+    );
+  });
+
+  it("rejects a WindowResult with a malformed worstCase trade (non-finite sellPrice)", () => {
+    const result = validWindowResult();
+    result.worstCase.trades = [{ ...result.worstCase.trades[0]!, sellPrice: NaN }];
+    expect(() => validatePrecomputedResult(result)).toThrow(/worstCase\.trades\[0\]\.sellPrice/);
+  });
+
+  it("rejects a WindowResult whose worstCase.endingBalance exceeds the optimal-case endingBalance (issue #31 -- catches a max/min inversion bug)", () => {
+    const result = validWindowResult();
+    result.endingBalance = 60;
+    result.worstCase.endingBalance = 61;
+    expect(() => validatePrecomputedResult(result)).toThrow(
+      /worstCase\.endingBalance \(61\) must not exceed its optimal-case counterpart \(60\)/,
+    );
+  });
+
+  it("passes a WindowResult whose worstCase.endingBalance exactly equals the optimal-case endingBalance (the rare 'no losing trade available' edge case)", () => {
+    const result = validWindowResult();
+    result.endingBalance = 60;
+    result.worstCase.endingBalance = 60;
+    expect(() => validatePrecomputedResult(result)).not.toThrow();
+  });
+
+  it("rejects an IntradayResult missing a day's worstCase entirely (issue #31)", () => {
+    const result = validIntradayResult() as unknown as Record<string, unknown>;
+    const day = (result.days as unknown[])[0] as Record<string, unknown>;
+    delete day.worstCase;
+    expect(() => validatePrecomputedResult(result as unknown as IntradayResult)).toThrow(
+      /days\[0\]\.worstCase must be an object/,
+    );
+  });
+
+  it("rejects an IntradayResult with a malformed day worstCase trade (missing buyTime)", () => {
+    const result = validIntradayResult();
+    result.days[0]!.worstCase.trades = [{ ...result.days[0]!.worstCase.trades[0]!, buyTime: "" }];
+    expect(() => validatePrecomputedResult(result)).toThrow(
+      /days\[0\]\.worstCase\.trades\[0\]\.buyTime/,
+    );
+  });
+
+  it("rejects an IntradayResult whose day worstCase.endingBalance exceeds that day's optimal-case endingBalance", () => {
+    const result = validIntradayResult();
+    result.days[0]!.endingBalance = 40;
+    result.days[0]!.worstCase.endingBalance = 41;
+    expect(() => validatePrecomputedResult(result)).toThrow(
+      /days\[0\]\.worstCase\.endingBalance \(41\) must not exceed its optimal-case counterpart \(40\)/,
+    );
   });
 
   it("reports every problem found, not just the first", () => {

@@ -19,7 +19,7 @@ async function submitAnyGuess(user: ReturnType<typeof userEvent.setup>) {
 
 function fixtureResult(overrides: Partial<WindowResult> = {}): WindowResult {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     model: "window",
     range: "1Y",
     generatedAt: "2026-08-21T19:50:21.468Z",
@@ -52,6 +52,18 @@ function fixtureResult(overrides: Partial<WindowResult> = {}): WindowResult {
         sellPrice: 174.3800048828125,
       },
     ],
+    worstCase: {
+      endingBalance: 4.2,
+      trades: [
+        {
+          ticker: "ZBRA",
+          buyDate: "2025-08-21",
+          buyPrice: 300,
+          sellDate: "2026-08-21",
+          sellPrice: 63,
+        },
+      ],
+    },
     universeSize: 503,
     skippedTickers: [],
     ...overrides,
@@ -60,7 +72,7 @@ function fixtureResult(overrides: Partial<WindowResult> = {}): WindowResult {
 
 function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): IntradayResult {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     model: "intraday-daily",
     range: "1M",
     generatedAt: "2026-08-21T19:50:21.468Z",
@@ -86,6 +98,19 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
             sellPrice: 125,
           },
         ],
+        worstCase: {
+          endingBalance: 12,
+          trades: [
+            {
+              ticker: "GOOG",
+              date: "2026-08-20",
+              buyTime: "09:30:00",
+              buyPrice: 100,
+              sellTime: "10:30:00",
+              sellPrice: 60,
+            },
+          ],
+        },
       },
       {
         date: "2026-08-21",
@@ -102,6 +127,19 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
             sellPrice: 400,
           },
         ],
+        worstCase: {
+          endingBalance: 4,
+          trades: [
+            {
+              ticker: "TSLA",
+              date: "2026-08-21",
+              buyTime: "09:30:00",
+              buyPrice: 200,
+              sellTime: "10:30:00",
+              sellPrice: 40,
+            },
+          ],
+        },
       },
     ],
     ...overrides,
@@ -207,6 +245,10 @@ describe("ResultsPanel", () => {
     expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
     expect(screen.getAllByText(/SNDK/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/MNST/).length).toBeGreaterThan(0);
+    // The worst-case contrast stat (issue #31) renders alongside HeroStat
+    // -- window model, no reveal gate to clear.
+    expect(screen.getByText("$4.20")).toBeInTheDocument();
+    expect(screen.getByText("(0.2x)")).toBeInTheDocument();
     expect(screen.getAllByText(/MRNA/).length).toBeGreaterThan(0);
   });
 
@@ -363,6 +405,7 @@ describe("ResultsPanel", () => {
               endingBalance: 20,
               barIntervalMinutes: 60,
               trades: [],
+              worstCase: { endingBalance: 20, trades: [] },
             },
           ],
         }),
@@ -406,6 +449,24 @@ describe("ResultsPanel", () => {
         expect(
           screen.queryByRole("img", { name: /portfolio value over time/i }),
         ).not.toBeInTheDocument();
+        // The worst-case contrast stat (issue #31) must not spoil the
+        // real answer before the guess is submitted either.
+        expect(screen.queryByText("$4.00")).not.toBeInTheDocument();
+        expect(screen.queryByText(/worst case/i)).not.toBeInTheDocument();
+      });
+
+      it("reveals the worst-case contrast stat alongside HeroStat once the guess is submitted, not before (issue #31)", async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+        render(<ResultsPanel range="1M" state={state} />);
+
+        expect(screen.queryByText(/worst case/i)).not.toBeInTheDocument();
+
+        await submitAnyGuess(user);
+
+        // Most recent day (2026-08-21): worstCase.endingBalance 4, i.e. 0.2x.
+        expect(screen.getByText("$4.00")).toBeInTheDocument();
+        expect(screen.getByText("(0.2x)")).toBeInTheDocument();
       });
 
       it("reveals the actual result once the user submits a guess, and shows their guess alongside it", async () => {

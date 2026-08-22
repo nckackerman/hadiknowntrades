@@ -95,7 +95,7 @@ describe("runPipeline", () => {
       const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
       generatedAts.add(parsed.generatedAt);
       expect(parsed).toMatchObject({
-        schemaVersion: 2,
+        schemaVersion: 3,
         model: "window",
         range,
         maxTrades: 3,
@@ -109,7 +109,7 @@ describe("runPipeline", () => {
       const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
       generatedAts.add(parsed.generatedAt);
       expect(parsed).toMatchObject({
-        schemaVersion: 2,
+        schemaVersion: 3,
         model: "intraday-daily",
         range,
         maxTradesPerDay: 3,
@@ -266,6 +266,37 @@ describe("runPipeline", () => {
       expect(store.objects.has("results/MAX.json")).toBe(false);
       expect(store.objects.size).toBe(3);
     });
+
+    it("computes a worst-case counterpart alongside the optimal window result, never better than it (issue #31)", async () => {
+      const dailyFixture = new Map<string, DailyClose[]>([
+        ["UP", [daily(daysBack(2000), 10), daily(daysBack(10), 200)]], // 20x
+        ["DOWN", [daily(daysBack(2000), 200), daily(daysBack(10), 10)]], // 0.05x
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["UP", "DOWN"],
+        fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
+        fetchIntradayBars: noIntradayData,
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
+        store,
+        asOf,
+      }).catch(() => {});
+
+      const max = JSON.parse(store.objects.get("results/MAX.json")!);
+      expect(max.worstCase).toBeDefined();
+      expect(max.worstCase.endingBalance).toBeLessThan(max.endingBalance);
+      expect(max.worstCase.endingBalance).toBeLessThanOrEqual(max.startingCapital);
+      expect(max.worstCase.trades).toEqual([
+        expect.objectContaining({ ticker: "DOWN", buyPrice: 200, sellPrice: 10 }),
+      ]);
+      // The optimal-case picked the *other* ticker, so the two results'
+      // trades genuinely differ, not just their endingBalance.
+      expect(max.trades).toEqual([
+        expect.objectContaining({ ticker: "UP", buyPrice: 10, sellPrice: 200 }),
+      ]);
+    });
   });
 
   describe("intraday path (1M/3M/1Y)", () => {
@@ -372,6 +403,36 @@ describe("runPipeline", () => {
       expect(store.objects.has("results/3M.json")).toBe(false);
       expect(store.objects.has("results/1Y.json")).toBe(false);
       expect(store.objects.size).toBe(2); // 5Y/MAX still wrote successfully
+    });
+
+    it("computes a per-day worst-case counterpart, never better than that day's optimal endingBalance (issue #31)", async () => {
+      const intradayFixture = new Map<string, IntradayBar[]>([
+        ["UP", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 100)]],
+        ["DOWN", [bar(daysBack(5), "09:30:00", 100), bar(daysBack(5), "10:30:00", 10)]],
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["UP", "DOWN"],
+        fetchDailyCloses: noDailyData,
+        fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
+        store,
+        asOf,
+      }).catch(() => {});
+
+      const oneMonth = JSON.parse(store.objects.get("results/1M.json")!);
+      expect(oneMonth.days).toHaveLength(1);
+      const day = oneMonth.days[0];
+      expect(day.worstCase).toBeDefined();
+      expect(day.worstCase.endingBalance).toBeLessThan(day.endingBalance);
+      expect(day.worstCase.trades).toEqual([
+        expect.objectContaining({ ticker: "DOWN", buyPrice: 100, sellPrice: 10 }),
+      ]);
+      expect(day.trades).toEqual([
+        expect.objectContaining({ ticker: "UP", buyPrice: 10, sellPrice: 100 }),
+      ]);
     });
   });
 

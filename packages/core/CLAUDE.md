@@ -86,6 +86,29 @@ file's own header comment; don't re-derive it, read that first.
   invalid `maxTrades`/`startingCapital`) — it does not trust this
   package's own Yahoo client to have already sanitized everything, by
   design (defense in depth, see `is-valid-price.ts`).
+- **Worst-case search (`optimizeWorstTrades`, issue #31)**: the same DP
+  in the min direction, sharing 100% of `optimizeTrades`'s validation/
+  calendar/reconstruction logic via a private `runOptimizer(...,
+direction)` — only `computeLevel`'s four comparison sites/sentinels are
+  parameterized by `direction: "max" | "min"` (see that function's own
+  doc comment for exactly which four, and why the "no price here"
+  sentinel must flip to `+Infinity`, not stay `-Infinity`, for a min
+  search). None of the three deterministic tie-break rules (cross-ticker
+  alphabetical, cross-day earliest-wins, trade-vs-carry-forward strict
+  inequality) needed inverting for "min" — they're all about determinism
+  given an otherwise-tied objective, not about maximizing, so the same
+  rule falls out unchanged under inversion. Live-verified (real Yahoo
+  data, full 503-ticker S&P 500 universe, all 5 ranges, no S3 write): 0
+  invariant violations (`worst <= optimal` held everywhere), 0 non-finite
+  results, and the "worst case still nets a gain" edge case (see that
+  function's own doc comment) never triggered on real data — 5Y's worst
+  case came back $0.81 from $20, MAX's $0.02, both genuine losses. Full
+  pipeline run (both directions, both paths, all 5 ranges, real network
+  I/O) took ~34s for the full universe — consistent with the "roughly
+  doubles nightly optimizer wall-clock, still cheap" expectation, and
+  confirms the intraday path's ~250-per-range separate `optimizeTrades`
+  calls (now doubled to include `optimizeWorstTrades`) stay cheap too,
+  not just the window path's single whole-window call.
 - **Fun/expected product quirk, not a bug**: the "Max" range genuinely
   produces astronomically large numbers (a 5-ticker demo run hit ~$716M
   from $20). That's real perfect-hindsight compounding over decades, not
@@ -444,3 +467,20 @@ by calendar day (the date-part of each bar's `date`), then call
   `format-date.ts`) all assumed `buyDate`/`sellDate` were plain calendar
   dates -- silently reusing `Trade` unmodified here would have corrupted
   those call sites' date parsing rather than erroring.
+- **Worst-case per day (issue #31)**: `optimizeIntradayDays`'s own
+  `.map()` body is the one place this issue's design isn't a clean
+  "leave the existing function untouched" mirror of `optimizer.ts`'s
+  `optimizeTrades`/`optimizeWorstTrades` split -- there's no way to
+  attach a `worstCase` field to a day's single returned
+  `IntradayDayResult` object without touching this function's body, since
+  `IntradayDayResult` is one combined per-day record, not two separate
+  ones a caller merges. Fix: the per-day `.map()` callback also calls
+  `optimizeWorstTrades(dayBars, ...)` and folds the result into
+  `worstCase: { endingBalance, trades }` (`IntradayWorstCaseResult`) on
+  the same object -- additive to this function's implementation, no
+  change to any existing optimal-case value/behavior. `apps/pipeline`'s
+  `pipeline.ts` needed **zero** changes for the intraday path as a
+  result: it already treats `IntradayDayResult` as opaque everywhere
+  (`sixtyMinuteDays`, `mergeDaysByGranularity`, the final `days` array),
+  so `worstCase` flows through every one of those call sites for free
+  once `IntradayDayResult` itself carries it.

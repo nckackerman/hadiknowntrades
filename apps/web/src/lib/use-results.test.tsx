@@ -6,7 +6,7 @@ import { useResults } from "./use-results";
 
 function fixtureResult(): PrecomputedResult {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     model: "window",
     range: "1Y",
     generatedAt: "2026-08-21T19:50:21.468Z",
@@ -17,6 +17,7 @@ function fixtureResult(): PrecomputedResult {
     startingCapital: 20,
     endingBalance: 42,
     trades: [],
+    worstCase: { endingBalance: 20, trades: [] },
     universeSize: 503,
     skippedTickers: [],
   };
