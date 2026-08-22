@@ -365,6 +365,61 @@ it only ever reads the 60-minute day-result array.
   depends on doesn't meet that bar. Revisit if `apps/web` ever starts
   branching on this field's presence.
 
+## Write-time result self-validation (issue #47)
+
+`src/results-schema.ts`'s `validatePrecomputedResult` is a runtime,
+hand-rolled check that a `PrecomputedResult` actually satisfies its own
+declared shape (`WindowResult`/`IntradayResult`, discriminated by
+`model`) -- required fields present, `startingCapital`/`endingBalance`/
+prices/day-balances finite numbers, `trades`/`days` arrays well-formed
+-- throwing `ResultValidationError` (every problem found, not just the
+first) if not. `apps/pipeline/src/pipeline.ts` calls it immediately
+before each range's `putObject` (see `apps/pipeline/CLAUDE.md`).
+
+- **Deliberately hand-rolled, not a schema library** (e.g. zod) --
+  checked first per the issue's own scope note, and this package has no
+  runtime-validation dependency today; the shape is small, stable, and
+  cheaper to keep in sync by hand-reading it against the interfaces
+  above than by maintaining a second, library-specific representation
+  of the same shape. Revisit if the shape ever grows enough that
+  hand-sync stops being the cheaper option.
+- **Must treat its input as untrusted despite the `PrecomputedResult`
+  compile-time parameter type** -- the whole point is catching a bug
+  that produces a runtime value violating that type despite TypeScript
+  (e.g. a `NaN` slipping through arithmetic, exactly optimizer.ts's own
+  `OptimizerInputError` "computed a non-finite endingBalance" case, just
+  on the _output_ side instead of input). Every field access inside the
+  validator goes through an `unknown`/`Record<string, unknown>` cast and
+  an explicit runtime check (`Number.isFinite`, `Array.isArray`, etc.) --
+  never a bare property read trusted to have the declared type, which
+  would silently defeat the check for exactly the bug class it exists to
+  catch.
+- Same "defense in depth" spirit as `optimizer.ts`'s own input
+  validation (see above), just facing the opposite direction: that
+  validates the optimizer's _inputs_ before use; this validates the
+  pipeline's _output_ right before it becomes what `apps/web` reads --
+  there's nothing further downstream to catch a bad value once this
+  passes.
+- **`schemaVersion` is checked for exact equality against
+  `RESULTS_SCHEMA_VERSION`, not just "is it a non-negative integer."**
+  An earlier version of `validateBase` only did the looser check --
+  caught in code review as a real gap, not a nitpick: a stale or
+  reverted `schemaVersion` (e.g. a rollback that regressed the constant
+  without regenerating results, or a hand-crafted test fixture that
+  forgot to bump it) is exactly the kind of self-inconsistency this
+  validator exists to catch, and "any non-negative integer" would
+  silently accept it.
+- **`isPositiveFiniteNumber` (used for `startingCapital`/`endingBalance`/
+  day balances/`buyPrice`/`sellPrice`) builds on `is-valid-price.ts`'s
+  `isValidPrice`** (`typeof v === "number" && isValidPrice(v)`) rather
+  than re-deriving `Number.isFinite(value) && value > 0` independently
+  -- also caught in code review: `optimizer.ts` and `yahoo-client.ts`
+  already centralize that exact predicate through `isValidPrice`
+  specifically so "legitimate price" can't drift between call sites,
+  and this validator had quietly re-implemented it a third time. The
+  predicate is unchanged either way (both are `Number.isFinite(value) &&
+value > 0`); this is a reuse fix, not a behavior change.
+
 ## Per-day intraday optimizer (issue #28)
 
 `src/intraday-optimizer.ts`'s `optimizeIntradayDays` needs **no new DP**.

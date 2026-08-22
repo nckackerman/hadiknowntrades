@@ -7,25 +7,11 @@
 
 import { useEffect, useState } from "react";
 
+import { prefersReducedMotion } from "./prefers-reduced-motion";
+
 /** ease-out cubic: fast start, settles gently into the final value -- reads as a count "arriving," not a linear ticker. */
 function easeOutCubic(t: number): number {
   return 1 - Math.pow(1 - t, 3);
-}
-
-/**
- * Checked once per animation start (not subscribed live) -- this hook
- * only ever animates once per mount (the "reveal"), so there's no
- * later moment where a mid-flight OS-setting change would need to be
- * honored. Guarded for environments without `matchMedia` (jsdom in this
- * repo's test setup doesn't implement it) by treating "unknown" as "no
- * preference," matching how missing media-query support degrades in
- * real browsers too.
- */
-function prefersReducedMotion(): boolean {
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-    return false;
-  }
-  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 /**
