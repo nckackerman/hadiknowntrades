@@ -61,6 +61,25 @@ export function parseRange(raw: string | null): PresetRange | null {
 }
 
 /**
+ * Exact-case membership check against PRESET_RANGES -- deliberately
+ * *not* case-folding the way `parseRange` does for a query-string value.
+ *
+ * This exists for validating a raw dynamic *route segment* (see
+ * ../app/api/og/[range]/route.tsx), not a query parameter: Next's Full
+ * Route Cache caches a `force-static` route handler's response per
+ * distinct path string, so a case-insensitive match there would still
+ * let every case variant of a valid range (`/api/og/max`, `/api/og/Max`,
+ * `/api/og/MAX`, ...) resolve to equivalent content while each getting
+ * its own separate 24h-cached entry and its own separate render -- the
+ * exact duplicate-work bug this function exists to close. A query
+ * string, by contrast, is never part of a cached path segment, so
+ * `parseRange`'s case-insensitivity there is harmless and stays as-is.
+ */
+export function isCanonicalRange(raw: string): raw is PresetRange {
+  return (PRESET_RANGES as readonly string[]).includes(raw);
+}
+
+/**
  * Handles GET /api/results?range=... : validates the range, reads the
  * corresponding precomputed result via `reader`, and returns it as JSON
  * with caching headers -- or a clear JSON error response (with an

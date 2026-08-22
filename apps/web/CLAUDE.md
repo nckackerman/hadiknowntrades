@@ -519,6 +519,162 @@ see `packages/core/CLAUDE.md`'s "Internal imports" note: the fix belongs
 in `packages/core`'s own relative-import style, not in how this app
 imports the package.
 
+## OG share card (issue #33): `/api/og/[range]`, Satori-rendered, ISR-cached
+
+`src/app/api/og/[range]/route.tsx` renders a 1200x630 PNG share card
+("$20 -> $48,203 - Max range") via Next's `ImageResponse` (`next/og`,
+Satori under the hood -- JSX/CSS to PNG, no headless browser). Content
+comes from `src/lib/og-card.ts`'s `buildOgCardContent` (pure, unit
+tested); pixels come from `src/components/OgCard.tsx`'s `renderOgCard`
+(split out specifically so it's callable directly, bypassing the route
+entirely -- see "Live verification without headless-browser or real S3"
+below).
+
+- **Scope: only the "window" result model (5Y, MAX today) gets a card.**
+  `buildOgCardContent` returns `null` for an "intraday-daily" result
+  (1M/3M/1Y, issue #28) and the route turns that into a 404 -- not an
+  oversight. That model has no single top-level `endingBalance` to
+  headline (per-day results don't compound, see
+  `packages/core/CLAUDE.md`), and picking which day's result a card
+  would even feature is its own product decision. Deliberately keyed off
+  the result's actual `model` field, not a hardcoded range list, so a
+  future model/range change stays correct with no list to remember to
+  update.
+- **Caching: real ISR (`export const dynamic = "force-static"` +
+  `export const revalidate = 86400`), not just a `Cache-Control` header
+  like `/api/results` uses.** This was a deliberate choice over that
+  route's own pattern: `/api/results` is fully dynamic per request
+  (`force-dynamic`) and relies on downstream caches respecting its
+  header, so its own handler still runs every request with nothing in
+  front of it. This route's handler -- which does real Satori/PNG
+  rendering, not a cheap JSON passthrough -- only runs once per range
+  per 24h; verified live via `next start` + curl: `x-nextjs-cache: MISS`
+  on the first request, `HIT` (no re-render) on the second. 24h matches
+  the pipeline's nightly cadence, the same staleness tolerance
+  `/api/results` already documents.
+  - This route deliberately has **no `generateStaticParams`** -- adding
+    one would make `next build` read from S3 at build time, which this
+    sandboxed dev environment has no credentials for. Omitting it means
+    every range is rendered (then cached) on its first real request
+    instead, identically in production, and keeps `next build` fully
+    offline-safe here (confirmed: `next build`'s route summary lists
+    `/api/og/[range]` as `○ (Static)`, `/api/results` as `ƒ (Dynamic)`,
+    exactly the intended split).
+    - **Confirmed live (not just inferred from docs) that this isn't
+      just a sandbox-convenience workaround -- it would be a real
+      regression against this app's actual deployment split.** Adding
+      `generateStaticParams` (returning all of `PRESET_RANGES`) plus
+      `export const dynamicParams = false` and rebuilding: `next build`
+      eagerly invoked this route's own `GET` once per range (confirmed
+      with a temporary `console.error` inside the handler, printed
+      during "Generating static pages"), baking in the
+      `server_misconfigured` 500 (no `RESULTS_BUCKET` at build time) as
+      each range's _initial_ cached entry -- and surprisingly also
+      flipped the build summary from `○ (Static)` to `ƒ (Dynamic)` for
+      this route. Since this app's real deploy topology has S3 access
+      at _runtime_ (the deployed Lambda) but not at _build_ time (no
+      `RESULTS_BUCKET` in CI/local builds -- see `infra/CLAUDE.md`'s env
+      var contract note, which is pipeline-specific, not web-build-time),
+      this would ship every deploy with a guaranteed-broken card for a
+      full 24h post-deploy even though the real bucket is reachable the
+      whole time. Reverted; this is why route param validation (below)
+      is a plain in-handler check instead of Next's
+      `generateStaticParams`/`dynamicParams` mechanism, despite that
+      being the more textbook-idiomatic way to bound a dynamic segment.
+  - **Known, accepted rough edge**: an _error_ response (misconfigured
+    bucket, a range not published yet, corrupt data) gets cached by
+    Next's Full Route Cache the same as a successful render, for the
+    same 24h window -- there's no "don't cache non-2xx" carve-out for
+    route handlers the way `fetch`'s own Data Cache has. Not engineered
+    around (throwing instead of returning a `Response` isn't a
+    documented, reliable escape hatch for ISR'd route handlers either) --
+    these are rare, operational failure modes, and a stale error for up
+    to a day is no worse than the staleness the rest of this
+    precomputed-nightly app already accepts everywhere else.
+  - **Route-param validation (found in code review, fixed)**: the raw
+    `[range]` segment used to reach `getResultsResponse` (which
+    case-folds via `parseRange`) with no earlier check at all. Combined
+    with `force-static` + default `dynamicParams: true`, every distinct
+    string under `[range]` -- a case variant of a valid range
+    (`/api/og/max`), or pure garbage (`/api/og/not-a-range`) -- got its
+    own separate Satori render (for case variants of a real range) or S3
+    round-trip (for garbage), each becoming its own separately-cached
+    24h entry for what's ultimately either duplicate or useless content.
+    Fixed with `results-api.ts`'s `isCanonicalRange` (an _exact-case_
+    membership check against `PRESET_RANGES`, deliberately not
+    case-folding like `parseRange` does for `/api/results`' query
+    param), called first thing in the route handler, before
+    `getResultsResponse` or any rendering. Rejects with 404 +
+    `Cache-Control: no-store`.
+    - **Verified live (`next build` + `next start` + curl) exactly what
+      this guard does and doesn't fix**: a case variant (`/api/og/max`)
+      and garbage (`/api/og/not-a-range`) both now 404 immediately, with
+      no S3 read and no Satori render -- confirmed by the response
+      returning instantly with no `[api/results]` log line. **But** the
+      guard does _not_ stop Next's Full Route Cache from still creating
+      a cache entry for that exact rejected path -- `x-nextjs-cache` was
+      `MISS` then `HIT` on a second request to the same rejected path,
+      identical to a legitimate range. This is the same "no carve-out
+      for non-2xx" limitation as the rough edge documented above, just
+      for a 404 instead of a 5xx/502. Accepted: the fix's actual value is
+      eliminating the _wasted expensive work_ (duplicate renders, S3
+      round-trips) per rejected path, not eliminating cache-slot growth
+      from someone enumerating garbage strings -- the only mechanism
+      that would fully close that (`generateStaticParams` +
+      `dynamicParams = false`) was tried and reverted for the reason
+      above. Low real-world severity for this project (a small learning
+      app, not a target for that kind of enumeration), not engineered
+      around further.
+  - This route reuses `getResultsResponse` (`/api/results`'s own logic)
+    in-process rather than re-implementing S3-read-plus-validate a
+    second time, so both routes can't drift on what counts as a
+    valid/corrupt/not-yet-published result. Its error body is `{ error,
+message }` JSON -- this route reads the `message` field back out
+    rather than using the plain HTTP status line, since a
+    `Response.json`-built response's `statusText` is an uninformative
+    empty string in practice (verified live: curling an unsupported
+    range returned `status=400` with an _empty_ `statusText`, only
+    fixed by reading the JSON body's own `message` instead).
+- **Live verification without a headless browser or real S3, without
+  contaminating the committed diff**: this dev environment has neither
+  (see this file's own "Headless-browser screenshot verification"
+  note for the browser side; `RESULTS_BUCKET`/AWS credentials for the
+  S3 side). Two throwaway techniques, both removed before committing:
+  1. A small `@vitest-environment node`-tagged test file that imports
+     `renderOgCard` directly and writes each fixture's PNG to disk for
+     visual inspection -- no route, no server, no S3 at all. **Must
+     override the environment to `node`**: this project's
+     `vitest.config.mts` defaults every test to `jsdom` (see its own
+     comment), and under jsdom, `next/og`'s PNG rasterization (resvg,
+     WASM-based) fails outright with `Unsupported input` -- something
+     about jsdom's globals confuses it. Plain `node` has no such issue;
+     confirmed by toggling only the environment tag with everything
+     else unchanged.
+  2. For a true end-to-end HTTP check (through Next's real routing,
+     `ImageResponse`'s content-type/status handling, and the ISR
+     cache itself, not just the render function in isolation): a
+     temporary in-memory `ResultReader` swapped in for `reader` when
+     `RESULTS_BUCKET` is unset, `next build` + `next start` against a
+     real local port, then `curl`. This is what produced the
+     `x-nextjs-cache: MISS`/`HIT` evidence above. Reverted immediately
+     after -- `git diff`/`git status` should show none of this in the
+     final commit.
+- **The astronomical-number (scientific-notation) formatting branch
+  actually was live-verified against Satori (found missing in code
+  review, then checked)**: the PR's original live verification covered
+  a gain/modest-gain/loss, but never a MAX-range-scale result large
+  enough to trip `format-currency.ts`'s `formatScientific` (the
+  `×`/superscript-digit branch, past `SCIENTIFIC_THRESHOLD` = 1e15) --
+  a real risk since Satori renders through its own bundled font, which
+  might lack glyphs for `×` or the Unicode superscript digits
+  (`¹`/`⁹`/etc.) and either render tofu or throw. Checked via technique
+  1 above with `endingBalance = 4.2e19` (`startingCapital` fixed at
+  `$20`, so this drives both the dollar figure _and_ the
+  `endingBalance/startingCapital` multiplier well past the threshold):
+  rendered cleanly as `$4.20×10¹⁹` and `(2.10×10¹⁸x)`, no tofu, no
+  throw, no fallback needed. Satori's bundled font does have these
+  glyphs -- `og-card.ts`/`OgCard.tsx` needed no changes for this case.
+
 ## localStorage pattern (issue #34, first use of browser storage in this app)
 
 `lib/local-storage.ts` is the one place this app ever touches

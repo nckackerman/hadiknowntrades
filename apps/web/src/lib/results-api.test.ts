@@ -1,7 +1,7 @@
 import { PRESET_RANGES, type PrecomputedResult } from "@hadiknowntrades/core";
 import { describe, expect, it, vi } from "vitest";
 
-import { getResultsResponse, parseRange, type ResultReader } from "./results-api";
+import { getResultsResponse, isCanonicalRange, parseRange, type ResultReader } from "./results-api";
 
 function fixtureResult(range: (typeof PRESET_RANGES)[number]): PrecomputedResult {
   return {
@@ -43,6 +43,29 @@ describe("parseRange", () => {
     expect(parseRange("")).toBeNull();
     expect(parseRange("2Y")).toBeNull();
     expect(parseRange("bogus")).toBeNull();
+  });
+});
+
+describe("isCanonicalRange", () => {
+  it("accepts every preset range, exact-case only", () => {
+    for (const range of PRESET_RANGES) {
+      expect(isCanonicalRange(range)).toBe(true);
+    }
+  });
+
+  it("rejects case variants of a valid range -- unlike parseRange, this check does not fold case", () => {
+    for (const range of PRESET_RANGES) {
+      expect(isCanonicalRange(range.toLowerCase())).toBe(false);
+    }
+    expect(isCanonicalRange("Max")).toBe(false);
+    expect(isCanonicalRange("max")).toBe(false);
+  });
+
+  it("rejects empty and unsupported values", () => {
+    expect(isCanonicalRange("")).toBe(false);
+    expect(isCanonicalRange("2Y")).toBe(false);
+    expect(isCanonicalRange("bogus")).toBe(false);
+    expect(isCanonicalRange("not-a-range")).toBe(false);
   });
 });
 
