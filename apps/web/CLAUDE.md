@@ -107,6 +107,40 @@ separator check), the single shared place this detection happens.
 check -- a real duplication caught in code review before this note was
 written; don't reintroduce a second copy of the check.
 
+## Render-crash boundary (`app/error.tsx`, issue #46)
+
+`app/error.tsx` catches render-time throws that `useResults`'s fetch-only
+state machine never sees (see the "Two result models" note above and
+`use-results.ts`) -- it wraps `page.tsx` (and everything under it) in a
+React error boundary Next installs automatically, per the App Router
+`error.js` file convention. A few things worth knowing before touching
+it:
+
+- **`error.js`'s fallback component receives both `reset` and `retry`**,
+  not just `reset` (confirmed straight from
+  `node_modules/next/dist/client/components/error-boundary.d.ts`'s
+  `ErrorInfo` type, not the docs prose alone -- `retry` only stabilized
+  in Next 16.3.0, so anything in training data or older blog posts that
+  only mentions `reset` predates it). The official guidance is to prefer
+  `retry()` "in most cases" since it re-fetches the segment before
+  re-rendering; this file deliberately still uses `reset()` instead,
+  since a render-time throw here is a client-side bug in already-fetched
+  data, not a stale-fetch problem `retry`'s re-fetch would help with.
+- `next build`'s own type-checking pass is happy with `error.tsx` as-is,
+  but running `tsc --noEmit` directly (skipping `next typegen`) fails on
+  an unrelated pre-existing error in `layout.tsx` (`Cannot find name
+  'LayoutProps'` -- a Next-generated ambient type). Always run the
+  package's own `pnpm run typecheck` script (which runs `next typegen`
+  first), not a bare `tsc --noEmit`, or this looks like a bug the new
+  code introduced when it isn't one.
+- Tested by mounting a small test-local class component that mirrors
+  Next's real `ErrorBoundaryHandler` shape (catch a throw,
+  hand `error`/`reset` to the fallback) around a deliberately-throwing
+  child -- see `app/error.test.tsx`. Next's actual boundary isn't
+  practically testable under RTL/jsdom, so this mirrors its contract
+  instead of exercising the real one; if that ever changes, prefer
+  driving the real boundary.
+
 ## Importing `@hadiknowntrades/core`
 
 Import it by its normal package specifier
