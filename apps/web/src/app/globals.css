@@ -34,6 +34,20 @@
   --series-1-wash: rgb(57 135 229 / 12%);
   --status-critical: #e66767;
   --status-good: #0ca30c;
+
+  /*
+   * Surface elevation (issue #77): --surface-1/--surface-2 previously
+   * had no visual separation from --background beyond their own (barely
+   * different) tone plus a 1px --gridline border -- flat against the
+   * near-black page, per a live screenshot taken for this issue. One
+   * shared box-shadow recipe (a tight, dark contact shadow plus a
+   * softer, wider ambient one, plus a faint inset top highlight for a
+   * "raised" read) rather than a separate value per surface tone --
+   * the shadow itself doesn't need to vary with the surface color it
+   * sits under.
+   */
+  --shadow-surface:
+    0 1px 2px rgb(0 0 0 / 45%), 0 8px 24px rgb(0 0 0 / 35%), inset 0 1px 0 rgb(255 255 255 / 4%);
 }
 
 @theme inline {
@@ -177,6 +191,89 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .results-fade-in {
+    animation: none;
+  }
+}
+
+/*
+ * Surface elevation (issue #77): applied to the app's genuine "card"
+ * surfaces -- TradeRow's own rows, TradeList's prose box (and its empty-
+ * state fallback), ResultsPanel's three "no trades"/"no days" empty-
+ * state boxes, and OnboardingIntro's banner -- not to every
+ * --surface-1/--surface-2 background in the app. Deliberately *not*
+ * applied to RangeSelector/ModeToggle's pill-toggle housings (control
+ * chrome, not a content card) or to DailyGuessForm/StartingCapitalInput/
+ * CustomRangeSelector/DaySelector's own form-control backgrounds (same
+ * reasoning) or to ResultsPanel's LoadingSkeleton placeholders (a
+ * transient loading state, not a card worth its own elevation). See
+ * --shadow-surface's own doc comment above for the shadow recipe itself.
+ */
+.surface-card {
+  box-shadow: var(--shadow-surface);
+}
+
+/*
+ * HeroStat's reveal accent (issue #77): once useCountUp's tween settles
+ * on its exact final value, the visible ending-balance figure (the
+ * aria-hidden span -- see HeroStat.tsx's own doc comment for why the
+ * sr-only twin is deliberately left untouched) gets a soft glow tied to
+ * the same gain/loss color its own multiplier badge already uses
+ * (--status-good / --status-critical at the badge's own >=1 "gain"
+ * threshold, not HeroStat's stricter `isGain` used only to gate the
+ * celebration burst -- see HeroStat.tsx's doc comment on why those two
+ * thresholds deliberately differ and shouldn't be unified). Renders for
+ * *both* a gain and a loss reveal, unlike CelebrationBurst -- this is a
+ * "the number just landed" accent, not a celebration.
+ *
+ * Two-layer reduced-motion guard, same shape as .confetti-piece/
+ * .chart-tap-hint-pulse/.results-fade-in above: HeroStat's own
+ * `animateAccentReveal` (a derived value using the exact same
+ * short-circuit safety shouldCelebrate.ts's `isGain && settled` already
+ * relies on -- see that file's doc comment) is the primary gate deciding
+ * whether to add `.hero-figure-accent-animate` at all; the media query
+ * below is defense-in-depth for the rare case a future caller renders
+ * that class without going through the check. `.hero-figure-accent`
+ * alone (no `-animate` sibling) is the class HeroStat adds instead when
+ * motion is reduced -- its own resting text-shadow rule already *is*
+ * the animation's final frame, so the glow still appears, just without
+ * ever animating in: "skipped/instant," not "skipped entirely," per the
+ * issue's own acceptance criteria wording.
+ */
+.hero-figure-accent {
+  text-shadow:
+    0 0 2px var(--hero-accent-glow, transparent),
+    0 0 16px var(--hero-accent-glow, transparent);
+}
+
+.hero-figure-accent-animate {
+  animation: hero-figure-accent-in 700ms ease-out;
+  /* Same reasoning as .chart-tap-hint-pulse's own forwards below: hold
+     the keyframe's own `to` values once the animation completes, rather
+     than implicitly relying on them matching .hero-figure-accent's
+     separately-declared resting rule. Without this, a future edit to
+     either rule alone (glow strength here, or the keyframe's own `to`)
+     would make the glow visibly flash to one value and snap to a
+     different one the instant the animation ends. */
+  animation-fill-mode: forwards;
+}
+
+@keyframes hero-figure-accent-in {
+  from {
+    text-shadow:
+      0 0 0 transparent,
+      0 0 0 transparent;
+    opacity: 0.55;
+  }
+  to {
+    text-shadow:
+      0 0 2px var(--hero-accent-glow, transparent),
+      0 0 16px var(--hero-accent-glow, transparent);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-figure-accent-animate {
     animation: none;
   }
 }

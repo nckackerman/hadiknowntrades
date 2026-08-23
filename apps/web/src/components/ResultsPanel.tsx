@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 
 import type {
   BenchmarkResult,
@@ -20,9 +20,9 @@ import {
 import { formatDate } from "@/lib/format-date";
 import { formatHeroCurrency } from "@/lib/format-currency";
 import { DEFAULT_MODE, MODE_LABELS, type Mode } from "@/lib/mode";
-import { prefersReducedMotion } from "@/lib/prefers-reduced-motion";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { useDailyGuess } from "@/lib/use-daily-guess";
+import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
 import { BenchmarkStat } from "@/components/BenchmarkStat";
 import { DailyGuessForm } from "@/components/DailyGuessForm";
 import { DaySelector } from "@/components/DaySelector";
@@ -141,17 +141,18 @@ function LoadingSkeleton() {
  * happens to be showing.
  *
  * **A real bug (found in `high` code review, fixed) with the first version
- * of this feature is why this is a component with its own `useState`,
- * not a plain `prefersReducedMotion() ? "" : " results-fade-in"`
- * expression computed inline in `ResultsPanel`'s render body.** That
- * plain-expression version re-evaluated `prefersReducedMotion()` on
- * *every* render of `ResultsPanel`, including the mode/day/starting-
- * capital re-renders that leave this wrapper's own div instance mounted
- * the whole time (see the "Two result models" section in
- * apps/web/CLAUDE.md for why those never remount it). If the OS-level
- * reduced-motion preference actually changed value *between* two such
- * re-renders -- toggled mid-session, then the user clicks ModeToggle --
- * the computed className string would flip too, adding or removing the
+ * of this feature is why this reads reduced-motion via
+ * `useReducedMotionAtMount` (`lib/use-reduced-motion-at-mount.ts`), not
+ * a plain `prefersReducedMotion() ? "" : " results-fade-in"` expression
+ * computed inline in `ResultsPanel`'s render body.** That plain-
+ * expression version re-evaluated `prefersReducedMotion()` on *every*
+ * render of `ResultsPanel`, including the mode/day/starting-capital
+ * re-renders that leave this wrapper's own div instance mounted the
+ * whole time (see the "Two result models" section in apps/web/CLAUDE.md
+ * for why those never remount it). If the OS-level reduced-motion
+ * preference actually changed value *between* two such re-renders --
+ * toggled mid-session, then the user clicks ModeToggle -- the computed
+ * className string would flip too, adding or removing the
  * `results-fade-in` class on an element that's already on screen. Per
  * the CSS Animations spec, an element's `animation-name` newly entering
  * its computed style (even via a plain class-attribute change on an
@@ -160,18 +161,22 @@ function LoadingSkeleton() {
  * already-visible content, exactly the replay this issue's own out-of-
  * scope section says must never happen.
  *
- * `useState`'s lazy initializer runs exactly once, at the moment React
- * actually creates a new instance of this component -- which, given
- * where this is used below (only ever swapped in for `LoadingSkeleton`
- * on a genuine `"loading"` -> `"success"` transition), only happens on a
- * real range/custom-anchor switch or first load, never a mode/day/
- * starting-capital change. No extra key/memoization bookkeeping is
- * needed to replicate that "was this a genuine mount?" check by hand --
- * it falls straight out of React's own reconciliation rules for this
- * component's call sites.
+ * `useReducedMotionAtMount`'s `useState` lazy initializer runs exactly
+ * once, at the moment React actually creates a new instance of this
+ * component -- which, given where this is used below (only ever swapped
+ * in for `LoadingSkeleton` on a genuine `"loading"` -> `"success"`
+ * transition), only happens on a real range/custom-anchor switch or
+ * first load, never a mode/day/starting-capital change. No extra
+ * key/memoization bookkeeping is needed to replicate that "was this a
+ * genuine mount?" check by hand -- it falls straight out of React's own
+ * reconciliation rules for this component's call sites. **Shared with
+ * `HeroStat.tsx`'s own reveal-accent gate (issue #77), which hit the
+ * identical bug independently** -- see the hook's own doc comment for
+ * the full argument, extracted rather than left as two copies of the
+ * same fix.
  */
 function FadeInWrapper({ children }: { children: ReactNode }) {
-  const [shouldFadeIn] = useState(() => !prefersReducedMotion());
+  const shouldFadeIn = !useReducedMotionAtMount();
   return (
     <div className={`flex flex-col gap-8${shouldFadeIn ? " results-fade-in" : ""}`}>{children}</div>
   );
@@ -356,7 +361,7 @@ function WindowResultBody({
       <div className="flex flex-col gap-3">
         <h2 className="text-lg font-semibold text-[var(--text-primary)]">Trades</h2>
         {isEmpty ? (
-          <div className="rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
+          <div className="surface-card rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
             {emptyCopy}
           </div>
         ) : (
@@ -527,7 +532,7 @@ export function ResultsPanel({
 
     if (data.days.length === 0 || !activeDay) {
       return (
-        <div className="rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
+        <div className="surface-card rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
           No trading days are available yet for {RANGE_COPY[range]}.
         </div>
       );
@@ -680,7 +685,7 @@ export function ResultsPanel({
             <div className="flex flex-col gap-3">
               <h2 className="text-lg font-semibold text-[var(--text-primary)]">Trades</h2>
               {isEmptyDay ? (
-                <div className="rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
+                <div className="surface-card rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
                   No trade would have beaten holding cash on {formatDate(activeDay.date)}.
                 </div>
               ) : (

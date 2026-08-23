@@ -275,4 +275,116 @@ describe("HeroStat", () => {
       expect(screen.queryByTestId("celebration-burst")).not.toBeInTheDocument();
     });
   });
+
+  describe("reveal accent (issue #77)", () => {
+    it("adds no accent class to the visible figure before the reveal settles", () => {
+      stubPrefersReducedMotion(false);
+      // Never invoke the callback -- still mid-tween, not settled yet.
+      vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+
+      const { container } = render(<HeroStat startingCapital={20} endingBalance={6876.86} />);
+
+      expect(container.querySelector(".hero-figure-accent")).not.toBeInTheDocument();
+    });
+
+    it("adds the accent class, colored as a gain, and plays the entrance animation once settled with motion allowed", () => {
+      stubPrefersReducedMotion(false);
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+        cb(performance.now() + 100_000);
+        return 1;
+      });
+
+      const { container } = render(<HeroStat startingCapital={20} endingBalance={6876.86} />);
+
+      const figure = container.querySelector(".hero-figure-accent");
+      expect(figure).toBeInTheDocument();
+      expect(figure).toHaveClass("hero-figure-accent-animate");
+      expect(figure).toHaveStyle({ "--hero-accent-glow": "var(--status-good)" });
+    });
+
+    it("colors the accent as a loss when the multiplier is below 1x", () => {
+      stubPrefersReducedMotion(true);
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+        cb(performance.now());
+        return 1;
+      });
+
+      const { container } = render(<HeroStat startingCapital={20} endingBalance={5} />);
+
+      const figure = container.querySelector(".hero-figure-accent");
+      expect(figure).toBeInTheDocument();
+      expect(figure).toHaveStyle({ "--hero-accent-glow": "var(--status-critical)" });
+    });
+
+    it("skips the entrance animation, but still shows the glow instantly, when reduced motion is requested", () => {
+      stubPrefersReducedMotion(true);
+      // Fire the first available frame synchronously, same as
+      // use-count-up's own reduced-motion test above.
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+        cb(performance.now());
+        return 1;
+      });
+
+      const { container } = render(<HeroStat startingCapital={20} endingBalance={6876.86} />);
+
+      const figure = container.querySelector(".hero-figure-accent");
+      expect(figure).toBeInTheDocument();
+      expect(figure).not.toHaveClass("hero-figure-accent-animate");
+    });
+
+    // Regression test for a real bug found in `/code-review`: `settled`
+    // (this accent's own gate) is trivially `true` at mount whenever
+    // startingCapital === endingBalance (a flat result), unlike `isGain`
+    // (which stays strictly false at mount even for a flat result and is
+    // what makes shouldCelebrate's own `isGain && settled` short-circuit
+    // safe). No requestAnimationFrame mocking is needed here at all --
+    // `settled` is already true on the very first render for this case,
+    // before any animation frame could fire.
+    it("is settled immediately for a flat result (startingCapital === endingBalance), still reading the reduced-motion preference safely", () => {
+      stubPrefersReducedMotion(true);
+
+      const { container } = render(<HeroStat startingCapital={20} endingBalance={20} />);
+
+      const figure = container.querySelector(".hero-figure-accent");
+      expect(figure).toBeInTheDocument();
+      expect(figure).not.toHaveClass("hero-figure-accent-animate");
+    });
+
+    // Regression test for a real bug found in `/code-review`, the same
+    // class FadeInWrapper's own test (ResultsPanel.test.tsx) already
+    // covers: the first version of this feature re-read
+    // prefersReducedMotion() on every HeroStat render instead of once at
+    // mount, so if the OS-level preference changed value between two
+    // renders of an *already-settled* instance (no remount -- e.g. a
+    // displayStartingCapital edit, issue #15), the animate class could
+    // flip on already-visible content, replaying the entrance animation
+    // well after the real reveal. The useState lazy-initializer fix
+    // reads prefersReducedMotion() exactly once, at mount.
+    it("keeps the accent's animate class fixed across a re-render of an already-settled figure, even if the OS motion preference changes mid-session", () => {
+      stubPrefersReducedMotion(false);
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+        cb(performance.now() + 100_000);
+        return 1;
+      });
+
+      const { container, rerender } = render(
+        <HeroStat startingCapital={20} endingBalance={6876.86} />,
+      );
+      expect(container.querySelector(".hero-figure-accent")).toHaveClass(
+        "hero-figure-accent-animate",
+      );
+
+      // Flip the stubbed preference, then re-render the same mounted
+      // instance with an unrelated prop change -- must not remount
+      // HeroStat (a real remount would replay the reveal by design).
+      stubPrefersReducedMotion(true);
+      rerender(
+        <HeroStat startingCapital={20} endingBalance={6876.86} displayStartingCapital={500} />,
+      );
+
+      expect(container.querySelector(".hero-figure-accent")).toHaveClass(
+        "hero-figure-accent-animate",
+      );
+    });
+  });
 });

@@ -25,7 +25,7 @@ export function OnboardingIntro() {
   return (
     <div
       role="note"
-      className="flex items-start justify-between gap-3 rounded-lg border border-[var(--gridline)] bg-[var(--surface-2)] px-4 py-3 text-sm text-[var(--text-secondary)]"
+      className="surface-card flex items-start justify-between gap-3 rounded-lg border border-[var(--gridline)] bg-[var(--surface-2)] px-4 py-3 text-sm text-[var(--text-secondary)]"
     >
       <p>
         This is a hindsight toy: starting from $20, it finds the best possible outcome from at most

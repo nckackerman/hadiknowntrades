@@ -40,7 +40,7 @@ export function TradeRow({
   const { returnFraction, isGain } = computeTradeReturn(openPrice, closePrice, direction);
   const { openVerb, closeVerb } = tradeVerbs(direction);
   return (
-    <li className="flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-3 text-sm">
+    <li className="surface-card flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-3 text-sm">
       <span className="font-medium text-[var(--text-muted)]">#{index + 1}</span>
       <span>
         {openVerb} <span className="font-semibold text-[var(--text-primary)]">{ticker}</span>{" "}

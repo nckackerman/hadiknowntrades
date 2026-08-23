@@ -1935,6 +1935,16 @@ fresh one once the new fetch resolves.
   flip the stubbed `matchMedia` preference, then `rerender` the _same_
   mounted tree with an unrelated prop change (`mode`) and assert the
   wrapper's fade-in class doesn't move.
+  **Update (issue #77):** this exact "latch `prefersReducedMotion()` once
+  via a `useState` lazy initializer" shape got reimplemented independently
+  in `HeroStat.tsx`'s reveal accent, hitting the identical bug a second
+  time before being caught in `/code-review`. Both call sites now share
+  `lib/use-reduced-motion-at-mount.ts`'s `useReducedMotionAtMount` hook
+  instead of each holding its own copy -- see that file's own doc comment
+  for the full argument (unchanged from what's written here) and its
+  precondition for safe reuse. `FadeInWrapper` itself is now `const
+shouldFadeIn = !useReducedMotionAtMount();`, no local `useState` of its
+  own.
 - Still reuses `lib/prefers-reduced-motion.ts` rather than a second
   `matchMedia` check, and `FadeInWrapper` is only ever rendered once
   `state.status === "success"` (both early returns for `"loading"`/
@@ -2040,3 +2050,121 @@ dark` on `globals.css`'s `:root` (a real CSS property, not a custom
   so these are now standalone literal values with no live source of
   truth to stay in sync with (join `global-error.tsx`'s own values in
   that same boat).
+
+## Visual polish pass: surface elevation, chart fill, hero accent (issue #77)
+
+Three small, additive CSS/SVG changes against the dark-only palette #76
+left in place, each scoped to the "implementer's call" cosmetic values
+the issue itself left open:
+
+- **Surface elevation**: `globals.css`'s new `--shadow-surface` token
+  (a tight contact shadow + a softer ambient one + a faint inset top
+  highlight) and its `.surface-card` class are applied only to the
+  app's genuine "card" surfaces -- `TradeRow.tsx`'s rows, `TradeList.tsx`'s
+  prose box and empty-state fallback, `ResultsPanel.tsx`'s three
+  "no trades"/"no days" empty-state boxes, and `OnboardingIntro.tsx`'s
+  banner -- **not** every `--surface-1`/`--surface-2` background in the
+  app. Deliberately left off `RangeSelector`/`ModeToggle`'s pill-toggle
+  housings (control chrome, not a content card), the various form
+  controls that use `--surface-1` as their own background
+  (`DailyGuessForm`, `StartingCapitalInput`, `CustomRangeSelector`,
+  `DaySelector`), and `ResultsPanel`'s `LoadingSkeleton` placeholders (a
+  transient loading state, not worth its own elevation) -- a shadow on a
+  small pill or an input field read as visual noise, not polish, in a
+  quick live check. If a future surface-toned element genuinely reads as
+  a "card," add `.surface-card` to it explicitly rather than reaching
+  for one blanket selector matching every element that sets its
+  background from either surface custom property -- that would also
+  catch the pill/input/skeleton cases above, unintentionally. **Don't
+  spell that selector out literally in this file, even in prose**: tried
+  once while writing this very note, not just reasoned about --
+  Tailwind v4's content scanner reads this CLAUDE.md file too, and
+  writing the bracketed arbitrary-value class name with a wildcard
+  stand-in for "either surface number" was enough to make `next build`
+  emit a real "Unexpected token" CSS-optimizer warning at build time
+  (the scanner tried to treat the prose string as a candidate utility
+  class and choked on the wildcard character). Describe such patterns
+  structurally instead, the way the sentence above this note does.
+- **Chart area-fill gradient**: `PortfolioChart.tsx` already had an
+  area-fill gradient under the line (`<linearGradient>` fading
+  `--series-1` to transparent, present since issue #25's original
+  frontend PR) -- the issue's own background section describing "no
+  area fill" was working from a live screenshot where the fill was
+  simply too faint to read (a flat 10% opacity at the top, fading to
+  0%). Fixed by raising the top stop to 32% and adding a 55%-offset
+  8%-opacity middle stop (a curved, not linear, taper) rather than
+  adding a second gradient element -- confirmed live via the
+  throwaway-debug-route technique below that the wash is now clearly
+  visible against the dark background without competing with the
+  gridlines or the line itself.
+- **Hero stat reveal accent**: `HeroStat.tsx`'s visible (aria-hidden)
+  ending-balance span gets `globals.css`'s new `.hero-figure-accent`
+  class (a soft `text-shadow` glow) once `settled` goes true -- colored
+  via the same `isMultiplierGain` (`>= 1`) threshold the adjacent
+  multiplier badge already uses, deliberately _not_ the stricter
+  `isGain` that gates `CelebrationBurst`, so the glow (unlike confetti)
+  renders on both a gain and a loss reveal. Under reduced motion,
+  `.hero-figure-accent` alone still applies its own resting glow
+  instantly, satisfying the issue's "skipped/instant" wording literally:
+  the _animation_ (`.hero-figure-accent-animate`, a brief CSS
+  `@keyframes` entrance) is skipped, the glow itself isn't. Never
+  touches the `sr-only` twin span or the `aria-hidden` attribute on the
+  visible one, so neither the accessibility pairing nor `useCountUp`'s
+  tween is affected -- only a `className`/inline custom-property
+  (`--hero-accent-glow`) added to an already-existing span.
+  `HeroStat.test.tsx`'s "reveal accent (issue #77)" describe block
+  covers: no class pre-settle, gain coloring + animate class with motion
+  allowed, loss coloring, and the animate-class omission under reduced
+  motion (mirroring `CelebrationBurst.test.tsx`/`should-celebrate.test.ts`'s
+  own gating coverage per the issue's acceptance criteria).
+  - **Two real bugs found in `/code-review`, both fixed, in how
+    `animateAccentReveal` originally decided whether to add
+    `.hero-figure-accent-animate`.** The first draft computed it as
+    `settled && !prefersReducedMotion()`, claiming (wrongly) to reuse
+    `should-celebrate.ts`'s own `isGain && settled` short-circuit safety.
+    That claim doesn't hold here: `isGain` (`endingBalance >
+startingCapital`, strict) stays `false` at mount even for a flat result,
+    which is what makes `shouldCelebrate`'s `&&` provably never reach
+    `prefersReducedMotion()` on the SSR-matching first render -- but
+    `settled` (this accent's own gate, `animatedEndingBalance ===
+endingBalance`) is trivially `true` at mount whenever `startingCapital
+=== endingBalance` (a flat/no-trade result), so `prefersReducedMotion()`
+    genuinely _could_ run during that first render for that case,
+    reintroducing the exact hydration-mismatch risk those hooks exist to
+    avoid. Second, reading `prefersReducedMotion()` live on every render
+    (rather than latched once) meant the animate class could add/remove
+    itself on an already-mounted, already-settled figure if the OS
+    preference changed mid-session and an unrelated prop re-rendered
+    `HeroStat` (e.g. a `displayStartingCapital` edit) -- the identical bug
+    class `FadeInWrapper` (issue #65, below) already found and fixed
+    independently, reimplemented here before being caught a second time.
+    Both fixed the same way: `lib/use-reduced-motion-at-mount.ts`'s
+    `useReducedMotionAtMount` hook, shared with `FadeInWrapper`, latches
+    the read once via a `useState` lazy initializer at mount -- see that
+    hook's own doc comment for the full argument and its precondition
+    for safe reuse (only ever mounted from a client-only success branch).
+    Regression tests for both live in `HeroStat.test.tsx`'s own "reveal
+    accent" describe block (a flat-result case, and a re-render-with-
+    flipped-preference case) and generically in
+    `use-reduced-motion-at-mount.test.ts`.
+  - **A third finding in the same pass, also fixed**: `.hero-figure-accent-animate`'s
+    keyframe had no `animation-fill-mode: forwards`, unlike every other
+    animation in this file (`.confetti-piece`, `.chart-tap-hint-pulse`) --
+    its post-animation state relied on the keyframe's own `to` values
+    happening to exactly match `.hero-figure-accent`'s separately-declared
+    resting rule rather than being explicitly held. Added, matching
+    convention.
+- **Verified live** via the established throwaway-debug-route +
+  headless-Chromium technique (this file's own "Headless-browser
+  screenshot verification" section) -- a debug page rendered `HeroStat`
+  - `PortfolioChart` + `TradeList` for both a gain and a loss fixture,
+    screenshotted with and without `reducedMotion: "reduce"` context
+    emulation. Confirmed: both figures show a colored glow (green/red)
+    matching their multiplier badge; the chart's area fill reads clearly
+    under both a rising and a falling line; the trade-narration card shows
+    a visible soft shadow lifting it off the near-black background; no
+    confetti and no animate class under reduced motion, but the glow is
+    still present and instant. Playwright itself was temporarily added
+    (`pnpm add -D -w playwright`) and reverted afterward (confirmed via
+    `git diff package.json`/`pnpm install` afterward), per this file's own
+    convention.
