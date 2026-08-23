@@ -1410,3 +1410,62 @@ working URL, not a case one feature's own logic silently overrides:
   result is never actually consumed" situation issue #11's own `range
 === null` handling already established, just with one more always-ignored
   parameter alongside it.
+
+## Reveal announcement for screen readers (issue #67)
+
+The guess -> reveal swap in `ResultsPanel.tsx`'s intraday-daily branch
+(issue #34, see "Daily guessing game" above) had no `aria-live` coverage
+at all until this issue -- a screen reader user who submitted the guess
+form got no announcement that a large block of new content (`HeroStat`,
+`WorstCaseStat`, the methodology paragraph, `BenchmarkStat`, the "You
+guessed $X" line, `PortfolioChart`, the trade list) had just appeared.
+
+- **A `role="status"` + `aria-live="polite"` `sr-only` `<div>` sits at
+  the very top of the intraday-daily branch's return, always rendered**
+  -- not conditionally mounted only once `guess !== null` alongside the
+  revealed content. This mirrors `PortfolioChart.tsx`'s own `aria-live`
+  tooltip readout (an always-present container whose _text_ changes),
+  not `LoadingSkeleton`'s pattern (a container that itself mounts/
+  unmounts) -- an aria-live region generally needs to already exist in
+  the accessibility tree before the mutation it's meant to announce, so
+  conditionally mounting the region at the same instant as the content
+  it announces risks the mount itself being what a screen reader has to
+  notice, not a guaranteed live-region-mutation announcement.
+- Content is a static sentence, `` `Results revealed for ${formatDate(activeDay.date)} (${MODE_LABELS[mode].toLowerCase()}).` ``
+  when `guess !== null`, empty string otherwise -- deliberately **not**
+  wired to `HeroStat`'s per-frame `useCountUp` tween value. See this
+  file's own "Client-side animation" section above, which already
+  documents this exact trap (spamming assistive tech with every
+  intermediate count-up number) and its established fix for `HeroStat`
+  itself (`aria-hidden` + a static `sr-only` twin) -- this issue applies
+  the same "announce the fact, not the animating figure" principle one
+  level up, at the whole-section swap rather than a single number.
+- **Keyed on mode too, not just date (real bug, found in `high` code
+  review, fixed)**: `guess` is itself keyed on `(range, date, mode)` (see
+  "Long-only vs. long+short mode" below), so a day already guessed under
+  _both_ modes stays non-null on both sides of a mode switch -- the
+  underlying content still genuinely changes (a different trade
+  sequence, the same reasoning `HeroStat`'s own `heroKey` already keys on
+  mode for), but with the announcement text built from date alone, that
+  swap produced no DOM text mutation at all for assistive tech to notice.
+  `MODE_LABELS` (`lib/mode.ts`) is a new export, extracted from
+  `ModeToggle.tsx`'s previously-private label map so both surfaces share
+  one copy instead of the announcement growing its own second copy of
+  the same "long" -> "Long only" mapping.
+- Switching to a different, not-yet-guessed day resets the region back
+  to empty (the `guess !== null` check re-evaluates against the new
+  day's own stored guess, via the same `(range, date, mode)`-keyed
+  `useDailyGuess` this branch already calls) -- so the announcement
+  never stays stuck announcing a stale day's reveal.
+- Tested in `ResultsPanel.test.tsx`'s "guess-then-reveal (issue #34)"
+  describe block: `getByRole("status")` is empty before `submitAnyGuess`,
+  holds the reveal sentence after; resets to empty on a day switch; and
+  a dedicated regression test leaves `requestAnimationFrame` real
+  (un-mocked, unlike most of this file's other reveal-animation tests)
+  so `useCountUp`'s tween is still genuinely mid-flight when the
+  assertion runs, confirming the announcement is the final static
+  sentence even then, not an in-progress dollar figure. The mode-keying
+  fix itself is regression-tested in the "mode (issue #13)" describe
+  block: guess both modes for the same day first, then assert the
+  announcement text actually changes on a mode switch alone (date
+  unchanged).

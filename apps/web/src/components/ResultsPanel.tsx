@@ -19,7 +19,7 @@ import {
 } from "@/lib/portfolio-series";
 import { formatDate } from "@/lib/format-date";
 import { formatHeroCurrency } from "@/lib/format-currency";
-import { DEFAULT_MODE, type Mode } from "@/lib/mode";
+import { DEFAULT_MODE, MODE_LABELS, type Mode } from "@/lib/mode";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { useDailyGuess } from "@/lib/use-daily-guess";
 import { BenchmarkStat } from "@/components/BenchmarkStat";
@@ -498,6 +498,31 @@ export function ResultsPanel({
 
     return (
       <div className="flex flex-col gap-8">
+        {/* Announces the guess -> reveal swap below to screen reader users
+            (issue #67) -- always present in the DOM (not conditionally
+            mounted alongside the revealed content) so assistive tech has
+            already registered this region before the swap happens, the
+            same always-present-container pattern PortfolioChart's own
+            aria-live tooltip readout uses. Deliberately a static "the
+            reveal happened" sentence, not wired to HeroStat's per-frame
+            count-up value -- see apps/web/CLAUDE.md's "Client-side
+            animation" section on why that would spam assistive tech with
+            every intermediate number.
+
+            Includes mode (issue #13), not just the date (found in code
+            review): the day's own content genuinely changes when
+            switching between an already-guessed day's long-only and
+            long+short variants (a different trade sequence, same as
+            HeroStat's own heroKey treats a mode switch -- see that
+            comment below), even though `guess` stays non-null across
+            the switch and the date itself doesn't change -- without
+            mode in the announcement text, that swap produced no DOM
+            mutation for assistive tech to notice at all. */}
+        <div role="status" aria-live="polite" className="sr-only">
+          {guess !== null
+            ? `Results revealed for ${formatDate(activeDay.date)} (${MODE_LABELS[mode].toLowerCase()}).`
+            : ""}
+        </div>
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-end justify-between gap-4">
             {guess === null ? (

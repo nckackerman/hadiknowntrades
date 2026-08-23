@@ -841,6 +841,59 @@ describe("ResultsPanel", () => {
         expect(screen.queryByRole("button", { name: /reveal/i })).not.toBeInTheDocument();
         expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
       });
+
+      it('announces the reveal to screen readers via a role="status" live region once the guess is submitted, and stays silent before (issue #67)', async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+        render(<ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />);
+
+        // The live region exists in the DOM before the reveal -- so
+        // assistive tech has already registered it and will catch the
+        // upcoming content change -- but carries no announcement yet.
+        expect(screen.getByRole("status")).toHaveTextContent("");
+
+        await submitAnyGuess(user);
+
+        expect(screen.getByRole("status")).toHaveTextContent(
+          "Results revealed for Aug 21, 2026 (long only).",
+        );
+      });
+
+      it("clears the reveal announcement when switching to a different day that hasn't been guessed yet", async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+        const { rerender } = render(
+          <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />,
+        );
+        await submitAnyGuess(user);
+        expect(screen.getByRole("status")).toHaveTextContent(
+          "Results revealed for Aug 21, 2026 (long only).",
+        );
+
+        rerender(<ResultsPanel range="1M" state={state} selectedDay="2026-08-20" />);
+
+        expect(screen.getByRole("status")).toHaveTextContent("");
+      });
+
+      it("does not wire the announcement to HeroStat's per-frame animating figure -- it stays a static sentence even mid-tween (issue #67)", async () => {
+        // Regression guard for the exact trap apps/web/CLAUDE.md's
+        // "Client-side animation" section documents: never let an
+        // aria-live region announce every intermediate count-up value.
+        // Here requestAnimationFrame is left un-mocked (jsdom's real
+        // rAF backs it, see that same doc section), so useCountUp's
+        // tween is still mid-flight when this assertion runs -- the
+        // live region's text must already be the final static sentence
+        // regardless, never an in-progress dollar figure.
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+        render(<ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />);
+
+        await submitAnyGuess(user);
+
+        expect(screen.getByRole("status")).toHaveTextContent(
+          "Results revealed for Aug 21, 2026 (long only).",
+        );
+      });
     });
   });
 
@@ -907,6 +960,32 @@ describe("ResultsPanel", () => {
 
       rerender(<ResultsPanel range="1M" state={state} mode="long-short" />);
       expect(screen.getByRole("button", { name: /reveal/i })).toBeInTheDocument();
+    });
+
+    it("re-announces the reveal when switching modes on a day already guessed under both modes, since the underlying content genuinely changes (issue #67 regression, found in code review)", async () => {
+      // Unlike the previous test, both modes' guesses are already stored
+      // before this test's own assertions run -- guess stays non-null on
+      // both sides of the mode switch below, so the aria-live text is the
+      // *only* signal a screen reader gets that the swapped-in content
+      // (a genuinely different trade sequence -- see HeroStat's own
+      // heroKey comment) is new. The fix must key the announcement on
+      // mode, not just date, or this switch produces no DOM mutation at
+      // all for assistive tech to notice.
+      const user = userEvent.setup();
+      const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+      const { rerender } = render(<ResultsPanel range="1M" state={state} mode="long" />);
+      await submitAnyGuess(user);
+      rerender(<ResultsPanel range="1M" state={state} mode="long-short" />);
+      await submitAnyGuess(user);
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Results revealed for Aug 21, 2026 (long + short).",
+      );
+
+      rerender(<ResultsPanel range="1M" state={state} mode="long" />);
+
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Results revealed for Aug 21, 2026 (long only).",
+      );
     });
   });
 

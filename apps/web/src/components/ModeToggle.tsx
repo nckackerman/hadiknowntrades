@@ -1,11 +1,6 @@
 "use client";
 
-import { MODES, type Mode } from "@/lib/mode";
-
-const MODE_LABELS: Record<Mode, string> = {
-  long: "Long only",
-  "long-short": "Long + short",
-};
+import { MODE_LABELS, MODES, type Mode } from "@/lib/mode";
 
 interface ModeToggleProps {
   selected: Mode;
