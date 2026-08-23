@@ -1431,7 +1431,7 @@ guessed $X" line, `PortfolioChart`, the trade list) had just appeared.
   conditionally mounting the region at the same instant as the content
   it announces risks the mount itself being what a screen reader has to
   notice, not a guaranteed live-region-mutation announcement.
-- Content is a static sentence, `` `Results revealed for ${formatDate(activeDay.date)}.` ``
+- Content is a static sentence, `` `Results revealed for ${formatDate(activeDay.date)} (${MODE_LABELS[mode].toLowerCase()}).` ``
   when `guess !== null`, empty string otherwise -- deliberately **not**
   wired to `HeroStat`'s per-frame `useCountUp` tween value. See this
   file's own "Client-side animation" section above, which already
@@ -1440,6 +1440,18 @@ guessed $X" line, `PortfolioChart`, the trade list) had just appeared.
   itself (`aria-hidden` + a static `sr-only` twin) -- this issue applies
   the same "announce the fact, not the animating figure" principle one
   level up, at the whole-section swap rather than a single number.
+- **Keyed on mode too, not just date (real bug, found in `high` code
+  review, fixed)**: `guess` is itself keyed on `(range, date, mode)` (see
+  "Long-only vs. long+short mode" below), so a day already guessed under
+  _both_ modes stays non-null on both sides of a mode switch -- the
+  underlying content still genuinely changes (a different trade
+  sequence, the same reasoning `HeroStat`'s own `heroKey` already keys on
+  mode for), but with the announcement text built from date alone, that
+  swap produced no DOM text mutation at all for assistive tech to notice.
+  `MODE_LABELS` (`lib/mode.ts`) is a new export, extracted from
+  `ModeToggle.tsx`'s previously-private label map so both surfaces share
+  one copy instead of the announcement growing its own second copy of
+  the same "long" -> "Long only" mapping.
 - Switching to a different, not-yet-guessed day resets the region back
   to empty (the `guess !== null` check re-evaluates against the new
   day's own stored guess, via the same `(range, date, mode)`-keyed
@@ -1452,4 +1464,8 @@ guessed $X" line, `PortfolioChart`, the trade list) had just appeared.
   (un-mocked, unlike most of this file's other reveal-animation tests)
   so `useCountUp`'s tween is still genuinely mid-flight when the
   assertion runs, confirming the announcement is the final static
-  sentence even then, not an in-progress dollar figure.
+  sentence even then, not an in-progress dollar figure. The mode-keying
+  fix itself is regression-tested in the "mode (issue #13)" describe
+  block: guess both modes for the same day first, then assert the
+  announcement text actually changes on a mode switch alone (date
+  unchanged).

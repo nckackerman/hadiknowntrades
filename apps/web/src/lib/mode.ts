@@ -15,6 +15,20 @@ export type Mode = (typeof MODES)[number];
 export const DEFAULT_MODE: Mode = "long";
 
 /**
+ * Human-readable label per mode -- the single shared copy `ModeToggle.tsx`'s
+ * pill buttons and `ResultsPanel.tsx`'s reveal aria-live announcement
+ * (issue #67) both read, so the two surfaces can't drift on how a mode
+ * is named. `ModeToggle.tsx` used to keep its own private copy of this
+ * exact map before issue #67 needed the same labels for its own copy
+ * (found in code review) -- extracted here rather than letting a second
+ * component grow a second copy.
+ */
+export const MODE_LABELS: Record<Mode, string> = {
+  long: "Long only",
+  "long-short": "Long + short",
+};
+
+/**
  * Case-insensitively matches a raw query-string value against MODES, or
  * returns null if it doesn't match either -- mirrors results-api.ts's own
  * `parseRange`. A missing or unrecognized `?mode=` falls back to

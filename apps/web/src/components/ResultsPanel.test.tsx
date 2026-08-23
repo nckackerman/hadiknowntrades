@@ -854,7 +854,9 @@ describe("ResultsPanel", () => {
 
         await submitAnyGuess(user);
 
-        expect(screen.getByRole("status")).toHaveTextContent("Results revealed for Aug 21, 2026.");
+        expect(screen.getByRole("status")).toHaveTextContent(
+          "Results revealed for Aug 21, 2026 (long only).",
+        );
       });
 
       it("clears the reveal announcement when switching to a different day that hasn't been guessed yet", async () => {
@@ -864,7 +866,9 @@ describe("ResultsPanel", () => {
           <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />,
         );
         await submitAnyGuess(user);
-        expect(screen.getByRole("status")).toHaveTextContent("Results revealed for Aug 21, 2026.");
+        expect(screen.getByRole("status")).toHaveTextContent(
+          "Results revealed for Aug 21, 2026 (long only).",
+        );
 
         rerender(<ResultsPanel range="1M" state={state} selectedDay="2026-08-20" />);
 
@@ -886,7 +890,9 @@ describe("ResultsPanel", () => {
 
         await submitAnyGuess(user);
 
-        expect(screen.getByRole("status")).toHaveTextContent("Results revealed for Aug 21, 2026.");
+        expect(screen.getByRole("status")).toHaveTextContent(
+          "Results revealed for Aug 21, 2026 (long only).",
+        );
       });
     });
   });
@@ -954,6 +960,32 @@ describe("ResultsPanel", () => {
 
       rerender(<ResultsPanel range="1M" state={state} mode="long-short" />);
       expect(screen.getByRole("button", { name: /reveal/i })).toBeInTheDocument();
+    });
+
+    it("re-announces the reveal when switching modes on a day already guessed under both modes, since the underlying content genuinely changes (issue #67 regression, found in code review)", async () => {
+      // Unlike the previous test, both modes' guesses are already stored
+      // before this test's own assertions run -- guess stays non-null on
+      // both sides of the mode switch below, so the aria-live text is the
+      // *only* signal a screen reader gets that the swapped-in content
+      // (a genuinely different trade sequence -- see HeroStat's own
+      // heroKey comment) is new. The fix must key the announcement on
+      // mode, not just date, or this switch produces no DOM mutation at
+      // all for assistive tech to notice.
+      const user = userEvent.setup();
+      const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+      const { rerender } = render(<ResultsPanel range="1M" state={state} mode="long" />);
+      await submitAnyGuess(user);
+      rerender(<ResultsPanel range="1M" state={state} mode="long-short" />);
+      await submitAnyGuess(user);
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Results revealed for Aug 21, 2026 (long + short).",
+      );
+
+      rerender(<ResultsPanel range="1M" state={state} mode="long" />);
+
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Results revealed for Aug 21, 2026 (long only).",
+      );
     });
   });
 
