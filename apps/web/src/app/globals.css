@@ -203,7 +203,7 @@ body {
  * --surface-1/--surface-2 background in the app. Deliberately *not*
  * applied to RangeSelector/ModeToggle's pill-toggle housings (control
  * chrome, not a content card) or to DailyGuessForm/StartingCapitalInput/
- * CustomRangeSelector/DaySelector's own form-control backgrounds (same
+ * CustomRangeSelector/DayOverview's own form-control-like backgrounds (same
  * reasoning) or to ResultsPanel's LoadingSkeleton placeholders (a
  * transient loading state, not a card worth its own elevation). See
  * --shadow-surface's own doc comment above for the shadow recipe itself.

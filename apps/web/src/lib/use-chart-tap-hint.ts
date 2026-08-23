@@ -44,7 +44,8 @@ import { prefersReducedMotion } from "./prefers-reduced-motion";
  * found in code review, fixed).** The first version only wrote the
  * dismissal from `dismiss()` itself, which meant a `PortfolioChart` that
  * unmounts before either happens -- e.g. the intraday-daily model's
- * `DaySelector` switching to a different day mid-pulse, well within the
+ * `DayOverview` (issue #80; `DaySelector` before it) switching to a
+ * different day mid-pulse, well within the
  * ~4.2s three-cycle animation -- left `isChartTapHintDismissed()` still
  * reading `false`, so the very next `PortfolioChart` mount (a different
  * day, or the same one revisited) showed the pulse all over again,

@@ -10,7 +10,7 @@ import {
 
 interface StartingCapitalInputProps {
   /** The currently-committed starting capital (issue #15) -- a
-   * controlled component, same pattern as RangeSelector/DaySelector: the
+   * controlled component, same pattern as RangeSelector/DayOverview: the
    * caller (ResultsPanel, via ResultsPage's useStartingCapital) owns the
    * value and, if it wants persistence, is responsible for it. */
   value: number;

@@ -40,7 +40,7 @@ interface UseDailyGuessResult {
  * a tree that can render during SSR without re-checking that assumption.
  *
  * `range`, `date`, or `mode` changing (the user picked a different day
- * via DaySelector, switched range tabs, or toggled long-only/long+short
+ * via DayOverview, switched range tabs, or toggled long-only/long+short
  * via ModeToggle -- issue #13) is handled with the same "adjust state
  * during render when a prop changes" pattern use-results.ts already
  * established for range changes: switching any of the three must

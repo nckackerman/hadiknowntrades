@@ -4,7 +4,7 @@ import {
   type IntradayResult,
   type WindowResult,
 } from "@hadiknowntrades/core";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -17,10 +17,16 @@ import { ResultsPanel } from "./ResultsPanel";
  * screen (issue #34) -- every intraday-daily test below has to clear this
  * gate before it can assert on the actual revealed result, the same way a
  * real user would.
+ *
+ * The submit button's accessible name is matched *exactly* ("Reveal the
+ * answer"), not with a loose /reveal/i regex -- since issue #80 added
+ * DayOverview, every unguessed day's own row button also has "Guess to
+ * reveal" in its accessible name, and a loose match found the first (and
+ * wrong) one of those instead of the actual submit button.
  */
 async function submitAnyGuess(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText(/what do you think/i), "1");
-  await user.click(screen.getByRole("button", { name: /reveal/i }));
+  await user.click(screen.getByRole("button", { name: "Reveal the answer" }));
 }
 
 function fixtureResult(overrides: Partial<WindowResult> = {}): WindowResult {
@@ -575,8 +581,10 @@ describe("ResultsPanel", () => {
       render(<ResultsPanel range="1M" state={state} />);
       // The date is visible in the guess prompt itself, before any guess
       // is submitted -- confirms the fallback-to-most-recent-day logic
-      // runs even pre-reveal, not just after.
-      expect(screen.getByText(/Aug 21, 2026/)).toBeInTheDocument();
+      // runs even pre-reveal, not just after. Scoped to the prompt's own
+      // label (not a bare screen.getByText) since issue #80's DayOverview
+      // also renders "Aug 21, 2026" in its own day row.
+      expect(screen.getByLabelText(/Aug 21, 2026/)).toBeInTheDocument();
       await submitAnyGuess(user);
 
       // Most recent day is 2026-08-21 (MSFT), not 2026-08-20 (AAPL).
@@ -614,15 +622,52 @@ describe("ResultsPanel", () => {
       expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
     });
 
-    it("calls onSelectDay when a different day is chosen from the DaySelector, even before that day has been guessed", async () => {
+    it("calls onSelectDay when a different day's row is clicked in DayOverview, even before that day has been guessed", async () => {
       const user = userEvent.setup();
       const onSelectDay = vi.fn();
       const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
       render(<ResultsPanel range="1M" state={state} onSelectDay={onSelectDay} />);
 
-      await user.selectOptions(screen.getByRole("combobox"), "2026-08-20");
+      await user.click(screen.getByRole("button", { name: /Aug 20, 2026/ }));
 
       expect(onSelectDay).toHaveBeenCalledWith("2026-08-20");
+    });
+
+    describe("DayOverview (issue #80)", () => {
+      it("lists every trading day in the range with its own trade count, even before any day has been guessed", () => {
+        const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+        render(<ResultsPanel range="1M" state={state} />);
+
+        // fixtureIntradayResult's two days: 2026-08-20 (1 trade) and
+        // 2026-08-21 (the default-selected, most recent day -- 1 trade
+        // too, see its own fixture trades array).
+        expect(screen.getByRole("button", { name: /Aug 20, 2026.*1 trade/ })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: /Aug 21, 2026.*1 trade/ })).toBeInTheDocument();
+      });
+
+      it("never shows a day's dollar ending balance until that specific day has been guessed", async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+        render(<ResultsPanel range="1M" state={state} />);
+
+        // Neither day's real ending balance ($25 for 08-20, $40 for
+        // 08-21) is visible before any guess is submitted -- both rows
+        // show the locked placeholder instead.
+        expect(screen.getAllByText("Guess to reveal")).toHaveLength(2);
+        expect(screen.queryByText("$25.00")).not.toBeInTheDocument();
+        expect(screen.queryByText("$40.00")).not.toBeInTheDocument();
+
+        // Guessing the currently-active day (2026-08-21, the default)
+        // reveals only that row's balance -- the other day, still
+        // unguessed, keeps its own placeholder. Scoped to the day's own
+        // row (not a bare screen.getByText) since HeroStat's sr-only
+        // figure reads the identical "$40.00" once revealed too.
+        await submitAnyGuess(user);
+
+        const revealedRow = screen.getByRole("button", { name: /Aug 21, 2026/ });
+        expect(within(revealedRow).getByText("$40.00")).toBeInTheDocument();
+        expect(screen.getAllByText("Guess to reveal")).toHaveLength(1);
+      });
     });
 
     it("shows an empty state for a day with no trades", async () => {
@@ -712,7 +757,7 @@ describe("ResultsPanel", () => {
         const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
         render(<ResultsPanel range="1M" state={state} />);
 
-        expect(screen.getByRole("button", { name: /reveal/i })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Reveal the answer" })).toBeInTheDocument();
         expect(screen.queryByText("$40.00")).not.toBeInTheDocument();
         expect(screen.queryByText(/MSFT/)).not.toBeInTheDocument();
         expect(
@@ -754,9 +799,9 @@ describe("ResultsPanel", () => {
         render(<ResultsPanel range="1M" state={state} />);
 
         await user.type(screen.getByLabelText(/what do you think/i), "30");
-        await user.click(screen.getByRole("button", { name: /reveal/i }));
+        await user.click(screen.getByRole("button", { name: "Reveal the answer" }));
 
-        expect(screen.queryByRole("button", { name: /reveal/i })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Reveal the answer" })).not.toBeInTheDocument();
         expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
         expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
         expect(screen.getByText(/you guessed \$30\.00/i)).toBeInTheDocument();
@@ -769,7 +814,7 @@ describe("ResultsPanel", () => {
 
         // Guessed while the prompt showed $20.00 starting capital.
         await user.type(screen.getByLabelText(/what do you think/i), "30");
-        await user.click(screen.getByRole("button", { name: /reveal/i }));
+        await user.click(screen.getByRole("button", { name: "Reveal the answer" }));
         expect(screen.getByText(/you guessed \$30\.00/i)).toBeInTheDocument();
 
         // Starting capital changes post-reveal (e.g. via StartingCapitalInput)
@@ -788,14 +833,14 @@ describe("ResultsPanel", () => {
         const { unmount } = render(<ResultsPanel range="1M" state={state} />);
 
         await user.type(screen.getByLabelText(/what do you think/i), "15");
-        await user.click(screen.getByRole("button", { name: /reveal/i }));
+        await user.click(screen.getByRole("button", { name: "Reveal the answer" }));
         expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
 
         unmount();
         render(<ResultsPanel range="1M" state={state} />);
 
         // No guess prompt on the "reload" -- straight to the revealed result.
-        expect(screen.queryByRole("button", { name: /reveal/i })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Reveal the answer" })).not.toBeInTheDocument();
         expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
         expect(screen.getByText(/you guessed \$15\.00/i)).toBeInTheDocument();
       });
@@ -811,7 +856,7 @@ describe("ResultsPanel", () => {
 
         rerender(<ResultsPanel range="1M" state={state} selectedDay="2026-08-20" />);
 
-        expect(screen.getByRole("button", { name: /reveal/i })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Reveal the answer" })).toBeInTheDocument();
         expect(screen.queryByText(/AAPL/)).not.toBeInTheDocument();
       });
 
@@ -831,15 +876,15 @@ describe("ResultsPanel", () => {
         expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
 
         rerender(<ResultsPanel range="3M" state={state} selectedDay="2026-08-21" />);
-        expect(screen.getByRole("button", { name: /reveal/i })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Reveal the answer" })).toBeInTheDocument();
         expect(screen.queryByText(/MSFT/)).not.toBeInTheDocument();
 
         rerender(<ResultsPanel range="1Y" state={state} selectedDay="2026-08-21" />);
-        expect(screen.getByRole("button", { name: /reveal/i })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Reveal the answer" })).toBeInTheDocument();
 
         // Switching back to 1M still remembers the original guess.
         rerender(<ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />);
-        expect(screen.queryByRole("button", { name: /reveal/i })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Reveal the answer" })).not.toBeInTheDocument();
         expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
       });
 
@@ -960,7 +1005,7 @@ describe("ResultsPanel", () => {
       expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
 
       rerender(<ResultsPanel range="1M" state={state} mode="long-short" />);
-      expect(screen.getByRole("button", { name: /reveal/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Reveal the answer" })).toBeInTheDocument();
     });
 
     it("re-announces the reveal when switching modes on a day already guessed under both modes, since the underlying content genuinely changes (issue #67 regression, found in code review)", async () => {
