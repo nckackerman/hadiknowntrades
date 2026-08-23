@@ -1669,11 +1669,32 @@ added real, cheap discoverability value without inventing anything new.
   the discoverable hover interaction), not already shown/dismissed
   (`chart-tap-hint-storage.ts`, same single-sentinel shape as
   `onboarding-storage.ts`, issue #64), and not `prefersReducedMotion()`.
-  Dismissed (persisted, never shown again) either by any real chart
-  interaction (`revealNearestPoint`, shared by pointerdown/pointermove
-  since issue #44) or by the pulse animation completing three cycles on
-  its own (`onAnimationEnd`) -- so a user who never taps still only sees
-  it flash briefly once, not forever.
+  A tap (`revealNearestPoint`, shared by pointerdown/pointermove since
+  issue #44) or the pulse animation completing three cycles on its own
+  (`onAnimationEnd`) hides it for the rest of that mount, so a user who
+  never taps still only sees it flash briefly once, not forever.
+  - **The dismissal itself is persisted immediately on mount (a `useEffect`
+    with an empty dependency array), not deferred until the tap/
+    animation-end that hides it locally (real bug, found in `high` code
+    review, fixed).** The first version only wrote to storage from those
+    two dismiss paths -- fine for a chart that stays mounted, but
+    `ResultsPanel`'s intraday-daily model unmounts `PortfolioChart`
+    entirely on a `DaySelector` day switch (see "Two result models"
+    above), well within the pulse's own ~4.2s three-cycle runtime. A
+    touch user who switched days mid-pulse, before tapping or waiting it
+    out, left `isChartTapHintDismissed()` still reading `false` -- so
+    the next `PortfolioChart` mount (any day, including the one just
+    left) showed the pulse all over again, repeatably, contradicting
+    this hook's own "shown once, ever" contract. The effect fires
+    synchronously on commit, strictly before the browser can dispatch
+    any user event that could unmount this component (a day-switch click
+    included), so persisting there instead closes the gap regardless of
+    what happens to that particular mount afterward. Regression-tested
+    two ways: `use-chart-tap-hint.test.ts` unmounts a shown-but-untapped
+    hook instance and asserts a fresh instance stays dismissed;
+    `PortfolioChart.test.tsx`'s own "touch tap hint" describe block does
+    the same one level up, rendering and unmounting a whole
+    `PortfolioChart` with no tap at all.
 - **Deliberately the `use-daily-guess.ts` synchronous-read shortcut, not
   `use-hydrated-local-storage-state.ts`'s deferred-correction hook** --
   `use-chart-tap-hint.ts`'s own doc comment spells out why this is safe:
@@ -1714,3 +1735,19 @@ scale(...)` on an SVG `<circle>`, which needs `transform-box: fill-box`
   motion requested) on a throwaway debug route
   (`debug-chart-tap-hint/page.tsx`, deleted before committing, per this
   file's own "Screenshotting a component locally" convention).
+- **`lib/stub-match-media.test-util.ts`** is a new shared per-query
+  `matchMedia` stub (`stubMatchMedia({ "(pointer: coarse)": true, ... })`)
+  -- `use-chart-tap-hint.test.ts` and `PortfolioChart.test.tsx` both need
+  to control two independent media queries (`(pointer: coarse)`,
+  `prefersReducedMotion()`'s own `(prefers-reduced-motion: reduce)`)
+  rather than one fixed `matches`, and this issue's own first draft
+  hand-copied an identical stub function into both files (`high` code
+  review finding, fixed). Named `.test-util.ts`, not `.ts`, specifically
+  so Vitest's default `**/*.{test,spec}.*` glob doesn't pick it up as
+  its own (empty, assertion-free) test file -- confirmed live, not just
+  reasoned about: the full suite's file count didn't change by adding
+  it. `use-count-up.test.ts`/`HeroStat.test.tsx`'s own older, narrower
+  `stubPrefersReducedMotion` (a single fixed `matches`, no per-query
+  control) stays independently duplicated between those two files --
+  out of scope for this issue, not touched here; worth extracting
+  alongside this one if a third caller ever needs it.

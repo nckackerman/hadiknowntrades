@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { PortfolioChart } from "./PortfolioChart";
 import { boxesOverlap, labelBox, type LabelAnchor } from "@/lib/chart-label-layout";
 import type { PortfolioPoint } from "@/lib/portfolio-series";
+import { stubMatchMedia } from "@/lib/stub-match-media.test-util";
 
 const points: PortfolioPoint[] = [
   { date: "2024-01-01", value: 20, event: null },
@@ -11,27 +12,6 @@ const points: PortfolioPoint[] = [
 ];
 
 const PLACEHOLDER_TEXT = "Tap, hover, or focus the chart (use the arrow keys) to inspect a point.";
-
-/**
- * Stubs `window.matchMedia` per-query (unlike a single fixed `matches`)
- * -- use-chart-tap-hint.ts calls it for two independent queries
- * (`(pointer: coarse)` and `prefersReducedMotion()`'s own
- * `(prefers-reduced-motion: reduce)`), and the "touch tap hint" tests
- * below need to control them independently. jsdom in this repo's setup
- * doesn't implement `matchMedia` at all -- see use-count-up.ts's own
- * doc comment -- so every one of this describe block's tests needs this
- * stub even to reach a `false` default deterministically.
- */
-function stubMatchMedia(overrides: Record<string, boolean>) {
-  vi.stubGlobal(
-    "matchMedia",
-    vi.fn((query: string) => ({
-      matches: overrides[query] ?? false,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    })),
-  );
-}
 
 /**
  * jsdom's SVG elements report a zero-size getBoundingClientRect by
@@ -434,18 +414,20 @@ describe("PortfolioChart", () => {
       expect(getTapHintPulse(container)).toBeNull();
     });
 
-    it("dismisses the hint (and persists the dismissal) on the first tap", () => {
+    it("hides the pulse on the first tap (the dismissal itself was already persisted at mount)", () => {
       stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": false });
 
       const { container } = render(<PortfolioChart points={eventPoints} />);
       expect(getTapHintPulse(container)).not.toBeNull();
+      // Persisted as soon as it was shown, not deferred until this tap --
+      // see use-chart-tap-hint.test.ts's own regression test for why.
+      expect(window.localStorage.getItem("hikt:chart-tap-hint-dismissed")).not.toBeNull();
 
       const svg = getChartSvg();
       stubChartRect(svg);
       fireEvent.pointerDown(svg, { clientX: 860 });
 
       expect(getTapHintPulse(container)).toBeNull();
-      expect(window.localStorage.getItem("hikt:chart-tap-hint-dismissed")).not.toBeNull();
     });
 
     it("never shows the hint on a later mount once it was already dismissed", () => {
@@ -455,6 +437,28 @@ describe("PortfolioChart", () => {
       const { container } = render(<PortfolioChart points={eventPoints} />);
 
       expect(getTapHintPulse(container)).toBeNull();
+    });
+
+    /**
+     * Regression test for a real bug found in code review: the hint's
+     * dismissal used to persist only from an actual tap or the pulse
+     * animation's own completion, so a chart that unmounted before
+     * either happened -- e.g. `ResultsPanel`'s `DaySelector` switching
+     * to a different intraday day mid-pulse -- left the "shown" flag
+     * unset, and the very next `PortfolioChart` mount (a fresh instance,
+     * the same way switching days remounts one) showed the pulse again.
+     * Unmounting here with no tap at all mirrors exactly that scenario.
+     */
+    it("stays dismissed on a fresh mount (e.g. after switching days) even if the previous chart was never tapped", () => {
+      stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": false });
+
+      const first = render(<PortfolioChart points={eventPoints} />);
+      expect(getTapHintPulse(first.container)).not.toBeNull();
+      first.unmount();
+
+      const second = render(<PortfolioChart points={eventPoints} />);
+
+      expect(getTapHintPulse(second.container)).toBeNull();
     });
   });
 });

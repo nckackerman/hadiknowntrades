@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { dismissChartTapHint, isChartTapHintDismissed } from "./chart-tap-hint-storage";
 import { prefersReducedMotion } from "./prefers-reduced-motion";
@@ -38,6 +38,22 @@ import { prefersReducedMotion } from "./prefers-reduced-motion";
  *   burst -- the caption fix (`PortfolioChart.tsx`'s idle readout) is
  *   this issue's real accessibility floor for every user regardless of
  *   motion preference or pointer type.
+ *
+ * **Persisted immediately on mount (via the effect below), not deferred
+ * until `dismiss()`/the pulse animation's own `onAnimationEnd` (real bug,
+ * found in code review, fixed).** The first version only wrote the
+ * dismissal from `dismiss()` itself, which meant a `PortfolioChart` that
+ * unmounts before either happens -- e.g. the intraday-daily model's
+ * `DaySelector` switching to a different day mid-pulse, well within the
+ * ~4.2s three-cycle animation -- left `isChartTapHintDismissed()` still
+ * reading `false`, so the very next `PortfolioChart` mount (a different
+ * day, or the same one revisited) showed the pulse all over again,
+ * repeatably, contradicting this hook's own "shown once, ever" contract.
+ * The effect fires synchronously on commit, before the browser can
+ * dispatch any user event (a tap, or a click that would unmount this
+ * component by switching days) -- so by the time either could happen,
+ * the dismissal is already durable regardless of what happens to this
+ * particular mount afterward.
  */
 export function useChartTapHint(): [boolean, () => void] {
   const [show, setShow] = useState(() => {
@@ -50,10 +66,17 @@ export function useChartTapHint(): [boolean, () => void] {
     return window.matchMedia("(pointer: coarse)").matches;
   });
 
+  useEffect(() => {
+    if (show) {
+      dismissChartTapHint();
+    }
+    // Mount-only: `show` is only ever set once, by the initializer above
+    // -- there's no later render where this should re-fire.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally mount-only, see comment above
+  }, []);
+
   function dismiss(): void {
-    if (!show) return;
     setShow(false);
-    dismissChartTapHint();
   }
 
   return [show, dismiss];

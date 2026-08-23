@@ -2,28 +2,10 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { dismissChartTapHint } from "./chart-tap-hint-storage";
+import { stubMatchMedia } from "./stub-match-media.test-util";
 import { useChartTapHint } from "./use-chart-tap-hint";
 
 const STORAGE_KEY = "hikt:chart-tap-hint-dismissed";
-
-/**
- * Stubs `window.matchMedia` per-query, unlike use-count-up.test.ts's own
- * helper (a single fixed `matches` regardless of query) -- this hook
- * calls `matchMedia` for two different queries
- * (`prefersReducedMotion()`'s own `(prefers-reduced-motion: reduce)`,
- * plus this hook's own `(pointer: coarse)`), and tests need to control
- * them independently.
- */
-function stubMatchMedia(overrides: Record<string, boolean>) {
-  vi.stubGlobal(
-    "matchMedia",
-    vi.fn((query: string) => ({
-      matches: overrides[query] ?? false,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    })),
-  );
-}
 
 describe("useChartTapHint", () => {
   afterEach(() => {
@@ -75,7 +57,26 @@ describe("useChartTapHint", () => {
     expect(result.current[0]).toBe(false);
   });
 
-  it("dismiss() hides the hint and persists the dismissal to localStorage", () => {
+  it("persists the dismissal to localStorage as soon as the hint is shown, before any interaction", () => {
+    stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": false });
+
+    const { result } = renderHook(() => useChartTapHint());
+
+    // No dismiss() call yet -- the mount effect alone should have
+    // already persisted it.
+    expect(result.current[0]).toBe(true);
+    expect(window.localStorage.getItem(STORAGE_KEY)).not.toBeNull();
+  });
+
+  it("does not write to storage on mount when the hint isn't shown", () => {
+    stubMatchMedia({ "(pointer: coarse)": false, "(prefers-reduced-motion: reduce)": false });
+
+    renderHook(() => useChartTapHint());
+
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it("dismiss() hides the hint locally (storage was already persisted at mount)", () => {
     stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": false });
 
     const { result } = renderHook(() => useChartTapHint());
@@ -89,16 +90,25 @@ describe("useChartTapHint", () => {
     expect(window.localStorage.getItem(STORAGE_KEY)).not.toBeNull();
   });
 
-  it("dismiss() is a no-op (doesn't write to storage) when the hint was never shown", () => {
-    stubMatchMedia({ "(pointer: coarse)": false, "(prefers-reduced-motion: reduce)": false });
+  /**
+   * Regression test for a real bug found in code review: the first
+   * version only persisted the dismissal from `dismiss()` itself (or
+   * the pulse animation's own `onAnimationEnd`), so a chart that
+   * unmounted before either happened -- e.g. switching to a different
+   * intraday day mid-pulse -- left the flag unset, and the very next
+   * mount showed the hint again. Unmounting here with no `dismiss()`
+   * call at all mirrors exactly that "switched away before interacting"
+   * scenario.
+   */
+  it("stays dismissed for a later mount even when a shown hint is unmounted without any interaction", () => {
+    stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": false });
 
-    const { result } = renderHook(() => useChartTapHint());
-    expect(result.current[0]).toBe(false);
+    const first = renderHook(() => useChartTapHint());
+    expect(first.result.current[0]).toBe(true);
+    first.unmount();
 
-    act(() => {
-      result.current[1]();
-    });
+    const second = renderHook(() => useChartTapHint());
 
-    expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull();
+    expect(second.result.current[0]).toBe(false);
   });
 });
