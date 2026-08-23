@@ -845,17 +845,63 @@ drill-down in `ResultsPanel.tsx`'s intraday-daily branch.
   interactive control, and a `<button>` isn't a valid direct child of
   `<tr>` per the HTML spec. See `DayOverview.tsx`'s own doc comment for
   the full reasoning.
-- Calls `daily-guess-storage.ts`'s exported `getDailyGuess` directly
-  (not through the `useDailyGuess` hook, which only ever tracks one
-  `(range, date, mode)` triple at a time -- the one currently active
-  below) once per day in `data.days`, every render this branch takes.
-  Cheap even at ~252 rows (1Y) -- a `localStorage.getItem` + JSON.parse
-  per day, only on a real user interaction (mode/day switch, guess
-  submit, starting-capital edit), not on every keystroke -- and
-  correctly reactive: submitting a guess for the active day changes
-  `useDailyGuess`'s own `guess` state, which re-renders `ResultsPanel`
-  (and therefore `DayOverview`) anyway, so that row's placeholder flips
-  to the real figure with no extra plumbing.
+- `ResultsPanel.tsx`'s `dayOverviewRows` calls `daily-guess-storage.ts`'s
+  exported `getDailyGuess` directly (not through the `useDailyGuess`
+  hook, which only ever tracks one `(range, date, mode)` triple at a
+  time -- the one currently active below) once per day in `data.days`.
+  **A top-level `useMemo`, not a plain computation inside the
+  intraday-daily render branch (real bug, found in `high` code review on
+  this issue's own PR, fixed)**: the first version recomputed this --
+  up to ~252 `localStorage.getItem` + `JSON.parse` calls for 1Y -- on
+  _every_ `ResultsPanel` render, contradicting this very section's own
+  original "not on every keystroke" claim; in reality every successfully-
+  parsed `StartingCapitalInput` keystroke changes the `startingCapital`
+  prop and re-renders the whole panel, which re-ran the full per-day
+  scan each time. Hoisted to a top-level `useMemo` (unconditional, per
+  the Rules of Hooks, alongside `activeDay`/`points`) with dependency
+  array `[state, activeDay, startingCapital, mode, range, guess]` fixes
+  this for real: it now only recomputes on an actual fetch/day/mode/
+  capital/range/guess change, not on every render. **`guess` (from
+  `useDailyGuess`, the _active_ day's own guess) is a deliberate
+  dependency despite never being read in the memo's body** -- each row
+  re-derives its own guessed status independently via `getDailyGuess`,
+  but submitting a guess changes only `guess`, none of the other five
+  dependencies, so without it in the array this memo would keep
+  returning the stale pre-guess rows (the just-revealed day's row stuck
+  on "Guess to reveal") until some unrelated dependency happened to
+  change too -- an `eslint-disable-next-line react-hooks/exhaustive-deps`
+  on that line documents why, the same precedented pattern
+  `use-count-up.ts`/`use-chart-tap-hint.ts`/
+  `use-hydrated-local-storage-state.ts` already use for an intentional
+  hook-dependency deviation.
+- **The selected row scrolls into view on mount and on every selection
+  change (real bug, found in the same `high` code review, fixed)**: the
+  list is height-capped (`max-h-72 overflow-y-auto`) and the selected
+  day defaults to the _most recent_ one (`ResultsPanel`'s own fallback)
+  -- the last entry in this ascending-date list. Without an explicit
+  scroll, the list always rendered scrolled to the top on load for any
+  range with more days than fit in ~288px (1M/3M/1Y), leaving the
+  actually-active row below the fold -- defeating the "at a glance"
+  point of this whole component. Fixed with a `selectedRef` attached
+  only to the currently-selected row's `<button>` and a `useEffect`
+  keyed on `selected` calling `scrollIntoView({ block: "nearest",
+behavior })`. Guarded two ways, both matching this app's established
+  conventions for a browser API jsdom doesn't fully implement (see
+  `prefers-reduced-motion.ts`'s own `matchMedia` guard): a
+  `typeof element.scrollIntoView === "function"` check -- confirmed live
+  against the actual jsdom install that it has **no** `scrollIntoView`
+  at all, not even a no-op stub, unlike `getBoundingClientRect` (see
+  "Chart pointer interaction" above); and `behavior: "auto"` instead of
+  `"smooth"` under `prefersReducedMotion()` -- still scrolls (this is
+  functionally necessary, not decorative motion worth skipping
+  entirely, unlike `.chart-tap-hint-pulse`'s own reduced-motion
+  treatment), just without the animation. `DayOverview.test.tsx`
+  regression-tests all of this directly (mount, a `selected` change, no
+  redundant scroll on an unrelated re-render, both motion branches, and
+  that the component never throws under jsdom's real scrollIntoView-less
+  default) by assigning a `vi.fn()` onto `Element.prototype.scrollIntoView`
+  per test and reading `.mock.instances[0]` to confirm which row's
+  button it was actually called on.
 - No `.surface-card` shadow elevation on `DayOverview`'s list container
   -- same "control chrome, not a content card" bucket issue #77's
   surface-elevation pass put `DaySelector`'s own `<select>` in (see

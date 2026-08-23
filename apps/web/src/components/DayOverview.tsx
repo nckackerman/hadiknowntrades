@@ -1,7 +1,10 @@
 "use client";
 
+import { useEffect, useRef } from "react";
+
 import { formatDate } from "@/lib/format-date";
 import { formatHeroCurrency } from "@/lib/format-currency";
+import { prefersReducedMotion } from "@/lib/prefers-reduced-motion";
 
 export interface DayOverviewRow {
   /** YYYY-MM-DD. */
@@ -69,8 +72,43 @@ interface DayOverviewProps {
  * stored guess exists for that exact (range, date, mode) triple, so the
  * one thing the guessing game actually protects -- the dollar figure --
  * is never leaked through this list ahead of a real guess.
+ *
+ * **Scrolls the selected row into view on mount and on every selection
+ * change (found in `high` code review, fixed)** -- the list is height-
+ * capped (`max-h-72`) and scrolls independently, and the selected day
+ * defaults to the *most recent* one (`ResultsPanel`'s own fallback), the
+ * last entry in this ascending-date list. Without this, the list always
+ * renders scrolled to the top on load for any range with more days than
+ * fit in ~288px (1M/3M/1Y) -- the actually-active row sits below the
+ * fold, defeating the "at a glance" point of this component. `selectedRef`
+ * is attached only to the currently-selected row's `<button>` (never more
+ * than one at a time), and the effect keyed on `selected` re-runs it
+ * every time the active day changes, including the very first render.
+ * `scrollIntoView` is guarded two ways, both matching this app's existing
+ * conventions for a browser API jsdom doesn't fully implement (see
+ * `prefers-reduced-motion.ts`'s own `matchMedia` guard): a
+ * `typeof ... === "function"` check, since jsdom (this app's test
+ * environment) has no `scrollIntoView` at all, not even as a no-op stub
+ * (confirmed against the actual jsdom install, not assumed); and
+ * `behavior: "auto"` instead of `"smooth"` under `prefersReducedMotion()`,
+ * the same "still happens, just not animated" treatment
+ * `use-chart-tap-hint.ts`'s own affordances give reduced-motion users
+ * elsewhere in this app -- unlike a purely decorative animation, jumping
+ * the list to the right row is functionally necessary, not itself motion
+ * worth skipping.
  */
 export function DayOverview({ rows, selected, onSelect, maxTradesPerDay }: DayOverviewProps) {
+  const selectedRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    const element = selectedRef.current;
+    if (!element || typeof element.scrollIntoView !== "function") return;
+    element.scrollIntoView({
+      block: "nearest",
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
+  }, [selected]);
+
   return (
     <div className="flex flex-col gap-1.5">
       <p className="text-sm text-[var(--text-secondary)]">
@@ -85,6 +123,7 @@ export function DayOverview({ rows, selected, onSelect, maxTradesPerDay }: DayOv
             <li key={row.date}>
               <button
                 type="button"
+                ref={isSelected ? selectedRef : undefined}
                 aria-current={isSelected ? "true" : undefined}
                 onClick={() => onSelect(row.date)}
                 className={`grid w-full grid-cols-[1fr_auto_auto] items-center gap-x-3 rounded-md px-3 py-2 text-left text-sm transition-colors ${
