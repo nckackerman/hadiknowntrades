@@ -255,14 +255,23 @@ with anchor age. This is exactly what `optimizer.ts`'s own documented
 complexity predicts (`packages/core/CLAUDE.md`'s "Optimizer algorithm"
 section: O(days x tickers x maxTrades)) -- each anchor's window runs from
 that anchor's date to "today," so the oldest anchors carry close to the
-full ~21-year window and the newest carry almost none. This benchmark's
-own most-expensive anchor (the oldest, ~full-21-year window) is, by
-construction, almost exactly the same call as the separately-measured
-MAX-range `optimizeAllVariants` benchmark already in this codebase
+full ~21-year window and the newest carry almost none. **This benchmark's
+own oldest anchor is NOT the same call as the separately-measured
+MAX-range `optimizeAllVariants` benchmark already in this codebase**
 (`packages/core/CLAUDE.md`'s "Short-selling mode" section: ~3.36s for one
-full-503-ticker/21-year `optimizeAllVariants` call) -- these two
-independently-measured numbers are consistent with each other, not in
-tension.
+full-503-ticker MAX-range call) -- MAX's own `presetRangeStartDate` is
+genuinely unbounded (`null`), not capped at 21 years
+(`packages/core/CLAUDE.md`'s own "21 years, not MAX's own true unbounded
+reach" line), and this benchmark's own section 2.2 shows the real fetched
+calendar spans 14,281 trading days back to 1970 -- ~2.7x more than the
+day-anchors' 21-year/5,282-day cap (14,281 / 5,282 = 2.70). Scaling the
+3.36s MAX figure down by that correct ~2.7x day-count ratio gives ~1.24s
+(3.36 / 2.70), which is a close match to -- and a tighter one than a naive
+unscaled comparison would suggest -- this benchmark's own observed 1.506s
+for its oldest (true 21-year) anchor. The two independently-measured
+numbers are consistent with each other once compared at the correct
+scale, not in tension; the earlier draft's direct (unscaled) comparison
+was itself the error, not the two underlying measurements.
 
 **Peak RSS is a secondary, confirming signal pointing the same
 direction.** The 1,779MB peak was reached at the very first checkpoint
@@ -337,19 +346,52 @@ three listed fallbacks resolve cleanly:
   | 9                | 2,264            | 754s                                      |
   | 10               | 2,515            | 931s (already over 900s on compute alone) |
 
-  **10 years is already too deep** -- compute alone exceeds the entire
-  budget before fetch/write/preset-range overhead (a combined ~75-160s,
-  generously estimated: 11.2s fetch + ~4s for the 5 preset ranges'
-  `optimizeAllVariants` calls, per `packages/core/CLAUDE.md`'s own
-  ~4.0s live-measured figure + up to ~159s worst-case write time) are
-  even added back in. **7-8 years lands with real margin**: at 8 years,
-  ~607s compute + ~75-160s overhead ~= 682-767s, leaving 133-218s
-  (15-24%) of headroom under 900s; at 7 years the margin is more
-  comfortable still (~463s compute, ~538-623s total, 277-362s/31-40%
-  headroom). This also happens to land inside the issue's own suggested
-  "5-10 years" bracket for fallback (b), at the deeper end that real
-  margin allows rather than the shallowest option that merely clears the
-  bar.
+  **10 years is already too deep** -- compute alone (931s) exceeds the
+  entire 900s budget before fetch/write/preset-range overhead are even
+  added back in. **7-8 years lands with real margin.** The overhead
+  needs re-deriving at the actual recommended scope, not reused from
+  2.3's full-21-year write-time estimate (106-159s was sized for all
+  5,288 jobs at the full scale, an over-estimate for the much smaller
+  scope this recommendation actually targets): at `DEFAULT_WRITE_CONCURRENCY
+= 10`, 8 years' ~2,012 custom anchors + 5 preset ranges + 1 manifest is
+  2,018 write jobs (202 rounds); 7 years' ~1,761 anchors + 6 is 1,767
+  jobs (177 rounds). At the same 200-300ms/round pessimistic estimate
+  2.3 used: 8yr write time ~= 40-61s, 7yr ~= 35-53s. Total overhead
+  (fetch 11.2s + ~4s preset-range compute + write, correctly summed):
+  8yr ~= 11.2 + 4 + 40 to 11.2 + 4 + 61 = **~56-76s**; 7yr ~= 11.2 + 4 +
+  35 to 11.2 + 4 + 53 = **~51-68s**. Total pipeline time: **8 years ~=
+  663-683s, leaving 217-237s (24-26%) headroom under 900s; 7 years ~=
+  514-531s, leaving 369-386s (41-43%) headroom** -- both with more real
+  margin than a full-scale-write-time-based estimate would suggest, since
+  the actual recommended scope has far fewer write jobs than the full
+  21-year scheme. This also happens to land inside the issue's own
+  suggested "5-10 years" bracket for fallback (b), at the deeper end
+  that real margin allows rather than the shallowest option that merely
+  clears the bar.
+
+  **Peak RSS at this scope, bounded from the same real checkpoint data
+  (2.2/2.3), not re-benchmarked**: the full run's 1,779MB peak occurred
+  only while processing anchors 1-500 -- the oldest anchors, whose
+  windows (21 down to ~19.5 years) are all _deeper_ than either
+  recommended cutoff, so a 7-8yr-scoped pipeline would never process any
+  anchor that large. The relevant comparison is RSS at the point in the
+  full run where it was processing anchors with the _same_ window depth
+  a 7-8yr-scoped run's own largest (oldest) anchor would have: anchor
+  index ~3,270 for 8 years (between the 3,000-checkpoint's 1,656MB and
+  the 3,500-checkpoint's 1,658MB) and ~3,521 for 7 years (between the
+  3,500-checkpoint's 1,658MB and the 4,000-checkpoint's 1,659MB) -- both
+  comfortably inside the flat ~1,652-1,660MB plateau the full run had
+  already settled into by checkpoint 2,000. **Bound: ~1,660MB peak RSS at
+  either 7 or 8 years** (vs. 1,779MB for the full 21-year scope) --
+  against the 2048MB `memorySize`, that's ~81% utilization / ~19%
+  (388MB) headroom, meaningfully safer than the full-scope figure's ~13%.
+  If anything this is a conservative upper bound, not a tight one: a real
+  7-8yr-scoped run would never transiently hold any of the larger
+  15-21yr-window anchors' state at all (not even briefly, the way the
+  full run's early checkpoints did before GC caught up), so the real
+  number could plausibly land lower still. Memory is not a blocker at the
+  recommended scope, consistent with (not contradicting) the time-budget
+  conclusion above.
 
   **The exact figure within 7-8 years (or elsewhere in this range) is a
   genuine product-depth tradeoff, not picked here** -- see "For the

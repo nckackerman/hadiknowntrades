@@ -1248,6 +1248,19 @@ _also_ just a precomputed S3 read (the coarsened design this issue
 actually shipped), there's no backing-logic/cache-semantics difference
 left to justify a second route.
 
+**Plan-only, not yet implemented: issue #75 (`docs/plans/issue-75-plan.md`)
+replaces this whole month-granularity scheme with a real day-precision
+calendar picker.** The single biggest change for this file specifically:
+`CustomRangeSelector.tsx` currently computes its own anchor list
+client-side for free (`customRangeAnchors(asOf)` needs no real data, see
+below); the day-granularity replacement can't do that (real trading days
+aren't computable from calendar math alone), so the picker gains a new
+server fetch (`GET /api/custom-anchors`, a manifest of real precomputed
+anchor days) it never needed before -- see that plan's section 6. As of
+this note nothing below has changed: `?anchor=YYYY-MM`, `getCustomResultsResponse`,
+`parseAnchorMonth`, and the 252-month `<select>` are all still exactly as
+described in the rest of this section.
+
 - **`results-api.ts`'s `getCustomResultsResponse`** is a sibling of
   `getResultsResponse`, not a branch merged into it -- deliberately kept
   separate so this addition can't risk the existing, well-tested
