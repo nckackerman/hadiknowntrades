@@ -153,3 +153,38 @@ body {
     opacity: 0;
   }
 }
+
+/*
+ * Softens the LoadingSkeleton -> success-tree handoff when switching
+ * preset range or custom-anchor month (issue #65) -- applied to
+ * ResultsPanel.tsx's three success-branch outer wrappers ("window",
+ * "custom-window", "intraday-daily"). Deliberately NOT applied to mode or
+ * day switching -- see ResultsPanel.tsx's own fadeInClassName doc comment
+ * for why those never replay this animation in the first place (neither
+ * switch remounts these wrapper divs).
+ *
+ * The reduced-motion query below is defense-in-depth, same reasoning as
+ * .confetti-piece's/.chart-tap-hint-pulse's own above -- ResultsPanel.tsx
+ * already skips adding this class at all when prefersReducedMotion() is
+ * true (mirroring should-celebrate.ts's own primary-gate pattern), so
+ * this just guarantees no motion plays even if a future caller ever
+ * applies the class without going through that check.
+ */
+@keyframes results-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.results-fade-in {
+  animation: results-fade-in 300ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .results-fade-in {
+    animation: none;
+  }
+}

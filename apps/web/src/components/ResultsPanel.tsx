@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import type {
   BenchmarkResult,
@@ -20,6 +20,7 @@ import {
 import { formatDate } from "@/lib/format-date";
 import { formatHeroCurrency } from "@/lib/format-currency";
 import { DEFAULT_MODE, MODE_LABELS, type Mode } from "@/lib/mode";
+import { prefersReducedMotion } from "@/lib/prefers-reduced-motion";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { useDailyGuess } from "@/lib/use-daily-guess";
 import { BenchmarkStat } from "@/components/BenchmarkStat";
@@ -130,6 +131,49 @@ function LoadingSkeleton() {
         <div className="h-16 w-full rounded-lg bg-[var(--surface-2)]" />
       </div>
     </div>
+  );
+}
+
+/**
+ * Wraps a success-branch's outer content and applies the range/custom-
+ * anchor switch fade-in (issue #65) exactly once per genuine *mount* of
+ * this wrapper, not once per render of whatever already-mounted instance
+ * happens to be showing.
+ *
+ * **A real bug (found in `high` code review, fixed) with the first version
+ * of this feature is why this is a component with its own `useState`,
+ * not a plain `prefersReducedMotion() ? "" : " results-fade-in"`
+ * expression computed inline in `ResultsPanel`'s render body.** That
+ * plain-expression version re-evaluated `prefersReducedMotion()` on
+ * *every* render of `ResultsPanel`, including the mode/day/starting-
+ * capital re-renders that leave this wrapper's own div instance mounted
+ * the whole time (see the "Two result models" section in
+ * apps/web/CLAUDE.md for why those never remount it). If the OS-level
+ * reduced-motion preference actually changed value *between* two such
+ * re-renders -- toggled mid-session, then the user clicks ModeToggle --
+ * the computed className string would flip too, adding or removing the
+ * `results-fade-in` class on an element that's already on screen. Per
+ * the CSS Animations spec, an element's `animation-name` newly entering
+ * its computed style (even via a plain class-attribute change on an
+ * existing DOM node) starts that animation fresh -- so an "instant,
+ * always" mode/day switch could suddenly flash opacity 0 -> 1 on
+ * already-visible content, exactly the replay this issue's own out-of-
+ * scope section says must never happen.
+ *
+ * `useState`'s lazy initializer runs exactly once, at the moment React
+ * actually creates a new instance of this component -- which, given
+ * where this is used below (only ever swapped in for `LoadingSkeleton`
+ * on a genuine `"loading"` -> `"success"` transition), only happens on a
+ * real range/custom-anchor switch or first load, never a mode/day/
+ * starting-capital change. No extra key/memoization bookkeeping is
+ * needed to replicate that "was this a genuine mount?" check by hand --
+ * it falls straight out of React's own reconciliation rules for this
+ * component's call sites.
+ */
+function FadeInWrapper({ children }: { children: ReactNode }) {
+  const [shouldFadeIn] = useState(() => !prefersReducedMotion());
+  return (
+    <div className={`flex flex-col gap-8${shouldFadeIn ? " results-fade-in" : ""}`}>{children}</div>
   );
 }
 
@@ -279,7 +323,7 @@ function WindowResultBody({
   const effectiveStartingCapital = startingCapital ?? data.startingCapital;
 
   return (
-    <div className="flex flex-col gap-8">
+    <FadeInWrapper>
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <HeroAndWorstCase
@@ -319,7 +363,7 @@ function WindowResultBody({
           <TradeList trades={variant.trades} startingCapital={effectiveStartingCapital} />
         )}
       </div>
-    </div>
+    </FadeInWrapper>
   );
 }
 
@@ -497,7 +541,7 @@ export function ResultsPanel({
     const effectiveStartingCapital = startingCapital ?? activeDay.startingCapital;
 
     return (
-      <div className="flex flex-col gap-8">
+      <FadeInWrapper>
         {/* Announces the guess -> reveal swap below to screen reader users
             (issue #67) -- always present in the DOM (not conditionally
             mounted alongside the revealed content) so assistive tech has
@@ -645,7 +689,7 @@ export function ResultsPanel({
             </div>
           </>
         )}
-      </div>
+      </FadeInWrapper>
     );
   }
 

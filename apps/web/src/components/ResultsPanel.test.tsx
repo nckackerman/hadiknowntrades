@@ -8,6 +8,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { stubMatchMedia } from "@/lib/stub-match-media.test-util";
 import type { ResultsState } from "@/lib/use-results";
 import { ResultsPanel } from "./ResultsPanel";
 
@@ -1104,6 +1105,100 @@ describe("ResultsPanel", () => {
       // longShort.worstCase.endingBalance is 2 (vs. the long-only 4.2).
       expect(screen.getByText("$2.00")).toBeInTheDocument();
       expect(screen.queryByText("$4.20")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("range/anchor switch fade-in transition (issue #65)", () => {
+    // jsdom in this repo's Vitest setup has no window.matchMedia at all
+    // (see prefers-reduced-motion.ts's own doc comment) -- stubMatchMedia
+    // gives every test in this block a deterministic answer for
+    // prefersReducedMotion()'s own "(prefers-reduced-motion: reduce)"
+    // query instead of silently relying on that missing-matchMedia
+    // fallback.
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("applies the fade-in class to the window model's success wrapper when motion is allowed", () => {
+      stubMatchMedia({ "(prefers-reduced-motion: reduce)": false });
+      const state: ResultsState = { status: "success", data: fixtureResult() };
+      const { container } = render(<ResultsPanel range="1Y" state={state} />);
+
+      expect(container.querySelector(".flex.flex-col.gap-8")).toHaveClass("results-fade-in");
+    });
+
+    it("omits the fade-in class from the window model's success wrapper under prefers-reduced-motion", () => {
+      stubMatchMedia({ "(prefers-reduced-motion: reduce)": true });
+      const state: ResultsState = { status: "success", data: fixtureResult() };
+      const { container } = render(<ResultsPanel range="1Y" state={state} />);
+
+      expect(container.querySelector(".flex.flex-col.gap-8")).not.toHaveClass("results-fade-in");
+    });
+
+    it("applies the fade-in class to the custom-window model's success wrapper when motion is allowed", () => {
+      stubMatchMedia({ "(prefers-reduced-motion: reduce)": false });
+      const state: ResultsState<CustomWindowResult> = {
+        status: "success",
+        data: fixtureCustomWindowResult(),
+      };
+      const { container } = render(<ResultsPanel range="1Y" state={state} />);
+
+      expect(container.querySelector(".flex.flex-col.gap-8")).toHaveClass("results-fade-in");
+    });
+
+    it("omits the fade-in class from the custom-window model's success wrapper under prefers-reduced-motion", () => {
+      stubMatchMedia({ "(prefers-reduced-motion: reduce)": true });
+      const state: ResultsState<CustomWindowResult> = {
+        status: "success",
+        data: fixtureCustomWindowResult(),
+      };
+      const { container } = render(<ResultsPanel range="1Y" state={state} />);
+
+      expect(container.querySelector(".flex.flex-col.gap-8")).not.toHaveClass("results-fade-in");
+    });
+
+    it("applies the fade-in class to the intraday-daily model's success wrapper when motion is allowed", () => {
+      stubMatchMedia({ "(prefers-reduced-motion: reduce)": false });
+      const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+      const { container } = render(<ResultsPanel range="1M" state={state} />);
+
+      expect(container.querySelector(".flex.flex-col.gap-8")).toHaveClass("results-fade-in");
+    });
+
+    it("omits the fade-in class from the intraday-daily model's success wrapper under prefers-reduced-motion", () => {
+      stubMatchMedia({ "(prefers-reduced-motion: reduce)": true });
+      const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+      const { container } = render(<ResultsPanel range="1M" state={state} />);
+
+      expect(container.querySelector(".flex.flex-col.gap-8")).not.toHaveClass("results-fade-in");
+    });
+
+    // Regression test for a real bug found in `high` code review: the
+    // first version of this feature re-read prefersReducedMotion() on
+    // every ResultsPanel render, not just at the wrapper's own mount --
+    // so if the OS-level preference changed value between two renders of
+    // an *already-mounted* wrapper (no new fetch, same `state.status ===
+    // "success"` the whole time), the fade-in class would flip on
+    // already-visible content, restarting the CSS animation on what's
+    // supposed to be an instant, unrelated re-render. FadeInWrapper's
+    // useState lazy initializer fixes this by only ever reading
+    // prefersReducedMotion() once, at the wrapper's own mount -- this
+    // test re-renders the *same* mounted success tree (same `state`
+    // reference, no unmount) with the stubbed media query flipped in
+    // between, and asserts the class doesn't move either time.
+    it("keeps the fade-in class fixed across a re-render of an already-mounted wrapper, even if the OS motion preference changes mid-session", () => {
+      stubMatchMedia({ "(prefers-reduced-motion: reduce)": false });
+      const state: ResultsState = { status: "success", data: fixtureResult() };
+      const { container, rerender } = render(<ResultsPanel range="1Y" state={state} mode="long" />);
+      expect(container.querySelector(".flex.flex-col.gap-8")).toHaveClass("results-fade-in");
+
+      // Flip the stubbed preference, then re-render the same wrapper with
+      // an unrelated prop change (mode) -- this must not unmount/remount
+      // WindowResultBody's own FadeInWrapper.
+      stubMatchMedia({ "(prefers-reduced-motion: reduce)": true });
+      rerender(<ResultsPanel range="1Y" state={state} mode="long-short" />);
+
+      expect(container.querySelector(".flex.flex-col.gap-8")).toHaveClass("results-fade-in");
     });
   });
 });
