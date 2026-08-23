@@ -12,8 +12,8 @@ const PIECE_COUNT = 24;
 
 // A small, deliberately festive palette -- distinct from the muted
 // dataviz tokens in globals.css (this isn't a chart, it's a one-shot
-// decoration), but still legible against both the light and dark
-// backgrounds since this app has no in-app theme toggle to key off.
+// decoration), chosen to stay legible against this app's one dark
+// background (issue #76: dark is the only theme, no toggle to key off).
 const CONFETTI_COLORS = ["#f5b301", "#ff6b6b", "#2dd4bf", "#a78bfa", "#3987e5", "#34d399"];
 
 interface ConfettiPiece {

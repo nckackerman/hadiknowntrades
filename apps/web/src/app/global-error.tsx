@@ -28,12 +28,14 @@ interface GlobalErrorPageProps {
  * file's whole job is to still render something legible when that's
  * true. Per Next's own docs ("global-error and the built-in 500 page
  * render their own document and do not include your global styles"),
- * styling here is a small self-contained inline <style> block instead
+ * styling here is a small self-contained inline style prop instead
  * of the app's normal Tailwind/CSS-custom-property pipeline -- the
  * color values below are copied from globals.css's
  * --status-critical/--background/etc. tokens rather than referencing
  * them, since those custom properties live on a :root this document
- * doesn't share.
+ * doesn't share. Dark is this app's only theme (issue #76) -- these are
+ * globals.css's dark values directly, unconditional, no
+ * prefers-color-scheme swap.
  *
  * Same visual language and copy as error.tsx (role="alert" card, same
  * heading/body text, same reset()-not-retry() reasoning -- see that
@@ -49,7 +51,11 @@ export default function GlobalError({ error, reset }: GlobalErrorPageProps) {
   }, [error]);
 
   return (
-    <html lang="en">
+    // colorScheme: "dark" (mirroring globals.css's own `color-scheme: dark`,
+    // see its doc comment) keeps this standalone document's own native
+    // UA chrome -- scrollbars, any future native control -- dark too,
+    // not just the custom-painted card below.
+    <html lang="en" style={{ colorScheme: "dark" }}>
       <body
         style={{
           margin: 0,
@@ -57,25 +63,10 @@ export default function GlobalError({ error, reset }: GlobalErrorPageProps) {
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
-          background: "#ffffff",
+          background: "#0a0a0a",
           fontFamily: "Arial, Helvetica, sans-serif",
         }}
       >
-        {/* Values mirror globals.css's dark-mode overrides for
-            --background / --status-critical / --text-secondary --
-            duplicated here (not imported) since this document doesn't
-            load globals.css. See this file's own doc comment above. */}
-        <style>{`
-          @media (prefers-color-scheme: dark) {
-            body { background: #0a0a0a !important; }
-            #global-error-card {
-              border-color: rgba(230, 103, 103, 0.3) !important;
-              background: rgba(230, 103, 103, 0.05) !important;
-            }
-            #global-error-title { color: #e66767 !important; }
-            #global-error-body { color: #c3c2b7 !important; }
-          }
-        `}</style>
         <div
           style={{
             width: "100%",
@@ -88,7 +79,6 @@ export default function GlobalError({ error, reset }: GlobalErrorPageProps) {
           }}
         >
           <div
-            id="global-error-card"
             role="alert"
             style={{
               display: "flex",
@@ -96,15 +86,13 @@ export default function GlobalError({ error, reset }: GlobalErrorPageProps) {
               alignItems: "flex-start",
               gap: "0.5rem",
               borderRadius: "0.5rem",
-              border: "1px solid rgba(208, 59, 59, 0.3)",
-              background: "rgba(208, 59, 59, 0.05)",
+              border: "1px solid rgba(230, 103, 103, 0.3)",
+              background: "rgba(230, 103, 103, 0.05)",
               padding: "1rem 1.25rem",
             }}
           >
-            <p id="global-error-title" style={{ margin: 0, fontWeight: 600, color: "#d03b3b" }}>
-              Something went wrong
-            </p>
-            <p id="global-error-body" style={{ margin: 0, fontSize: "0.875rem", color: "#52514e" }}>
+            <p style={{ margin: 0, fontWeight: 600, color: "#e66767" }}>Something went wrong</p>
+            <p style={{ margin: 0, fontSize: "0.875rem", color: "#c3c2b7" }}>
               This page hit an unexpected error while rendering. This is a bug on our end, not
               something you did.
             </p>
@@ -115,7 +103,7 @@ export default function GlobalError({ error, reset }: GlobalErrorPageProps) {
                 marginTop: "0.5rem",
                 borderRadius: "9999px",
                 border: "none",
-                background: "#2a78d6",
+                background: "#3987e5",
                 padding: "0.375rem 1rem",
                 fontSize: "0.875rem",
                 fontWeight: 500,

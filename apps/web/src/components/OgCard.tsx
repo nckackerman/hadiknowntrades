@@ -16,13 +16,21 @@ import { rangeLabel } from "@/lib/og-card";
 export const OG_CARD_WIDTH = 1200;
 export const OG_CARD_HEIGHT = 630;
 
-// On-brand tokens, hand-copied from globals.css's light (`:root`)
-// palette -- Satori renders once, server-side, with no access to a
-// viewer's OS theme preference, so this card deliberately always renders
-// in the light palette rather than picking one arbitrarily per request.
-// If globals.css's values ever change, update these copies too --
-// nothing enforces they stay in sync (same known gap as
-// app/global-error.tsx's own hand-copied token values).
+// On-brand tokens, hand-copied from what used to be globals.css's light
+// `:root` palette, before issue #76 made dark the app's only theme and
+// deleted those light values from `:root` entirely. Satori renders once,
+// server-side, with no access to a viewer's OS theme preference, and a
+// share-card image needs to look right embedded on arbitrary third-party
+// pages/platforms regardless of this app's own in-page theme -- so this
+// deliberately stays a fixed light card, now fully independent of
+// globals.css's (dark-only) palette rather than picking one of its two
+// values. Not swept up by issue #76's `prefers-color-scheme` removal: this
+// file never read that media query to begin with, and there's no more
+// `:root` light palette left to copy from -- these are just standalone
+// literal color values now. If they ever need to change, there's no
+// `globals.css` source of truth to keep them in sync with any more (same
+// known gap `app/global-error.tsx`'s own hand-copied tokens still have
+// against globals.css's dark values).
 const BACKGROUND = "#fcfcfb";
 const ACCENT = "#2a78d6";
 const TEXT_PRIMARY = "#0b0b0b";

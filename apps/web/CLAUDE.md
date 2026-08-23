@@ -294,13 +294,15 @@ A few things worth knowing before touching either:
   get the app's global styles/fonts for free ("global-error and the
   built-in 500 page render their own document and do not include your
   global styles"). This file's approach: no import of `./globals.css` or
-  `next/font` at all -- inline `style` props plus one small `<style>`
-  tag for the `prefers-color-scheme: dark` swap, with the actual color
+  `next/font` at all -- plain inline `style` props, with the actual color
   values hand-copied from `globals.css`'s tokens rather than referenced
   (there's no shared `:root` to reference into). If `globals.css`'s
   `--status-critical`/`--background`/etc. values ever change, update the
   copies in `global-error.tsx` too -- nothing enforces that they stay in
-  sync.
+  sync. Since issue #76 (dark mode only), both files hand-copy the same
+  single set of dark values unconditionally -- no `prefers-color-scheme`
+  media query in either place any more, so there's only one set of
+  numbers to keep in sync, not two.
 - `next build`'s own type-checking pass is happy with `error.tsx` as-is,
   but running `tsc --noEmit` directly (skipping `next typegen`) fails on
   an unrelated pre-existing error in `layout.tsx` (`Cannot find name
@@ -1973,3 +1975,68 @@ fresh one once the new fetch resolves.
   itself was temporarily added (`pnpm add -D -w playwright`) and reverted
   afterward, per this file's own "Headless-browser screenshot
   verification" convention above.
+
+## Dark mode only (issue #76)
+
+`globals.css`'s `:root` used to hold light values with a
+`@media (prefers-color-scheme: dark)` block redefining them; that block
+is gone, and `:root` now holds the old dark values directly, unconditionally
+-- dark is this app's only theme, no in-app toggle, no OS-preference
+branching anywhere. `global-error.tsx`'s independent hand-copied
+`<style>` block (see "Render-crash boundaries" above) lost its own
+`prefers-color-scheme` swap the same way, for the same reason (it can't
+import `globals.css`, so it always needed its own copy of whichever
+values were live).
+
+- **The CSS custom-property swap alone wasn't the whole fix (found in
+  `high` code review, fixed): `color-scheme` also needed setting
+  explicitly.** Before this issue, this app's own painted colors and the
+  browser's _native_ UA-widget theming (a `<select>`'s dropdown popup --
+  `CustomRangeSelector.tsx`/`DaySelector.tsx`; `StartingCapitalInput.tsx`'s
+  `type="number"` spin-button chrome; scrollbars) both happened to track
+  the same `prefers-color-scheme` signal independently, so they always
+  agreed by coincidence, not by any explicit link between them. Once the
+  page's own colors stopped following that signal but nothing told the
+  browser to stop _its_ native-widget theming from following it too, an
+  OS-light visitor would get this app's dark page with a light-themed
+  native dropdown/spinner popping up on top of it -- a real, visible
+  mismatch a plain screenshot pass didn't catch (a transient native
+  popup, not part of the page's own paint). Fixed with `color-scheme:
+dark` on `globals.css`'s `:root` (a real CSS property, not a custom
+  token) and an equivalent `style={{ colorScheme: "dark" }}` on
+  `global-error.tsx`'s own `<html>` tag, its usual React-inline-style
+  spelling. **Any future non-`prefers-color-scheme` theme mechanism in
+  this app (a toggle, a per-user override) needs to keep setting this
+  too** -- it's a separate lever from the custom-property values, not
+  implied by them.
+- Verified live: `getComputedStyle(document.documentElement).colorScheme`
+  read back `"dark"` from a real `next build`/`next start` page loaded
+  under Playwright's `colorScheme: "light"` context emulation, confirming
+  the property actually takes effect regardless of the emulated OS
+  preference, not just that the CSS was written.
+- Screenshot-verified (same throwaway-debug-route + headless-Chromium
+  technique this file's other sections already establish, `colorScheme:
+"light"` emulation) across all 6 preset ranges, one custom anchor, a
+  guess-then-revealed intraday day (confetti burst included), and a
+  375px mobile width -- every view renders fully dark regardless of the
+  emulated OS preference, with a matching dark-scheme screenshot of the
+  same page confirming no visual regression from removing the media
+  query. `global-error.tsx` was verified by temporarily throwing inside
+  `layout.tsx` (reverted before committing, never worth keeping as a
+  permanent debug affordance) and loading the page under `next dev`
+  (not `next build`, which fails outright on a throw during static
+  prerendering of `/` -- the runtime boundary this file exists for
+  never gets a chance to run in that mode) with Next's own dev error
+  overlay dismissed via <kbd>Escape</kbd> to see the real fallback
+  underneath.
+- **`OgCard.tsx`'s share-card palette is deliberately untouched and
+  stays hardcoded light** -- it never read `prefers-color-scheme` (Satori
+  renders server-side with no viewer/OS context at all) and a share
+  image needs to look right embedded on arbitrary third-party
+  pages/platforms regardless of this app's own in-page theme, so "dark
+  mode only" doesn't apply to it. Its own doc comment used to say these
+  values were copied from `globals.css`'s _light_ `:root` palette;
+  updated to note that palette no longer exists there at all post-#76,
+  so these are now standalone literal values with no live source of
+  truth to stay in sync with (join `global-error.tsx`'s own values in
+  that same boat).
