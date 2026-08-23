@@ -841,6 +841,53 @@ describe("ResultsPanel", () => {
         expect(screen.queryByRole("button", { name: /reveal/i })).not.toBeInTheDocument();
         expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
       });
+
+      it('announces the reveal to screen readers via a role="status" live region once the guess is submitted, and stays silent before (issue #67)', async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+        render(<ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />);
+
+        // The live region exists in the DOM before the reveal -- so
+        // assistive tech has already registered it and will catch the
+        // upcoming content change -- but carries no announcement yet.
+        expect(screen.getByRole("status")).toHaveTextContent("");
+
+        await submitAnyGuess(user);
+
+        expect(screen.getByRole("status")).toHaveTextContent("Results revealed for Aug 21, 2026.");
+      });
+
+      it("clears the reveal announcement when switching to a different day that hasn't been guessed yet", async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+        const { rerender } = render(
+          <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />,
+        );
+        await submitAnyGuess(user);
+        expect(screen.getByRole("status")).toHaveTextContent("Results revealed for Aug 21, 2026.");
+
+        rerender(<ResultsPanel range="1M" state={state} selectedDay="2026-08-20" />);
+
+        expect(screen.getByRole("status")).toHaveTextContent("");
+      });
+
+      it("does not wire the announcement to HeroStat's per-frame animating figure -- it stays a static sentence even mid-tween (issue #67)", async () => {
+        // Regression guard for the exact trap apps/web/CLAUDE.md's
+        // "Client-side animation" section documents: never let an
+        // aria-live region announce every intermediate count-up value.
+        // Here requestAnimationFrame is left un-mocked (jsdom's real
+        // rAF backs it, see that same doc section), so useCountUp's
+        // tween is still mid-flight when this assertion runs -- the
+        // live region's text must already be the final static sentence
+        // regardless, never an in-progress dollar figure.
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+        render(<ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />);
+
+        await submitAnyGuess(user);
+
+        expect(screen.getByRole("status")).toHaveTextContent("Results revealed for Aug 21, 2026.");
+      });
     });
   });
 

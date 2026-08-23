@@ -498,6 +498,19 @@ export function ResultsPanel({
 
     return (
       <div className="flex flex-col gap-8">
+        {/* Announces the guess -> reveal swap below to screen reader users
+            (issue #67) -- always present in the DOM (not conditionally
+            mounted alongside the revealed content) so assistive tech has
+            already registered this region before the swap happens, the
+            same always-present-container pattern PortfolioChart's own
+            aria-live tooltip readout uses. Deliberately a static "the
+            reveal happened" sentence, not wired to HeroStat's per-frame
+            count-up value -- see apps/web/CLAUDE.md's "Client-side
+            animation" section on why that would spam assistive tech with
+            every intermediate number. */}
+        <div role="status" aria-live="polite" className="sr-only">
+          {guess !== null ? `Results revealed for ${formatDate(activeDay.date)}.` : ""}
+        </div>
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-end justify-between gap-4">
             {guess === null ? (
