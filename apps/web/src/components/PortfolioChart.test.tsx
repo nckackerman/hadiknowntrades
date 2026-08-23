@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { PortfolioChart } from "./PortfolioChart";
+import { boxesOverlap, labelBox, type LabelAnchor } from "@/lib/chart-label-layout";
 import type { PortfolioPoint } from "@/lib/portfolio-series";
 
 const points: PortfolioPoint[] = [
@@ -188,6 +189,103 @@ describe("PortfolioChart", () => {
       expect(within(table).getByText(/Short MSFT @/)).toBeInTheDocument();
       expect(within(table).getByText(/Cover MSFT @/)).toBeInTheDocument();
       expect(within(table).queryByText(/Buy MSFT/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe("point-label collision avoidance (issue #68)", () => {
+    /**
+     * The real-world case the issue was filed from ("a sell a few days
+     * after a buy"): AAPL's own open and close land only 4 days apart
+     * (matching the issue's own acceptance criteria) within a much
+     * longer overall window (~5 years, matching the originally-observed
+     * 5Y-range screenshot), so the two dates land only a handful of
+     * pixels apart on the x-axis -- and a moderate ~50% gain moves the
+     * close point up the log-scaled y-axis just enough to put the
+     * close's below-label in range of the open's above-label (see
+     * chart-label-layout.test.ts's own equivalent fixture and comment
+     * for why a moderate gain, not a huge one, is what actually
+     * collides). MSFT's own trade, later in the window with a much
+     * bigger gain, doubles as a second, differently-shaped pair.
+     */
+    const closeTogetherPoints: PortfolioPoint[] = [
+      { date: "2020-01-01", value: 20, event: null },
+      {
+        date: "2022-06-01",
+        value: 20,
+        event: { type: "open", direction: "long", ticker: "AAPL", price: 10 },
+      },
+      {
+        date: "2022-06-05",
+        value: 30,
+        event: { type: "close", direction: "long", ticker: "AAPL", price: 15 },
+      },
+      {
+        date: "2023-01-10",
+        value: 30,
+        event: { type: "open", direction: "long", ticker: "MSFT", price: 310.55 },
+      },
+      {
+        date: "2023-01-14",
+        value: 300,
+        event: { type: "close", direction: "long", ticker: "MSFT", price: 3105.5 },
+      },
+      { date: "2025-01-01", value: 300, event: null },
+    ];
+
+    /**
+     * Reads each rendered marker's own two <text> lines straight out of
+     * the DOM and rebuilds the bounding box chart-label-layout.ts itself
+     * would compute for that exact content/position -- so this checks
+     * the real wiring (component -> resolveLabelOffsets -> rendered
+     * attributes), not just the pure layout function in isolation
+     * (already covered by chart-label-layout.test.ts).
+     */
+    function renderedLabelBoxes() {
+      const svg = getChartSvg();
+      const markerGroups = within(svg)
+        .getAllByText(/^(Buy|Sell) /)
+        .map((el) => el.closest("g")!);
+
+      return markerGroups.map((g) => {
+        const [primaryEl, secondaryEl] = g.querySelectorAll("text");
+        const x = Number(primaryEl!.getAttribute("x"));
+        const y = Number(primaryEl!.getAttribute("y"));
+        const anchor = primaryEl!.getAttribute("text-anchor") as LabelAnchor;
+        return labelBox(
+          {
+            x,
+            y,
+            isAbove: true, // unused by labelBox itself, only by resolveLabelOffsets
+            anchor,
+            primaryText: primaryEl!.textContent ?? "",
+            secondaryText: secondaryEl!.textContent ?? "",
+          },
+          y,
+        );
+      });
+    }
+
+    it("renders no two overlapping label bounding boxes for dates ~4 days apart", () => {
+      render(<PortfolioChart points={closeTogetherPoints} />);
+
+      const boxes = renderedLabelBoxes();
+      expect(boxes).toHaveLength(4); // AAPL open/close + MSFT open/close
+
+      for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+          expect(boxesOverlap(boxes[i]!, boxes[j]!)).toBe(false);
+        }
+      }
+    });
+
+    it("still renders every marker's own gain/loss-independent verb+ticker text (collision avoidance doesn't drop labels)", () => {
+      render(<PortfolioChart points={closeTogetherPoints} />);
+      const svg = within(getChartSvg());
+
+      expect(svg.getByText("Buy AAPL")).toBeInTheDocument();
+      expect(svg.getByText("Sell AAPL")).toBeInTheDocument();
+      expect(svg.getByText("Buy MSFT")).toBeInTheDocument();
+      expect(svg.getByText("Sell MSFT")).toBeInTheDocument();
     });
   });
 });

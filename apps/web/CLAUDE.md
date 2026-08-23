@@ -1538,3 +1538,64 @@ readStored, writeStored)` -- see that file's own doc comment for the
   differing stale/fresh values that could actually exercise a clobber
   for this particular caller) -- the guard itself is covered once,
   generically, in `use-hydrated-local-storage-state.test.ts`.
+
+## Chart point-label collision avoidance (issue #68)
+
+`lib/chart-label-layout.ts`'s `resolveLabelOffsets` is a small, pure,
+unit-tested-in-isolation module `PortfolioChart.tsx` calls to pick each
+trade marker's label `y` position, replacing the old fixed `p.y - 14` /
+`p.y + 24` offsets with per-marker values that never let two labels'
+estimated bounding boxes overlap. Kept separate from the component, same
+reasoning `chart-scales.ts`'s own header comment already gives for its
+own extraction.
+
+- **The actual collision case is _not_ what a first reading of the issue
+  suggests.** A trade's close and the _next_ trade's open always land at
+  the exact same portfolio value (opening a position doesn't move value
+  -- see `portfolio-series.ts`'s own header comment), and open labels
+  render above/close labels render below with a large enough built-in
+  gap (25px baseline-to-baseline at the original fixed offsets) that
+  this specific pairing can _never_ actually overlap, confirmed by hand
+  algebra before writing any fixture. **The real collision is a single
+  trade's own open+close pair**: its close's value is _compounded_ from
+  its open's (`compoundBalance`), so a real, moderate gain moves the
+  close point up the log-scaled y-axis just enough that its
+  below-the-point label creeps into range of the open's
+  above-the-point label -- but only for a _moderate_ gain. A huge gain
+  (or a huge loss) pushes the close point's y far enough from the open's
+  that they're never close regardless of how many days apart the two
+  dates are on the x-axis. Both `chart-label-layout.test.ts` and
+  `PortfolioChart.test.tsx`'s own "point-label collision avoidance"
+  describe block deliberately use a synthetic ~50% gain for this reason,
+  not an extreme one -- an extreme-gain fixture would silently pass even
+  on the pre-fix code and prove nothing.
+- **Algorithm**: greedy, in x order -- place each label at its normal
+  base offset; if its estimated bounding box overlaps any
+  already-placed label's box, push it further out **in the same
+  direction it already points** (an open's label never flips below its
+  point, a close's never flips above) in fixed `STACK_STEP` increments
+  until clear. At most 6 markers total (3 trades), so brute-force
+  pairwise checking per placement costs nothing.
+- **No real DOM measurement is possible for this** -- SVG `<text>`
+  reports a zero-size `getBoundingClientRect`/`getBBox` under jsdom (see
+  this file's own "Chart pointer interaction" section), and even a real
+  browser needs an actually-mounted node to measure. Box width is a
+  deliberate **per-character estimate** (`CHAR_WIDTH_PRIMARY`/
+  `CHAR_WIDTH_SECONDARY`), calibrated generously against this app's own
+  two label font sizes/weights so a real rendered label is never wider
+  than predicted (avoiding false-negative "no collision" verdicts) --
+  not derived from any live measurement.
+- **Live screenshot verification found a second, _out-of-scope_ overlap
+  risk, deliberately not fixed here**: a marker sitting very close to
+  the plot's vertical domain edge can have its label visually brush the
+  always-rendered x-axis start/end date text (a completely different
+  pair of elements neither this module nor the issue's own scope covers
+  -- see the issue's own "Out of scope: no change to ... gridline
+  rendering"). The debug fixture used for live verification was
+  deliberately built with values comfortably inside the plotted y-domain
+  (not pinned to the window's own min) specifically to avoid this
+  unrelated edge case and get a clean, unambiguous screenshot of the
+  actual marker-to-marker fix. Worth knowing before filing a future
+  "label overlaps the axis" issue: it's a different collision (label vs.
+  axis text, not label vs. label) and would need its own fix, not an
+  extension of `resolveLabelOffsets`.

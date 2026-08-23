@@ -19,6 +19,7 @@ import { memo, useId, useMemo, useState } from "react";
 import { formatAxisCurrency, formatHeroCurrency } from "@/lib/format-currency";
 import { formatDateTime, isPortfolioDatetime } from "@/lib/format-date";
 import { buildLogScale, buildTimeScale, niceLogTicks } from "@/lib/chart-scales";
+import { resolveLabelOffsets } from "@/lib/chart-label-layout";
 import type { PortfolioEvent, PortfolioPoint } from "@/lib/portfolio-series";
 import { tradeVerbs, tradeVerbsPast } from "@/lib/trade-math";
 
@@ -114,6 +115,29 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
   const areaPath = `${linePath} L ${plotted[plotted.length - 1]!.x.toFixed(2)},${PLOT_HEIGHT} L ${plotted[0]!.x.toFixed(2)},${PLOT_HEIGHT} Z`;
 
   const eventMarkers = plotted.filter((p) => p.event !== null);
+
+  // Collision-avoided label y-positions (issue #68), one per
+  // eventMarkers entry in the same order -- computed from the same text
+  // each marker actually renders, so the layout algorithm reasons about
+  // real (estimated) label widths, not just point spacing. Not
+  // useMemo'd: eventMarkers is a fresh array every render (a `.filter`
+  // over the already-memoized `plotted`), same as linePath/areaPath
+  // above, and the input is at most 6 markers -- too small to be worth
+  // memoizing against a dependency that itself changes identity every
+  // render.
+  const labelYs = resolveLabelOffsets(
+    eventMarkers.map((p) => {
+      const event = p.event!;
+      return {
+        x: p.x,
+        y: p.y,
+        isAbove: event.type === "open",
+        anchor: anchorFor(p.x),
+        primaryText: `${eventLabelVerb(event)} ${event.ticker}`,
+        secondaryText: `${formatDateTime(p.date)} · ${formatHeroCurrency(event.price)}`,
+      };
+    }),
+  );
 
   const hovered = hoverIndex !== null ? plotted[hoverIndex] : null;
 
@@ -269,8 +293,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
               #13, see eventLabelVerb). */}
           {eventMarkers.map((p, i) => {
             const event = p.event!;
-            const isAbove = event.type === "open";
-            const labelY = isAbove ? p.y - 14 : p.y + 24;
+            const labelY = labelYs[i]!;
             return (
               <g key={`${p.date}-${event.type}-${event.ticker}-${i}`}>
                 <circle
