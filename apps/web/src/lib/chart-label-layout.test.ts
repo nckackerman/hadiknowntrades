@@ -4,6 +4,7 @@ import {
   boxesOverlap,
   labelBox,
   resolveLabelOffsets,
+  type LabelLayoutBounds,
   type LabelLayoutInput,
 } from "./chart-label-layout";
 
@@ -161,6 +162,75 @@ describe("resolveLabelOffsets", () => {
     for (const labelY of labelYs) {
       expect(labelY).toBeLessThan(180);
     }
+  });
+
+  /**
+   * Code review finding, fixed: without a bound, the greedy stacking
+   * loop has nothing stopping it from pushing a still-colliding label
+   * further and further until it's pushed off the visible chart
+   * entirely (clipped by the enclosing SVG's own viewBox) -- worse than
+   * the overlap this module exists to fix, since an overlapping label
+   * is at least still visible. Two markers landing close in both x and
+   * y near the very top of the plot (e.g. two trades' opens shortly
+   * after each other, both near a chart high) is exactly the case that
+   * needs several stack levels to fully separate.
+   */
+  it("clamps stacking to the given bounds instead of pushing a label off-canvas", () => {
+    const inputs: LabelLayoutInput[] = [
+      {
+        x: 400,
+        y: 10, // near the very top of a typical plot
+        isAbove: true,
+        anchor: "middle",
+        primaryText: "Buy AAPL",
+        secondaryText: "Jun 1, 2024 · $10.00",
+      },
+      {
+        x: 404,
+        y: 12, // a few px away in both x and y -- collides at every early stack level
+        isAbove: true,
+        anchor: "middle",
+        primaryText: "Buy MSFT",
+        secondaryText: "Jun 2, 2024 · $20.00",
+      },
+    ];
+    // Matches PortfolioChart's own real bound: MARGIN.top = 56 of
+    // headroom above the plot's local y = 0 before the outer <svg>'s
+    // viewBox clips content.
+    const bounds: LabelLayoutBounds = { minY: -56, maxY: 1000 };
+
+    const labelYs = resolveLabelOffsets(inputs, bounds);
+    const boxes = inputs.map((input, i) => labelBox(input, labelYs[i]!));
+
+    for (const box of boxes) {
+      expect(box.top).toBeGreaterThanOrEqual(bounds.minY);
+      expect(box.bottom).toBeLessThanOrEqual(bounds.maxY);
+    }
+  });
+
+  it("still resolves collisions normally when the bounds are generous enough to never bind", () => {
+    const inputs: LabelLayoutInput[] = [
+      {
+        x: 402,
+        y: 300,
+        isAbove: true,
+        anchor: "middle",
+        primaryText: "Buy AAPL",
+        secondaryText: "Jun 1, 2024 · $10.00",
+      },
+      {
+        x: 406,
+        y: 270,
+        isAbove: false,
+        anchor: "middle",
+        primaryText: "Sell AAPL",
+        secondaryText: "Jun 5, 2024 · $30.00",
+      },
+    ];
+    const generousBounds: LabelLayoutBounds = { minY: -10_000, maxY: 10_000 };
+
+    expect(resolveLabelOffsets(inputs, generousBounds)).toEqual(resolveLabelOffsets(inputs));
+    assertNoOverlaps(inputs);
   });
 });
 

@@ -1599,3 +1599,46 @@ own extraction.
   "label overlaps the axis" issue: it's a different collision (label vs.
   axis text, not label vs. label) and would need its own fix, not an
   extension of `resolveLabelOffsets`.
+- **Unbounded stacking can push a label off the visible canvas entirely
+  (`high` code review finding, fixed)**: the first version of the greedy
+  loop above had nothing stopping it from stepping a still-colliding
+  label further and further out -- fine for two markers, but a small
+  cluster (several markers close in both x _and_ y, near the plot's own
+  top or bottom edge, where there's the least headroom to begin with)
+  can need several stack levels to fully separate, and each level was
+  unconditionally another `STACK_STEP` away with no ceiling. Traced by
+  hand: two "open" markers a couple px apart near `y = 10`/`y = 12`
+  needed stack level 2 (`labelY = -58`) to clear, which -- once
+  translated through the `<g>`'s own `MARGIN.top = 56` -- lands at
+  absolute SVG `y = -2`, outside the `0..400` viewBox and silently
+  clipped by the root `<svg>`'s default overflow -- the exact failure
+  mode this issue exists to eliminate, just moved from "overlapping" to
+  "invisible". Fixed with an optional `LabelLayoutBounds` (`{ minY,
+maxY }`) `resolveLabelOffsets` now accepts: the stacking loop simply
+  stops advancing once the _next_ level would cross the bound, accepting
+  whatever residual overlap remains at the last in-bounds position --
+  crowded-but-visible beats invisible. `PortfolioChart.tsx` passes
+  `{ minY: -MARGIN.top, maxY: HEIGHT - MARGIN.top }`, the real local-
+  coordinate extent before the outer `<svg>` clips. Regression-tested
+  two ways: `chart-label-layout.test.ts` asserts directly against a
+  tight bound with the hand-traced near-collision fixture above, and
+  `PortfolioChart.test.tsx` renders a genuinely pathological 6-marker
+  cluster (the max this chart ever shows) crowded near the plot's top
+  edge and asserts every rendered label's box stays within the real
+  `MARGIN.top`-based bound -- live-screenshot-verified too (both
+  themes): the crowded cluster's labels visibly overlap each other
+  (an accepted tradeoff at that many markers packed into one spot) but
+  never disappear off the top of the chart.
+- **The layout inputs (anchor, verb+ticker text, date+price text) used
+  to be computed twice per marker -- once to build
+  `resolveLabelOffsets`' input array, again in the render map just below
+  (`high` code review finding, fixed)**: not a correctness bug on its
+  own, but a real drift risk (`anchorFor`/`eventLabelVerb`/
+  `formatDateTime`/`formatHeroCurrency` each called from two independent
+  call sites nothing enforced would stay in sync). Fixed by computing a
+  single `markerLabels` array once (`{ p, event, isAbove, anchor,
+primaryText, secondaryText }` per marker) that both the
+  `resolveLabelOffsets` call and the render `.map` now read from --
+  matching the exact "compute once, reuse" pattern the "Long-only vs.
+  long+short mode" section above already applied to `tradeVerbs`/
+  `tradeVerbsPast` for the same class of duplication.

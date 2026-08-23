@@ -79,6 +79,28 @@ export interface LabelBox {
   bottom: number;
 }
 
+/**
+ * The vertical extent a label's box must stay within (in the same local
+ * coordinate space as each input's own `y`) -- optional, since this
+ * module has no inherent notion of a canvas. Without a bound, the
+ * greedy stacking loop below has nothing stopping it from pushing a
+ * still-colliding label further and further from its point until its
+ * box is pushed **off the visible chart entirely** (clipped by the
+ * enclosing SVG's own viewBox, not just "still a bit crowded") -- found
+ * in code review: a small cluster of markers near the same x *and* y
+ * (the exact case this module exists to handle) can need several stack
+ * levels to fully separate, and each level moves a label another
+ * `STACK_STEP` away with no ceiling. When a bound is supplied, the loop
+ * stops advancing a label once the *next* level would cross it,
+ * accepting whatever residual overlap remains at the last in-bounds
+ * position -- a label that's still a little crowded but visible is
+ * strictly better than one pushed off-canvas and invisible.
+ */
+export interface LabelLayoutBounds {
+  minY: number;
+  maxY: number;
+}
+
 function labelWidth(primaryText: string, secondaryText: string): number {
   return Math.max(
     primaryText.length * CHAR_WIDTH_PRIMARY,
@@ -123,8 +145,16 @@ export function boxesOverlap(a: LabelBox, b: LabelBox): boolean {
  * marker count (at most 6, one open+close pair per trade, up to 3
  * trades), so brute-force pairwise checking per placement is plenty
  * fast, and no more complex packing algorithm is warranted.
+ *
+ * `bounds`, if given, caps how far a label can be pushed (see
+ * `LabelLayoutBounds`'s own doc comment) -- a still-colliding label at
+ * the bound simply stays at its last in-bounds position rather than
+ * being clipped off-canvas.
  */
-export function resolveLabelOffsets(inputs: readonly LabelLayoutInput[]): number[] {
+export function resolveLabelOffsets(
+  inputs: readonly LabelLayoutInput[],
+  bounds?: LabelLayoutBounds,
+): number[] {
   const placedBoxes: LabelBox[] = [];
   const results: number[] = [];
 
@@ -139,8 +169,13 @@ export function resolveLabelOffsets(inputs: readonly LabelLayoutInput[]): number
       level += 1
     ) {
       const offset = base + level * STACK_STEP;
-      labelY = input.isAbove ? input.y - offset : input.y + offset;
-      box = labelBox(input, labelY);
+      const nextLabelY = input.isAbove ? input.y - offset : input.y + offset;
+      const nextBox = labelBox(input, nextLabelY);
+      if (bounds && (nextBox.top < bounds.minY || nextBox.bottom > bounds.maxY)) {
+        break; // Would clip off-canvas -- stay at the last in-bounds position.
+      }
+      labelY = nextLabelY;
+      box = nextBox;
     }
 
     placedBoxes.push(box);

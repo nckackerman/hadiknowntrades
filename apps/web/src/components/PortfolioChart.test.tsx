@@ -206,9 +206,19 @@ describe("PortfolioChart", () => {
      * for why a moderate gain, not a huge one, is what actually
      * collides). MSFT's own trade, later in the window with a much
      * bigger gain, doubles as a second, differently-shaped pair.
+     *
+     * The window's own start value is deliberately lower (5) than
+     * AAPL's own open value (20), not equal to it -- matching the
+     * live-verification debug fixture (see apps/web/CLAUDE.md's own
+     * "Chart point-label collision avoidance" section): pinning AAPL's
+     * open at the domain's own minimum would put it right at the plot's
+     * bottom edge, where resolveLabelOffsets' bounds (issue #68 code
+     * review follow-up) correctly refuse to stack a label past the
+     * visible canvas -- a *different*, out-of-scope collision (label vs.
+     * plot edge) this fixture isn't meant to exercise.
      */
     const closeTogetherPoints: PortfolioPoint[] = [
-      { date: "2020-01-01", value: 20, event: null },
+      { date: "2020-01-01", value: 5, event: null },
       {
         date: "2022-06-01",
         value: 20,
@@ -286,6 +296,62 @@ describe("PortfolioChart", () => {
       expect(svg.getByText("Sell AAPL")).toBeInTheDocument();
       expect(svg.getByText("Buy MSFT")).toBeInTheDocument();
       expect(svg.getByText("Sell MSFT")).toBeInTheDocument();
+    });
+
+    /**
+     * Code review finding, fixed: without a bound, stacking a heavily
+     * crowded cluster of labels can push one past the outer <svg>'s own
+     * viewBox and get silently clipped -- worse than the overlap this
+     * issue exists to fix. Six "open" markers (the max this chart ever
+     * renders -- one open+close pair per trade, up to 3 trades) all
+     * within a single pixel of each other, near the very top of the
+     * plot (where there's the least headroom above y=0 to begin with),
+     * forces several stack levels for the later ones -- enough to go
+     * out of bounds without the fix.
+     */
+    it("keeps every label's box within the visible SVG canvas even under a heavily crowded cluster near the plot's top edge", () => {
+      const crowdedPoints: PortfolioPoint[] = [
+        { date: "2020-01-01", value: 5, event: null },
+        ...Array.from({ length: 6 }, (_, i) => ({
+          date: `2024-01-0${i + 1}`,
+          value: 990 + i, // clustered near the window's own max (1000) -- near the plot's top edge
+          event: {
+            type: "open" as const,
+            direction: "long" as const,
+            ticker: `TICK${i}`,
+            price: 10 + i,
+          },
+        })),
+        { date: "2025-01-01", value: 1000, event: null },
+      ];
+
+      render(<PortfolioChart points={crowdedPoints} />);
+      const svg = within(getChartSvg());
+
+      const boxes = Array.from({ length: 6 }, (_, i) => {
+        const primaryEl = svg.getByText(`Buy TICK${i}`);
+        const g = primaryEl.closest("g")!;
+        const [, secondaryEl] = g.querySelectorAll("text");
+        const y = Number(primaryEl.getAttribute("y"));
+        return labelBox(
+          {
+            x: Number(primaryEl.getAttribute("x")),
+            y,
+            isAbove: true,
+            anchor: primaryEl.getAttribute("text-anchor") as LabelAnchor,
+            primaryText: primaryEl.textContent ?? "",
+            secondaryText: secondaryEl!.textContent ?? "",
+          },
+          y,
+        );
+      });
+
+      // Matches this component's own MARGIN.top -- content above this
+      // local y is clipped by the outer <svg>'s viewBox.
+      const MARGIN_TOP = 56;
+      for (const box of boxes) {
+        expect(box.top).toBeGreaterThanOrEqual(-MARGIN_TOP);
+      }
     });
   });
 });
