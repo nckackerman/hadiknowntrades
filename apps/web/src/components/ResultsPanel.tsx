@@ -20,6 +20,7 @@ import {
 import { formatDate } from "@/lib/format-date";
 import { formatHeroCurrency } from "@/lib/format-currency";
 import { DEFAULT_MODE, MODE_LABELS, type Mode } from "@/lib/mode";
+import { prefersReducedMotion } from "@/lib/prefers-reduced-motion";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { useDailyGuess } from "@/lib/use-daily-guess";
 import { BenchmarkStat } from "@/components/BenchmarkStat";
@@ -248,6 +249,15 @@ interface WindowResultBodyProps {
   mode: Mode;
   startingCapital?: number;
   onStartingCapitalChange?: (value: number) => void;
+  /**
+   * Softens the LoadingSkeleton -> success-tree handoff for a range or
+   * custom-anchor switch (issue #65) -- appended to this component's own
+   * outer wrapper's className. See ResultsPanel's own `fadeInClassName`
+   * doc comment (its single computation site) for why this is safe to
+   * apply unconditionally here and why it never replays on a mode/day
+   * switch.
+   */
+  fadeInClassName: string;
 }
 
 /**
@@ -273,13 +283,14 @@ function WindowResultBody({
   mode,
   startingCapital,
   onStartingCapitalChange,
+  fadeInClassName,
 }: WindowResultBodyProps) {
   const variant = selectVariant<Trade>(data, data.longShort, mode);
   const isEmpty = variant.trades.length === 0;
   const effectiveStartingCapital = startingCapital ?? data.startingCapital;
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className={`flex flex-col gap-8${fadeInClassName}`}>
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <HeroAndWorstCase
@@ -469,6 +480,36 @@ export function ResultsPanel({
 
   const { data } = state;
 
+  // Softens the LoadingSkeleton -> success-tree handoff for a range or
+  // custom-anchor switch (issue #65) -- appended to the className of each
+  // of the three success-branch outer wrappers below ("window",
+  // "custom-window" via WindowResultBody, and "intraday-daily"). Computed
+  // once here, not per-branch, since it's identical either way.
+  //
+  // Only ever reached once state.status is "success" (both early returns
+  // above have already run), so -- like use-chart-tap-hint.ts/
+  // use-daily-guess.ts (see their own doc comments) -- this never runs
+  // during SSR and needs no separate hydration-safety story of its own:
+  // useResults'/useCustomResults' fetch state machine always starts
+  // "loading" on both the server and the initial client render, so a
+  // "success" render is client-only by construction.
+  //
+  // Deliberately mirrors shouldCelebrate.ts's own primary-gate pattern
+  // (skip the animation class entirely rather than rely on the CSS
+  // keyframe's @media guard alone) -- the CSS's own
+  // @media (prefers-reduced-motion: reduce) guard in globals.css is
+  // defense-in-depth on top, the same two-layer approach that keyframe
+  // already documents for .confetti-piece/.chart-tap-hint-pulse.
+  //
+  // No JS-level toggle is needed to keep this from replaying on a mode or
+  // day switch (both explicitly out of scope, see the issue) -- neither
+  // switch ever unmounts/remounts these wrapper divs in the first place
+  // (mode/day are plain prop/local-state changes within an
+  // already-mounted success tree, not a new fetch), so the animation
+  // naturally never re-triggers for them; only an actual fresh mount
+  // (a genuine range/custom-anchor switch, or first load) ever plays it.
+  const fadeInClassName = prefersReducedMotion() ? "" : " results-fade-in";
+
   if (data.model === "intraday-daily") {
     if (range === null) {
       // Invariant violation, not a reachable product state: an
@@ -497,7 +538,7 @@ export function ResultsPanel({
     const effectiveStartingCapital = startingCapital ?? activeDay.startingCapital;
 
     return (
-      <div className="flex flex-col gap-8">
+      <div className={`flex flex-col gap-8${fadeInClassName}`}>
         {/* Announces the guess -> reveal swap below to screen reader users
             (issue #67) -- always present in the DOM (not conditionally
             mounted alongside the revealed content) so assistive tech has
@@ -671,6 +712,7 @@ export function ResultsPanel({
         mode={mode}
         startingCapital={startingCapital}
         onStartingCapitalChange={onStartingCapitalChange}
+        fadeInClassName={fadeInClassName}
       />
     );
   }
@@ -711,6 +753,7 @@ export function ResultsPanel({
       mode={mode}
       startingCapital={startingCapital}
       onStartingCapitalChange={onStartingCapitalChange}
+      fadeInClassName={fadeInClassName}
     />
   );
 }

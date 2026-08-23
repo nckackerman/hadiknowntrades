@@ -1878,3 +1878,59 @@ Date()` per mount, not a module-level constant) -- see that file's
   confirmed the "More options" disclosure actually expands and a mode
   selection still writes `?mode=` to the URL exactly as before, ruling
   out the debug harness itself masking an interaction regression.
+
+## Range/anchor switch fade-in transition (issue #65)
+
+The only genuine "just swaps content" gap left in this app (mode/day
+switching already had `HeroStat`'s own keyed-remount reveal, see "Two
+result models" above and `HeroStat`'s `heroKey` doc comment) was
+`ResultsPanel.tsx`'s `LoadingSkeleton` -> success-tree handoff on a range
+or custom-anchor switch, since `useFetchResultsState` resets state to
+`{status: "loading"}` synchronously the instant its `url` changes
+(`lib/use-results.ts`), unmounting the whole success tree and mounting a
+fresh one once the new fetch resolves.
+
+- **Mechanism: a plain CSS `@keyframes` opacity fade (`globals.css`'s
+  `results-fade-in`, 300ms ease-out), appended to the className of
+  `ResultsPanel.tsx`'s three success-branch outer wrapper `<div>`s** --
+  `WindowResultBody`'s own wrapper (shared by the `"window"` and
+  `"custom-window"` branches, via a new required `fadeInClassName: string`
+  prop) and the `"intraday-daily"` branch's own wrapper. No library, same
+  convention `.confetti-piece`/`.chart-tap-hint-pulse` already establish.
+- **No JS toggle is needed to keep mode/day switching from replaying
+  this** -- both are plain prop/local-state changes within an
+  already-mounted success tree (no new fetch, see "Two result models"
+  above), so neither ever unmounts/remounts these wrapper divs in the
+  first place; a CSS mount-animation on a static className simply never
+  re-triggers without a fresh DOM node. Verified live (below) alongside
+  confirming the animation _does_ play on an actual loading -> success
+  transition.
+- **`fadeInClassName` is computed once in `ResultsPanel`, not per-branch**
+  (`prefersReducedMotion() ? "" : " results-fade-in"`), then threaded to
+  all three wrappers -- reusing `lib/prefers-reduced-motion.ts` rather
+  than a second `matchMedia` check, and only ever reached once
+  `state.status === "success"` (both early returns for `"loading"`/
+  `"error"` already ran), so -- like `use-daily-guess.ts`/
+  `use-chart-tap-hint.ts` (see their own doc comments) -- this is
+  client-only by construction and needs no separate hydration-safety
+  story. Mirrors `should-celebrate.ts`'s own primary-gate pattern (skip
+  the class outright under reduced motion, don't rely on the CSS
+  `@media` guard alone); `results-fade-in`'s own
+  `@media (prefers-reduced-motion: reduce)` block in `globals.css` is
+  defense-in-depth on top, the same two-layer approach that keyframe's
+  own doc comment already documents for `.confetti-piece`/
+  `.chart-tap-hint-pulse`.
+- **Verified live** via the established throwaway-debug-route + headless-
+  Chromium technique (`apps/web/CLAUDE.md`'s own notes above): a debug
+  page toggled `ResultsPanel`'s `state` between `"loading"` and a real
+  `"success"` fixture (the actual transition this issue targets, not
+  just a static before/after screenshot) and sampled the wrapper's
+  `getComputedStyle(...).opacity` at several points after the switch.
+  With no reduced-motion preference: `0` at 20ms, `0.09` at 100ms,
+  `0.56` at 200ms, `0.98` at 350ms -- a real, visible fade, not an
+  instant snap. With `reducedMotion: "reduce"` (Playwright's own context
+  option, not a hand-rolled `matchMedia` stub): opacity was `1` at every
+  sampled point from 20ms on, confirming the transition is fully skipped,
+  not just slowed down. Playwright itself was temporarily added
+  (`pnpm add -D -w playwright`) and reverted afterward, per this file's
+  own "Headless-browser screenshot verification" convention above.
