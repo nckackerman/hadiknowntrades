@@ -1824,6 +1824,46 @@ guessed.
   -- an arbitrary but consistent choice of which copy to interact with,
   since both share the same props/handlers and a test's assertion is
   identical either way.
+  - **That coverage alone left the mobile copy itself completely
+    untested (`high` code review finding, fixed)**: every assertion in
+    the file went through `desktopControls()`, so a bug isolated to just
+    the `<details>` copy specifically (a typo in its own `onSelect` prop,
+    the `<details>`/`<summary>` structure getting mangled) would have
+    passed the whole suite untouched. A new `"mobile 'More options'
+disclosure (issue #63)"` describe block adds a `mobileControls()`
+    sibling helper (`within(screen.getByTestId("controls-more-mobile"))`)
+    and two tests -- a mode-toggle click and an anchor `<select>` change,
+    both routed through the mobile instance specifically -- confirming
+    it writes the same URL params the desktop copy's own tests already
+    check.
+  - **The desktop div was also missing `flex-wrap` (`high` code review
+    finding, fixed)**: unlike its mobile twin inside the `<details>`
+    (`className="mt-3 flex flex-wrap items-center gap-3"`), the desktop
+    copy was `sm:flex` with no `flex-wrap` -- fine at the 1024px width
+    this issue's own screenshot verification checked, but the three
+    children (`"or"`, `CustomRangeSelector`, `ModeToggle`) couldn't wrap
+    onto their own line if their combined width ever exceeded the row
+    (e.g. right at the 640px `sm` boundary itself, or with browser
+    zoom/OS text-size scaling enlarging the rendered text) -- they'd
+    overflow instead. Now `flex flex-wrap` like the mobile copy, no
+    visual change at the widths already screenshotted.
+  - **`CustomRangeSelector`'s own `customRangeAnchors(new Date())` call
+    effectively doubled in cost per `ResultsPage` render (`high` code
+    review finding, fixed)** -- this component's own doc comment already
+    called the 252-iteration loop "cheap... not engineered around
+    further" for a _single_ instance recomputing it every render, but
+    this issue's two-instance design means every `ResultsPage` render
+    (e.g. on every `router.replace` from a range/day/mode change) now
+    ran that loop twice. Fixed inside `CustomRangeSelector.tsx` itself
+    (no prop change, so still within this issue's "wrapper/layout change
+    in the two parent components only" scope) with `useMemo(() =>
+customRangeAnchors(new Date()), [])` -- computed once per _mount_, not
+    once per _render_, which also incidentally fixes the pre-existing
+    per-render redundancy for the single-instance case this doc comment
+    used to accept. The empty dependency array preserves the exact same
+    SSR/hydration-mismatch risk profile as before (still a fresh `new
+Date()` per mount, not a module-level constant) -- see that file's
+    own updated doc comment.
 - **Screenshot verification used the throwaway-debug-route technique**
   (`apps/web/CLAUDE.md`'s own "Screenshotting a component locally" note)
   at a real 375x812 viewport: a debug page rendered `ResultsPage.tsx`'s

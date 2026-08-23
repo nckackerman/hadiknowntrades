@@ -148,7 +148,10 @@ export function ResultsPage() {
               instance's own state or behavior can drift from the other
               since both are driven by the same `anchor`/`mode` props and
               `selectAnchor`/`selectMode` handlers. */}
-          <div data-testid="controls-more-desktop" className="hidden items-center gap-3 sm:flex">
+          <div
+            data-testid="controls-more-desktop"
+            className="hidden flex-wrap items-center gap-3 sm:flex"
+          >
             <span className="text-sm text-[var(--text-muted)]">or</span>
             <CustomRangeSelector selected={anchor} onSelect={selectAnchor} />
             <ModeToggle selected={mode} onSelect={selectMode} />

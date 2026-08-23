@@ -216,4 +216,39 @@ describe("ResultsPage", () => {
       });
     });
   });
+
+  describe('mobile "More options" disclosure (issue #63)', () => {
+    // The mobile-only copy (data-testid="controls-more-mobile", inside a
+    // sm:hidden <details>) has identical props/handlers to the desktop
+    // copy every other describe block above exercises via
+    // desktopControls() -- every prior test here only proves the desktop
+    // instance is wired correctly, never this one. Without a dedicated
+    // check here, a future bug isolated to just the <details> copy (a
+    // typo in its own onSelect prop, the <details>/summary structure
+    // getting mangled) would pass the full suite untouched (`high` code
+    // review finding on this issue's own PR, fixed).
+    function mobileControls() {
+      return within(screen.getByTestId("controls-more-mobile"));
+    }
+
+    it("writes the selected mode to the URL when the toggle inside the mobile disclosure is clicked", async () => {
+      const user = userEvent.setup();
+      render(<ResultsPage />);
+
+      await user.click(mobileControls().getByRole("button", { name: "Long + short" }));
+
+      expect(replace).toHaveBeenCalledWith("/?mode=long-short", { scroll: false });
+    });
+
+    it("writes the selected anchor to the URL when a start month is chosen inside the mobile disclosure", async () => {
+      const user = userEvent.setup();
+      const anchor = customRangeAnchors(new Date())[2]!;
+      search = "range=5Y";
+      render(<ResultsPage />);
+
+      await user.selectOptions(mobileControls().getByRole("combobox"), anchor);
+
+      expect(replace).toHaveBeenCalledWith(`/?anchor=${anchor}`, { scroll: false });
+    });
+  });
 });
