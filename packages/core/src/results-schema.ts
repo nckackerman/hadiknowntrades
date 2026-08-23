@@ -40,7 +40,7 @@ export function resultKey(range: PresetRange): string {
  * The S3 key a custom-range anchor's precomputed result (issue #11) is
  * stored/read under -- same single-source-of-truth role as resultKey
  * above, just for CustomWindowResult instead of PrecomputedResult.
- * Namespaced under `results/custom/` (not flat alongside the 5 preset
+ * Namespaced under `results/custom/` (not flat alongside the 6 preset
  * keys) so the two families are trivially distinguishable by key prefix
  * alone, and so an S3 listing of one family never accidentally includes
  * the other.

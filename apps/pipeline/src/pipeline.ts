@@ -1173,7 +1173,7 @@ interface BuildCustomWindowResultsOptions {
   startingCapital: number;
   maxTrades: number;
   skipped: readonly string[];
-  /** SPY's raw fetched closes (issue #12) -- computeBenchmark is called once per anchor here, mirroring buildWindowResults/buildIntradayResults's per-range calls, since a custom anchor's own start date isn't one of the 5 PRESET_RANGES benchmarksByRange is keyed by. */
+  /** SPY's raw fetched closes (issue #12) -- computeBenchmark is called once per anchor here, mirroring buildWindowResults/buildIntradayResults's per-range calls, since a custom anchor's own start date isn't one of the 6 PRESET_RANGES benchmarksByRange is keyed by. */
   benchmarkCloses: readonly DailyClose[];
   /** The anchor points to compute a result for -- see RunPipelineOptions.customRangeAnchors's own doc comment for why this defaults to empty at the runPipeline level. */
   anchors: readonly AnchorMonth[];
@@ -1769,7 +1769,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // an empty array if the fetch failed entirely -- computeBenchmark's
   // own inWindow.length === 0 guard then returns null for every range
   // uniformly) -- see computeBenchmark for the MAX/1993-truncation
-  // handling. All 5 PRESET_RANGES get an entry, not just the two window
+  // handling. All 6 PRESET_RANGES get an entry, not just the two window
   // ranges: the benchmark is a single well-defined whole-window figure
   // regardless of which trading model (window vs. intraday-daily) a
   // given range uses.
@@ -1933,7 +1933,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // how a rejection is turned into part of the aggregated error instead.
   //
   // Bounded by writeConcurrency (issue #11 code review finding) rather
-  // than firing all writeJobs.length (up to 257: 5 preset + up to 252
+  // than firing all writeJobs.length (up to 258: 6 preset + up to 252
   // custom anchors) putObject calls at once -- this had never been
   // tested against real S3 (this feature's own live verification
   // explicitly excluded S3 writes, see packages/core/CLAUDE.md's "Custom
