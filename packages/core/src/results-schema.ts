@@ -990,7 +990,17 @@ export function validateCustomAnchorsManifest(result: CustomAnchorsManifest): vo
   if (!Array.isArray(r.anchors) || r.anchors.length === 0) {
     problems.push(`anchors must be a non-empty array, got ${describe(r.anchors)}`);
   } else {
+    // Tracks the most recent *well-formed* anchor and its own real index
+    // -- not just "the previous array index" -- so the
+    // duplicate/out-of-order messages below always cite the actual
+    // preceding well-formed anchor, even when one or more malformed
+    // entries sit between it and the current one (a real, if
+    // diagnostic-only, bug found in code review: `previous` used to stay
+    // unset across a malformed entry's early `return`, but the message
+    // still hardcoded `anchors[i - 1]` as if it always held that
+    // skipped entry's own value).
     let previous: string | null = null;
+    let previousIndex: number | null = null;
     r.anchors.forEach((anchor, i) => {
       if (!isNonEmptyString(anchor) || anchorDateToDate(anchor) === null) {
         problems.push(
@@ -998,16 +1008,17 @@ export function validateCustomAnchorsManifest(result: CustomAnchorsManifest): vo
         );
         return;
       }
-      if (previous !== null) {
+      if (previous !== null && previousIndex !== null) {
         if (anchor === previous) {
-          problems.push(`anchors[${i}] ("${anchor}") duplicates anchors[${i - 1}]`);
+          problems.push(`anchors[${i}] ("${anchor}") duplicates anchors[${previousIndex}]`);
         } else if (anchor < previous) {
           problems.push(
-            `anchors[${i}] ("${anchor}") is out of order -- must be strictly ascending, but comes before anchors[${i - 1}] ("${previous}")`,
+            `anchors[${i}] ("${anchor}") is out of order -- must be strictly ascending, but comes before anchors[${previousIndex}] ("${previous}")`,
           );
         }
       }
       previous = anchor;
+      previousIndex = i;
     });
   }
 

@@ -910,20 +910,30 @@ Replaces the whole month-granularity scheme above end to end -- `AnchorMonth`
   -- **no longer a pure function of calendar time alone.** There's no
   calendar-math equivalent of "the 1st of the month" for "a real
   NYSE/Nasdaq trading day," so this now takes the real trading-day
-  calendar as an explicit argument (typically
-  `buildCalendar(history).dates`, `optimizer.ts`'s already-exported
-  union-of-every-ticker's-real-dates derivation -- not a hand-rolled US
-  market holiday calendar, which could drift from reality in a way real
-  fetched data structurally can't). Filters `tradingDates` to
-  `[asOf - CUSTOM_RANGE_ANCHOR_YEARS_BACK years, asOf]` inclusive,
-  newest first. Still a pure, easily-unit-tested function despite taking
-  real data as an argument -- feed it a synthetic `tradingDates` array,
-  no real fetch needed for a test.
+  calendar as an explicit argument -- the real caller
+  (`apps/pipeline`'s `runPipeline`) passes
+  `collectTradingDates(windowFetch.history)`, **not**
+  `buildCalendar(history).dates` (a real, code-review-caught
+  inefficiency, fixed): `buildCalendar` also reindexes every ticker's
+  full price series onto the shared date axis into a `pricesByTicker`
+  map this call never reads, real avoidable compute on every nightly
+  run given this whole issue's own live-benchmarked finding that
+  compute time is the binding constraint against the Lambda's 900s
+  budget (section 2 below). `collectTradingDates` is just
+  `buildCalendar`'s own sorted-date-union step, factored out of it
+  (`optimizer.ts`) so both share one implementation of "what counts as
+  a trading day" -- `buildCalendar` itself calls `collectTradingDates`
+  internally now, not a separately-hand-rolled duplicate. Filters
+  `tradingDates` to `[asOf - CUSTOM_RANGE_ANCHOR_YEARS_BACK years,
+asOf]` inclusive, newest first. Still a pure, easily-unit-tested
+  function despite taking real data as an argument -- feed it a
+  synthetic `tradingDates` array, no real fetch needed for a test.
 - **No missing/holiday-date snapping is needed, but for a different
   reason than the old month scheme's** -- every element of
-  `buildCalendar(...).dates` is, by construction, a day at least one
-  ticker actually has a close for, so there's no weekend/holiday date in
-  the anchor list to begin with, and no forward-snap-produces-duplicate-
+  `collectTradingDates(...)`/`buildCalendar(...).dates` (the same date
+  list either way) is, by construction, a day at least one ticker
+  actually has a close for, so there's no weekend/holiday date in the
+  anchor list to begin with, and no forward-snap-produces-duplicate-
   anchors collision case to design around (a naive calendar-day anchor
   list, which this deliberately isn't, would have that problem -- see
   `docs/plans/issue-75-plan.md` section 3.1 for the full argument).

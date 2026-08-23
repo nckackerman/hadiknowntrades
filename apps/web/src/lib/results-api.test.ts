@@ -466,20 +466,20 @@ describe("getCustomAnchorsResponse", () => {
     expect(body.error).toBe("schema_mismatch");
   });
 
-  it("reads the manifest key and returns { anchors } with 200 and caching headers", async () => {
+  it("reads the manifest key and returns the full manifest (schemaVersion + anchors) with 200 and caching headers", async () => {
     const anchors = ["2019-03-14", "2019-03-15", "2024-06-14"];
-    const objects = new Map([
-      [
-        "results/custom/index.json",
-        JSON.stringify({ schemaVersion: RESULTS_SCHEMA_VERSION, anchors }),
-      ],
-    ]);
+    const stored = { schemaVersion: RESULTS_SCHEMA_VERSION, anchors };
+    const objects = new Map([["results/custom/index.json", JSON.stringify(stored)]]);
 
     const response = await getCustomAnchorsResponse(memoryReader(objects));
 
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body).toEqual({ anchors });
+    // The full stored object, not a narrowed { anchors } projection
+    // (code review finding) -- useCustomAnchors() types the fetched
+    // payload as the full CustomAnchorsManifest, so the route must
+    // actually return that shape, schemaVersion included.
+    expect(body).toEqual(stored);
     const cacheControl = response.headers.get("Cache-Control");
     expect(cacheControl).toContain("max-age=300");
     expect(cacheControl).toContain("stale-while-revalidate");

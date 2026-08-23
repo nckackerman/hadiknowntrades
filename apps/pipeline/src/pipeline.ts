@@ -69,7 +69,7 @@
 import {
   anchorDateToDate,
   BlockedError,
-  buildCalendar,
+  collectTradingDates,
   customRangeAnchors,
   optimizeIntradayDays,
   optimizeAllVariants,
@@ -209,7 +209,7 @@ export interface RunPipelineOptions {
    * **Issue #75 changed this from a precomputed `readonly AnchorMonth[]`
    * list to this boolean** -- day-granularity anchors can only be
    * derived from the window path's own already-fetched history (via
-   * `customRangeAnchors(buildCalendar(windowFetch.history).dates,
+   * `customRangeAnchors(collectTradingDates(windowFetch.history),
    * asOf)`, packages/core), which isn't available until *after*
    * `runPipeline`'s own fetch completes, unlike the month scheme's
    * anchors (a pure function of calendar time alone, computable by
@@ -1883,14 +1883,20 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // **Computed here, not passed in from outside (issue #75's real,
   // deliberate shift -- see RunPipelineOptions.computeCustomAnchors's own
   // doc comment)**: `customRangeAnchors` (packages/core) needs a real
-  // trading-day calendar, which only exists once `buildCalendar` has run
-  // over `windowFetch.history` -- data this function only has *after*
+  // trading-day calendar, which only exists once the fetch over
+  // `windowFetch.history` has run -- data this function only has *after*
   // its own fetch above completes, unlike the old month scheme's anchors
   // (a pure function of calendar time alone, computable before ever
-  // calling runPipeline).
+  // calling runPipeline). Uses `collectTradingDates`, not
+  // `buildCalendar(...).dates` (code review finding, fixed) --
+  // `buildCalendar` also reindexes every ticker's full price series into
+  // a `pricesByTicker` map this call never reads, real avoidable compute
+  // on every nightly run given this whole issue's own live-benchmarked
+  // finding that pipeline compute time is the binding constraint (see
+  // `collectTradingDates`'s own doc comment, packages/core/src/optimizer.ts).
   const customAnchors: readonly AnchorDate[] =
     options.computeCustomAnchors && !windowFetch.failureReason
-      ? customRangeAnchors(buildCalendar(windowFetch.history).dates, asOf)
+      ? customRangeAnchors(collectTradingDates(windowFetch.history), asOf)
       : [];
 
   const customBuild: CustomWindowResultsBuild = windowFetch.failureReason
@@ -1920,35 +1926,11 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     ...customBuild.failures,
   ];
 
-  // The published anchors manifest (issue #75) -- the picker-facing list
-  // of which specific days apps/web's calendar UI may offer, published
-  // as its own small S3 object (results-schema.ts's CustomAnchorsManifest,
-  // read by apps/web's GET /api/custom-anchors) since day-granularity
-  // anchors are no longer derivable client-side the way the old month
-  // scheme's were (see custom-range-anchors.ts's own doc comment).
-  //
-  // Only the anchors that actually got a *written* CustomWindowResult
-  // (customBuild.results, not the raw customAnchors list) go in the
-  // manifest -- an anchor buildCustomWindowResults validly skipped
-  // (duplicate/malformed/future-dated, none reachable via the one real
-  // caller today) or whose own compute failed has no stored result to
-  // serve, and publishing it as "selectable" would just be a 404 waiting
-  // to happen. Sorted ascending (oldest first) per
-  // CustomAnchorsManifest.anchors' own documented contract -- the
-  // opposite of customRangeAnchors' own newest-first convention, since a
-  // calendar UI wants to walk forward through months. Skipped entirely
-  // (leaving any previously-published manifest untouched, same
-  // "gracefully stale" posture as every preset range's own written-if-
-  // succeeded behavior) when there's nothing to publish -- an empty
-  // manifest would itself fail validateCustomAnchorsManifest's own
-  // non-empty check below.
-  const customAnchorsManifest: CustomAnchorsManifest | null =
-    options.computeCustomAnchors && customBuild.results.length > 0
-      ? {
-          schemaVersion: RESULTS_SCHEMA_VERSION,
-          anchors: customBuild.results.map((result) => result.anchorDate).sort(),
-        }
-      : null;
+  // The published anchors manifest (issue #75) is computed further
+  // below, once the actual per-anchor S3 write outcomes are known --
+  // NOT here from customBuild.results (compute success alone) -- see
+  // the manifest's own comment near the write loop for why that
+  // distinction is load-bearing, not cosmetic.
 
   if (windowResults.length === 0 && intradayResults.length === 0) {
     // Refuse to overwrite S3's existing (presumably good) results with
@@ -2044,15 +2026,84 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     validate: () => validateCustomWindowResult(result),
     body: JSON.stringify(result, null, 2),
   }));
-  // The anchors manifest (issue #75) -- one more WriteJob, held to the
-  // exact same "must fail the run" standard as every preset/custom-anchor
-  // write (see customAnchorsManifest's own comment above for why it's
-  // derived from the same already-required-to-succeed window-path
-  // history, not a looser-standard granularity-override-style write):
-  // a manifest write failure means apps/web's picker either serves a
-  // stale anchor list or 404s its own fetch entirely, which is exactly
-  // the "silently stale forever" failure mode this system's alerting
-  // exists to catch.
+  const primaryWriteJobs = [...presetWriteJobs, ...customWriteJobs];
+
+  const primaryWriteOutcomes = await mapWithConcurrency(
+    primaryWriteJobs,
+    writeConcurrency,
+    async (job) => {
+      job.validate();
+      await options.store.putObject(job.key, job.body);
+      return job.label;
+    },
+  );
+
+  // The published anchors manifest (issue #75) -- the picker-facing list
+  // of which specific days apps/web's calendar UI may offer, published
+  // as its own small S3 object (results-schema.ts's CustomAnchorsManifest,
+  // read by apps/web's GET /api/custom-anchors) since day-granularity
+  // anchors are no longer derivable client-side the way the old month
+  // scheme's were (see custom-range-anchors.ts's own doc comment).
+  //
+  // **Built from the real primaryWriteOutcomes above, not from
+  // customBuild.results / customResults alone (a real bug found in code
+  // review, fixed)**: computing this from compute *success* rather than
+  // write *success* meant a transient putObject failure on one anchor's
+  // own result -- while every other write in the same batch, including
+  // the manifest's own eventual write, succeeded -- would still have
+  // published that anchor as selectable, even though nothing was ever
+  // actually stored at its key. A user picking that date would 404 for
+  // up to 24h, until the next nightly run overwrote the stale manifest.
+  // customWriteJobs[i] and customResults[i] share the same index (both
+  // built from one customResults.map(...) call), so
+  // primaryWriteOutcomes[presetWriteJobs.length + i] is customResults[i]'s
+  // own real write outcome -- correlated by that shared index, not
+  // re-derived from anything else.
+  //
+  // Necessarily a *second*, later write phase (see manifestWriteOutcomes
+  // below) rather than folded into primaryWriteJobs above: which anchors
+  // succeeded can only be known once primaryWriteOutcomes has actually
+  // settled, and the manifest's own content depends on that outcome --
+  // so the manifest can't be written in the same batch as the writes it
+  // needs to observe the result of.
+  //
+  // Only the anchors that actually got a *written* CustomWindowResult go
+  // in the manifest -- an anchor buildCustomWindowResults validly
+  // skipped (duplicate/malformed/future-dated, none reachable via the
+  // one real caller today), whose own compute failed, or whose own
+  // write failed has no stored result to serve, and publishing it as
+  // "selectable" would just be a 404 waiting to happen. Sorted ascending
+  // (oldest first) per CustomAnchorsManifest.anchors' own documented
+  // contract -- the opposite of customRangeAnchors' own newest-first
+  // convention, since a calendar UI wants to walk forward through
+  // months. Skipped entirely (leaving any previously-published manifest
+  // untouched, same "gracefully stale" posture as every preset range's
+  // own written-if-succeeded behavior) when there's nothing to publish
+  // -- an empty manifest would itself fail
+  // validateCustomAnchorsManifest's own non-empty check below.
+  const successfulCustomAnchorDates = customResults
+    .filter((_, i) => primaryWriteOutcomes[presetWriteJobs.length + i]?.status === "fulfilled")
+    .map((result) => result.anchorDate)
+    .sort();
+  const customAnchorsManifest: CustomAnchorsManifest | null =
+    options.computeCustomAnchors && successfulCustomAnchorDates.length > 0
+      ? { schemaVersion: RESULTS_SCHEMA_VERSION, anchors: successfulCustomAnchorDates }
+      : null;
+
+  // The manifest's own WriteJob, held to the exact same "must fail the
+  // run" standard as every preset/custom-anchor write above (see the
+  // comment above for why it's derived from the same already-required-
+  // to-succeed window-path history, not a looser-standard granularity-
+  // override-style write): a manifest write failure means apps/web's
+  // picker either serves a stale anchor list or 404s its own fetch
+  // entirely, which is exactly the "silently stale forever" failure
+  // mode this system's alerting exists to catch. Run through its own
+  // mapWithConcurrency call (trivially one job today, but kept
+  // consistent with primaryWriteJobs' own bounded-concurrency shape
+  // rather than a bare inline putObject) -- concatenated back into one
+  // combined writeJobs/writeOutcomes pair below so every downstream
+  // consumer (failedWrites, writtenCount) still sees one unified view,
+  // unaware this was two sequential phases rather than one batch.
   const manifestWriteJobs: WriteJob[] = customAnchorsManifest
     ? [
         {
@@ -2063,13 +2114,19 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         },
       ]
     : [];
-  const writeJobs = [...presetWriteJobs, ...customWriteJobs, ...manifestWriteJobs];
+  const manifestWriteOutcomes = await mapWithConcurrency(
+    manifestWriteJobs,
+    writeConcurrency,
+    async (job) => {
+      job.validate();
+      await options.store.putObject(job.key, job.body);
+      return job.label;
+    },
+  );
 
-  const writeOutcomes = await mapWithConcurrency(writeJobs, writeConcurrency, async (job) => {
-    job.validate();
-    await options.store.putObject(job.key, job.body);
-    return job.label;
-  });
+  const writeJobs = [...primaryWriteJobs, ...manifestWriteJobs];
+  const writeOutcomes = [...primaryWriteOutcomes, ...manifestWriteOutcomes];
+
   // Every rejection, not just the first -- plain Promise.all (and a
   // naive "throw on the first rejected settlement" loop) would only
   // ever surface one job's problem even when multiple are independently

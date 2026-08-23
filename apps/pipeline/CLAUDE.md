@@ -1045,16 +1045,24 @@ state.
   real caller opts in" property the old default had). The real anchor
   list is now computed _inside_ `runPipeline` itself, right where
   `buildCustomWindowResults` is called:
-  `customRangeAnchors(buildCalendar(windowFetch.history).dates, asOf)`
+  `customRangeAnchors(collectTradingDates(windowFetch.history), asOf)`
   -- gated behind `options.computeCustomAnchors && !windowFetch.failureReason`,
   the same gating `buildCustomWindowResults` itself already had. This is
   a real, deliberate architectural shift, not just a rename: day-
-  granularity anchors need the real fetched trading-day calendar
-  (`buildCalendar`, from `windowFetch.history`), which only exists
-  _after_ the fetch completes -- `src/run.ts` (the one real caller)
-  can no longer compute the anchor list itself before calling
+  granularity anchors need the real fetched trading-day calendar, which
+  only exists _after_ the fetch completes -- `src/run.ts` (the one real
+  caller) can no longer compute the anchor list itself before calling
   `runPipeline` the way it could for the old, pure-calendar-math month
   scheme. `src/run.ts` now just passes `computeCustomAnchors: true`.
+  **Uses `collectTradingDates` (packages/core's `optimizer.ts`), not
+  `buildCalendar(...).dates` (code review finding, fixed)** --
+  `buildCalendar` also reindexes every ticker's full price series into a
+  `pricesByTicker` map this call never reads; `collectTradingDates` is
+  just the sorted-date-union half of that same function, factored out
+  specifically so this call doesn't pay for the unused reindex on every
+  nightly run, given this whole issue's own live-benchmarked finding
+  that compute time is the binding constraint against the Lambda's 900s
+  budget.
 - **`buildCustomWindowResults`'s per-anchor loop variable is `anchor:
 AnchorDate`, not `anchorMonth: AnchorMonth`** -- and its startDate
   derivation got _simpler_, not just renamed: the old month scheme had

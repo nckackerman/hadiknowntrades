@@ -2,36 +2,73 @@
 
 import { useMemo, useRef, useState } from "react";
 
-import type { AnchorDate } from "@hadiknowntrades/core";
+import {
+  anchorDateToDate,
+  toDateString,
+  type AnchorDate,
+  type CustomAnchorsManifest,
+} from "@hadiknowntrades/core";
 
-import { useCustomAnchors } from "@/lib/use-custom-anchors";
+import { formatDate } from "@/lib/format-date";
+import type { ResultsState } from "@/lib/use-results";
 
 interface CustomRangeSelectorProps {
   /** The currently-selected anchor, or null when custom-range mode isn't active (a preset range is showing instead). */
   selected: AnchorDate | null;
   onSelect: (anchor: AnchorDate) => void;
+  /**
+   * The published anchors manifest's own fetch state -- lifted up and
+   * fetched **once** by the caller (ResultsPage.tsx's `useCustomAnchors()`
+   * call) rather than by this component itself (issue #75 code review
+   * finding, fixed): `CustomRangeSelector` is mounted twice (desktop +
+   * mobile, issue #63's own responsive duplication), and each instance
+   * calling `useCustomAnchors()` independently doubled the
+   * `GET /api/custom-anchors` request on every page load, and risked
+   * visibly inconsistent UI if one request failed while the other
+   * succeeded. See ResultsPage.tsx's own doc comment on its
+   * `anchorsState` for the full reasoning.
+   */
+  anchorsState: ResultsState<CustomAnchorsManifest> | null;
 }
 
 const WEEKDAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
-/** Splits a well-formed YYYY-MM-DD AnchorDate into its numeric parts (month 0-indexed, matching Date's own convention). Every anchor this component ever handles comes from either `selected` (already validated upstream, see ResultsPage.tsx's parseAnchorDate) or the manifest (already validated at write time by packages/core's validateCustomAnchorsManifest), so no malformed-input branch is needed here. */
-function parseAnchorParts(anchor: AnchorDate): { year: number; month: number; day: number } {
-  const [year, month, day] = anchor.split("-").map(Number);
-  return { year: year!, month: month! - 1, day: day! };
+/**
+ * Splits a well-formed YYYY-MM-DD AnchorDate into its UTC year/0-indexed-
+ * month/day parts, or null if it isn't parseable -- via packages/core's
+ * `anchorDateToDate` (issue #75 code review finding, fixed) rather than a
+ * hand-rolled `split`+`Number`: the old version extracted numeric parts
+ * without going through `anchorDateToDate`'s own `MIN_ANCHOR_YEAR`/
+ * max-year sanity floor at all, so a malformed `selected` (e.g. a
+ * hand-edited `?anchor=0099-06-01` URL) would have silently reached
+ * `new Date(Date.UTC(99, ...))` downstream and hit the exact two-digit-
+ * year reinterpretation bug that function exists to guard against --
+ * see its own doc comment (`custom-range-anchors.ts`) for the full
+ * mechanism. Every anchor this component handles in practice is already
+ * well-formed (either `selected`, itself validated upstream by
+ * ResultsPage.tsx's `parseAnchorDate`, or the manifest, validated at
+ * write time by packages/core's `validateCustomAnchorsManifest`), so the
+ * `null` return is defensive only -- callers fall back to a sane default
+ * rather than crash on it.
+ *
+ * **Known, low-priority, not fixed here**: `anchorDateToDate` itself
+ * deliberately doesn't validate that a day is real for its month (see
+ * its own doc comment) -- a hand-edited `?anchor=2021-02-30` URL still
+ * parses (silently normalizing to March 2) rather than returning `null`
+ * here. In that case the trigger's own label (`formatDate`, below)
+ * would show the normalized date while no calendar cell shows as
+ * selected (no real day cell's own candidate string, always a genuine
+ * calendar day, ever equals the un-normalized `"2021-02-30"`). Only
+ * reachable via a hand-edited URL, not through any real interaction
+ * this component itself offers.
+ */
+function parseAnchorParts(anchor: AnchorDate): { year: number; month: number; day: number } | null {
+  const date = anchorDateToDate(anchor);
+  if (!date) return null;
+  return { year: date.getUTCFullYear(), month: date.getUTCMonth(), day: date.getUTCDate() };
 }
 
-/** Formats an AnchorDate as "March 15, 2019" for the trigger's own label once a date is selected -- the same toLocaleDateString pattern the old month-scheme formatAnchorLabel used, with day: "numeric" added. */
-function formatSelectedLabel(anchor: AnchorDate): string {
-  const { year, month, day } = parseAnchorParts(anchor);
-  return new Date(Date.UTC(year, month, day)).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    timeZone: "UTC",
-  });
-}
-
-/** Formats a (year, 0-indexed month) pair as "March 2019" for the calendar grid's own header. */
+/** Formats a (year, 0-indexed month) pair as "March 2019" for the calendar grid's own header -- no AnchorDate/day component involved, so there's no packages/core parse to reuse here the way the trigger's own selected-date label (formatDate, below) has. */
 function formatMonthLabel(year: number, month: number): string {
   return new Date(Date.UTC(year, month, 1)).toLocaleDateString("en-US", {
     year: "numeric",
@@ -54,8 +91,9 @@ function firstWeekdayOfMonth(year: number, month: number): number {
   return new Date(Date.UTC(year, month, 1)).getUTCDay();
 }
 
+/** Builds a day cell's own candidate AnchorDate from the currently-viewed (year, 0-indexed month) plus a day number -- via packages/core's `toDateString` (issue #75 code review finding, fixed) rather than a third hand-rolled zero-pad implementation, matching `date-utils.ts`'s own `YYYY-MM-DD` formatting exactly. */
 function dayAnchor(year: number, month: number, day: number): AnchorDate {
-  return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  return toDateString(new Date(Date.UTC(year, month, day)));
 }
 
 interface ViewedMonth {
@@ -70,19 +108,20 @@ interface ViewedMonth {
  * month if one is selected, else the newest published anchor's month
  * (anchors is ascending -- see CustomAnchorsManifest's own doc comment
  * -- so the newest is the last element), else (no anchors published
- * yet, or still loading) the real current month.
+ * yet, still loading, or either `source` fails to parse -- defensive
+ * only, see parseAnchorParts' own doc comment) the real current month.
  */
 function defaultViewedMonth(
   anchors: readonly AnchorDate[],
   selected: AnchorDate | null,
 ): ViewedMonth {
   const source = selected ?? anchors[anchors.length - 1];
-  if (!source) {
+  const parsed = source ? parseAnchorParts(source) : null;
+  if (!parsed) {
     const now = new Date();
     return { year: now.getUTCFullYear(), month: now.getUTCMonth() };
   }
-  const { year, month } = parseAnchorParts(source);
-  return { year, month };
+  return { year: parsed.year, month: parsed.month };
 }
 
 /**
@@ -90,7 +129,8 @@ function defaultViewedMonth(
  * design, day-granularity anchors since issue #75) -- but deliberately
  * only from the fixed set of real trading-day anchor points the nightly
  * pipeline actually computes+writes a result for (the published
- * manifest, fetched via useCustomAnchors), never a truly arbitrary date.
+ * manifest, fetched once by the caller and passed in as `anchorsState`
+ * -- see that prop's own doc comment), never a truly arbitrary date.
  *
  * **Issue #75 replaced the old month-scheme's plain `<select>` with a
  * hand-rolled calendar-grid picker** -- a day-granularity anchor set
@@ -143,14 +183,24 @@ function defaultViewedMonth(
  * route's silent 404, BenchmarkStat's silent null render) rather than
  * inventing a new error-surfacing pattern for just this one control.
  */
-export function CustomRangeSelector({ selected, onSelect }: CustomRangeSelectorProps) {
-  const anchorsState = useCustomAnchors();
+export function CustomRangeSelector({
+  selected,
+  onSelect,
+  anchorsState,
+}: CustomRangeSelectorProps) {
   const detailsRef = useRef<HTMLDetailsElement>(null);
   // Only ever set by explicit prev/next navigation below -- null means
   // "still showing the natural default" (see defaultViewedMonth), so a
   // freshly re-opened popover (or a newly-arrived `selected` prop) keeps
   // tracking that default instead of getting stuck wherever a previous
-  // session's navigation left off.
+  // session's navigation left off. Reset both on a real selection
+  // (handleSelect) and whenever the popover closes without one -- a
+  // click-away or Escape, neither of which routes through handleSelect
+  // (issue #75 code review finding, fixed: this used to only reset on
+  // an actual selection, so closing the popover any other way left a
+  // stale navigated-away month in place for the next time it opened,
+  // contradicting this very comment's own "keeps tracking that default"
+  // claim).
   const [viewedOverride, setViewedOverride] = useState<ViewedMonth | null>(null);
 
   const anchors = anchorsState?.status === "success" ? anchorsState.data.anchors : [];
@@ -209,12 +259,27 @@ export function CustomRangeSelector({ selected, onSelect }: CustomRangeSelectorP
   return (
     <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
       <span>Starting from</span>
-      <details ref={detailsRef} className="relative">
+      <details
+        ref={detailsRef}
+        className="relative"
+        onToggle={() => {
+          // Fires on both open and close (a native <details> "toggle"
+          // event) -- only reset the navigated-away month once it's
+          // actually closed, whether via handleSelect's own programmatic
+          // `.open = false` (harmlessly redundant with that function's
+          // own reset above) or a click-away/Escape (the case this
+          // handler actually exists for -- see viewedOverride's own doc
+          // comment).
+          if (!detailsRef.current?.open) {
+            setViewedOverride(null);
+          }
+        }}
+      >
         <summary
           data-testid="custom-range-trigger"
           className="cursor-pointer list-none rounded-md border border-[var(--gridline)] bg-[var(--surface-1)] px-2 py-1.5 text-sm font-medium text-[var(--text-primary)]"
         >
-          {selected ? formatSelectedLabel(selected) : "Choose a start date…"}
+          {selected ? formatDate(selected) : "Choose a start date…"}
         </summary>
         <div className="absolute right-0 z-10 mt-2 w-64 max-w-[calc(100vw-2rem)] rounded-md border border-[var(--gridline)] bg-[var(--surface-1)] p-3 shadow-lg">
           <div className="mb-2 flex items-center justify-between gap-2">

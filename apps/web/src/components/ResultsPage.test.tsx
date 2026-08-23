@@ -93,6 +93,24 @@ describe("ResultsPage", () => {
     expect(fetch).toHaveBeenCalledWith("/api/results?range=1Y");
   });
 
+  it("fetches the custom-anchors manifest exactly once, even though CustomRangeSelector is mounted twice (issue #63's desktop/mobile duplication) -- code review finding", async () => {
+    render(<ResultsPage />);
+
+    // Both mounted CustomRangeSelector instances (desktop + mobile) share
+    // the one anchorsState fetched here in ResultsPage, rather than each
+    // independently calling useCustomAnchors() -- confirm both actually
+    // render as interactive (not stuck on "Loading start dates…") before
+    // counting calls, so a regression that broke the sharing and left
+    // one instance perpetually loading wouldn't slip past a naive call
+    // count check for the wrong reason.
+    await screen.findAllByTestId("custom-range-trigger");
+
+    const customAnchorsCalls = vi
+      .mocked(fetch)
+      .mock.calls.filter(([input]) => String(input).startsWith("/api/custom-anchors"));
+    expect(customAnchorsCalls).toHaveLength(1);
+  });
+
   it("reads the initial range from the URL, case-insensitively", () => {
     search = "range=max";
     render(<ResultsPage />);

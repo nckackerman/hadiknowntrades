@@ -28,6 +28,7 @@ export type { DailyClose, IntradayBar } from "./yahoo-client";
 
 export {
   buildCalendar,
+  collectTradingDates,
   optimizeTrades,
   optimizeWorstTrades,
   optimizeBothDirections,

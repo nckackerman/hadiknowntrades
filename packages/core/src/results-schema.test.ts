@@ -839,6 +839,25 @@ describe("validateCustomAnchorsManifest", () => {
     expect(() => validateCustomAnchorsManifest(manifest)).toThrow(/anchors\[1\].*out of order/);
   });
 
+  it("cites the real preceding well-formed anchor, not the immediately-preceding malformed one, in an out-of-order message (code review finding)", () => {
+    const manifest = validCustomAnchorsManifest();
+    // anchors[1] is malformed and skipped; anchors[2] is out of order
+    // relative to anchors[0] (the real preceding well-formed anchor),
+    // not anchors[1] (which was never actually parsed/tracked).
+    manifest.anchors = ["2019-03-15", "not-a-date", "2019-03-14"];
+    expect(() => validateCustomAnchorsManifest(manifest)).toThrow(
+      /anchors\[2\] \("2019-03-14"\) is out of order.*comes before anchors\[0\] \("2019-03-15"\)/,
+    );
+  });
+
+  it("cites the real preceding well-formed anchor in a duplicate message across a malformed entry (code review finding)", () => {
+    const manifest = validCustomAnchorsManifest();
+    manifest.anchors = ["2019-03-15", "not-a-date", "2019-03-15"];
+    expect(() => validateCustomAnchorsManifest(manifest)).toThrow(
+      /anchors\[2\] \("2019-03-15"\) duplicates anchors\[0\]/,
+    );
+  });
+
   it("reports every problem, not just the first", () => {
     const manifest = validCustomAnchorsManifest();
     manifest.schemaVersion = RESULTS_SCHEMA_VERSION - 1;

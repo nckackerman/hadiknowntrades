@@ -128,8 +128,10 @@ export function anchorDateToDate(anchor: string): Date | null {
 /**
  * Every valid custom-start-date anchor as of `asOf`, given the real
  * trading-day calendar `tradingDates` (ascending, e.g.
- * `buildCalendar(history).dates` from optimizer.ts) -- every real
- * trading day within `CUSTOM_RANGE_ANCHOR_YEARS_BACK` years of `asOf`,
+ * `collectTradingDates(history)` from optimizer.ts -- or
+ * `buildCalendar(history).dates`, the same date list, if a caller
+ * already has a `Calendar` for other reasons) -- every real trading day
+ * within `CUSTOM_RANGE_ANCHOR_YEARS_BACK` years of `asOf`,
  * newest first (matching the pre-issue-#75 month scheme's own
  * newest-first convention).
  *
@@ -154,9 +156,10 @@ export function anchorDateToDate(anchor: string): Date | null {
  * from.
  *
  * Callers: `apps/pipeline`'s `runPipeline` is the only real caller,
- * passing `buildCalendar(windowFetch.history).dates` (the same full
+ * passing `collectTradingDates(windowFetch.history)` (the same full
  * daily-close history 5Y/MAX already fetch, reused -- zero new Yahoo
- * requests for this feature) -- see apps/pipeline/CLAUDE.md's "Custom
+ * requests for this feature, and no reindexed `pricesByTicker` map
+ * built and discarded either) -- see apps/pipeline/CLAUDE.md's "Custom
  * date-range anchors" section. `apps/web`'s date-picker no longer calls
  * this function directly (it needs real fetched data this package alone
  * can't supply client-side) -- it instead reads the pipeline's own
@@ -172,15 +175,55 @@ export function anchorDateToDate(anchor: string): Date | null {
  * a test.
  */
 export function customRangeAnchors(tradingDates: readonly string[], asOf: Date): AnchorDate[] {
-  const cutoff = toDateString(
-    new Date(
-      Date.UTC(
-        asOf.getUTCFullYear() - CUSTOM_RANGE_ANCHOR_YEARS_BACK,
-        asOf.getUTCMonth(),
-        asOf.getUTCDate(),
-      ),
-    ),
-  );
+  const cutoff = toDateString(yearsBeforeUtc(asOf, CUSTOM_RANGE_ANCHOR_YEARS_BACK));
   const endString = toDateString(asOf);
   return tradingDates.filter((d) => d >= cutoff && d <= endString).reverse();
+}
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+/**
+ * `date` minus a plain number of calendar *years*, in UTC -- the
+ * years-back counterpart to `date-utils.ts`'s own `daysBeforeUtc`, kept
+ * local to this file (not re-exported through `index.ts`) since nothing
+ * outside this file needs a years-back offset today. Exported (only)
+ * for this file's own test to exercise the leap-day clamp below at
+ * offsets other than the fixed `CUSTOM_RANGE_ANCHOR_YEARS_BACK` -- with
+ * that constant fixed at 5 (odd), `date.getUTCFullYear()` and
+ * `date.getUTCFullYear() - 5` can never both be leap years (a leap year
+ * is always divisible by 4, and two years 5 apart can't both be), so
+ * `customRangeAnchors` itself can never exercise the "no clamp needed"
+ * branch below -- only a direct test at a different, even offset can.
+ *
+ * **Does NOT delegate to `new Date(Date.UTC(year - n, month, day))`
+ * naively (a real bug, found in code review, fixed)**: when `date` is
+ * Feb 29 (a leap day) and `date`'s year minus `years` is not itself a
+ * leap year, `Date.UTC` silently normalizes the nonexistent "Feb 29" into
+ * "Mar 1" -- verified directly: `Date.UTC(2019, 1, 29)` produces
+ * 2019-03-01, not an error or a clamped Feb 28. Left unguarded, this
+ * pushes `customRangeAnchors`' own cutoff a day later than intended
+ * *only* on the one calendar day per 4 years the pipeline happens to run
+ * on Feb 29 in a leap year whose `years`-years-earlier year isn't also
+ * leap (e.g. asOf 2024-02-29, `CUSTOM_RANGE_ANCHOR_YEARS_BACK = 5` ->
+ * 2019, not a leap year) -- silently excluding whatever real trading-day
+ * anchor(s) fall on that boundary day from `tradingDates`, a real if
+ * narrow correctness gap rather than an intentional design choice.
+ *
+ * **Explicit clamp: Feb 29 -> Feb 28 when the target year isn't leap**,
+ * a deliberate, documented choice (not the only defensible one -- "roll
+ * forward to Mar 1" is a legitimate alternative) chosen to keep the
+ * cutoff within the same *month* "N years back" should land in, rather
+ * than silently spilling into the next one. A leap day landing in a
+ * target year that's also leap (e.g. 2024 back 4 years to 2020, both
+ * leap) is entirely unaffected -- this only ever fires for the specific
+ * leap-day-into-non-leap-year combination.
+ */
+export function yearsBeforeUtc(date: Date, years: number): Date {
+  const year = date.getUTCFullYear() - years;
+  const month = date.getUTCMonth();
+  const day = date.getUTCDate();
+  const clampedDay = month === 1 && day === 29 && !isLeapYear(year) ? 28 : day;
+  return new Date(Date.UTC(year, month, clampedDay));
 }

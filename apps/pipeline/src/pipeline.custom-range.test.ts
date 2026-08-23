@@ -321,5 +321,14 @@ describe("runPipeline custom-range anchors (issue #11, day-granularity since iss
     expect(objects.has("results/custom/2019-07-01.json")).toBe(false);
     expect(objects.has("results/custom/2024-06-14.json")).toBe(true);
     expect(objects.has("results/custom/index.json")).toBe(true);
+
+    // Regression test (code review finding): the manifest must be built
+    // from real per-anchor *write* outcomes, not from which anchors
+    // merely computed successfully -- a stale manifest listing
+    // "2019-07-01" as selectable, despite its own write having failed,
+    // would 404 for any user who picked it until the next nightly run.
+    const manifest = JSON.parse(objects.get("results/custom/index.json")!);
+    expect(manifest.anchors).toEqual(["2024-06-14"]);
+    expect(manifest.anchors).not.toContain("2019-07-01");
   });
 });

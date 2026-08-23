@@ -1,7 +1,9 @@
-import { RESULTS_SCHEMA_VERSION } from "@hadiknowntrades/core";
-import { render, screen, waitFor } from "@testing-library/react";
+import { RESULTS_SCHEMA_VERSION, type CustomAnchorsManifest } from "@hadiknowntrades/core";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import type { ResultsState } from "@/lib/use-results";
 
 import { CustomRangeSelector } from "./CustomRangeSelector";
 
@@ -10,62 +12,69 @@ import { CustomRangeSelector } from "./CustomRangeSelector";
 // "requires navigation" cases are covered without a huge fixture.
 const TEST_ANCHORS = ["2023-12-28", "2024-01-05", "2024-01-10", "2024-01-20"];
 
-function mockAnchorsFetch(anchors: string[] = TEST_ANCHORS) {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ schemaVersion: RESULTS_SCHEMA_VERSION, anchors }), {
-        status: 200,
-      }),
-    ),
-  );
+// issue #75 code review finding: CustomRangeSelector no longer fetches
+// its own anchors manifest (that's lifted up to ResultsPage.tsx, fetched
+// once and shared across both mounted instances -- see
+// ResultsPage.tsx's own doc comment) -- it's a plain prop now, so these
+// tests build the state directly instead of mocking `fetch`.
+const LOADING_STATE: ResultsState<CustomAnchorsManifest> = { status: "loading" };
+const ERROR_STATE: ResultsState<CustomAnchorsManifest> = {
+  status: "error",
+  httpStatus: 502,
+  error: "upstream_error",
+  message: "Failed to read precomputed results.",
+};
+
+function successState(anchors: string[] = TEST_ANCHORS): ResultsState<CustomAnchorsManifest> {
+  return { status: "success", data: { schemaVersion: RESULTS_SCHEMA_VERSION, anchors } };
 }
 
-async function openCalendar(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(await screen.findByTestId("custom-range-trigger"));
+function openCalendar(user: ReturnType<typeof userEvent.setup>) {
+  return user.click(screen.getByTestId("custom-range-trigger"));
 }
 
 describe("CustomRangeSelector (day-granularity calendar picker, issue #75)", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
   describe("loading state", () => {
     it("renders a disabled trigger while the anchors manifest is loading", () => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(() => new Promise(() => {})),
-      ); // never resolves
-      render(<CustomRangeSelector selected={null} onSelect={() => {}} />);
+      render(
+        <CustomRangeSelector selected={null} onSelect={() => {}} anchorsState={LOADING_STATE} />,
+      );
+
+      expect(screen.getByRole("button", { name: "Loading start dates…" })).toBeDisabled();
+    });
+
+    it("also renders the loading trigger when anchorsState is null (not yet mounted/fetched)", () => {
+      render(<CustomRangeSelector selected={null} onSelect={() => {}} anchorsState={null} />);
 
       expect(screen.getByRole("button", { name: "Loading start dates…" })).toBeDisabled();
     });
   });
 
   describe("error state", () => {
-    it("renders an inline unavailable message, no trigger at all, on a fetch error", async () => {
-      vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
-      render(<CustomRangeSelector selected={null} onSelect={() => {}} />);
+    it("renders an inline unavailable message, no trigger at all, on a fetch error", () => {
+      render(
+        <CustomRangeSelector selected={null} onSelect={() => {}} anchorsState={ERROR_STATE} />,
+      );
 
-      expect(await screen.findByText("Start-date picker unavailable")).toBeInTheDocument();
+      expect(screen.getByText("Start-date picker unavailable")).toBeInTheDocument();
       expect(screen.queryByTestId("custom-range-trigger")).not.toBeInTheDocument();
     });
   });
 
   describe("loaded, no selection", () => {
-    beforeEach(() => mockAnchorsFetch());
-
-    it('shows "Choose a start date…" on the trigger', async () => {
-      render(<CustomRangeSelector selected={null} onSelect={() => {}} />);
-
-      expect(await screen.findByTestId("custom-range-trigger")).toHaveTextContent(
-        "Choose a start date…",
+    it('shows "Choose a start date…" on the trigger', () => {
+      render(
+        <CustomRangeSelector selected={null} onSelect={() => {}} anchorsState={successState()} />,
       );
+
+      expect(screen.getByTestId("custom-range-trigger")).toHaveTextContent("Choose a start date…");
     });
 
     it("defaults the calendar view to the newest published anchor's month", async () => {
       const user = userEvent.setup();
-      render(<CustomRangeSelector selected={null} onSelect={() => {}} />);
+      render(
+        <CustomRangeSelector selected={null} onSelect={() => {}} anchorsState={successState()} />,
+      );
 
       await openCalendar(user);
 
@@ -74,7 +83,9 @@ describe("CustomRangeSelector (day-granularity calendar picker, issue #75)", () 
 
     it("renders every real anchor day as enabled, and every other day in the month as disabled", async () => {
       const user = userEvent.setup();
-      render(<CustomRangeSelector selected={null} onSelect={() => {}} />);
+      render(
+        <CustomRangeSelector selected={null} onSelect={() => {}} anchorsState={successState()} />,
+      );
 
       await openCalendar(user);
 
@@ -88,7 +99,9 @@ describe("CustomRangeSelector (day-granularity calendar picker, issue #75)", () 
     it("calls onSelect with the clicked real anchor day and closes the popover", async () => {
       const onSelect = vi.fn();
       const user = userEvent.setup();
-      const { container } = render(<CustomRangeSelector selected={null} onSelect={onSelect} />);
+      const { container } = render(
+        <CustomRangeSelector selected={null} onSelect={onSelect} anchorsState={successState()} />,
+      );
 
       await openCalendar(user);
       await user.click(screen.getByRole("button", { name: "10" }));
@@ -100,7 +113,9 @@ describe("CustomRangeSelector (day-granularity calendar picker, issue #75)", () 
     it("clicking a disabled (non-anchor) day does nothing", async () => {
       const onSelect = vi.fn();
       const user = userEvent.setup();
-      render(<CustomRangeSelector selected={null} onSelect={onSelect} />);
+      render(
+        <CustomRangeSelector selected={null} onSelect={onSelect} anchorsState={successState()} />,
+      );
 
       await openCalendar(user);
       await user.click(screen.getByRole("button", { name: "15" }));
@@ -110,7 +125,9 @@ describe("CustomRangeSelector (day-granularity calendar picker, issue #75)", () 
 
     it("navigates to the previous/next month via the nav buttons", async () => {
       const user = userEvent.setup();
-      render(<CustomRangeSelector selected={null} onSelect={() => {}} />);
+      render(
+        <CustomRangeSelector selected={null} onSelect={() => {}} anchorsState={successState()} />,
+      );
 
       await openCalendar(user);
       expect(screen.getByText("January 2024")).toBeInTheDocument();
@@ -125,7 +142,9 @@ describe("CustomRangeSelector (day-granularity calendar picker, issue #75)", () 
 
     it("disables the previous-month button at the oldest anchor's month, and the next-month button at the newest's", async () => {
       const user = userEvent.setup();
-      render(<CustomRangeSelector selected={null} onSelect={() => {}} />);
+      render(
+        <CustomRangeSelector selected={null} onSelect={() => {}} anchorsState={successState()} />,
+      );
 
       await openCalendar(user);
       expect(screen.getByRole("button", { name: "Next month" })).toBeDisabled();
@@ -133,22 +152,53 @@ describe("CustomRangeSelector (day-granularity calendar picker, issue #75)", () 
       await user.click(screen.getByRole("button", { name: "Previous month" }));
       expect(screen.getByRole("button", { name: "Previous month" })).toBeDisabled();
     });
+
+    it("resets a navigated-away month once the popover is closed without a selection (code review finding)", async () => {
+      const user = userEvent.setup();
+      const { container } = render(
+        <CustomRangeSelector selected={null} onSelect={() => {}} anchorsState={successState()} />,
+      );
+
+      await openCalendar(user);
+      await user.click(screen.getByRole("button", { name: "Previous month" }));
+      expect(screen.getByText("December 2023")).toBeInTheDocument();
+
+      // Close without selecting a day -- click the trigger again (a
+      // native <details>/<summary> toggle), the same effect a real
+      // click-away or Escape would have.
+      await user.click(screen.getByTestId("custom-range-trigger"));
+      expect(container.querySelector("details")).not.toHaveAttribute("open");
+
+      // Reopen: the calendar should be back to its natural default
+      // (the newest anchor's month), not stuck on the previously
+      // navigated-away month.
+      await user.click(screen.getByTestId("custom-range-trigger"));
+      expect(screen.getByText("January 2024")).toBeInTheDocument();
+    });
   });
 
   describe("loaded, with a selection", () => {
-    beforeEach(() => mockAnchorsFetch());
-
-    it("formats the selected anchor as a full date on the trigger", async () => {
-      render(<CustomRangeSelector selected="2024-01-10" onSelect={() => {}} />);
-
-      expect(await screen.findByTestId("custom-range-trigger")).toHaveTextContent(
-        "January 10, 2024",
+    it("formats the selected anchor as a full date on the trigger", () => {
+      render(
+        <CustomRangeSelector
+          selected="2024-01-10"
+          onSelect={() => {}}
+          anchorsState={successState()}
+        />,
       );
+
+      expect(screen.getByTestId("custom-range-trigger")).toHaveTextContent("Jan 10, 2024");
     });
 
     it("defaults the calendar view to the selected anchor's own month, not the newest anchor's", async () => {
       const user = userEvent.setup();
-      render(<CustomRangeSelector selected="2023-12-28" onSelect={() => {}} />);
+      render(
+        <CustomRangeSelector
+          selected="2023-12-28"
+          onSelect={() => {}}
+          anchorsState={successState()}
+        />,
+      );
 
       await openCalendar(user);
 
@@ -157,7 +207,13 @@ describe("CustomRangeSelector (day-granularity calendar picker, issue #75)", () 
 
     it("marks the selected day with aria-current", async () => {
       const user = userEvent.setup();
-      render(<CustomRangeSelector selected="2024-01-10" onSelect={() => {}} />);
+      render(
+        <CustomRangeSelector
+          selected="2024-01-10"
+          onSelect={() => {}}
+          anchorsState={successState()}
+        />,
+      );
 
       await openCalendar(user);
 
@@ -167,9 +223,10 @@ describe("CustomRangeSelector (day-granularity calendar picker, issue #75)", () 
 
   describe("empty manifest (defensive, not expected in practice)", () => {
     it("falls back to the real current month when there are no published anchors", async () => {
-      mockAnchorsFetch([]);
       const user = userEvent.setup();
-      render(<CustomRangeSelector selected={null} onSelect={() => {}} />);
+      render(
+        <CustomRangeSelector selected={null} onSelect={() => {}} anchorsState={successState([])} />,
+      );
 
       await openCalendar(user);
 
@@ -179,7 +236,7 @@ describe("CustomRangeSelector (day-granularity calendar picker, issue #75)", () 
         month: "long",
         timeZone: "UTC",
       });
-      await waitFor(() => expect(screen.getByText(expectedMonth)).toBeInTheDocument());
+      expect(screen.getByText(expectedMonth)).toBeInTheDocument();
     });
   });
 });

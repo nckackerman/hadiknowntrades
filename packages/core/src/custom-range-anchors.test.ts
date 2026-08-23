@@ -4,6 +4,7 @@ import {
   anchorDateToDate,
   CUSTOM_RANGE_ANCHOR_YEARS_BACK,
   customRangeAnchors,
+  yearsBeforeUtc,
 } from "./custom-range-anchors.js";
 import { toDateString } from "./date-utils.js";
 
@@ -146,5 +147,53 @@ describe("customRangeAnchors", () => {
     for (const anchor of customRangeAnchors(tradingDates, asOf)) {
       expect(anchorDateToDate(anchor)).not.toBeNull();
     }
+  });
+
+  describe("leap-day cutoff (code review finding)", () => {
+    // 2024 is a leap year (has Feb 29); 2024 - 5 = 2019 is not. Naively
+    // constructing Date.UTC(2019, 1, 29) silently normalizes to
+    // 2019-03-01 -- see yearsBeforeUtc's own doc comment for why this
+    // would otherwise push the cutoff a day later than intended and
+    // silently exclude a real trading-day anchor landing on 2019-02-28
+    // from the result.
+    it("clamps a Feb 29 asOf's cutoff to Feb 28 when the target year isn't a leap year", () => {
+      const leapAsOf = new Date("2024-02-29T00:00:00Z");
+      const dates = denseTradingDates(2000, "2024-02-29");
+      const anchors = customRangeAnchors(dates, leapAsOf);
+      expect(anchors[0]).toBe("2024-02-29");
+      // The cutoff is 2019-02-28, NOT 2019-03-01 -- 2019-02-28 must be
+      // included, and no earlier date should be.
+      expect(anchors).toContain("2019-02-28");
+      expect(anchors[anchors.length - 1]).toBe("2019-02-28");
+      expect(anchors).not.toContain("2019-02-27");
+    });
+  });
+});
+
+describe("yearsBeforeUtc", () => {
+  it("subtracts a plain number of years for an ordinary (non-Feb-29) date", () => {
+    expect(toDateString(yearsBeforeUtc(new Date("2024-06-15T00:00:00Z"), 5))).toBe("2019-06-15");
+  });
+
+  it("clamps Feb 29 to Feb 28 when the target year is not a leap year", () => {
+    // 2024 - 5 = 2019, not a leap year.
+    expect(toDateString(yearsBeforeUtc(new Date("2024-02-29T00:00:00Z"), 5))).toBe("2019-02-28");
+  });
+
+  it("does not clamp when the target year is also a leap year", () => {
+    // 2024 - 4 = 2020, also a leap year -- Feb 29 exists in both, so the
+    // real Feb 29 is preserved, not clamped.
+    expect(toDateString(yearsBeforeUtc(new Date("2024-02-29T00:00:00Z"), 4))).toBe("2020-02-29");
+  });
+
+  it("does not clamp a non-Feb-29 date even when the target year isn't leap", () => {
+    expect(toDateString(yearsBeforeUtc(new Date("2024-02-28T00:00:00Z"), 5))).toBe("2019-02-28");
+  });
+
+  it("does not mutate the date passed in", () => {
+    const date = new Date("2024-02-29T00:00:00Z");
+    const original = new Date(date);
+    yearsBeforeUtc(date, 5);
+    expect(date.getTime()).toBe(original.getTime());
   });
 });
