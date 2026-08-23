@@ -1511,11 +1511,30 @@ substitute -- unlikely to be the first thing read.
   workaround): no throwaway route was actually needed here, since
   `use-results.ts`'s fetch happens in a client-only effect, not during
   SSR -- the page shell (header, `OnboardingIntro`) renders fully
-  server-side even with `/api/results` 500ing, confirmed by `next build`
-  - `next start` + a headless-Chromium Playwright script (installed
-    and reverted for one verification session only, per the "Headless-
-    browser screenshot verification" note above) that loaded the real
-    page, asserted no console message matched `/hydration|did not
+  server-side even with `/api/results` 500ing, confirmed by building
+  and starting the real production server (`next build`, `next start`)
+  and driving it with a headless-Chromium Playwright script (installed
+  and reverted for one verification session only, per the "Headless-
+  browser screenshot verification" note above) that loaded the real
+  page, asserted no console message matched `/hydration|did not
 match|server rendered/i`, clicked dismiss, then did a real
-    `page.reload()` and asserted the banner stayed gone. Screenshotted in
-    both light and dark.
+  `page.reload()` and asserted the banner stayed gone. Screenshotted in
+  both light and dark.
+- **Duplication found in code review, fixed by extracting
+  `lib/use-hydrated-local-storage-state.ts`.** `use-onboarding-dismissed.ts`
+  originally reimplemented the exact mount-hydration + `userSetRef`
+  race-guard shape `use-starting-capital.ts` already had, near-verbatim
+  -- a real reuse finding, not just a style nit, since a future fix to
+  that logic (like the race-guard fix `use-starting-capital.ts` itself
+  needed once, see its own git history) would otherwise have to be
+  manually re-applied to both copies. Both hooks are now thin wrappers
+  around one generic `useHydratedLocalStorageState<T>(defaultValue,
+readStored, writeStored)` -- see that file's own doc comment for the
+  full hydration-safety/race-guard reasoning, now told in one place
+  instead of two. `use-onboarding-dismissed.ts`'s own race-guard
+  behavior is no longer independently tested (see that test file's own
+  comment on why: its `readStored` can only ever report `true` or
+  `null`, and its setter only ever writes `true`, so there's no pair of
+  differing stale/fresh values that could actually exercise a clobber
+  for this particular caller) -- the guard itself is covered once,
+  generically, in `use-hydrated-local-storage-state.test.ts`.

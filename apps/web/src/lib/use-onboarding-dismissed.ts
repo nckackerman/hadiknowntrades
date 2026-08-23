@@ -3,24 +3,30 @@
 // Tracks whether the first-visit onboarding intro banner (issue #64) has
 // been dismissed, persisted across reloads via onboarding-storage.ts.
 
-import { useEffect, useRef, useState } from "react";
-
 import { dismissOnboarding, isOnboardingDismissed } from "./onboarding-storage";
+import { useHydratedLocalStorageState } from "./use-hydrated-local-storage-state";
+
+/**
+ * `readStored` for use-hydrated-local-storage-state.ts's generic hook
+ * below -- `null` means "no correction needed" (the hook's own default
+ * of `false`, not-dismissed, already covers that case), so a plain
+ * `isOnboardingDismissed()` boolean is only meaningful to report when
+ * it's actually `true`.
+ */
+function readStoredDismissed(): true | null {
+  return isOnboardingDismissed() ? true : null;
+}
 
 /**
  * Whether the onboarding intro has been dismissed, and a function to
  * dismiss it.
  *
- * Always starts `false` (banner visible) on every render -- including the
- * very first client render during hydration -- and only corrects to `true`
- * from an effect after mount, if a previous dismissal is actually found in
- * storage. This is the same hydration-safety trick use-starting-capital.ts
- * uses for the same reason (see its own doc comment): reading localStorage
- * during render would make the client's first render (during hydration)
- * disagree with the server-rendered HTML whenever the banner had already
- * been dismissed on a prior visit -- exactly the kind of hydration
- * mismatch that hook (and prefers-reduced-motion.ts/use-count-up.ts)
- * already warn against.
+ * A thin wrapper around use-hydrated-local-storage-state.ts's generic
+ * hydration-safe "start at a default, correct from storage after mount"
+ * hook -- see that file's own doc comment for the full hydration-safety
+ * reasoning and the mount-to-microtask race guard, both shared verbatim
+ * with use-starting-capital.ts (issue #15), the hook this one's shared
+ * logic was originally factored out of.
  *
  * This is deliberately **not** the simpler use-daily-guess.ts-style
  * "read synchronously in the useState initializer" shortcut -- that
@@ -29,46 +35,17 @@ import { dismissOnboarding, isOnboardingDismissed } from "./onboarding-storage";
  * during SSR (see use-daily-guess.ts's own doc comment). This hook backs
  * a page-level banner mounted unconditionally on the root page, which
  * *can* render during SSR, so it needs the deferred-correction approach
- * instead. The tradeoff is the same one use-starting-capital.ts accepts
- * too -- a first-time-this-session flash of the banner (for a returning
- * visitor who already dismissed it) before the real state applies just
- * after mount -- rather than a console-visible hydration error.
- *
- * Guarded against a race with an in-flight `dismiss` call the same way
- * use-starting-capital.ts's own setter is: `userSetRef` flips to `true`
- * synchronously inside `dismiss` (same tick as its own `setDismissed`
- * call, so there's no gap for the microtask to slip in between), and the
- * deferred microtask checks it first, bailing out if a real dismissal
- * already happened -- otherwise a very fast dismiss-then-remount could
- * have the microtask silently flip `dismissed` back to whatever was
- * (not) in storage a moment before the write landed.
+ * instead (see use-hydrated-local-storage-state.ts for why).
  */
 export function useOnboardingDismissed(): [boolean, () => void] {
-  const [dismissed, setDismissed] = useState(false);
-  const userSetRef = useRef(false);
-
-  useEffect(() => {
-    // Deferred to a microtask rather than called synchronously as the
-    // first thing in the effect body -- react-hooks/set-state-in-effect
-    // flags exactly that shape, the same lint use-count-up.ts's and
-    // use-starting-capital.ts's own doc comments describe working around.
-    queueMicrotask(() => {
-      // A real dismiss() call already landed in the window between mount
-      // and this microtask running -- don't clobber it (see this hook's
-      // own doc comment).
-      if (userSetRef.current) return;
-      if (isOnboardingDismissed()) {
-        setDismissed(true);
-      }
-    });
-    // Mount-only: a one-time "hydrate from storage" correction, not a
-    // subscription that should ever re-run.
-  }, []);
+  const [dismissed, setDismissed] = useHydratedLocalStorageState<boolean>(
+    false,
+    readStoredDismissed,
+    dismissOnboarding,
+  );
 
   function dismiss(): void {
-    userSetRef.current = true;
     setDismissed(true);
-    dismissOnboarding();
   }
 
   return [dismissed, dismiss];

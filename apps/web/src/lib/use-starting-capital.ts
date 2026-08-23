@@ -14,14 +14,13 @@
 // directly, specifically so every feature's try/catch/SSR-guard logic
 // doesn't get re-implemented ad hoc per hook.
 
-import { useEffect, useRef, useState } from "react";
-
-import { readLocalStorage, writeLocalStorage } from "./local-storage";
 import {
   DEFAULT_STARTING_CAPITAL,
   clampStartingCapital,
   parseStartingCapital,
 } from "./starting-capital";
+import { readLocalStorage, writeLocalStorage } from "./local-storage";
+import { useHydratedLocalStorageState } from "./use-hydrated-local-storage-state";
 
 const STORAGE_KEY = "hikt:startingCapital";
 
@@ -50,71 +49,26 @@ function writeStoredStartingCapital(value: number): void {
  * DEFAULT_STARTING_CAPITAL (today's fixed $20) and persisted to
  * localStorage across reloads once changed.
  *
- * Always starts at DEFAULT_STARTING_CAPITAL on every render -- including
- * the very first client render during hydration -- and only corrects to
- * whatever's actually in storage from an effect after mount. This is the
- * same hydration-safety trick prefers-reduced-motion.ts/use-count-up.ts
- * use for the same reason (see their own doc comments): reading
- * localStorage during render would make the client's first render
- * (during hydration) disagree with the server-rendered HTML whenever a
- * non-default value was already stored, which is exactly the kind of
- * hydration mismatch those files already warn against. The tradeoff is
- * the same one they accept too -- a brief flash of the default value
- * before the real one applies just after mount -- rather than a
- * console-visible hydration error.
- *
- * **Guarded against a race with an in-flight `setStartingCapital` call
- * (a real bug, found in code review, fixed):** deferring the hydration
- * read to a microtask (see the comment below) opens a window, between
- * mount and that microtask actually running, where a caller could invoke
- * the returned setter -- e.g. StartingCapitalInput's own mount-time
- * `trackedValue` resync, or just a very fast user edit. Without a guard,
- * the microtask's `setStartingCapitalState(stored)` would land *after*
- * that update and silently clobber it back to whatever stale value was
- * last persisted, discarding the update with no error and no trace.
- * `userSetRef` closes that window: the setter flips it to `true`
- * synchronously (same tick as its own `setStartingCapitalState` call, so
- * there's no gap for the microtask to slip in between), and the
- * microtask checks it immediately before applying the stored value,
- * bailing out if a real update already happened. A plain `useRef` is
- * fine here (unlike StartingCapitalInput's own `trackedValue`, which
- * uses state instead of a ref specifically because it's *read during
- * render* -- see apps/web/CLAUDE.md's note on why `react-hooks/refs`
- * forbids that) -- this ref is only ever read from inside the microtask
- * callback, never during render.
+ * A thin wrapper around use-hydrated-local-storage-state.ts's generic
+ * hydration-safe "start at a default, correct from storage after mount"
+ * hook -- see that file's own doc comment for the full hydration-safety
+ * reasoning and the mount-to-microtask race guard, both shared verbatim
+ * with use-onboarding-dismissed.ts (issue #64), the second caller whose
+ * addition is what prompted factoring this out (a real code-review
+ * finding: this hook and that one used to duplicate the identical
+ * mount-hydration + race-guard logic near-verbatim). The only thing this
+ * wrapper adds on top is `clampStartingCapital` on write, so an
+ * out-of-range value is never persisted or reflected in state.
  */
 export function useStartingCapital(): [number, (next: number) => void] {
-  const [startingCapital, setStartingCapitalState] = useState(DEFAULT_STARTING_CAPITAL);
-  const userSetRef = useRef(false);
-
-  useEffect(() => {
-    // Deferred to a microtask rather than called synchronously as the
-    // first thing in the effect body -- react-hooks/set-state-in-effect
-    // flags exactly that shape (a direct, unconditional-looking setState
-    // at the top of an effect), the same lint use-count-up.ts's own doc
-    // comment describes working around by folding a setState call into
-    // a callback invoked by something external to the effect itself
-    // (there, requestAnimationFrame; here, the microtask queue) instead
-    // of calling it as the effect's own first statement.
-    queueMicrotask(() => {
-      // A real setStartingCapital call already landed in the window
-      // between mount and this microtask running -- don't clobber it
-      // with a stale persisted value (see this hook's own doc comment).
-      if (userSetRef.current) return;
-      const stored = readStoredStartingCapital();
-      if (stored !== null) {
-        setStartingCapitalState(stored);
-      }
-    });
-    // Mount-only: a one-time "hydrate from storage" correction, not a
-    // subscription that should ever re-run.
-  }, []);
+  const [startingCapital, setStartingCapitalState] = useHydratedLocalStorageState(
+    DEFAULT_STARTING_CAPITAL,
+    readStoredStartingCapital,
+    writeStoredStartingCapital,
+  );
 
   function setStartingCapital(next: number): void {
-    userSetRef.current = true;
-    const clamped = clampStartingCapital(next);
-    setStartingCapitalState(clamped);
-    writeStoredStartingCapital(clamped);
+    setStartingCapitalState(clampStartingCapital(next));
   }
 
   return [startingCapital, setStartingCapital];

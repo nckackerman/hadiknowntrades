@@ -108,28 +108,13 @@ describe("useOnboardingDismissed", () => {
     expect(writeSpy).toHaveBeenCalled();
   });
 
-  // Regression coverage mirroring use-starting-capital.test.ts's identical
-  // race-condition test: the mount effect's hydration read is deferred to
-  // a microtask, leaving a window between mount and that microtask
-  // actually running. A dismiss() call landing in that window must not get
-  // clobbered back to "not dismissed" once the deferred microtask finally
-  // runs against stale-looking storage state.
-  it("keeps an in-flight dismiss() update instead of letting the deferred hydration microtask clobber it (race condition guard)", async () => {
-    vi.spyOn(onboardingStorageLib, "isOnboardingDismissed").mockReturnValue(false);
-
-    const { result } = renderHook(() => useOnboardingDismissed());
-
-    // Synchronously, in the window between mount (which queues the
-    // hydration microtask) and that microtask actually running.
-    act(() => {
-      result.current[1]();
-    });
-
-    await flushMicrotasks();
-
-    // Without the guard, the now-run hydration microtask (seeing the
-    // mocked "not dismissed" storage read) would have set this back to
-    // false.
-    expect(result.current[0]).toBe(true);
-  });
+  // The mount-to-microtask race guard itself (a deferred hydration read
+  // clobbering an in-flight setValue update) is now generic shared logic
+  // -- see use-hydrated-local-storage-state.test.ts's own dedicated
+  // regression test for that. It isn't independently re-tested here: this
+  // hook's readStored (readStoredDismissed) only ever reports `true` or
+  // `null`, and dismiss() only ever sets `true`, so there's no pair of
+  // "stale stored value" vs. "just-set value" that could actually differ
+  // and produce an observable clobber for this particular caller the way
+  // use-starting-capital.test.ts's numeric version still can.
 });
