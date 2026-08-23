@@ -1,5 +1,5 @@
 import { customRangeAnchors } from "@hadiknowntrades/core";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -31,6 +31,19 @@ describe("ResultsPage", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
+
+  // CustomRangeSelector/ModeToggle each render twice (issue #63) -- once
+  // in a `sm:flex` div visible at desktop widths, once inside a `sm:hidden`
+  // <details> "More options" disclosure for narrow viewports -- see
+  // ResultsPage.tsx's own doc comment on why this is two real instances
+  // rather than one CSS-toggled instance. jsdom loads no stylesheet in
+  // this test file, so both instances report as equally "visible" to
+  // Testing Library queries; scope to the desktop copy (arbitrary but
+  // consistent -- both instances share the same props/handlers, so which
+  // one a test interacts with doesn't affect what it's actually proving).
+  function desktopControls() {
+    return within(screen.getByTestId("controls-more-desktop"));
+  }
 
   it("defaults to 1Y when the URL has no range param", () => {
     render(<ResultsPage />);
@@ -67,7 +80,7 @@ describe("ResultsPage", () => {
     it("defaults to long-only when the URL has no mode param", () => {
       render(<ResultsPage />);
 
-      expect(screen.getByRole("button", { name: "Long only" })).toHaveAttribute(
+      expect(desktopControls().getByRole("button", { name: "Long only" })).toHaveAttribute(
         "aria-pressed",
         "true",
       );
@@ -77,7 +90,7 @@ describe("ResultsPage", () => {
       search = "mode=LONG-SHORT";
       render(<ResultsPage />);
 
-      expect(screen.getByRole("button", { name: "Long + short" })).toHaveAttribute(
+      expect(desktopControls().getByRole("button", { name: "Long + short" })).toHaveAttribute(
         "aria-pressed",
         "true",
       );
@@ -87,7 +100,7 @@ describe("ResultsPage", () => {
       search = "mode=bogus";
       render(<ResultsPage />);
 
-      expect(screen.getByRole("button", { name: "Long only" })).toHaveAttribute(
+      expect(desktopControls().getByRole("button", { name: "Long only" })).toHaveAttribute(
         "aria-pressed",
         "true",
       );
@@ -97,7 +110,7 @@ describe("ResultsPage", () => {
       const user = userEvent.setup();
       render(<ResultsPage />);
 
-      await user.click(screen.getByRole("button", { name: "Long + short" }));
+      await user.click(desktopControls().getByRole("button", { name: "Long + short" }));
 
       expect(replace).toHaveBeenCalledWith("/?mode=long-short", { scroll: false });
     });
@@ -107,7 +120,7 @@ describe("ResultsPage", () => {
       const user = userEvent.setup();
       render(<ResultsPage />);
 
-      await user.click(screen.getByRole("button", { name: "Long + short" }));
+      await user.click(desktopControls().getByRole("button", { name: "Long + short" }));
 
       expect(replace).toHaveBeenCalledWith("/?range=5Y&mode=long-short", { scroll: false });
     });
@@ -147,7 +160,7 @@ describe("ResultsPage", () => {
       search = "range=5Y";
       render(<ResultsPage />);
 
-      await user.selectOptions(screen.getByRole("combobox"), anchor);
+      await user.selectOptions(desktopControls().getByRole("combobox"), anchor);
 
       expect(replace).toHaveBeenCalledWith(`/?anchor=${anchor}`, { scroll: false });
     });
@@ -171,7 +184,7 @@ describe("ResultsPage", () => {
       render(<ResultsPage />);
 
       expect(fetch).toHaveBeenCalledWith(`/api/results?anchor=${anchor}`);
-      expect(screen.getByRole("button", { name: "Long + short" })).toHaveAttribute(
+      expect(desktopControls().getByRole("button", { name: "Long + short" })).toHaveAttribute(
         "aria-pressed",
         "true",
       );
@@ -183,7 +196,7 @@ describe("ResultsPage", () => {
       const user = userEvent.setup();
       render(<ResultsPage />);
 
-      await user.click(screen.getByRole("button", { name: "Long + short" }));
+      await user.click(desktopControls().getByRole("button", { name: "Long + short" }));
 
       expect(replace).toHaveBeenCalledWith(`/?anchor=${anchor}&mode=long-short`, {
         scroll: false,
@@ -196,7 +209,7 @@ describe("ResultsPage", () => {
       const user = userEvent.setup();
       render(<ResultsPage />);
 
-      await user.selectOptions(screen.getByRole("combobox"), anchor);
+      await user.selectOptions(desktopControls().getByRole("combobox"), anchor);
 
       expect(replace).toHaveBeenCalledWith(`/?mode=long-short&anchor=${anchor}`, {
         scroll: false,
