@@ -1,5 +1,7 @@
 "use client";
 
+import { useMemo } from "react";
+
 import { anchorMonthToDate, customRangeAnchors, type AnchorMonth } from "@hadiknowntrades/core";
 
 /**
@@ -48,17 +50,24 @@ interface CustomRangeSelectorProps {
  * actually computed a result for), which is why this is a `<select>` of
  * real options instead.
  *
- * customRangeAnchors(new Date()) is called fresh on every render rather
- * than memoized/passed as a prop -- it's a cheap, pure function of
- * calendar time (a 252-iteration loop), and the tiny risk of an SSR vs.
- * client hydration mismatch (both sides call `new Date()` independently,
- * a few hundred ms apart at most) only matters if a render straddles the
- * exact millisecond a month boundary rolls over -- an accepted,
- * documented edge case for a low-stakes learning project, not engineered
- * around further.
+ * customRangeAnchors(new Date()) is a cheap, pure function of calendar
+ * time (a 252-iteration loop) -- memoized per mount (`useMemo(..., [])`)
+ * rather than recomputed every render, purely to avoid redundant work
+ * across re-renders of the *same* mounted instance (issue #63's code
+ * review: ResultsPage.tsx now mounts two instances of this component at
+ * once, a desktop copy and a mobile "More options" copy, so an
+ * unmemoized per-render call effectively doubled this cost on every
+ * ResultsPage render). Still computed fresh on every new *mount* (an
+ * empty dependency array, not a module-level constant), so the tiny risk
+ * of an SSR vs. client hydration mismatch (both sides call `new Date()`
+ * independently, a few hundred ms apart at most) is unchanged from
+ * before this memoization -- it only matters if a render straddles the
+ * exact millisecond a month boundary rolls over, an accepted, documented
+ * edge case for a low-stakes learning project, not engineered around
+ * further.
  */
 export function CustomRangeSelector({ selected, onSelect }: CustomRangeSelectorProps) {
-  const anchors = customRangeAnchors(new Date());
+  const anchors = useMemo(() => customRangeAnchors(new Date()), []);
 
   return (
     <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">

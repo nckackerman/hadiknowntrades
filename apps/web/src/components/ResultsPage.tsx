@@ -119,10 +119,57 @@ export function ResultsPage() {
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <RangeSelector selected={range} onSelect={selectRange} />
-          <span className="text-sm text-[var(--text-muted)]">or</span>
-          <CustomRangeSelector selected={anchor} onSelect={selectAnchor} />
-          <ModeToggle selected={mode} onSelect={selectMode} />
+          {/* Below 640px, RangeSelector alone already fills most of the
+              row's width, so CustomRangeSelector and ModeToggle used to
+              each wrap onto their own near-full-width line -- confirmed
+              via a real screenshot (apps/web/CLAUDE.md's "Mobile layout
+              pass" section, issue #63) to push the actual result (chart,
+              trade list) below the fold on a real phone viewport. Fixed
+              by collapsing this group behind a "More options" disclosure
+              on narrow viewports only, matching the collapsed-by-default
+              pattern PortfolioChart.tsx's own "View chart data as a
+              table" disclosure already establishes.
+
+              This renders CustomRangeSelector/ModeToggle **twice** --
+              once here (visible at sm and up, hidden below it) and once
+              inside the <details> below (visible only below sm) --
+              rather than one shared instance toggled by CSS alone. A
+              single-instance version (a <details> forced open via CSS at
+              sm and up, overriding its native "closed hides content"
+              behavior) was tried first and reverted: a real, live-
+              verified Chromium bug (not a hypothetical) fails to paint
+              (and fails hit-testing on) a closed <details>'s content even
+              when every computed style says it should render -- see
+              apps/web/CLAUDE.md's "Mobile layout pass" section for the
+              full repro. Two real controlled-component instances with
+              identical props/handlers, gated by plain `hidden`/`sm:`
+              utilities (the ordinary, well-supported responsive-nav
+              duplication pattern), sidesteps that bug entirely -- neither
+              instance's own state or behavior can drift from the other
+              since both are driven by the same `anchor`/`mode` props and
+              `selectAnchor`/`selectMode` handlers. */}
+          <div
+            data-testid="controls-more-desktop"
+            className="hidden flex-wrap items-center gap-3 sm:flex"
+          >
+            <span className="text-sm text-[var(--text-muted)]">or</span>
+            <CustomRangeSelector selected={anchor} onSelect={selectAnchor} />
+            <ModeToggle selected={mode} onSelect={selectMode} />
+          </div>
         </div>
+        <details className="sm:hidden">
+          <summary className="cursor-pointer text-sm text-[var(--text-secondary)]">
+            More options
+          </summary>
+          <div
+            data-testid="controls-more-mobile"
+            className="mt-3 flex flex-wrap items-center gap-3"
+          >
+            <span className="text-sm text-[var(--text-muted)]">or</span>
+            <CustomRangeSelector selected={anchor} onSelect={selectAnchor} />
+            <ModeToggle selected={mode} onSelect={selectMode} />
+          </div>
+        </details>
       </header>
 
       <ResultsPanel

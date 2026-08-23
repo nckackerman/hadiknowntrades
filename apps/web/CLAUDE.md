@@ -1751,3 +1751,130 @@ scale(...)` on an SVG `<circle>`, which needs `transform-box: fill-box`
   control) stays independently duplicated between those two files --
   out of scope for this issue, not touched here; worth extracting
   alongside this one if a third caller ever needs it.
+
+## Mobile layout pass for the top controls (issue #63)
+
+**The epic issue's own premise ("three stacked rows") was wrong, but the
+real risk it was gesturing at was real.** `ResultsPage.tsx`'s controls
+row is genuinely one `flex flex-wrap` container, not three separate row
+divs -- but at a real ~375px phone width, `RangeSelector`'s six pills
+alone already fill nearly the full row, so `CustomRangeSelector` and
+`ModeToggle` (and the `"or"` between them) each wrapped onto their own
+near-full-width line anyway. Screenshot-verified (the throwaway-debug-
+route technique below) that this pushed the actual result -- the chart
+and trade list, the whole point of the page -- below the fold on a real
+375x812 viewport in both the window and intraday-daily models; the
+intraday-daily model's pre-guess `DailyGuessForm` fit fine, but its own
+post-reveal content (chart, trade list) had the identical problem once
+guessed.
+
+- **Fix**: `CustomRangeSelector` + `ModeToggle` (+ the `"or"` between
+  them) collapse behind a `<details>` "More options" disclosure below
+  640px (this project's `sm` breakpoint everywhere else), leaving
+  `RangeSelector` as the one always-visible control -- matching the
+  collapsed-by-default pattern `PortfolioChart.tsx`'s own "View chart
+  data as a table" disclosure already establishes. `RangeSelector` was
+  kept always-visible (not collapsed) since it's the primary, most-used
+  control; the issue's own scope named `CustomRangeSelector`/
+  `ModeToggle` specifically as the less-essential candidates.
+- **Renders `CustomRangeSelector`/`ModeToggle` twice, not once** -- a
+  `hidden sm:flex` div (visible at `sm` and up) and a second copy inside
+  the `sm:hidden` `<details>` (visible only below `sm`), both driven by
+  the exact same `anchor`/`mode` props and `selectAnchor`/`selectMode`
+  handlers, so neither copy's behavior can drift from the other. This
+  wasn't the first design tried, and the reason it changed is worth
+  knowing before "simplifying" this back to one instance:
+  - **A single-instance version was tried first and reverted after a
+    real, live-verified browser bug, not a hypothetical one.** The
+    original design put `CustomRangeSelector`/`ModeToggle` inside the
+    `<details>` only, closed by default, and tried to force it visibly
+    "open" at `sm` and up purely via CSS (`display: contents` on the
+    `<details>` to promote its children into the outer flex row, plus
+    `display: flex !important` overriding the UA stylesheet rule that
+    hides a closed `<details>`'s content). Every computed style checked
+    out (`getComputedStyle` reported the right `display`, real non-zero
+    `getBoundingClientRect` dimensions in the right position) -- but the
+    content still didn't paint, and `document.elementFromPoint` at that
+    exact position hit the ancestor wrapper, not the actual control:
+    this Chromium build (verified via an isolated minimal repro, not
+    just in the real component) genuinely does not paint or hit-test a
+    closed `<details>`'s content even when an author CSS rule forces its
+    `display` back from `none`, at least for this exact "closed +
+    CSS-forced-visible" combination -- confirmed the same isolated
+    repro paints fine when the `open` attribute is actually present, so
+    it's specifically the "closed but CSS says show it" combination that
+    silently fails to render, not `display: contents` or `<details>` in
+    general. Two real component instances gated by plain `hidden`/`sm:`
+    utilities (the ordinary, well-supported responsive-nav duplication
+    pattern -- no reliance on overriding a closed `<details>`'s native
+    behavior at all) sidesteps this entirely. If a future change wants
+    to de-duplicate this back to one instance, re-verify this exact
+    failure mode live first, in this same browser/version, before
+    assuming a CSS-only approach will work.
+- **`ResultsPage.test.tsx` needed real changes, not just new
+  assertions**: with two real instances, `getByRole("button", { name:
+"Long + short" })`/`getByRole("combobox")` etc. started matching two
+  elements and throwing (jsdom loads no stylesheet in this test file at
+  all -- see `vitest.config.mts`'s own comment on the `jsdom`
+  environment -- so neither copy's `hidden`/`sm:flex` classes actually
+  compute to `display: none` there; both report as equally "visible" to
+  Testing Library queries, unlike in a real browser). Fixed with a
+  `desktopControls()` test helper (`within(screen.getByTestId(
+"controls-more-desktop"))`) that every affected query now goes through
+  -- an arbitrary but consistent choice of which copy to interact with,
+  since both share the same props/handlers and a test's assertion is
+  identical either way.
+  - **That coverage alone left the mobile copy itself completely
+    untested (`high` code review finding, fixed)**: every assertion in
+    the file went through `desktopControls()`, so a bug isolated to just
+    the `<details>` copy specifically (a typo in its own `onSelect` prop,
+    the `<details>`/`<summary>` structure getting mangled) would have
+    passed the whole suite untouched. A new `"mobile 'More options'
+disclosure (issue #63)"` describe block adds a `mobileControls()`
+    sibling helper (`within(screen.getByTestId("controls-more-mobile"))`)
+    and two tests -- a mode-toggle click and an anchor `<select>` change,
+    both routed through the mobile instance specifically -- confirming
+    it writes the same URL params the desktop copy's own tests already
+    check.
+  - **The desktop div was also missing `flex-wrap` (`high` code review
+    finding, fixed)**: unlike its mobile twin inside the `<details>`
+    (`className="mt-3 flex flex-wrap items-center gap-3"`), the desktop
+    copy was `sm:flex` with no `flex-wrap` -- fine at the 1024px width
+    this issue's own screenshot verification checked, but the three
+    children (`"or"`, `CustomRangeSelector`, `ModeToggle`) couldn't wrap
+    onto their own line if their combined width ever exceeded the row
+    (e.g. right at the 640px `sm` boundary itself, or with browser
+    zoom/OS text-size scaling enlarging the rendered text) -- they'd
+    overflow instead. Now `flex flex-wrap` like the mobile copy, no
+    visual change at the widths already screenshotted.
+  - **`CustomRangeSelector`'s own `customRangeAnchors(new Date())` call
+    effectively doubled in cost per `ResultsPage` render (`high` code
+    review finding, fixed)** -- this component's own doc comment already
+    called the 252-iteration loop "cheap... not engineered around
+    further" for a _single_ instance recomputing it every render, but
+    this issue's two-instance design means every `ResultsPage` render
+    (e.g. on every `router.replace` from a range/day/mode change) now
+    ran that loop twice. Fixed inside `CustomRangeSelector.tsx` itself
+    (no prop change, so still within this issue's "wrapper/layout change
+    in the two parent components only" scope) with `useMemo(() =>
+customRangeAnchors(new Date()), [])` -- computed once per _mount_, not
+    once per _render_, which also incidentally fixes the pre-existing
+    per-render redundancy for the single-instance case this doc comment
+    used to accept. The empty dependency array preserves the exact same
+    SSR/hydration-mismatch risk profile as before (still a fresh `new
+Date()` per mount, not a module-level constant) -- see that file's
+    own updated doc comment.
+- **Screenshot verification used the throwaway-debug-route technique**
+  (`apps/web/CLAUDE.md`'s own "Screenshotting a component locally" note)
+  at a real 375x812 viewport: a debug page rendered `ResultsPage.tsx`'s
+  real header JSX plus `ResultsPanel` with hardcoded `WindowResult`/
+  `IntradayResult` fixtures (no `RESULTS_BUCKET`/AWS creds needed), with
+  small buttons to switch between the window and intraday-daily models
+  without a second page load. Verified before and after, both models,
+  both light and dark, plus a 1024px desktop screenshot each time to
+  confirm no regression there (the issue's own out-of-scope constraint).
+  A separate live check against the real (unmodified-except-for-this-fix)
+  `ResultsPage` component -- not just the fixture-fed debug route --
+  confirmed the "More options" disclosure actually expands and a mode
+  selection still writes `?mode=` to the URL exactly as before, ruling
+  out the debug harness itself masking an interaction regression.
