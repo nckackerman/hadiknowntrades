@@ -111,6 +111,7 @@ describe("runPipeline: write-time self-validation (issue #47)", () => {
     // of these still lands in the store regardless.
     const store = memoryStore({
       "results/5Y.json": 20,
+      "results/1W.json": 20,
       "results/1M.json": 20,
       "results/3M.json": 20,
       "results/1Y.json": 20,
@@ -134,10 +135,11 @@ describe("runPipeline: write-time self-validation (issue #47)", () => {
     // range still was, exactly the "write whatever succeeded" guarantee
     // this must not break.
     expect(store.objects.has("results/5Y.json")).toBe(true);
+    expect(store.objects.has("results/1W.json")).toBe(true);
     expect(store.objects.has("results/1M.json")).toBe(true);
     expect(store.objects.has("results/3M.json")).toBe(true);
     expect(store.objects.has("results/1Y.json")).toBe(true);
-    expect(store.objects.size).toBe(4);
+    expect(store.objects.size).toBe(5);
   });
 
   it("reports every independently-failing range, not just the first, while still writing every other valid range", async () => {
@@ -162,6 +164,7 @@ describe("runPipeline: write-time self-validation (issue #47)", () => {
     ]);
     const store = memoryStore({
       "results/5Y.json": 20,
+      "results/1W.json": 20,
       "results/1M.json": 20,
       "results/3M.json": 20,
     });
@@ -193,8 +196,9 @@ describe("runPipeline: write-time self-validation (issue #47)", () => {
     expect(store.objects.has("results/1Y.json")).toBe(false);
     // ...but every other, independently-valid range still was.
     expect(store.objects.has("results/5Y.json")).toBe(true);
+    expect(store.objects.has("results/1W.json")).toBe(true);
     expect(store.objects.has("results/1M.json")).toBe(true);
     expect(store.objects.has("results/3M.json")).toBe(true);
-    expect(store.objects.size).toBe(3);
+    expect(store.objects.size).toBe(4);
   });
 });

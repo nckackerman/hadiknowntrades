@@ -33,6 +33,14 @@ describe("RangeSelector", () => {
     expect(onSelect).toHaveBeenCalledWith("MAX");
   });
 
+  it("renders pills in PRESET_RANGES order, with 1W positioned before 1M (issue #60)", () => {
+    render(<RangeSelector selected="1Y" onSelect={() => {}} />);
+
+    const renderedOrder = screen.getAllByRole("button").map((button) => button.textContent);
+    const expectedOrder = PRESET_RANGES.map((range) => (range === "MAX" ? "Max" : range));
+    expect(renderedOrder).toEqual(expectedOrder);
+  });
+
   it("marks every pill unpressed when selected is null (a custom start-date anchor is active instead, issue #11)", () => {
     render(<RangeSelector selected={null} onSelect={() => {}} />);
 

@@ -25,7 +25,7 @@ decades.
   close, full balance reinvested each time, can switch tickers between
   trades — that maximizes the ending balance for a given date range.
 - **Compute**: a nightly scheduled job runs the optimizer for each preset
-  range (1M / 3M / 1Y / 5Y / Max) and writes the results to S3. The site
+  range (1W / 1M / 3M / 1Y / 5Y / Max) and writes the results to S3. The site
   reads precomputed results through a thin API layer — no live recomputation
   per request.
 

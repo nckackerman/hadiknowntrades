@@ -33,6 +33,7 @@ import { TradeList } from "@/components/TradeList";
 import { WorstCaseStat } from "@/components/WorstCaseStat";
 
 const RANGE_COPY: Record<PresetRange, string> = {
+  "1W": "the past week",
   "1M": "the past month",
   "3M": "the past 3 months",
   "1Y": "the past year",

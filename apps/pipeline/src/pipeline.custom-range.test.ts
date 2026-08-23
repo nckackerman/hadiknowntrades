@@ -1,5 +1,5 @@
 // Dedicated tests for issue #11's coarsened custom-date-range anchors --
-// kept separate from pipeline.test.ts (which covers the 5 preset ranges
+// kept separate from pipeline.test.ts (which covers the 6 preset ranges
 // and doesn't pass customRangeAnchors at all, per RunPipelineOptions's
 // own doc comment) the same way pipeline.write-validation.test.ts is its
 // own file: this needs a distinct, focused fixture set rather than
@@ -111,10 +111,10 @@ describe("runPipeline custom-range anchors (issue #11)", () => {
     expect(jan2017.startDate).toBe("2017-01-01");
     expect(jan2017.trades[0].openDate).toBe("2018-01-02");
 
-    // The preset ranges (5) are unaffected/still written normally
+    // The preset ranges (6) are unaffected/still written normally
     // alongside the 2 custom anchors.
-    expect(summary.results).toHaveLength(5);
-    expect(store.objects.size).toBe(7);
+    expect(summary.results).toHaveLength(6);
+    expect(store.objects.size).toBe(8);
   });
 
   // Regression test for the issue #11/#13 integration: buildCustomWindowResults
@@ -186,7 +186,7 @@ describe("runPipeline custom-range anchors (issue #11)", () => {
     });
 
     expect(summary.customResults).toEqual([]);
-    expect(store.objects.size).toBe(5);
+    expect(store.objects.size).toBe(6);
     expect([...store.objects.keys()].some((key) => key.startsWith("results/custom/"))).toBe(false);
   });
 
@@ -340,10 +340,10 @@ describe("runPipeline custom-range anchors (issue #11)", () => {
     );
 
     expect(error.message).toMatch(/custom:2019-01: simulated S3 failure/);
-    // The 5 preset ranges still landed despite the one custom-anchor
+    // The 6 preset ranges still landed despite the one custom-anchor
     // write failure -- "write whatever succeeded" is preserved across
     // both families, not just within the preset-range set.
-    expect(objects.size).toBe(5);
+    expect(objects.size).toBe(6);
     expect(objects.has("results/custom/2019-01.json")).toBe(false);
   });
 });

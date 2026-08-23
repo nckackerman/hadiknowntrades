@@ -802,7 +802,7 @@ Date(year, ...)` two-digit-year reinterpretation rule (years 0-99
   same writer/reader-drift risk that constant exists to catch everywhere
   else, so it reuses the same protection.
 - `customResultKey(anchorMonth)` -> `results/custom/{anchorMonth}.json`,
-  namespaced under its own prefix so the two result families (5 presets,
+  namespaced under its own prefix so the two result families (6 presets,
   252 custom anchors) are trivially distinguishable by key prefix alone.
 - `validateCustomWindowResult` reuses every one of
   `validatePrecomputedResult`'s own private field-level validators
@@ -880,3 +880,44 @@ two features sitting side by side:
   computed per run, letting one anchor's overflow abort every other
   already-computable anchor would have been a much larger regression than
   it would be for just the 2 window ranges.
+
+## 1-week (1W) preset range (issue #60)
+
+`PRESET_RANGES` grew a 6th member, `"1W"` (past 7 days) -- added as the
+**first** element (`["1W", "1M", "3M", "1Y", "5Y", "MAX"]`), not
+appended, so every consumer that renders/iterates in `PRESET_RANGES`
+order (e.g. `apps/web`'s `RangeSelector.tsx`) places it before 1M with
+no ordering logic of its own to change. Uses the **intraday-daily**
+model, same as 1M/3M/1Y, not the whole-window model -- a 7-day window
+solved as a single whole-window DP over daily closes rarely produces
+more than one meaningful trade, so the per-day intraday view is the only
+one that gives an interesting result at this horizon (see
+`apps/pipeline/CLAUDE.md`'s "1W reuses 1M's 1-minute override wholesale"
+section for the pipeline side of this).
+
+- **`presetRangeStartDate("1W", asOf)` needs plain day-count arithmetic
+  (7 days back), not `subtractCalendar`'s month/year semantics.** This
+  is what `daysBeforeUtc` (`date-utils.ts`) is: a small, previously
+  pipeline-private helper (`apps/pipeline/src/pipeline.ts`'s own
+  `daysBeforeUtc`, used for `FIVE_MINUTE_LOOKBACK_DAYS`/
+  `ONE_MINUTE_LOOKBACK_DAYS`) promoted into this package and exported
+  from `index.ts` specifically so `preset-ranges.ts` could reuse the
+  exact same day-count logic instead of a second copy -- `apps/pipeline`
+  cannot be imported from `packages/core` (wrong dependency direction),
+  so the promotion had to go this way, not the reverse. `pipeline.ts`'s
+  own private `daysBeforeUtc` is unchanged (still module-private,
+  duplicate logic, byte-for-byte identical) -- deduplicating it to import
+  the shared one instead is a free-standing, low-priority cleanup this
+  issue flagged but didn't do, not something this issue's own
+  correctness depends on.
+- **Genuinely additive to the schema**: no shape change to
+  `IntradayResult` or any nested type, `validateBase`'s range check is
+  already a generic membership check against the live `PRESET_RANGES`
+  export (not a hardcoded list), so it accepts `"1W"` automatically --
+  **no `RESULTS_SCHEMA_VERSION` bump**, same class of change as
+  `barIntervalMinutes` landing additively at schema version 5 (see
+  "Mixed-granularity 1M/3M assembly" above).
+- Full design writeup (including the granularity-override reuse
+  decision, the "why this is safe" correctness argument, and the file
+  list TypeScript actually forces vs. what the issue's own text
+  claimed) lives in `docs/plans/issue-60-plan.md`.

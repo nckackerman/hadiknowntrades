@@ -40,7 +40,7 @@ export function resultKey(range: PresetRange): string {
  * The S3 key a custom-range anchor's precomputed result (issue #11) is
  * stored/read under -- same single-source-of-truth role as resultKey
  * above, just for CustomWindowResult instead of PrecomputedResult.
- * Namespaced under `results/custom/` (not flat alongside the 5 preset
+ * Namespaced under `results/custom/` (not flat alongside the 6 preset
  * keys) so the two families are trivially distinguishable by key prefix
  * alone, and so an S3 listing of one family never accidentally includes
  * the other.
@@ -166,7 +166,7 @@ export interface WindowResult extends PrecomputedResultBase {
 }
 
 /**
- * The per-day intraday model (issue #28; 1M/3M/1Y only): for every
+ * The per-day intraday model (issue #28; 1W/1M/3M/1Y, 1W since issue #60): for every
  * trading day in the window, the best up-to-`maxTradesPerDay` same-day
  * trades achievable using that day's real 60-minute price bars, solved
  * independently per day (see intraday-optimizer.ts) -- results do not

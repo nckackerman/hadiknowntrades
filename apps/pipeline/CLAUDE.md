@@ -2,13 +2,13 @@
 
 Nightly precompute job: fetch (via `packages/core`'s Yahoo client) ->
 optimize (via `packages/core`'s optimizer) -> write results to S3, for
-all 5 preset ranges. Read this before re-investigating something below —
+all 6 preset ranges. Read this before re-investigating something below —
 if a fact here turns out to be stale, fix the fact here too, not just the
 code.
 
 - Fetches each ticker's **full** history once (from 1970, effectively
-  "everything Yahoo has"), then slices that one fetch into the 5 preset
-  windows locally — not 5x separate network fetches per ticker.
+  "everything Yahoo has"), then slices that one fetch into the 6 preset
+  windows locally — not 6x separate network fetches per ticker.
 - Bounded concurrency (default 10 concurrent fetches).
 - Error handling is deliberately asymmetric:
   - `TickerNotFoundError` / `TransientFetchError` on one ticker -> skip
@@ -51,7 +51,7 @@ code.
     by infra/cdk's EventBridge nightly schedule. Lets errors propagate
     to fail the Lambda invocation (no custom retry/alerting).
 
-## Two independent paths since issue #28: window (5Y/MAX) vs. intraday (1M/3M/1Y)
+## Two independent paths since issue #28: window (5Y/MAX) vs. intraday (1W/1M/3M/1Y)
 
 `runPipeline` fetches and computes two paths concurrently, sharing the
 same generalized `fetchUniverseHistory` worker pool (now generic over
@@ -60,7 +60,7 @@ bar type, not daily-close-specific):
 - **Window path (5Y/MAX)**: unchanged from before #28 -- one daily-close
   fetch from `earliestDate`, sliced per range, run through
   `optimizeTrades`. Writes a `WindowResult`.
-- **Intraday path (1M/3M/1Y)**: one 60-minute-bar fetch from the 1Y
+- **Intraday path (1W/1M/3M/1Y)**: one 60-minute-bar fetch from the 1Y
   start date (`presetRangeStartDate("1Y", asOf)` -- reused rather than a
   second hand-maintained lookback constant; comfortably inside Yahoo's
   730-day retention), sliced per range, run through `optimizeIntradayDays`.
@@ -78,7 +78,7 @@ bar type, not daily-close-specific):
   `docs/plans/issue-28-plan.md`), not an accident of the refactor -- the
   two paths hit the same Yahoo endpoint but are otherwise unrelated, and
   there's no reason a daily-close-specific failure should also block
-  1M/3M/1Y (or vice versa) if the other fetch is fine.
+  1W/1M/3M/1Y (or vice versa) if the other fetch is fine.
 - **Real bug caught in code review, since fixed**: an earlier version of
   this split only threw when _both_ paths came up empty, exactly
   mirroring the original pre-#28 "refuse to overwrite with an empty run"
@@ -102,12 +102,12 @@ bar type, not daily-close-specific):
   reasonably diverge later.
 - `optimizeIntradayDays` is run **once**, over the full fetched intraday
   history (capped only at `endDateString`), and its output is _sliced_
-  per range (1M/3M/1Y) afterward -- not re-run separately for each
+  per range (1W/1M/3M/1Y) afterward -- not re-run separately for each
   range. An earlier version did re-run it per range, which was a real,
   needless cost caught in code review: a given trading day's own result
   never depends on which range window it falls inside (range-slicing
   only ever drops whole out-of-range days, never bars within an
-  in-range one), so re-solving the same day's DP up to 3 times (1M/3M/1Y
+  in-range one), so re-solving the same day's DP up to 4 times (1W/1M/3M/1Y
   are nested subsets of each other) was pure waste on a Lambda already
   documented above as running close to its memory ceiling.
 - `fetchUniverseHistory`'s abort case (`BlockedError`/
@@ -463,7 +463,7 @@ existing behavior with no new plumbing needed.
   (custom-range anchors), the write loop is `mapWithConcurrency(writeJobs,
 writeConcurrency, async (job) => { job.validate(); await
 options.store.putObject(job.key, job.body); return job.label; })` --
-  `writeJobs` concatenates `presetWriteJobs` (5 preset ranges) and
+  `writeJobs` concatenates `presetWriteJobs` (6 preset ranges) and
   `customWriteJobs` (up to 252 custom anchors, issue #11), and
   `mapWithConcurrency` is a bounded-concurrency worker pool (see below)
   that `await`s this callback per job inside a `try`/`catch`, not a bare
@@ -578,10 +578,10 @@ options.store.putObject(job.key, job.body); return job.label; })` --
   `validatePrecomputedResult`'s own pass/fail logic directly; this file
   only checks the pipeline's _wiring_ to it.
 
-## Granularity overrides: 3M's 5-minute and 1M's 1-minute bars (issues #30, #29)
+## Granularity overrides: 3M's 5-minute and 1M's (and, since issue #60, 1W's) 1-minute bars (issues #30, #29, #60)
 
-A **granularity override** upgrades one range's days to a finer bar
-granularity than the base 60-minute fetch, on a best-effort basis --
+A **granularity override** upgrades one or more ranges' days to a finer
+bar granularity than the base 60-minute fetch, on a best-effort basis --
 issue #30 added the first one (5-minute bars, upgrading 3M's most
 recent days), issue #29 added the second (1-minute bars, upgrading 1M).
 Both are driven by one generic mechanism in `pipeline.ts`, not two
@@ -589,25 +589,35 @@ parallel implementations:
 
 - **`buildGranularityOverrideSpecs(options, asOf)` builds the single
   list every other piece of this mechanism iterates over** -- one
-  `GranularityOverrideSpec` per override (`range`, `label`,
+  `GranularityOverrideSpec` per override (`ranges`, `label`,
   `barIntervalMinutes`, its own retention-bounded `from`, and the
-  underlying `fetchBars` function). `runPipeline` fetches every spec's
-  history via one inner `Promise.all` (still fully concurrent with the
-  window/intraday fetches and with each other, just gathered as an
-  array instead of separate named bindings); `buildIntradayResults`
-  loops over the resulting `{ spec, outcome }` pairs to solve
-  (`optimizeIntradayDays` with that spec's `barIntervalMinutes`) and
-  merge (`mergeDaysByGranularity` against the base 60-minute days) each
-  one, building the `granularityOverrides: Map<PresetRange,
+  underlying `fetchBars` function). **`ranges` is a `readonly
+PresetRange[]`, not a single `PresetRange`** (generalized for issue #60,
+  see its own bullet below) -- every range in the list shares that one
+  spec's fetch/solve/merge output verbatim, not one output per range.
+  `runPipeline` fetches every spec's history via one inner `Promise.all`
+  (still fully concurrent with the window/intraday fetches and with each
+  other, just gathered as an array instead of separate named bindings);
+  `buildIntradayResults` loops over the resulting `{ spec, outcome }`
+  pairs to solve (`optimizeIntradayDays` with that spec's
+  `barIntervalMinutes`) and merge (`mergeDaysByGranularity` against the
+  base 60-minute days) each one **once**, then registers that one
+  already-computed `GranularityOverride` object under every range in
+  `spec.ranges` in the `granularityOverrides: Map<PresetRange,
 GranularityOverride>` lookup that `buildIntradayResults`'s final
-  per-range loop reads from (`range === "3M"` and `range === "1M"` never
-  appear as branches anywhere in this file); and the final "at least one
-  path failed" error message loops over the same pairs to append one
-  status line per override, purely for operational visibility.
-  **Adding a third override means adding one entry to the list
-  `buildGranularityOverrideSpecs` returns (plus one new `fetch*Bars`
-  field on `RunPipelineOptions`, wired up in `src/run.ts`) -- nothing
-  else in this file changes.**
+  per-range loop reads from (`range === "3M"`/`range === "1M"`/
+  `range === "1W"` never appear as branches anywhere in this file); and
+  the final "at least one path failed" error message loops over the same
+  pairs to append one status line per override (`spec.ranges.join("/")`
+  in the label, e.g. "1-minute path (1M/1W only, non-fatal): ok."),
+  purely for operational visibility.
+  **Adding a third genuinely new granularity means adding one entry to
+  the list `buildGranularityOverrideSpecs` returns (plus one new
+  `fetch*Bars` field on `RunPipelineOptions`, wired up in `src/run.ts`)
+  -- nothing else in this file changes. Adding a range that reuses an
+  _existing_ override's already-fetched data (as 1W does for 1M's
+  1-minute fetch) means appending that range to an existing spec's
+  `ranges` array instead -- no new spec, no new fetch function.**
 - **This wasn't true when 1M's override first landed, and that gap was
   itself a real, code-review-caught bug, not just a style nit.** #30's
   own code comment on `GranularityOverride` promised "adding another
@@ -704,6 +714,58 @@ override?.extraDataAsOf ?? null)`; a range with no override (1Y) has its
   in `packages/core/CLAUDE.md`'s "Mixed-granularity 1M/3M assembly"
   section -- read that first before re-deriving any of this from
   scratch.
+
+### 1W reuses 1M's 1-minute override wholesale (issue #60)
+
+1W (the 6th preset range, past 7 days -- see
+`docs/plans/issue-60-plan.md`) needs **no new fetch, no new
+`GranularityOverrideSpec`, and no new solve/merge pass**: its own
+7-day window sits comfortably inside the 1-minute override's ~29-day
+lookback (`ONE_MINUTE_LOOKBACK_DAYS`), so `buildGranularityOverrideSpecs`
+just lists `ranges: ["1M", "1W"]` on that one existing spec instead of
+`range: "1M"`. `buildIntradayResults`' override loop still runs that
+spec's `optimizeIntradayDays`/`mergeDaysByGranularity` pass **exactly
+once**, then registers the identical resulting `GranularityOverride`
+object under both `"1M"` and `"1W"` in the `granularityOverrides` map --
+the final per-range slicing loop needed zero changes, since it already
+does a generic `granularityOverrides.get(range)` per range and now just
+finds a real entry for `"1W"` the same way it always has for `"1M"`.
+
+- **Why this is safe, not just convenient**: `mergeDaysByGranularity`'s
+  `mergedDays` array spans the _full_ base 60-minute fetch's range (see
+  "Mixed-granularity 1M/3M assembly" in `packages/core/CLAUDE.md` for
+  why -- every day is sourced from `primaryDays` first, then overlaid by
+  the override wherever it reaches), not truncated to the override's own
+  ~29-day lookback. 1W's own per-range date filter narrows that already-
+  full shared array down to its own 7-day window, and every day in that
+  window is guaranteed to already be present -- sourced from the base
+  60-minute pass at minimum, upgraded to 1-minute wherever the override's
+  lookback reaches, which fully covers 1W's 7-day window in every case
+  (7 < 29). The same reasoning covers `extraHistories`/`extraSkipped`/
+  `extraDataAsOf`: they're the _same_ 1-minute fetch outcome's data,
+  and every consumer (`universeSize`, `skippedTickers`, `dataAsOf`)
+  already scopes itself to each range's own `startDateString`/
+  `endDateString` window when reading them.
+- **Live-verified, no S3 write** (a throwaway Vitest fixture with bars 3
+  days back -- inside 1W's window -- and 20 days back -- inside 1M's
+  window but outside 1W's -- run, then deleted before commit): the
+  1-minute fetch mock was called **exactly once** for the whole run
+  (confirms no second fetch call for 1W), `results/1W.json` had exactly
+  one day (confirms the shared override data is correctly narrowed to
+  1W's own window, with no leakage of 1M's older days), and that day's
+  `barIntervalMinutes` was `1` with the 1-minute fixture's price (not
+  the coarser 60-minute fixture's) -- confirms 1W actually gets the
+  upgraded granularity, not a silent fallback. See
+  `pipeline.test.ts`'s "1-week path (1W, issue #60)" describe block for
+  the equivalent permanent regression coverage.
+- Three `spec.range` (singular) usages -- the two `overrideSolveFailures.push`
+  call sites and the final `overrideStatusLines` message -- became
+  `spec.ranges.join("/")` as a mechanical consequence of the field
+  generalizing to a list; the actual computed data is unaffected. The
+  two hardcoded "Intraday (1M/3M/1Y) path" status-message strings
+  elsewhere in `pipeline.ts` (the "both paths empty" abort message and
+  the final aggregated failure message) were updated to "Intraday
+  (1W/1M/3M/1Y) path" for the same reason.
 
 ### Per-override specifics
 
@@ -939,7 +1001,7 @@ references are historical, not current).
   reviewer flagged on the original plan**: there is no separate
   "permanent cache" for custom-anchor results, and therefore no separate
   invalidation logic anywhere. Every one of the 252 anchors is recomputed
-  from scratch every nightly run, exactly like the 5 preset ranges
+  from scratch every nightly run, exactly like the 6 preset ranges
   already are -- a bug fix or schema change to the optimizer fixes every
   stored anchor automatically on the next nightly run.
 - **Live-verified, real numbers, no S3 write** (full 503-ticker universe,

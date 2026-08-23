@@ -27,7 +27,7 @@ export interface OgCardContent {
  * returns `null` if this result doesn't support a card yet.
  *
  * A share card only exists for the "window" model today (5Y/MAX) -- the
- * "intraday-daily" model (1M/3M/1Y, issue #28) has no single top-level
+ * "intraday-daily" model (1W/1M/3M/1Y, issue #28; 1W since issue #60) has no single top-level
  * `endingBalance` to headline, since per-day results don't compound (see
  * packages/core/CLAUDE.md's "Per-day intraday optimizer" note). Picking
  * which day's result a card would even feature is its own product
@@ -60,6 +60,8 @@ export function buildOgCardContent(result: PrecomputedResult): OgCardContent | n
 /** Human-readable label for a preset range, for the card's caption. */
 export function rangeLabel(range: PrecomputedResult["range"]): string {
   switch (range) {
+    case "1W":
+      return "1 week";
     case "1M":
       return "1 month";
     case "3M":
