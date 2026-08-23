@@ -881,6 +881,22 @@ two features sitting side by side:
   already-computable anchor would have been a much larger regression than
   it would be for just the 2 window ranges.
 
+### Day-granularity extension (issue #75, plan-only as of 2026-08-23)
+
+Issue #75 replaces this whole month-granularity scheme with real
+trading-day anchors (still sourced from `buildCalendar(history).dates`,
+`optimizer.ts`'s already-exported trading-day derivation -- no separate
+holiday-calendar model). **A live benchmark found the naive
+"same 21-year lookback, just day granularity instead of month" version
+does not fit the pipeline Lambda's timeout, by ~4.5x, and is
+compute-bound** -- see `apps/pipeline/CLAUDE.md`'s "Day-granularity
+extension" section for the full real numbers (this package's own
+concern here is just that `CUSTOM_RANGE_ANCHOR_YEARS_BACK` itself is the
+lever the fix pulls, not a pipeline-side knob) and
+`docs/plans/issue-75-plan.md` for the complete design. As of this note,
+**not implemented** -- `customRangeAnchors` still generates 252 month
+anchors over 21 years, unchanged.
+
 ## 1-week (1W) preset range (issue #60)
 
 `PRESET_RANGES` grew a 6th member, `"1W"` (past 7 days) -- added as the
