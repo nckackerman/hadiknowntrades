@@ -109,3 +109,47 @@ body {
 .trade-narration-item {
   display: inline;
 }
+
+/*
+ * PortfolioChart's one-time touch "you can tap this" pulse hint (issue
+ * #66) -- a plain ring that expands and fades out around the most
+ * recent trade marker, three iterations then holds its final
+ * (invisible) state via `animation-fill-mode: forwards` rather than
+ * snapping back to fully visible between/after runs. `transform-box:
+ * fill-box` is needed because this is an SVG <circle>, not an HTML
+ * element -- without it `scale()` transforms around the nearest SVG
+ * viewport's origin (roughly the chart's top-left corner) instead of
+ * the circle's own center, the same trick CelebrationBurst's own
+ * confetti keyframe above doesn't need (plain HTML spans, whose default
+ * transform origin is already their own box).
+ *
+ * The reduced-motion query below is defense-in-depth, same reasoning as
+ * .confetti-piece's own above -- use-chart-tap-hint.ts already keeps
+ * this class from ever being rendered at all when the user prefers
+ * reduced motion, via the same shouldCelebrate-style "skip the
+ * affordance entirely" choice.
+ */
+@keyframes chart-tap-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(3);
+    opacity: 0;
+  }
+}
+
+.chart-tap-hint-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: chart-tap-pulse 1.4s ease-out 3;
+  animation-fill-mode: forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-tap-hint-pulse {
+    animation: none;
+    opacity: 0;
+  }
+}

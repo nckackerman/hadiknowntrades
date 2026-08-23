@@ -1,16 +1,17 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { PortfolioChart } from "./PortfolioChart";
 import { boxesOverlap, labelBox, type LabelAnchor } from "@/lib/chart-label-layout";
 import type { PortfolioPoint } from "@/lib/portfolio-series";
+import { stubMatchMedia } from "@/lib/stub-match-media.test-util";
 
 const points: PortfolioPoint[] = [
   { date: "2024-01-01", value: 20, event: null },
   { date: "2024-01-02", value: 30, event: null },
 ];
 
-const PLACEHOLDER_TEXT = "Hover or focus the chart (use the arrow keys) to inspect a point.";
+const PLACEHOLDER_TEXT = "Tap, hover, or focus the chart (use the arrow keys) to inspect a point.";
 
 /**
  * jsdom's SVG elements report a zero-size getBoundingClientRect by
@@ -352,6 +353,112 @@ describe("PortfolioChart", () => {
       for (const box of boxes) {
         expect(box.top).toBeGreaterThanOrEqual(-MARGIN_TOP);
       }
+    });
+  });
+
+  describe("touch tap hint (issue #66)", () => {
+    const eventPoints: PortfolioPoint[] = [
+      { date: "2024-01-01", value: 20, event: null },
+      {
+        date: "2024-01-02",
+        value: 20,
+        event: { type: "open", direction: "long", ticker: "AAPL", price: 10 },
+      },
+      {
+        date: "2024-01-03",
+        value: 40,
+        event: { type: "close", direction: "long", ticker: "AAPL", price: 20 },
+      },
+    ];
+
+    afterEach(() => {
+      window.localStorage.clear();
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    });
+
+    function getTapHintPulse(container: HTMLElement) {
+      return container.querySelector(".chart-tap-hint-pulse");
+    }
+
+    it("shows a pulsing hint on the most recent marker on a touch-primary device with nothing stored", () => {
+      stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": false });
+
+      const { container } = render(<PortfolioChart points={eventPoints} />);
+
+      expect(getTapHintPulse(container)).not.toBeNull();
+    });
+
+    it("does not show the hint on a mouse/trackpad device", () => {
+      stubMatchMedia({ "(pointer: coarse)": false, "(prefers-reduced-motion: reduce)": false });
+
+      const { container } = render(<PortfolioChart points={eventPoints} />);
+
+      expect(getTapHintPulse(container)).toBeNull();
+    });
+
+    it("does not show the hint when the user prefers reduced motion, even on a touch device", () => {
+      stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": true });
+
+      const { container } = render(<PortfolioChart points={eventPoints} />);
+
+      expect(getTapHintPulse(container)).toBeNull();
+    });
+
+    it("does not show the hint when there are no trade markers to point at", () => {
+      stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": false });
+
+      // The top-level `points` fixture has no trade events at all.
+      const { container } = render(<PortfolioChart points={points} />);
+
+      expect(getTapHintPulse(container)).toBeNull();
+    });
+
+    it("hides the pulse on the first tap (the dismissal itself was already persisted at mount)", () => {
+      stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": false });
+
+      const { container } = render(<PortfolioChart points={eventPoints} />);
+      expect(getTapHintPulse(container)).not.toBeNull();
+      // Persisted as soon as it was shown, not deferred until this tap --
+      // see use-chart-tap-hint.test.ts's own regression test for why.
+      expect(window.localStorage.getItem("hikt:chart-tap-hint-dismissed")).not.toBeNull();
+
+      const svg = getChartSvg();
+      stubChartRect(svg);
+      fireEvent.pointerDown(svg, { clientX: 860 });
+
+      expect(getTapHintPulse(container)).toBeNull();
+    });
+
+    it("never shows the hint on a later mount once it was already dismissed", () => {
+      stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": false });
+      window.localStorage.setItem("hikt:chart-tap-hint-dismissed", "1");
+
+      const { container } = render(<PortfolioChart points={eventPoints} />);
+
+      expect(getTapHintPulse(container)).toBeNull();
+    });
+
+    /**
+     * Regression test for a real bug found in code review: the hint's
+     * dismissal used to persist only from an actual tap or the pulse
+     * animation's own completion, so a chart that unmounted before
+     * either happened -- e.g. `ResultsPanel`'s `DaySelector` switching
+     * to a different intraday day mid-pulse -- left the "shown" flag
+     * unset, and the very next `PortfolioChart` mount (a fresh instance,
+     * the same way switching days remounts one) showed the pulse again.
+     * Unmounting here with no tap at all mirrors exactly that scenario.
+     */
+    it("stays dismissed on a fresh mount (e.g. after switching days) even if the previous chart was never tapped", () => {
+      stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": false });
+
+      const first = render(<PortfolioChart points={eventPoints} />);
+      expect(getTapHintPulse(first.container)).not.toBeNull();
+      first.unmount();
+
+      const second = render(<PortfolioChart points={eventPoints} />);
+
+      expect(getTapHintPulse(second.container)).toBeNull();
     });
   });
 });
