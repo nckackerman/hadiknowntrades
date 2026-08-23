@@ -1882,6 +1882,28 @@ primaryText, secondaryText }` per marker) that both the
   long+short mode" section above already applied to `tradeVerbs`/
   `tradeVerbsPast` for the same class of duplication.
 
+## The trade list always sits immediately below the chart (found while planning issue #85)
+
+Worth knowing before touching `PortfolioChart.tsx`'s on-chart labels or
+tooltip: in `ResultsPanel.tsx`, `PortfolioChart` is _immediately_
+followed by `TradeList` (window model) or `IntradayTradeList` (intraday
+model) in the render tree -- no gate between the two beyond whatever
+already gates the chart itself. `TradeList` renders as always-visible
+prose (`narrate-trades.ts`'s `NarratableTrade` carries `ticker`,
+`buyLabel`/`sellLabel`, and both prices) for the window model; for the
+intraday model, `IntradayTradeList`'s `TradeRow`-based rows sit behind
+the _same_ `DailyGuessForm` gate the chart itself is behind (issue
+#34/#80), never a stricter one. Net effect: whenever a user can see the
+chart, the exact ticker/date/price information any on-chart marker label
+carries is already rendered, unconditionally, one scroll-length below it
+-- a stronger duplication argument than "the hover/tap tooltip and the
+collapsed `ChartDataTable` already cover this" (the overlap the chart's
+own on-chart labels were originally justified against), since neither of
+those needs an extra interaction or an extra click the way the tooltip/
+table do. See `docs/plans/issue-85-plan.md` section 2 for the full
+reasoning this fact fed into (recommending removing `PortfolioChart`'s
+on-chart text labels and deleting `chart-label-layout.ts` entirely).
+
 ## Touch discoverability for the chart (issue #66)
 
 Two independent pieces, both scoped by the issue itself as "at minimum"
