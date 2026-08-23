@@ -17,24 +17,40 @@ with its own running balance). This plan's answers to the four questions
 the issue flags:
 
 1. **`RESULTS_SCHEMA_VERSION` bumps 6 -> 7.** Confirmed, not just
-   rubber-stamped -- section 3.
+   rubber-stamped -- section 3. **Revised**: this is now backed by a
+   concrete additive shape change (two new fields, see point 4 below),
+   a stronger justification than the pure-semantics argument this
+   section originally led with alone.
 2. **The guess-then-reveal spoiler needs a UX change, but a narrow one**:
-   the existing per-day guess mechanic stays completely unchanged
-   (mathematically unaffected by chaining, section 4.1); a _new_,
-   separate, count-gated (not order-gated) "whole-range running balance"
-   headline is added, locked until every day in the range has been
-   individually revealed -- section 4.
-3. **`StartingCapitalInput`'s rescale-by-ratio approach works for every
-   _existing_ display, unchanged, but does NOT extend to a new "true
-   chained dollar amount" display the way a naive port might assume** --
-   section 5, a real "confirm or correct" finding, not just a
-   confirmation.
-4. **The three tracks chain independently off their own prior-day
-   value**, applied as one new post-processing pass strictly _after_
-   the existing granularity-override merge and per-range slice, not
-   inside `optimizeIntradayDays` itself -- section 6, with a proof
+   the existing per-day guess mechanic stays unchanged in its own
+   mechanics (each day judged independently, in any order, against a
+   fixed nominal capital -- section 4.1); a _new_, separate, count-gated
+   (not order-gated) "whole-range running balance" headline is added,
+   locked until every day in the range has been individually revealed
+   -- section 4.
+3. **`StartingCapitalInput`'s rescale-by-ratio approach is mathematically
+   sound for every existing display once each track is paired with its
+   own chained starting capital, but "unchanged" was wrong as originally
+   claimed** -- section 5. **Revised (a real bug caught in independent
+   review, verified against the actual code, not just conceded)**: two
+   real `apps/web` call sites (`WorstCaseStat` under both modes;
+   `HeroStat` and `dayOverviewRows` under long+short mode) currently
+   rescale one track's `endingBalance` using a _different_ track's
+   `startingCapital` -- valid before chaining (every track shared one
+   flat value) but wrong once tracks diverge independently. The fix
+   needs both a schema addition (point 4) and a small, mechanical
+   `apps/web` fix (pass each track's own `startingCapital`, not a
+   reused shared one) -- not a pure display-logic correction alone.
+4. **The three (really four) tracks chain independently off their own
+   prior-day value**, applied as one new post-processing pass strictly
+   _after_ the existing granularity-override merge and per-range slice,
+   not inside `optimizeIntradayDays` itself -- section 6, with a proof
    sketch that every existing write-time cross-check invariant survives
-   chaining unmodified.
+   chaining unmodified. **Revised**: this design requires
+   `IntradayWorstCaseResult` and `IntradayLongShortResult` to each gain
+   their own `startingCapital` field (currently absent -- both types
+   only ever needed one implicitly-shared, flat value pre-chaining) --
+   see sections 3 and 6.2.
 
 ## 1. Architecture recap (what this issue touches, read in full first)
 
@@ -109,11 +125,15 @@ startDateString && day.date <= endDateString)`) -- a deliberate,
 (to / from)`, a pure linear scale that works because `endingBalance =
 startingCapital * multiplier` and `multiplier` never depends on
   `startingCapital`. Every dollar-figure component
-  (`HeroStat`/`WorstCaseStat`/`DayOverview`/the chart) calls this with
-  a **same-day, same-source `(startingCapital, endingBalance)` pair**
-  as the "from" side -- section 5 works through exactly why this keeps
-  working for every _existing_ display but not for a new one this issue
-  needs.
+  (`HeroStat`/`WorstCaseStat`/`DayOverview`/the chart) is _supposed_ to
+  call this with a **same-day, same-track `(startingCapital, endingBalance)`
+  pair** as the "from" side -- but today, two real call sites don't
+  (section 4.1 traces exactly which, and why that was harmless before
+  chaining but isn't after). Section 4.1/5 work through the fix and why
+  the underlying mechanism still doesn't need to change for every
+  _existing_ display, only how two call sites feed it; section 5 also
+  covers why a _new_ display this issue needs can't reuse the same
+  per-day pattern at all, even once fixed.
 
 ## 2. Scope confirmation against the issue's own text
 
@@ -134,45 +154,61 @@ startingCapital * multiplier` and `multiplier` never depends on
 ## 3. Does `RESULTS_SCHEMA_VERSION` need to bump? Yes, 6 -> 7
 
 The issue's own text argues yes but asks for it to be confirmed, not
-assumed. Working through it rather than deferring to the issue's own
-framing:
+assumed. **Revised from this plan's original draft**: the strongest
+justification isn't the semantics-change argument this section
+originally led with -- it's a concrete, additive shape change section
+6.2's design actually requires, found (and verified against the real
+code) during independent review of this plan.
 
-**The counter-argument worth taking seriously first**: `startingCapital`/
-`endingBalance` are not renamed, retyped, added, or removed --
-`IntradayDayResult`'s shape is byte-for-byte identical before and after
-this issue. Every prior bump in this codebase's history (2 through 6)
-was for an actual structural change (a field rename, a new sibling
-field, a new type). Is a pure semantics change -- same fields, same
-types, different meaning of the values -- really what
-`RESULTS_SCHEMA_VERSION`'s documented "shape change a reader needs to
-know about" criterion is for?
+**The real, load-bearing reason: two new fields are required, not
+optional.** `IntradayWorstCaseResult` and `IntradayLongShortResult`
+(`intraday-optimizer.ts`) currently have no `startingCapital` field of
+their own -- confirmed by reading both interfaces directly:
 
-**It is, for a concrete, non-hypothetical reason**: `apps/web`'s own
-UI, per section 4/5 below, needs to render _differently_ depending on
-whether a given `IntradayResult` was computed under the reset-per-day
-model or the chained model -- specifically, the new "whole-range running
-balance" headline (section 4.2) and the new "carried over from the
-previous day" framing (section 4.3) are both actively _wrong_ if
-rendered against pre-chaining (schema-6) stored data: schema-6 data has
-every day's `startingCapital` flatly equal to the configured capital by
-construction (never actually carried from a previous day), so a
-schema-7-aware UI naively rendering "carried over from Tuesday's
-result" against schema-6 data would show a technically-non-null but
-substantively false claim (nothing was actually carried over -- it's
-$20 for every day only because chaining never ran). **There is no
-reliable way to detect this from the data alone**: a schema-6 day
-sitting at exactly `startingCapital === previousDay.endingBalance` by
-sheer coincidence (a genuinely flat, no-trade day where the ratio is
-exactly 1) is indistinguishable field-by-field from a schema-7 chained
-day whose predecessor also happened to end flat -- so a heuristic
-"does day[i].startingCapital equal day[i-1].endingBalance" check can't
-safely stand in for a real version discriminant. This is exactly the
-writer/reader-drift risk `RESULTS_SCHEMA_VERSION` exists to catch
-(the pipeline, writing nightly, and `apps/web`, reading on every
-request, are two separate deploys that can genuinely be out of sync
-for a window around any rollout) -- the same reasoning
-`CustomWindowResult`'s own doc comment already gives for why it reuses
-this same global constant rather than being exempted.
+```ts
+export interface IntradayWorstCaseResult {
+  endingBalance: number;
+  trades: IntradayTrade[];
+}
+export interface IntradayLongShortResult {
+  endingBalance: number;
+  trades: IntradayTrade[];
+  worstCase: IntradayWorstCaseResult;
+}
+```
+
+Pre-chaining this was harmless: every track's `startingCapital` was the
+identical flat constant, so `IntradayDayResult.startingCapital` alone
+was enough to reconstruct any track's own ratio
+(`endingBalance / startingCapital`), and nothing needed its own copy.
+**Once the four tracks chain independently (section 6.1) and drift
+apart day by day, that's no longer true** -- `IntradayWorstCaseResult`'s
+own `endingBalance` and `IntradayLongShortResult`'s own `endingBalance`
+(and its nested `worstCase.endingBalance`) each need their own
+`startingCapital` to be independently interpretable at all, both for a
+new cross-day write-time check (section 6.4) and for `apps/web` to
+rescale each track correctly (section 5). This is an unambiguous,
+textbook case for `RESULTS_SCHEMA_VERSION`'s own bump criterion -- new
+required fields on an already-versioned type, exactly the same class of
+change issue #31's `worstCase` sibling field and issue #13's `longShort`
+sibling field each already bumped this constant for.
+
+**The semantics-change argument still applies too, as a secondary,
+reinforcing point, not the load-bearing one**: `apps/web`'s own UI
+(section 4/5) needs to render _differently_ depending on whether a
+given `IntradayResult` was computed under the reset-per-day model or
+the chained model -- the new "whole-range running balance" headline
+(section 4.2) and the "carried over from the previous day" framing
+(section 4.3) are both actively _wrong_ against pre-chaining (schema-6)
+stored data, and there's no reliable way to detect that from the data
+alone (a schema-6 day landing at exactly `startingCapital ===
+previousDay.endingBalance` by sheer no-trade-day coincidence is
+indistinguishable field-by-field from a genuinely chained one). Worth
+keeping in the record since it would independently justify a bump even
+in a hypothetical alternate design that needed no new fields at all --
+but the additive-fields argument above is the one this issue's actual
+design (section 6.2) is squarely inside precedent for, so it should
+lead.
 
 **Recommendation: bump to 7, the same global constant, not a narrower
 mechanism.** Two narrower alternatives considered and rejected:
@@ -220,33 +256,76 @@ exact cumulative product of days 1-11's ratios, in one glance, zero
 effort -- a real, immediate leak of information the per-day guessing
 game (issue #34) is specifically built to protect one day at a time.
 
-### 4.1 The core guessing mechanic itself needs zero changes
+### 4.1 The core guessing mechanic is unaffected in its own mechanics, but two real `apps/web` call sites need a mechanical fix, not zero changes
 
-**Key finding, not assumed**: `HeroStat`'s and `DayOverview`'s existing
-rescale calls (`rescaleFromStartingCapital(dayEndingBalance,
-day.startingCapital, effectiveStartingCapital)`, both computed off the
-_same day's own_ `(startingCapital, endingBalance)` pair) reduce
-algebraically to `effectiveStartingCapital * ratio_day` **regardless of
-whether `day.startingCapital` is chained or flat** -- the
-`day.startingCapital` term cancels out of the rescale formula
-completely (`value * (to/from)` where `value = from * ratio` always
-simplifies to `to * ratio`, independent of `from`'s actual numeric
-value). Since `ratio_day` (`endingBalance / startingCapital` for that
-one day) is exactly the same capital-invariant per-day ratio the DP
-already produces regardless of chaining (section 1), **every existing
-guess-then-reveal display -- `HeroStat`, `WorstCaseStat`,
-`DayOverview`'s row figure, the per-day `PortfolioChart` -- continues
-to show precisely the same "as if this day started fresh at
-$[effectiveStartingCapital]" number it always has, unmodified, chain or
-no chain.** No component code, no rescale call, and no guess-storage
-key needs to change for this to keep working exactly as it does today.
+**Key finding**: `rescaleFromStartingCapital(value, from, to)` reduces
+algebraically to `to * (value / from)`, and when `value`/`from` are the
+_same day's own, same-track_ `(startingCapital, endingBalance)` pair,
+`value / from` is exactly that track's capital-invariant per-day ratio
+(section 1) -- so the rescaled result is `to * ratio_day` **regardless
+of whether `from` is chained or flat**. This is the correct foundation
+for "the guessing game's own math doesn't change under chaining," and
+it still holds after the fix below.
 
-This is the resolution's foundation: the _existing_ guessing game (each
-day judged independently, in any order, against a fixed nominal
-capital) is left completely untouched -- it was never actually exposed
-to the leak in the first place, because it never displays the true
-chained absolute dollar figure at all, only the ratio-based "as if
-fresh" one.
+**This plan's original draft overstated the conclusion, and an
+independent review caught it, verified here against the actual code,
+not taken on faith**: "zero changes" is wrong. The cancellation above
+only holds when `value` and `from` are drawn from the _same_ track --
+and today's call sites don't reliably do that, because
+`IntradayWorstCaseResult`/`IntradayLongShortResult` have no
+`startingCapital` field of their own (section 3), so every existing
+call site had no choice but to reuse `IntradayDayResult.startingCapital`
+(the long-only track's value) as the "from" argument regardless of
+which track's `endingBalance` it was rescaling. Pre-chaining this was
+harmless (every track shared the identical flat value); post-chaining
+it silently mixes tracks. Traced directly against `ResultsPanel.tsx`:
+
+- **`HeroAndWorstCase`'s `WorstCaseStat` rescale is wrong under _both_
+  modes** (`ResultsPanel.tsx`, the `<HeroAndWorstCase>` call site):
+  `worstCaseEndingBalance` is `dayVariant.worstCase.endingBalance` --
+  under mode `"long"` that's the **worst** track's own value; under
+  `"long-short"` it's the **long-short-worst** track's value. Either
+  way it's rescaled via `rescaleFromStartingCapital(worstCaseEndingBalance,
+startingCapital, displayStartingCapital)` where `startingCapital` is
+  `activeDay.startingCapital` -- the **long-only** track's value, never
+  the actual source track's own. Since `worst <= long-only` on
+  essentially every real trading day, this would show a systematically
+  wrong (inflated, since it divides by a smaller-than-correct `from` on
+  a losing/underperforming day, or otherwise simply incorrect) number
+  from the very first day chaining ships, not just in some rare edge
+  case.
+- **`HeroStat` itself is wrong under `"long-short"` mode specifically**
+  (correct under `"long"`, since `dayVariant.endingBalance` and
+  `startingCapital={activeDay.startingCapital}` happen to be the same
+  track there): under `"long-short"`, `endingBalance` is
+  `dayVariant.endingBalance` = `activeDay.longShort.endingBalance`
+  (the long-short-best track), still paired with `activeDay.startingCapital`
+  (long-only).
+- **`dayOverviewRows`' per-row figure has the identical bug under
+  `"long-short"` mode**: `rescaleFromStartingCapital(variant.endingBalance,
+day.startingCapital, effectiveStartingCapital)` -- `variant.endingBalance`
+  is `day.longShort.endingBalance` under that mode, still paired with
+  `day.startingCapital` (long-only).
+
+**The fix, once the schema carries each track's own `startingCapital`
+(section 6.2), is small and mechanical -- not a redesign**: every one of
+these call sites needs to pass the _same track's own_ `startingCapital`
+as the "from" argument instead of reusing `activeDay.startingCapital`/
+`day.startingCapital` unconditionally. Concretely: `dayOverviewRows`
+rescales via `variant.startingCapital` (the already-mode-selected
+`Variant<IntradayTrade>` -- see `selectVariant`) instead of
+`day.startingCapital`; `HeroAndWorstCase` needs its worst-case rescale's
+"from" argument to be the worst-case track's own `startingCapital`
+(`dayVariant.worstCase.startingCapital`, itself mode-selected the same
+way), not the same `startingCapital` prop `HeroStat` uses for the
+best-case track. `HeroAndWorstCaseProps` gains a second starting-capital
+field (the worst-case track's own) alongside the existing one, rather
+than one shared prop trying to serve both stats. Once each call site
+pairs `endingBalance`/`startingCapital` from the _same_ track again,
+the cancellation argument above holds exactly as originally claimed,
+and the guessing game's own mechanics (guess-then-reveal, any order,
+against a fixed nominal capital) genuinely need no design change --
+only this plumbing fix.
 
 ### 4.2 The actual leak only exists in a _new_ display this issue's own acceptance criteria requires
 
@@ -336,41 +415,66 @@ own Background framing; masking it entirely would just move the gap
 from "spoiler risk" to "the feature's own headline number is never
 actually shown," which isn't a real resolution either).
 
-## 5. `StartingCapitalInput`'s rescale-by-ratio: confirmed for existing displays, corrected for the new one
+## 5. `StartingCapitalInput`'s rescale-by-ratio: corrected on two fronts, not just confirmed
 
-The issue's own text asked this to be verified, not assumed -- and the
-honest answer is split, not a flat yes or no:
+The issue's own text asked this to be verified, not assumed. **Revised
+from this plan's original draft**, which claimed every existing display
+needed "zero changes" -- true of the underlying _math_, false of the
+_current call sites_, per section 4.1's corrected finding:
 
-**Works unchanged for every existing display (section 4.1's finding)**:
-`HeroStat`, `WorstCaseStat`, and `DayOverview`'s per-row figure all
-rescale from a _same-day_ `(startingCapital, endingBalance)` pair, and
-that per-day ratio is preserved by chaining (it's capital-invariant by
-construction, section 1) -- so `rescaleFromStartingCapital`'s existing
-call sites need **zero changes**.
+**The rescale mechanism itself is sound for every existing display,
+once each call site pairs a track's `endingBalance` with that _same_
+track's own `startingCapital`** -- a same-track pair's ratio is
+preserved by chaining (capital-invariant by construction, section 1),
+so `rescaleFromStartingCapital` needs no new logic, no new utility
+function, and no change to what it computes. **What's actually
+required is the fix section 4.1 details**: give `IntradayWorstCaseResult`/
+`IntradayLongShortResult` their own `startingCapital` fields (section
+6.2), and update `HeroAndWorstCase`/`dayOverviewRows` in
+`ResultsPanel.tsx` to read each track's own field instead of reusing
+`activeDay.startingCapital`/`day.startingCapital` (the long-only
+track's value) for every track. Small and mechanical once the schema
+carries the fields, but a real, necessary code change -- not the "zero
+changes" this plan originally claimed.
 
-**Does NOT extend to the new whole-range running-balance headline
-(section 4.2) if applied the same way** -- this is the real "correct,
-don't just confirm" finding. A per-day rescale using that day's own
-(now day-varying, chained) `startingCapital` as the "from" argument
-_algebraically cancels the chaining out_ (section 4.1's own derivation:
-`value * (to/from)` simplifies to `to * ratio`, independent of `from`).
-Applying that same per-day formula to try to show the _true_ chained
-absolute dollar amount would silently produce the wrong number --
-exactly the same "as if fresh" figure the existing per-day displays
-already show, not the real carried-over amount. **The correct rescale
-for the whole-range headline is a single rescale from the _range's own
-root_ starting capital** (`data.days[0].startingCapital`, which is
-always the pipeline's flat configured constant -- every range's chain
-starts fresh there, per the issue's own Scope), applied once to the
-range's final chained `endingBalance`:
+**A second, independent gap (not affected by the fix above): the new
+whole-range running-balance headline (section 4.2) must NOT reuse the
+per-day rescale pattern at all, even the corrected same-track version**
+-- this part of the original finding holds up under review. A per-day
+rescale, even a correctly same-track-paired one, uses that day's own
+(now day-varying, chained) `startingCapital` as the "from" argument,
+which _algebraically cancels the chaining out_ (section 4.1's own
+derivation: `value * (to/from)` simplifies to `to * ratio`, independent
+of `from`). Applying that same per-day formula to try to show the
+_true_ chained absolute dollar amount would silently produce the wrong
+number -- exactly the same "as if fresh" figure the per-day displays
+correctly show, not the real carried-over amount. **The correct
+rescale for the whole-range headline is a single rescale from the
+_range's own root_ starting capital** (`data.days[0].startingCapital`,
+which is always the pipeline's flat configured constant -- every
+range's chain starts fresh there, per the issue's own Scope, and this
+value is identical across all four tracks on day 0 by construction, so
+it's safe to use as the "from" root regardless of which track's final
+balance is being displayed), applied once to the range's final chained
+`endingBalance` for whichever track `mode` currently selects:
 
 ```
 rescaleFromStartingCapital(
-  finalDay.endingBalance,        // the range's true final chained balance, in pipeline-root terms
-  data.days[0].startingCapital,  // the range's own root (always the flat configured constant)
+  selectVariant(finalDay, finalDay.longShort, mode).endingBalance,
+  // the range's true final chained balance for the selected track, in pipeline-root terms
+  data.days[0].startingCapital,
+  // the range's own root -- identical across all four tracks on day 0, so this
+  // single value is the correct "from" regardless of which track is selected
   effectiveStartingCapital,      // the user's chosen display capital
 )
 ```
+
+(The original draft's snippet used unconditional `finalDay.endingBalance`,
+implicitly always the long-only track -- updated here to select the
+same track `mode` has the rest of the page showing, for consistency
+with every other mode-aware display on the page. This refinement is
+new in this revision, not part of the bug the independent review
+flagged, but worth fixing alongside it while touching this section.)
 
 This is the same `rescaleFromStartingCapital` _function_ (no new
 utility needed), just called with a different, deliberately
@@ -397,11 +501,40 @@ track's balance. This groups naturally into the issue's own "three
 tracks" framing (long+short is one track that happens to carry two
 numbers, same as it already does today).
 
-### 6.2 Applied once per range, after slicing, after the override merge
+### 6.2 Schema addition, then applied once per range, after slicing, after the override merge
 
-Concretely, a new function (e.g. `chainStartingCapital(days:
+**Schema addition, required before the chaining pass below can be
+written (section 3's own load-bearing finding)**: `IntradayWorstCaseResult`
+and `IntradayLongShortResult` (`intraday-optimizer.ts`) each gain their
+own `startingCapital: number` field:
+
+```ts
+export interface IntradayWorstCaseResult {
+  startingCapital: number; // new
+  endingBalance: number;
+  trades: IntradayTrade[];
+}
+export interface IntradayLongShortResult {
+  startingCapital: number; // new -- this track's own (long-short-best) chained capital
+  endingBalance: number;
+  trades: IntradayTrade[];
+  worstCase: IntradayWorstCaseResult; // its own nested `startingCapital` is the long-short-worst track's
+}
+```
+
+Adding the field to `IntradayWorstCaseResult` alone covers _two_ of the
+four tracks for free, since `IntradayLongShortResult.worstCase` reuses
+that same interface -- `IntradayDayResult.worstCase.startingCapital` is
+the worst track's own value, `IntradayDayResult.longShort.worstCase.startingCapital`
+is the long-short-worst track's own, with no separate type needed for
+either. `IntradayDayResult.startingCapital` (unchanged) remains the
+long-only track's own value, and the new `IntradayLongShortResult.startingCapital`
+covers the long-short-best track -- all four tracks now independently
+readable.
+
+With that in place, a new function (e.g. `chainStartingCapital(days:
 IntradayDayResult[], rootStartingCapital: number): IntradayDayResult[]`)
-called inside `buildIntradayResults`'s existing `INTRADAY_RANGES.map`
+is called inside `buildIntradayResults`'s existing `INTRADAY_RANGES.map`
 loop, immediately after `days = sourceDays.filter(...)` (the existing
 per-range slice) and before that range's `IntradayResult` object is
 assembled:
@@ -424,11 +557,20 @@ const chainedDays = days.map((day) => {
     ...day,
     startingCapital: longOnlyCapital,
     endingBalance: longOnlyCapital * longOnlyRatio,
-    worstCase: { ...day.worstCase, endingBalance: worstCapital * worstRatio },
+    worstCase: {
+      ...day.worstCase,
+      startingCapital: worstCapital,
+      endingBalance: worstCapital * worstRatio,
+    },
     longShort: {
       ...day.longShort,
+      startingCapital: longShortCapital,
       endingBalance: longShortCapital * longShortRatio,
-      worstCase: { ...day.longShort.worstCase, endingBalance: longShortWorstCapital * longShortWorstRatio },
+      worstCase: {
+        ...day.longShort.worstCase,
+        startingCapital: longShortWorstCapital,
+        endingBalance: longShortWorstCapital * longShortWorstRatio,
+      },
     },
   };
   longOnlyCapital = chained.endingBalance;
@@ -438,6 +580,13 @@ const chainedDays = days.map((day) => {
   return chained;
 });
 ```
+
+(This is the corrected version of this pseudocode -- the plan's
+original draft omitted the three new `startingCapital: ...` lines
+above, which is exactly the gap an independent review caught: without
+them, `IntradayWorstCaseResult`/`IntradayLongShortResult` would still
+have no way to expose their own chained capital, and section 4.1's
+`apps/web` fix would have nothing to read.)
 
 `trades`/`barIntervalMinutes` are untouched by this pass -- trades hold
 literal ticker prices, never dollar allocations, so they need no
@@ -520,27 +669,52 @@ proof on paper.
 
 ### 6.4 New write-time invariant: cross-day chaining itself
 
-`validateIntradayDay`'s existing per-day checks are unaffected (still
-"is this a positive finite number," independent of chaining). A new
+`validateIntradayDay`'s existing per-day checks stay mostly unaffected
+(still "is this a positive finite number," independent of chaining) but
+now also need to check the three _new_ `startingCapital` fields
+(section 6.2) with the same `isPositiveFiniteNumber` predicate every
+other starting-capital/ending-balance field already uses -- a small,
+mechanical addition to an existing check, not a new category on its
+own.
+
+**Revised from this plan's original draft, which described this check
+as though the fields it needs already existed -- they didn't (section
+3), so as originally written this check had nowhere to read three of
+the four tracks' own `startingCapital` from and couldn't actually be
+implemented.** With section 6.2's schema addition in place, a new
 **cross-day** check is added to `validatePrecomputedResult`'s intraday
-branch, iterating `days[]` in order for each of the four tracks:
-`days[i].startingCapital === days[i-1].endingBalance` for `i > 0`
-(exact equality is safe and appropriate here, unlike a tolerance-based
-check -- the pipeline literally copies the previous day's already-computed
-number forward, no new arithmetic introduces float drift), plus
-`days[0].startingCapital === result.startingCapital` (the range's own
-configured root) for all four tracks. This is the first cross-day
+branch, iterating `days[]` in order, once per track:
+
+- `days[i].startingCapital === days[i-1].endingBalance` (long-only)
+- `days[i].worstCase.startingCapital === days[i-1].worstCase.endingBalance` (worst)
+- `days[i].longShort.startingCapital === days[i-1].longShort.endingBalance` (long-short-best)
+- `days[i].longShort.worstCase.startingCapital === days[i-1].longShort.worstCase.endingBalance` (long-short-worst)
+
+for `i > 0` (exact equality is safe and appropriate here, unlike a
+tolerance-based check -- the pipeline literally copies the previous
+day's already-computed number forward for each track, no new
+arithmetic introduces float drift), plus, for day 0 of every range, all
+four tracks' own `startingCapital` equal to `result.startingCapital`
+(the range's own configured root -- section 6.2's design keeps all four
+tracks starting from that identical value). This is the first cross-day
 validation this codebase has ever needed -- worth calling out explicitly
 in `results-schema.ts`'s own doc comments as a new category, not folded
 silently into the existing per-day loop's language.
 
 ## 7. Test impact (qualitative)
 
-- `intraday-optimizer.test.ts`: unaffected -- `optimizeIntradayDays`
-  itself doesn't change.
+- `intraday-optimizer.test.ts`: gains coverage for the new
+  `IntradayWorstCaseResult.startingCapital`/`IntradayLongShortResult.startingCapital`
+  fields (section 6.2) -- `optimizeIntradayDays` itself still doesn't
+  change behaviorally, but every fixture that builds/asserts on one of
+  these two shapes needs the new field added, the same mechanical,
+  high-count-but-low-risk churn `RESULTS_SCHEMA_VERSION`'s own bump
+  history already documents recurring on every prior additive-field
+  bump (e.g. issue #31's original `worstCase` field).
 - `pipeline.test.ts`/`pipeline.custom-range.test.ts`: every existing
   intraday fixture's expected `startingCapital`/`endingBalance` per day
-  needs updating to chained values; a new focused test file (matching
+  (now four independent pairs per day, not one shared value) needs
+  updating to chained values; a new focused test file (matching
   this codebase's own "small, dedicated file" precedent for a risky new
   mechanism, e.g. `pipeline.chained-capital.test.ts`) covers: day-0 root
   equality across all four tracks, cross-day chaining equality, the
@@ -550,12 +724,18 @@ silently into the existing per-day loop's language.
 - `results-schema.test.ts`: new coverage for the cross-day check
   (section 6.4), both a passing chained fixture and a deliberately
   broken one.
-- `apps/web`: `ResultsPanel.test.tsx`'s existing guess-then-reveal
-  coverage should be re-run against chained fixtures to confirm section
-  4.1's "no display change" claim holds in practice, not just on paper;
-  new coverage for the whole-range headline's count-gating (masked at
-  partial reveal, unlocked at full reveal, correct root-based rescale)
-  and `DayOverview`'s corrected copy/per-row "carried over" note.
+- `apps/web`: `ResultsPanel.test.tsx` gains new coverage specifically
+  for the two real call-site fixes section 4.1 identifies -- a
+  chained fixture where the four tracks' rankings genuinely diverge, to
+  confirm `WorstCaseStat` (both modes) and `HeroStat`/`dayOverviewRows`
+  (long+short mode) each rescale from their own track's `startingCapital`,
+  not the long-only track's, not just on paper; existing guess-then-
+  reveal coverage should be re-run against chained fixtures too, to
+  confirm the guessing game's own mechanics genuinely need no design
+  change per section 4.1's revised conclusion. Also new coverage for
+  the whole-range headline's count-gating (masked at partial reveal,
+  unlocked at full reveal, correct root-based rescale for the selected
+  mode) and `DayOverview`'s corrected copy/per-row "carried over" note.
 - Live verification (per this repo's working agreement, at least once
   before shipping): a real local pipeline run (the same
   `local-run.ts`/`local-file-result-reader.ts` throwaway technique
