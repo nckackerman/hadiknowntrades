@@ -5,14 +5,18 @@
 // (factored out there so it's unit-testable without a real S3Client or
 // NextRequest) and ../../../lib/s3-result-reader.ts for the S3 read.
 //
-// GET /api/results?anchor=YYYY-MM (issue #11's coarsened custom
-// date-range feature) is the same route, branching on which query param
-// is present -- both `range` and `anchor` share this one route/reader/
-// caching setup rather than needing a second route file, since (unlike
-// the live-compute design this issue's plan originally sketched) a
-// custom anchor's result is precomputed nightly exactly like a preset
-// range's, with the exact same S3-read-only backing logic and cache
-// semantics -- see results-api.ts's getCustomResultsResponse.
+// GET /api/results?anchor=YYYY-MM-DD (issue #11's coarsened custom
+// date-range feature, day-granularity anchors since issue #75) is the
+// same route, branching on which query param is present -- both `range`
+// and `anchor` share this one route/reader/caching setup rather than
+// needing a second route file, since (unlike the live-compute design
+// this issue's plan originally sketched) a custom anchor's result is
+// precomputed nightly exactly like a preset range's, with the exact same
+// S3-read-only backing logic and cache semantics -- see results-api.ts's
+// getCustomResultsResponse. See ../custom-anchors/route.ts for the
+// separate route that serves the anchors *manifest* (issue #75) --
+// genuinely different from this route's job, since it has no identifier
+// to resolve.
 
 import type { NextRequest } from "next/server";
 

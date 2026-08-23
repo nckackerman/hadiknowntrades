@@ -1,4 +1,4 @@
-import { customRangeAnchors } from "@hadiknowntrades/core";
+import { RESULTS_SCHEMA_VERSION } from "@hadiknowntrades/core";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,15 +16,37 @@ vi.mock("next/navigation", () => ({
 // Next.js app router context this unit test doesn't set up.
 const { ResultsPage } = await import("./ResultsPage");
 
+// Fixed set of test anchors (issue #75's day-granularity picker), all
+// within the same month so tests below never need to navigate the
+// calendar to a different month view -- CustomRangeSelector's own
+// default-viewed-month is the newest anchor's month (see
+// defaultViewedMonth in CustomRangeSelector.tsx) when nothing is
+// selected, which is 2024-01 here.
+const TEST_ANCHORS = ["2024-01-05", "2024-01-10", "2024-01-20"];
+
 describe("ResultsPage", () => {
   beforeEach(() => {
     replace.mockClear();
     search = "";
-    // Never resolves -- these tests only care about range/URL wiring,
-    // not the fetched data, so leaving the panel in "loading" is fine.
+    // /api/custom-anchors resolves immediately with a fixed manifest so
+    // CustomRangeSelector's calendar grid is interactive in every test
+    // below; every other request (/api/results?...) never resolves --
+    // these tests only care about range/URL wiring, not the fetched
+    // result data, so leaving the panel in "loading" is fine.
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => new Promise(() => {})),
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.startsWith("/api/custom-anchors")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ schemaVersion: RESULTS_SCHEMA_VERSION, anchors: TEST_ANCHORS }),
+              { status: 200 },
+            ),
+          );
+        }
+        return new Promise(() => {});
+      }),
     );
   });
 
@@ -45,11 +67,48 @@ describe("ResultsPage", () => {
     return within(screen.getByTestId("controls-more-desktop"));
   }
 
+  /**
+   * Opens CustomRangeSelector's own calendar popover (a native
+   * <details>/<summary>, distinct from the outer "More options"
+   * disclosure -- see CustomRangeSelector.tsx's own doc comment) within
+   * `scope`, then clicks the day cell for `anchor` (must be one of
+   * TEST_ANCHORS, and in the calendar's currently-viewed month -- see
+   * this file's own TEST_ANCHORS comment for why that's always true
+   * here without any month navigation).
+   */
+  async function selectAnchorViaCalendar(
+    user: ReturnType<typeof userEvent.setup>,
+    scope: ReturnType<typeof within>,
+    anchor: string,
+  ) {
+    await user.click(await scope.findByTestId("custom-range-trigger"));
+    const day = String(Number(anchor.slice(8, 10)));
+    await user.click(scope.getByRole("button", { name: day }));
+  }
+
   it("defaults to 1Y when the URL has no range param", () => {
     render(<ResultsPage />);
 
     expect(screen.getByRole("button", { name: "1Y" })).toHaveAttribute("aria-pressed", "true");
     expect(fetch).toHaveBeenCalledWith("/api/results?range=1Y");
+  });
+
+  it("fetches the custom-anchors manifest exactly once, even though CustomRangeSelector is mounted twice (issue #63's desktop/mobile duplication) -- code review finding", async () => {
+    render(<ResultsPage />);
+
+    // Both mounted CustomRangeSelector instances (desktop + mobile) share
+    // the one anchorsState fetched here in ResultsPage, rather than each
+    // independently calling useCustomAnchors() -- confirm both actually
+    // render as interactive (not stuck on "Loading start dates…") before
+    // counting calls, so a regression that broke the sharing and left
+    // one instance perpetually loading wouldn't slip past a naive call
+    // count check for the wrong reason.
+    await screen.findAllByTestId("custom-range-trigger");
+
+    const customAnchorsCalls = vi
+      .mocked(fetch)
+      .mock.calls.filter(([input]) => String(input).startsWith("/api/custom-anchors"));
+    expect(customAnchorsCalls).toHaveLength(1);
   });
 
   it("reads the initial range from the URL, case-insensitively", () => {
@@ -126,9 +185,9 @@ describe("ResultsPage", () => {
     });
   });
 
-  describe("custom start-date anchor mode (issue #11)", () => {
+  describe("custom start-date anchor mode (issue #11, day-granularity since issue #75)", () => {
     it("fetches the anchor-specific endpoint and marks no preset pill as selected when ?anchor= is present", () => {
-      const anchor = customRangeAnchors(new Date())[0]!;
+      const anchor = TEST_ANCHORS[0]!;
       search = `anchor=${anchor}`;
       render(<ResultsPage />);
 
@@ -139,7 +198,7 @@ describe("ResultsPage", () => {
     });
 
     it("does not also fetch a preset range while in anchor mode", () => {
-      const anchor = customRangeAnchors(new Date())[0]!;
+      const anchor = TEST_ANCHORS[0]!;
       search = `anchor=${anchor}`;
       render(<ResultsPage />);
 
@@ -147,27 +206,27 @@ describe("ResultsPage", () => {
     });
 
     it("falls back to range mode for a malformed ?anchor= value", () => {
-      search = "anchor=not-a-month";
+      search = "anchor=not-a-date";
       render(<ResultsPage />);
 
       expect(screen.getByRole("button", { name: "1Y" })).toHaveAttribute("aria-pressed", "true");
       expect(fetch).toHaveBeenCalledWith("/api/results?range=1Y");
     });
 
-    it("writes the selected anchor to the URL, clearing ?range=, when a start month is chosen", async () => {
+    it("writes the selected anchor to the URL, clearing ?range=, when a start date is chosen", async () => {
       const user = userEvent.setup();
-      const anchor = customRangeAnchors(new Date())[2]!;
+      const anchor = TEST_ANCHORS[2]!;
       search = "range=5Y";
       render(<ResultsPage />);
 
-      await user.selectOptions(desktopControls().getByRole("combobox"), anchor);
+      await selectAnchorViaCalendar(user, desktopControls(), anchor);
 
       expect(replace).toHaveBeenCalledWith(`/?anchor=${anchor}`, { scroll: false });
     });
 
     it("clears ?anchor= when a preset range button is clicked while in anchor mode", async () => {
       const user = userEvent.setup();
-      const anchor = customRangeAnchors(new Date())[0]!;
+      const anchor = TEST_ANCHORS[0]!;
       search = `anchor=${anchor}`;
       render(<ResultsPage />);
 
@@ -179,7 +238,7 @@ describe("ResultsPage", () => {
 
   describe("anchor and mode combined (issue #11/#13 integration)", () => {
     it("fetches the anchor-specific endpoint and reads mode from the URL when both ?anchor= and ?mode= are set", () => {
-      const anchor = customRangeAnchors(new Date())[0]!;
+      const anchor = TEST_ANCHORS[0]!;
       search = `anchor=${anchor}&mode=long-short`;
       render(<ResultsPage />);
 
@@ -191,7 +250,7 @@ describe("ResultsPage", () => {
     });
 
     it("preserves the current anchor when only the mode changes", async () => {
-      const anchor = customRangeAnchors(new Date())[0]!;
+      const anchor = TEST_ANCHORS[0]!;
       search = `anchor=${anchor}`;
       const user = userEvent.setup();
       render(<ResultsPage />);
@@ -204,12 +263,12 @@ describe("ResultsPage", () => {
     });
 
     it("preserves the current mode when the anchor changes", async () => {
-      const anchor = customRangeAnchors(new Date())[2]!;
+      const anchor = TEST_ANCHORS[2]!;
       search = "range=5Y&mode=long-short";
       const user = userEvent.setup();
       render(<ResultsPage />);
 
-      await user.selectOptions(desktopControls().getByRole("combobox"), anchor);
+      await selectAnchorViaCalendar(user, desktopControls(), anchor);
 
       expect(replace).toHaveBeenCalledWith(`/?mode=long-short&anchor=${anchor}`, {
         scroll: false,
@@ -240,13 +299,13 @@ describe("ResultsPage", () => {
       expect(replace).toHaveBeenCalledWith("/?mode=long-short", { scroll: false });
     });
 
-    it("writes the selected anchor to the URL when a start month is chosen inside the mobile disclosure", async () => {
+    it("writes the selected anchor to the URL when a start date is chosen inside the mobile disclosure", async () => {
       const user = userEvent.setup();
-      const anchor = customRangeAnchors(new Date())[2]!;
+      const anchor = TEST_ANCHORS[2]!;
       search = "range=5Y";
       render(<ResultsPage />);
 
-      await user.selectOptions(mobileControls().getByRole("combobox"), anchor);
+      await selectAnchorViaCalendar(user, mobileControls(), anchor);
 
       expect(replace).toHaveBeenCalledWith(`/?anchor=${anchor}`, { scroll: false });
     });

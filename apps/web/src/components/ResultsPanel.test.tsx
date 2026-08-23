@@ -263,7 +263,7 @@ function fixtureCustomWindowResult(
   return {
     schemaVersion: RESULTS_SCHEMA_VERSION,
     model: "custom-window",
-    anchorMonth: "2019-03",
+    anchorDate: "2019-03-01",
     generatedAt: "2026-08-21T19:50:21.468Z",
     dataAsOf: "2026-08-21",
     startDate: "2019-03-01",

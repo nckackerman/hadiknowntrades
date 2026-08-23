@@ -728,7 +728,19 @@ by calendar day (the date-part of each bar's `date`), then call
   `IntradayDayResult[]` -- see that section for the full reasoning and
   what apps/pipeline does with `skippedDays`.
 
-## Custom date-range anchors (issue #11)
+## Custom date-range anchors (issue #11, superseded by issue #75's day-granularity extension)
+
+**Historical record of issue #11's original month-granularity design --
+superseded end to end by issue #75 (see "Day-precision extension (issue
+#75)" below, which is the current, shipped design).** Kept here rather
+than deleted since several of the bug-fix/code-review stories below
+(the two-digit-year `Date.UTC` bug, the shared-validator extraction)
+carried forward unchanged into the day-granularity replacement -- worth
+knowing the history rather than re-discovering it. **Every concrete
+claim in this subsection about current behavior (252 anchors, 21 years,
+`AnchorMonth`/`YYYY-MM`, `anchorMonthToDate`, `toAnchorMonth`) is
+stale** -- see the day-precision section below for what's actually
+shipped.
 
 `src/custom-range-anchors.ts` is the coarsened answer to "arbitrary
 date-range picker" -- see `docs/plans/issue-11-plan.md`'s section 1 for
@@ -881,21 +893,112 @@ two features sitting side by side:
   already-computable anchor would have been a much larger regression than
   it would be for just the 2 window ranges.
 
-### Day-granularity extension (issue #75, plan-only as of 2026-08-23)
+### Day-precision extension (issue #75) -- shipped, current design
 
-Issue #75 replaces this whole month-granularity scheme with real
-trading-day anchors (still sourced from `buildCalendar(history).dates`,
-`optimizer.ts`'s already-exported trading-day derivation -- no separate
-holiday-calendar model). **A live benchmark found the naive
-"same 21-year lookback, just day granularity instead of month" version
-does not fit the pipeline Lambda's timeout, by ~4.5x, and is
-compute-bound** -- see `apps/pipeline/CLAUDE.md`'s "Day-granularity
-extension" section for the full real numbers (this package's own
-concern here is just that `CUSTOM_RANGE_ANCHOR_YEARS_BACK` itself is the
-lever the fix pulls, not a pipeline-side knob) and
-`docs/plans/issue-75-plan.md` for the complete design. As of this note,
-**not implemented** -- `customRangeAnchors` still generates 252 month
-anchors over 21 years, unchanged.
+Replaces the whole month-granularity scheme above end to end -- `AnchorMonth`
+(`YYYY-MM`) is gone, along with `anchorMonthToDate`/`toAnchorMonth`.
+`custom-range-anchors.ts` now exports:
+
+- **`AnchorDate` (`string`)** -- a real trading day, `YYYY-MM-DD`, the
+  exact shape `date-utils.ts`'s `toDateString`/`DailyClose.date` already
+  use.
+- **`anchorDateToDate(anchor: string): Date | null`** -- parses/validates
+  a `YYYY-MM-DD` string, same `MIN_ANCHOR_YEAR`/max-year sanity-floor
+  reasoning as the old `anchorMonthToDate` (carried forward unchanged --
+  see the historical section above for why that floor exists).
+- **`customRangeAnchors(tradingDates: readonly string[], asOf: Date): AnchorDate[]`**
+  -- **no longer a pure function of calendar time alone.** There's no
+  calendar-math equivalent of "the 1st of the month" for "a real
+  NYSE/Nasdaq trading day," so this now takes the real trading-day
+  calendar as an explicit argument -- the real caller
+  (`apps/pipeline`'s `runPipeline`) passes
+  `collectTradingDates(windowFetch.history)`, **not**
+  `buildCalendar(history).dates` (a real, code-review-caught
+  inefficiency, fixed): `buildCalendar` also reindexes every ticker's
+  full price series onto the shared date axis into a `pricesByTicker`
+  map this call never reads, real avoidable compute on every nightly
+  run given this whole issue's own live-benchmarked finding that
+  compute time is the binding constraint against the Lambda's 900s
+  budget (section 2 below). `collectTradingDates` is just
+  `buildCalendar`'s own sorted-date-union step, factored out of it
+  (`optimizer.ts`) so both share one implementation of "what counts as
+  a trading day" -- `buildCalendar` itself calls `collectTradingDates`
+  internally now, not a separately-hand-rolled duplicate. Filters
+  `tradingDates` to `[asOf - CUSTOM_RANGE_ANCHOR_YEARS_BACK years,
+asOf]` inclusive, newest first. Still a pure, easily-unit-tested
+  function despite taking real data as an argument -- feed it a
+  synthetic `tradingDates` array, no real fetch needed for a test.
+- **No missing/holiday-date snapping is needed, but for a different
+  reason than the old month scheme's** -- every element of
+  `collectTradingDates(...)`/`buildCalendar(...).dates` (the same date
+  list either way) is, by construction, a day at least one ticker
+  actually has a close for, so there's no weekend/holiday date in the
+  anchor list to begin with, and no forward-snap-produces-duplicate-
+  anchors collision case to design around (a naive calendar-day anchor
+  list, which this deliberately isn't, would have that problem -- see
+  `docs/plans/issue-75-plan.md` section 3.1 for the full argument).
+
+**`CUSTOM_RANGE_ANCHOR_YEARS_BACK` is now `5`, not the live benchmark's
+own confirmed-safe 7-8 years** -- a deliberate, more-conservative product
+choice (confirmed with the user), not a technical ceiling. See section 2
+below (and the constant's own doc comment) for the real numbers this is
+weighed against. **This is a single, clearly-documented lever, exactly
+the same "bump the constant, nothing else hardcodes it" pattern the old
+252/21 numbers followed**: every consumer (`apps/pipeline`'s
+`runPipeline`, `apps/web`'s picker via the published manifest) derives
+its own bounds from this one constant. Extending the lookback later means
+bumping this number alone (up through the benchmark's own confirmed-safe
+7-8 year range without re-benchmarking; re-benchmark before going
+deeper than that).
+
+**Real anchor count at the shipped 5-year depth, live-measured (not
+estimated)**: a real local pipeline run (20 real tickers, real Yahoo
+data, `asOf` 2026-08-23) produced **1,255 real trading-day anchors** --
+close to the plan's own ~1,258 estimate for 5 years
+(`docs/plans/issue-75-plan.md` section 2.5's table), confirming the
+linear trading-days-per-year extrapolation holds at this depth.
+
+- **`results-schema.ts`'s `CustomWindowResult.anchorMonth` is renamed
+  `anchorDate: AnchorDate`** (the field itself, not just its type) --
+  `startDate` is now always exactly equal to `anchorDate` (no
+  separate "nominal vs. snapped" distinction anymore, since every
+  anchor is already a real trading day). `customResultKey(anchorDate)`
+  -> `results/custom/{anchorDate}.json` (`YYYY-MM-DD.json`, two more
+  digit groups than the old `YYYY-MM.json` -- the key **shape** is
+  unchanged). **`RESULTS_SCHEMA_VERSION` bumps 5 -> 6** for this rename,
+  the same "shape change a reader needs to know about" criterion every
+  prior bump has used.
+- **New: `CustomAnchorsManifest`** (`{ schemaVersion, anchors: AnchorDate[] }`,
+  `anchors` ascending -- oldest first, the opposite of
+  `customRangeAnchors`' own newest-first order, since a calendar UI wants
+  to walk forward through months) and its own fixed S3 key,
+  `CUSTOM_ANCHORS_MANIFEST_KEY` (`results/custom/index.json`) -- exists
+  because `apps/web`'s calendar picker can no longer compute its own
+  anchor list client-side the way the old month scheme's picker did (see
+  `apps/web/CLAUDE.md`'s "Custom start-date anchor picker" section for
+  the full why). Reuses `RESULTS_SCHEMA_VERSION`, same writer/reader-
+  drift reasoning every other stored result already has -- no second
+  parallel version number. `validateCustomAnchorsManifest` (same
+  hand-rolled discipline as every other validator here) checks
+  `schemaVersion` exact-equality, `anchors` is a non-empty array of
+  well-formed `AnchorDate` strings, and strictly ascending with no
+  duplicates.
+- **Old `results/custom/{YYYY-MM}.json` keys are left in place, not
+  retired** -- a deliberate choice (confirmed with the user), not an
+  oversight: they become fully inert the moment this code ships (nothing
+  reads or writes a `YYYY-MM.json`-shaped key anymore), their storage
+  cost is trivial and fixed (252 objects, ~431.5KB, per the old section's
+  own live-measured figure), and a real deletion pass is a genuine
+  real-AWS action this issue's own code-only scope didn't include. See
+  `apps/pipeline/CLAUDE.md`'s own note for the rollout-sequencing side of
+  this.
+
+See `docs/plans/issue-75-plan.md` for the complete design writeup this
+implements, and `apps/pipeline/CLAUDE.md`'s "Day-precision extension"
+section for the live benchmark numbers this whole design is weighed
+against (compute-bound, ~4.5x over the Lambda's 900s timeout at the naive
+21-year depth; 7-8 years is the benchmark's own confirmed-safe range;
+5 years is what actually shipped).
 
 ## 1-week (1W) preset range (issue #60)
 

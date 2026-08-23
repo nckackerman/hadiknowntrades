@@ -1,150 +1,229 @@
-// The "coarsened arbitrary date-range" feature (issue #11): instead of a
-// truly arbitrary user-chosen (start, end) pair -- which the issue's own
-// plan (docs/plans/issue-11-plan.md) showed isn't nightly-recomputable at
-// any real scale (a day-granularity, both-endpoints-free grid is ~14
-// million pairs) -- the user picks a *start* from a fixed, bounded set of
-// month-granularity anchor points, with the *end* always pinned to "today"
-// (the same end-of-window convention every existing preset range already
-// uses). This file is the single source of truth for what those anchor
+// The "coarsened arbitrary date-range" feature (issue #11, extended to
+// day granularity by issue #75): instead of a truly arbitrary
+// user-chosen (start, end) pair -- which the issue #11 plan
+// (docs/plans/issue-11-plan.md) showed isn't nightly-recomputable at any
+// real scale (a day-granularity, both-endpoints-free grid is ~14 million
+// pairs) -- the user picks a *start* from a fixed, bounded set of
+// anchor points, with the *end* always pinned to "today" (the same
+// end-of-window convention every existing preset range already uses).
+//
+// Issue #75 replaced issue #11's original month-granularity anchors
+// (the 1st of every month, a pure function of calendar time alone) with
+// real *trading-day* anchors, sourced from the actual fetched
+// daily-close history rather than a synthetic calendar/holiday model --
+// see customRangeAnchors's own doc comment below for why, and
+// docs/plans/issue-75-plan.md section 3 for the full design writeup.
+// This file is still the single source of truth for what those anchor
 // points are: apps/pipeline computes+writes one CustomWindowResult per
 // anchor every nightly run (see apps/pipeline/CLAUDE.md's "Custom
-// date-range anchors" section), and apps/web's date-picker UI only ever
-// lets a user select from this same list -- so the two can't drift on
-// what "a valid custom start date" means.
+// date-range anchors" section) plus a manifest of the anchor list itself
+// (results-schema.ts's CustomAnchorsManifest), and apps/web's date-picker
+// UI only ever lets a user select from that same published list -- so
+// the two can't drift on what "a valid custom start date" means.
+
+import { toDateString } from "./date-utils";
 
 /**
- * How many years back from "now" this feature generates monthly
- * start-date anchors for. Chosen to match the depth already used to
- * benchmark the optimizer's own "Max" range (see this package's
- * CLAUDE.md's "Optimizer algorithm" section, ~330ms for a 21-year
- * window) -- not MAX's own true, unbounded, ticker-inception-dependent
- * reach, just a concretely cost-modeled depth this feature's nightly
- * compute/storage budget is sized against (see apps/pipeline/CLAUDE.md
- * for the real numbers this constant drives: ~252 anchors, an estimated
- * ~80s of added nightly compute, ~1MB of added S3 storage). Bump this
- * later if a deeper reach is wanted -- nothing else needs to change,
- * every consumer (pipeline, API validation, the UI picker) derives its
+ * How many years back from "now" this feature generates trading-day
+ * start-date anchors for. **Deliberately conservative, not the deepest
+ * value a real live benchmark showed was safe** -- issue #75's own
+ * benchmark (docs/plans/issue-75-plan.md section 2) found the naive
+ * extension of issue #11's original 21-year lookback to day granularity
+ * (~5,282 anchors) does NOT fit the pipeline Lambda's real 900s timeout,
+ * by ~4.5x on compute time alone, and that 7-8 years (~1,761-2,012
+ * anchors) is the numbers-backed *safe range* (463-607s compute, real
+ * headroom under 900s). **5 was chosen instead of that range**, as an
+ * even more conservative starting point with extra timeout headroom on
+ * top of what the benchmark already showed safe -- a deliberate product
+ * choice (confirmed with the user), not a technical ceiling. This is
+ * the one, single, clearly-documented lever for that choice: bump this
+ * constant alone to extend the lookback later (up through the
+ * benchmark's own confirmed-safe 7-8 year range, or re-benchmark before
+ * going deeper than that) -- nothing else hardcodes 5 or needs to
+ * change, every consumer (apps/pipeline, apps/web's picker) derives its
  * own bounds from this same constant via customRangeAnchors below.
  */
-export const CUSTOM_RANGE_ANCHOR_YEARS_BACK = 21;
+export const CUSTOM_RANGE_ANCHOR_YEARS_BACK = 5;
 
 /**
- * A custom-range start-date anchor, identified by calendar year and
- * month (e.g. "2019-03" for March 2019 -- the anchor's actual start date
- * is always the 1st of that month, see anchorMonthToDate). Deliberately
- * a plain YYYY-MM string, not a Date -- the same "plain, sortable,
- * comparable string" convention every other date-like identifier in this
- * package's schema already uses (DailyClose.date, PresetRange's own
- * start/end date strings), so it round-trips through JSON (the S3
- * storage format) and a URL query param with no extra encoding/decoding
- * step.
+ * A custom-range start-date anchor, identified by a real trading date
+ * (e.g. "2019-03-15") -- the exact `YYYY-MM-DD` shape `date-utils.ts`'s
+ * `toDateString` already produces, and the same shape `DailyClose.date`/
+ * every `WindowResult.startDate` already uses. Deliberately a plain
+ * string, not a Date -- the same "plain, sortable, comparable string"
+ * convention every other date-like identifier in this package's schema
+ * already uses, so it round-trips through JSON (the S3 storage format)
+ * and a URL query param with no extra encoding/decoding step.
+ *
+ * **Issue #75 renamed this from `AnchorMonth`/`YYYY-MM`** (the 1st of a
+ * calendar month) to a full trading day -- see this file's own module
+ * header comment and customRangeAnchors' doc comment for why a day
+ * granularity needs a genuinely different sourcing mechanism, not just a
+ * type-level rename.
  */
-export type AnchorMonth = string;
+export type AnchorDate = string;
 
-const ANCHOR_MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
+const ANCHOR_DATE_PATTERN = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 
 /**
- * Sanity floor for a parsed anchor's year (code review finding, issue
- * #11): matches apps/pipeline's own DEFAULT_EARLIEST_DATE floor (no real
- * ticker's history goes back further than 1970), and -- more importantly
- * -- sits comfortably above JS's legacy `Date.UTC`/`new Date(year, ...)`
- * two-digit-year reinterpretation range (years 0-99 silently become
- * 1900-1999). Without this floor, a 4-digit-but-small anchor like
- * "0099-06" passes ANCHOR_MONTH_PATTERN (it's exactly 4 digits) but
- * `Date.UTC(99, 5, 1)` silently returns 1999-06-01, not a date in the
- * year 99 -- a real, silent misinterpretation, not a hypothetical one.
+ * Sanity floor for a parsed anchor's year (carried forward unchanged from
+ * issue #11's original `anchorMonthToDate`, see the code-review history
+ * on that function): matches apps/pipeline's own DEFAULT_EARLIEST_DATE
+ * floor (no real ticker's history goes back further than 1970), and --
+ * more importantly -- sits comfortably above JS's legacy `Date.UTC`/`new
+ * Date(year, ...)` two-digit-year reinterpretation range (years 0-99
+ * silently become 1900-1999). Without this floor, a 4-digit-but-small
+ * anchor like "0099-06-01" passes ANCHOR_DATE_PATTERN (it's exactly 4
+ * digits) but `Date.UTC(99, 5, 1)` silently returns 1999-06-01, not a
+ * date in the year 99 -- a real, silent misinterpretation, not a
+ * hypothetical one. This has nothing to do with month-vs-day granularity,
+ * so it's reused unchanged from the original month-scheme constant.
  */
 const MIN_ANCHOR_YEAR = 1970;
 
 /**
- * Parses a YYYY-MM anchor identifier back to a UTC Date at the 1st of
- * that month, or null if it isn't well-formed (wrong shape, a month
- * outside 01-12 -- the regex's own `(0[1-9]|1[0-2])` alternation already
- * rejects "13" etc. at the syntax level -- or a year outside a sane
- * range).
+ * Parses a YYYY-MM-DD anchor identifier back to a UTC Date at that exact
+ * day, or null if it isn't well-formed (wrong shape, a month outside
+ * 01-12 or a day outside 01-31 -- the regex's own alternations already
+ * reject those at the syntax level -- or a year outside a sane range).
+ * Does NOT validate that the day is real for its month (e.g.
+ * "2021-02-30" passes the regex and this parse, same as issue #11's
+ * original month-scheme version never validated a month's own real
+ * length) -- every real anchor this package produces always comes from
+ * customRangeAnchors below, itself always sourced from a real fetched
+ * trading date, so an invalid-calendar-day anchor is never actually
+ * produced in practice; this function's job is catching a malformed
+ * *string*, not re-deriving a full calendar model.
  *
- * **The regex alone is NOT sufficient validation (a real bug, found in
- * code review, fixed here)**: a syntactically well-formed 4-digit year
- * like "0099" still hits `Date.UTC`'s legacy two-digit-year
- * reinterpretation rule (see MIN_ANCHOR_YEAR's own doc comment) and
- * silently resolves to a completely different year (1999, not 99) --
- * `GET /api/results?anchor=0099-06` would otherwise pass
- * ANCHOR_MONTH_PATTERN and apps/web's parseAnchorMonth (results-api.ts)
- * unrejected. The explicit `year < MIN_ANCHOR_YEAR` check below (plus a
- * generous upper bound so a clearly-future year doesn't slip through
- * either) closes that gap; a caller should never rely on the regex match
- * alone implying a well-formed result.
+ * **The regex alone is NOT sufficient validation** -- same two-digit-year
+ * `Date.UTC` reinterpretation gap issue #11's original `anchorMonthToDate`
+ * had to guard against (see MIN_ANCHOR_YEAR's own doc comment): a
+ * syntactically well-formed 4-digit year like "0099" still hits that
+ * legacy rule and would silently resolve to a completely different year.
+ * The explicit `year < MIN_ANCHOR_YEAR` check below (plus a generous
+ * upper bound so a clearly-future year doesn't slip through either)
+ * closes that gap; a caller should never rely on the regex match alone
+ * implying a well-formed result.
  */
-export function anchorMonthToDate(anchor: string): Date | null {
-  const match = ANCHOR_MONTH_PATTERN.exec(anchor);
+export function anchorDateToDate(anchor: string): Date | null {
+  const match = ANCHOR_DATE_PATTERN.exec(anchor);
   if (!match) return null;
   const year = Number(anchor.slice(0, 4));
   const month = Number(anchor.slice(5, 7));
+  const day = Number(anchor.slice(8, 10));
   // Upper bound is "next calendar year" rather than an exact match
-  // against customRangeAnchors(asOf)'s own current bound -- deliberately
-  // generous, same reasoning parseAnchorMonth (apps/web/src/lib/
+  // against customRangeAnchors(...)'s own current bound -- deliberately
+  // generous, same reasoning parseAnchorDate (apps/web/src/lib/
   // results-api.ts) already documents for why it doesn't range-check
   // against the live anchor list: this server's "now" and a caller's own
-  // "now" can disagree by up to a day around a year/month boundary, and
-  // this is a sanity floor/ceiling against genuinely bogus input (like
-  // the two-digit-year bug above), not a re-derivation of the real
-  // bounded anchor list.
+  // "now" can disagree by up to a day around a year boundary, and this
+  // is a sanity floor/ceiling against genuinely bogus input (like the
+  // two-digit-year bug above), not a re-derivation of the real bounded
+  // anchor list.
   const maxYear = new Date().getUTCFullYear() + 1;
   if (year < MIN_ANCHOR_YEAR || year > maxYear) return null;
-  return new Date(Date.UTC(year, month - 1, 1));
-}
-
-/** Formats a Date as its YYYY-MM anchor identifier (UTC month, matching anchorMonthToDate's own UTC interpretation). */
-export function toAnchorMonth(date: Date): AnchorMonth {
-  const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-  return `${year}-${month}`;
+  return new Date(Date.UTC(year, month - 1, day));
 }
 
 /**
- * Every valid custom-start-date anchor as of `asOf`: the 1st of every
- * calendar month from the current (possibly partial) month back
- * CUSTOM_RANGE_ANCHOR_YEARS_BACK years, newest first. Both apps/pipeline
- * (which computes/writes a CustomWindowResult for every one of these,
- * every nightly run -- see apps/pipeline/CLAUDE.md) and apps/web (whose
- * date-picker only ever offers this exact list, and whose API route
- * validates a requested anchor's *shape* via anchorMonthToDate rather
- * than re-deriving this bound -- see results-api.ts's own comment on why
- * it deliberately does NOT also range-check against this list) call this
- * -- the single source of truth for which anchors exist.
+ * Every valid custom-start-date anchor as of `asOf`, given the real
+ * trading-day calendar `tradingDates` (ascending, e.g.
+ * `collectTradingDates(history)` from optimizer.ts -- or
+ * `buildCalendar(history).dates`, the same date list, if a caller
+ * already has a `Calendar` for other reasons) -- every real trading day
+ * within `CUSTOM_RANGE_ANCHOR_YEARS_BACK` years of `asOf`,
+ * newest first (matching the pre-issue-#75 month scheme's own
+ * newest-first convention).
  *
- * No missing/holiday-date snapping logic is needed here, unlike the
- * live-compute design this feature's plan originally sketched (see
- * docs/plans/issue-11-plan.md's history): each anchor's start is always a
- * *calendar* month boundary, and the actual slicing filter that consumes
- * it (apps/pipeline's computeWindowOptimization, `p.date >=
- * startDateString`) already forward-snaps to the nearest real trading day
- * on or after it -- the exact same filter every existing preset range's
- * own startDate already goes through with no special-casing. The end
- * date is always "today," handled identically to how every preset range
- * already handles it (dataAsOf vs. endDate). There is nothing left to
- * "snap" beyond what already happens for free.
+ * **No longer a pure function of calendar time alone (issue #75), unlike
+ * the month scheme's original version** -- there is no calendar-math
+ * equivalent of "the 1st of the month" for "a real NYSE/Nasdaq trading
+ * day": a naive calendar-day anchor list would include weekends/holidays
+ * that all forward-snap to the same real trading day under
+ * computeWindowOptimization's ordinary `p.date >= startDateString`
+ * slicing filter, producing byte-identical results under multiple
+ * different, both-selectable anchor identities -- wasted compute/storage
+ * and a confusing product surface (see docs/plans/issue-75-plan.md
+ * section 3.1 for the full "no forward-snapping at day granularity"
+ * argument). Trading days are sourced from the actual fetched
+ * daily-close history instead of a hand-rolled US market holiday
+ * calendar (fixed holidays + Good Friday + weekend exclusion +
+ * observed-holiday shifting) -- a synthetic model can drift from reality
+ * (an unscheduled closure, or a plain bug in the holiday-shifting rules)
+ * in a way real fetched data structurally can't; every date
+ * `tradingDates` contains is *definitionally* correct, since it's
+ * derived from the exact data every anchor's own result is computed
+ * from.
+ *
+ * Callers: `apps/pipeline`'s `runPipeline` is the only real caller,
+ * passing `collectTradingDates(windowFetch.history)` (the same full
+ * daily-close history 5Y/MAX already fetch, reused -- zero new Yahoo
+ * requests for this feature, and no reindexed `pricesByTicker` map
+ * built and discarded either) -- see apps/pipeline/CLAUDE.md's "Custom
+ * date-range anchors" section. `apps/web`'s date-picker no longer calls
+ * this function directly (it needs real fetched data this package alone
+ * can't supply client-side) -- it instead reads the pipeline's own
+ * published anchor list from the new `results/custom/index.json`
+ * manifest (results-schema.ts's `CustomAnchorsManifest`) via a small
+ * server-side API route, so the two still can't drift on what "a valid
+ * custom start date" means, just via a published list instead of a
+ * shared pure function.
+ *
+ * Stays a pure, easily-unit-tested function despite taking real data as
+ * an argument -- feed it a synthetic `tradingDates` array and a fixed
+ * `asOf`, assert the filtered/reversed output, no real fetch needed for
+ * a test.
  */
-export function customRangeAnchors(asOf: Date): AnchorMonth[] {
-  const totalMonths = CUSTOM_RANGE_ANCHOR_YEARS_BACK * 12;
-  const startYear = asOf.getUTCFullYear();
-  const startMonth = asOf.getUTCMonth(); // 0-indexed
-  const anchors: AnchorMonth[] = [];
-  for (let i = 0; i < totalMonths; i++) {
-    // startYear/startMonth are always a real, recent calendar date in
-    // practice, so this index is always comfortably positive -- no need
-    // to guard against JS's negative-modulo behavior for a negative
-    // totalIndex.
-    const totalIndex = startYear * 12 + startMonth - i;
-    const year = Math.floor(totalIndex / 12);
-    const month = totalIndex % 12; // 0-indexed, matching Date.UTC's own convention
-    // Routed through toAnchorMonth (below) rather than hand-rolling the
-    // identical zero-pad formatting a second time here -- a real,
-    // code-review-caught duplication: this function is the one real
-    // producer of AnchorMonth strings, but toAnchorMonth (exported
-    // through this package's public API for exactly this purpose) had
-    // zero actual callers anywhere in the codebase until this fix.
-    anchors.push(toAnchorMonth(new Date(Date.UTC(year, month, 1))));
-  }
-  return anchors;
+export function customRangeAnchors(tradingDates: readonly string[], asOf: Date): AnchorDate[] {
+  const cutoff = toDateString(yearsBeforeUtc(asOf, CUSTOM_RANGE_ANCHOR_YEARS_BACK));
+  const endString = toDateString(asOf);
+  return tradingDates.filter((d) => d >= cutoff && d <= endString).reverse();
+}
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+/**
+ * `date` minus a plain number of calendar *years*, in UTC -- the
+ * years-back counterpart to `date-utils.ts`'s own `daysBeforeUtc`, kept
+ * local to this file (not re-exported through `index.ts`) since nothing
+ * outside this file needs a years-back offset today. Exported (only)
+ * for this file's own test to exercise the leap-day clamp below at
+ * offsets other than the fixed `CUSTOM_RANGE_ANCHOR_YEARS_BACK` -- with
+ * that constant fixed at 5 (odd), `date.getUTCFullYear()` and
+ * `date.getUTCFullYear() - 5` can never both be leap years (a leap year
+ * is always divisible by 4, and two years 5 apart can't both be), so
+ * `customRangeAnchors` itself can never exercise the "no clamp needed"
+ * branch below -- only a direct test at a different, even offset can.
+ *
+ * **Does NOT delegate to `new Date(Date.UTC(year - n, month, day))`
+ * naively (a real bug, found in code review, fixed)**: when `date` is
+ * Feb 29 (a leap day) and `date`'s year minus `years` is not itself a
+ * leap year, `Date.UTC` silently normalizes the nonexistent "Feb 29" into
+ * "Mar 1" -- verified directly: `Date.UTC(2019, 1, 29)` produces
+ * 2019-03-01, not an error or a clamped Feb 28. Left unguarded, this
+ * pushes `customRangeAnchors`' own cutoff a day later than intended
+ * *only* on the one calendar day per 4 years the pipeline happens to run
+ * on Feb 29 in a leap year whose `years`-years-earlier year isn't also
+ * leap (e.g. asOf 2024-02-29, `CUSTOM_RANGE_ANCHOR_YEARS_BACK = 5` ->
+ * 2019, not a leap year) -- silently excluding whatever real trading-day
+ * anchor(s) fall on that boundary day from `tradingDates`, a real if
+ * narrow correctness gap rather than an intentional design choice.
+ *
+ * **Explicit clamp: Feb 29 -> Feb 28 when the target year isn't leap**,
+ * a deliberate, documented choice (not the only defensible one -- "roll
+ * forward to Mar 1" is a legitimate alternative) chosen to keep the
+ * cutoff within the same *month* "N years back" should land in, rather
+ * than silently spilling into the next one. A leap day landing in a
+ * target year that's also leap (e.g. 2024 back 4 years to 2020, both
+ * leap) is entirely unaffected -- this only ever fires for the specific
+ * leap-day-into-non-leap-year combination.
+ */
+export function yearsBeforeUtc(date: Date, years: number): Date {
+  const year = date.getUTCFullYear() - years;
+  const month = date.getUTCMonth();
+  const day = date.getUTCDate();
+  const clampedDay = month === 1 && day === 29 && !isLeapYear(year) ? 28 : day;
+  return new Date(Date.UTC(year, month, clampedDay));
 }

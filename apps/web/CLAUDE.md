@@ -1365,9 +1365,9 @@ mode)`, not just `(range, date)`** -- the identical argument this
   user's go-ahead, same as every prior schema bump, and not yet
   performed as of this issue's implementation).
 
-## Custom start-date anchor picker (issue #11)
+## Custom start-date anchor picker (issue #11, day-precision calendar since issue #75)
 
-`GET /api/results?anchor=YYYY-MM` is the same route as `?range=...`
+`GET /api/results?anchor=YYYY-MM-DD` is the same route as `?range=...`
 (`app/api/results/route.ts` branches on which query param is present),
 not a second route file -- see `docs/plans/issue-11-plan.md`'s section
 1.5 for why this differs from the (deferred) live-compute design's own
@@ -1376,18 +1376,105 @@ _also_ just a precomputed S3 read (the coarsened design this issue
 actually shipped), there's no backing-logic/cache-semantics difference
 left to justify a second route.
 
-**Plan-only, not yet implemented: issue #75 (`docs/plans/issue-75-plan.md`)
-replaces this whole month-granularity scheme with a real day-precision
-calendar picker.** The single biggest change for this file specifically:
-`CustomRangeSelector.tsx` currently computes its own anchor list
-client-side for free (`customRangeAnchors(asOf)` needs no real data, see
-below); the day-granularity replacement can't do that (real trading days
-aren't computable from calendar math alone), so the picker gains a new
-server fetch (`GET /api/custom-anchors`, a manifest of real precomputed
-anchor days) it never needed before -- see that plan's section 6. As of
-this note nothing below has changed: `?anchor=YYYY-MM`, `getCustomResultsResponse`,
-`parseAnchorMonth`, and the 252-month `<select>` are all still exactly as
-described in the rest of this section.
+**Issue #75 shipped the day-precision calendar picker
+`docs/plans/issue-75-plan.md` designed, replacing the month-granularity
+scheme (`?anchor=YYYY-MM`, a 252-option `<select>`) end to end.** The
+single biggest architectural change: `CustomRangeSelector.tsx` used to
+compute its own anchor list client-side for free
+(`customRangeAnchors(asOf)` needed no real data) -- day-granularity
+anchors can't be computed that way (real trading days aren't derivable
+from calendar math alone), so the picker now depends on a real server
+fetch it never needed before: `GET /api/custom-anchors`
+(`app/api/custom-anchors/route.ts`, backed by
+`getCustomAnchorsResponse` in `results-api.ts`), which serves the
+published `CustomAnchorsManifest` (`packages/core`, written by
+`apps/pipeline` alongside every individual `CustomWindowResult` --
+see `apps/pipeline/CLAUDE.md`'s "Day-precision extension" section).
+`lib/use-custom-anchors.ts`'s `useCustomAnchors()` hook is a thin
+`useFetchResultsState<CustomAnchorsManifest>("/api/custom-anchors")`
+instantiation (fetches once per mount, unlike
+`useResults`/`useCustomResults`, whose URLs change per selector) that
+`CustomRangeSelector.tsx` is the sole consumer of.
+
+`CustomRangeSelector.tsx` is now a hand-rolled calendar-grid picker
+behind a native `<details>`/`<summary>` disclosure (matching this app's
+own established disclosure pattern -- `ResultsPage.tsx`'s "More
+options," `PortfolioChart.tsx`'s "View chart data as a table"), not a
+`<select>`: a day-granularity anchor set (~1,255 entries at the shipped
+5-year lookback) is both too many for a flat option list and a genuine
+day-precision UI ask, not just a longer list. Month-nav header (`‹`
+current month `›`, disabled at the oldest/newest anchor's own month) +
+a 7-column Sun-first day grid, leading/trailing blank cells aligning the
+1st to its real weekday. A day cell's selectability is one `Set<AnchorDate>`
+membership check (`new Set(manifest.anchors)`, `useMemo`'d) -- a real
+anchor renders as an enabled `<button>` (click -> `onSelect` + close the
+popover), anything else (weekend, holiday, outside the lookback,
+future, or just not published yet) renders `disabled`, which alone
+gives correct tab-order skipping with no custom ARIA-grid machinery.
+**Keyboard navigation is tab-order only, no hand-rolled arrow-key grid
+roving** -- a deliberate scoping call the plan flagged explicitly (see
+`docs/plans/issue-75-plan.md` section 7's own tradeoff writeup), not an
+oversight. New loading/error states this control never needed before
+(the old `<select>` was a pure, always-available local computation): a
+disabled "Loading start dates…" trigger while `useCustomAnchors()` is
+loading, and a plain "Start-date picker unavailable" inline message (no
+trigger, no calendar at all) on a fetch error -- matching this app's
+established graceful-degradation posture elsewhere (the OG card route's
+silent 404, `BenchmarkStat`'s silent `null` render) rather than
+inventing a new error-surfacing pattern for just this one control.
+
+- **The trigger/popover wrapper changed from `<label>` to a plain `<div>`
+  (found during this issue's own test-writing, not the plan)**: a
+  `<label>` wrapping a `<button>` (labelable per the HTML spec, unlike
+  the old `<select>` this replaced, for which `<label>` wrapping is the
+  textbook-correct association) makes browsers/`dom-accessibility-api`
+  compute the _label's_ text ("Starting from") as the button's
+  accessible name, silently discarding whatever the button's own content
+  says ("Choose a start date…", the formatted selected date, or
+  "Loading start dates…") -- a real accessibility regression a plain
+  `getByRole("button", { name: "Loading start dates…" })` test query
+  caught immediately (it found the button named "Starting from"
+  instead), not something spotted by eye. A `<div>` wrapper (no
+  label-association semantics) fixes it: the button's own dynamic
+  content is its accessible name again, and "Starting from" is still
+  visible as an ordinary preceding text node.
+- **The popover's positioning is `right`-anchored with a `max-w-[calc(100vw-2rem)]`
+  clamp, not `left`-anchored at a fixed `w-64`** (found via a real
+  375px-viewport screenshot, not assumed) -- the trigger sits mid-row
+  after "Starting from," and a left-anchored, unclamped 256px popover
+  overflowed the real viewport's right edge on mobile, inside the nested
+  "More options" `<details>` (see below). Right-anchoring plus the
+  viewport-relative max-width keeps it fully on-screen at both the
+  375px mobile width and the always-visible desktop width, confirmed by
+  a real screenshot at both sizes.
+- **Live-verified end to end against a real local pipeline run, not just
+  fixtures/component tests** -- the acceptance criteria's own explicit
+  ask. Same throwaway technique this file's own "Per-day breadth made
+  visible" section (issue #80) already established:
+  `apps/pipeline/src/local-run.ts` (real `runPipeline`, a 20-real-ticker
+  universe, real Yahoo network calls, `computeCustomAnchors: true`,
+  writing to local disk) + `apps/web/src/lib/local-file-result-reader.ts`
+  (a `ResultReader` reading that directory, swapped in via a
+  `LOCAL_RESULTS_DIR` env var in both `app/api/results/route.ts` and the
+  new `app/api/custom-anchors/route.ts`) + `next dev` + a headless-
+  Chromium Playwright script (installed and reverted for this one
+  verification session, per this file's own "Headless-browser
+  screenshot verification" convention). Confirmed: the real pipeline run
+  produced 1,255 real trading-day custom-anchor results plus the
+  manifest; `GET /api/custom-anchors` served the real manifest; opening
+  the calendar showed the correct month with real anchor days enabled
+  and non-anchor days (weekends) disabled; clicking a real day wrote
+  `?anchor=2026-08-12` to the URL and rendered that day's real trade
+  data (`Best possible outcome since Aug 12, 2026...`); the calendar's
+  own nested `<details>` inside the outer mobile "More options"
+  `<details>` rendered and hit-tested correctly at a real 375px
+  viewport (the one specific combination the plan flagged as
+  not-previously-exercised, see below) -- no repeat of the documented
+  closed-`<details>`-forced-visible-via-CSS bug, since this nesting
+  never overrides native closed-state behavior with CSS the way that
+  bug required. All scaffolding (the two files above, both routes'
+  `LOCAL_RESULTS_DIR` branches, the temporary `tsx`/`playwright`
+  devDependencies) was reverted before the final commit.
 
 - **`results-api.ts`'s `getCustomResultsResponse`** is a sibling of
   `getResultsResponse`, not a branch merged into it -- deliberately kept
@@ -1403,14 +1490,17 @@ described in the rest of this section.
   a `TResult` type param on the call, not the config interface itself --
   ESLint's `no-unused-vars` otherwise flags an unused type param on the
   interface, since nothing in its fields actually mentions `TResult`).
-  `parseAnchorMonth` validates shape only
-  (via `packages/core`'s `anchorMonthToDate`) -- it does **not** also
-  check the parsed anchor against `customRangeAnchors(asOf)`'s current
-  252-month window, since this route's own server-side "now" and the
-  pipeline's last-run "now" can disagree by up to one anchor right around
-  a month boundary; an anchor outside the actually-published set just
-  falls through to the ordinary `not_found` 404 instead, same as any
-  preset range not yet computed on a first-ever pipeline run.
+  `parseAnchorDate` (renamed from `parseAnchorMonth` for issue #75)
+  validates shape only (via `packages/core`'s `anchorDateToDate`) -- it
+  does **not** also check the parsed anchor against the live published
+  anchors manifest, since this route's own server-side "now" and the
+  pipeline's last-run "now" can disagree by up to one anchor right
+  around a day boundary, and re-validating against a live-read manifest
+  here would mean an extra S3 read on every single `?anchor=` request
+  just to duplicate a check the ordinary `not_found` path already gives
+  for free; an anchor outside the actually-published set just falls
+  through to that path instead, same as any preset range not yet
+  computed on a first-ever pipeline run.
 - **`getPrecomputedResultResponse`'s JSON.parse try/catch alone wasn't
   enough (second-round code review finding, fixed)**: a successfully-
   parsed value can still be `null` or a non-object primitive (a
@@ -1455,7 +1545,7 @@ described in the rest of this section.
 - **Range mode and custom-anchor mode are mutually exclusive URL state**
   (`?range=` xor `?anchor=`, `ResultsPage.tsx`) -- selecting one clears
   the other, mirroring how `?day=` is already cleared on a range switch.
-  A new `useCustomResults(anchor: AnchorMonth | null)` hook
+  A new `useCustomResults(anchor: AnchorDate | null)` hook
   (`lib/use-custom-results.ts`) mirrors `useResults`'s own fetch state
   machine as a deliberate sibling, not a merge into it -- both return
   `null` (no fetch at all) when their own selector is `null`, so exactly
@@ -1476,9 +1566,9 @@ described in the rest of this section.
   `"window"` branch, rather than a second copy of that ~50-line JSX
   block -- the two models are the identical underlying computation (same
   `optimizeAllVariants` over a daily-close window, issue #13), differing
-  only in which field identifies the result (`range` vs. `anchorMonth`),
+  only in which field identifies the result (`range` vs. `anchorDate`),
   so `WindowResultBody` takes a structural `WindowLikeResult` (the fields
-  it actually reads -- neither `range` nor `anchorMonth`) plus a
+  it actually reads -- neither `range` nor `anchorDate`) plus a
   caller-supplied `descriptionPhrase`/`heroKey`/`emptyCopy`, derived
   differently by each of the two call sites (`RANGE_COPY[range]` for
   presets; `` `since ${formatDate(data.startDate)}` `` for a custom
@@ -1500,16 +1590,17 @@ described in the rest of this section.
   or writes storage and always reports "never guessed," since there's no
   (range, date) pair to key a guess under in custom-anchor mode and the
   guess UI never renders there anyway.
-- **`CustomWindowResult.startDate` is the anchor's own literal calendar
-  boundary** (e.g. `"2019-03-01"`), not forward-snapped to the nearest
-  real trading day -- same convention `WindowResult.startDate` already
-  follows for presets. The forward-snap is only ever visible in the
-  actual `trades`/`benchmark` data (via the ordinary slicing filter every
-  window already goes through), never a separate displayed field or UI
-  affordance -- there was no missing/holiday-date UI work needed for this
-  feature at all, unlike what the deferred live-compute design's own
-  section 2 had planned for. See `packages/core/CLAUDE.md`'s "Custom
-  date-range anchors" section for the full reasoning.
+- **`CustomWindowResult.startDate` is always exactly equal to
+  `anchorDate`** (issue #75) -- every anchor is already a real trading
+  day (see `packages/core/CLAUDE.md`'s "Day-precision extension"
+  section), so there's no separate "nominal vs. forward-snapped start"
+  distinction to display any more, unlike the old month scheme's
+  `startDate` (the literal calendar month boundary, e.g. `"2019-03-01"`,
+  which the ordinary window-slicing filter then forward-snapped past to
+  find the first real bar). No missing/holiday-date UI work was needed
+  for either scheme -- see `packages/core/CLAUDE.md`'s own section for
+  why day-granularity anchors need no forward-snapping at all, for a
+  different reason than the month scheme's own "it happens for free."
 
 ### Merged with issue #13's long-only vs. long+short mode
 
@@ -1536,7 +1627,7 @@ working URL, not a case one feature's own logic silently overrides:
   `"window"` and `"custom-window"` branches in `ResultsPanel.tsx` thread
   their own `mode` prop straight through, and both fold `mode` into their
   own `heroKey` (`` `${data.range}-${data.dataAsOf}-${mode}` `` /
-  `` `custom-${data.anchorMonth}-${data.dataAsOf}-${mode}` ``) so a mode
+  `` `custom-${data.anchorDate}-${data.dataAsOf}-${mode}` ``) so a mode
   switch remounts `HeroStat` and replays its reveal animation under a
   custom anchor exactly the same way it already did for a preset range.
   This only works because `CustomWindowResult` itself gained the same

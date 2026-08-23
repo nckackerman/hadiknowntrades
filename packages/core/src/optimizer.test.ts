@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   buildCalendar,
+  collectTradingDates,
   optimizeTrades,
   optimizeWorstTrades,
   optimizeAllVariants,
@@ -504,6 +505,47 @@ describe("buildCalendar", () => {
 
     expect(calendar.pricesByTicker.get("A")).toEqual([999]);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/duplicate/i));
+    warnSpy.mockRestore();
+  });
+});
+
+describe("collectTradingDates", () => {
+  it("returns the sorted union of every date present in any ticker's series", () => {
+    const prices = new Map([
+      ["A", series([10, 20], "2024-01-01")], // 01-01, 01-02
+      ["B", series([5, 6], "2024-01-02")], // 01-02, 01-03
+    ]);
+
+    expect(collectTradingDates(prices)).toEqual(["2024-01-01", "2024-01-02", "2024-01-03"]);
+  });
+
+  it("matches buildCalendar's own dates field exactly, for the same input (issue #75 code review finding -- the two must not drift)", () => {
+    const prices = new Map([
+      ["A", series([10, 20, 30], "2024-01-01")],
+      ["B", series([5, 6], "2024-02-15")],
+    ]);
+
+    expect(collectTradingDates(prices)).toEqual(buildCalendar(prices).dates);
+  });
+
+  it("returns an empty array for an empty input", () => {
+    expect(collectTradingDates(new Map())).toEqual([]);
+  });
+
+  it("does not warn or drop a date for a non-positive/non-finite close -- unlike buildCalendar's own pricesByTicker reindex, it doesn't inspect price validity at all", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const prices = new Map([
+      [
+        "A",
+        [
+          { date: "2024-01-01", close: 10 },
+          { date: "2024-01-02", close: NaN },
+        ],
+      ],
+    ]);
+
+    expect(collectTradingDates(prices)).toEqual(["2024-01-01", "2024-01-02"]);
+    expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 });

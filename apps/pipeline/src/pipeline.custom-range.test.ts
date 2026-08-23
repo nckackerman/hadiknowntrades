@@ -1,16 +1,32 @@
-// Dedicated tests for issue #11's coarsened custom-date-range anchors --
-// kept separate from pipeline.test.ts (which covers the 6 preset ranges
-// and doesn't pass customRangeAnchors at all, per RunPipelineOptions's
-// own doc comment) the same way pipeline.write-validation.test.ts is its
-// own file: this needs a distinct, focused fixture set rather than
-// bolting anchor assertions onto every existing preset-range test.
+// Dedicated tests for issue #11's coarsened custom-date-range anchors
+// (day-granularity real trading-day anchors since issue #75) -- kept
+// separate from pipeline.test.ts (which covers the 6 preset ranges and
+// doesn't pass computeCustomAnchors at all, per RunPipelineOptions's own
+// doc comment) the same way pipeline.write-validation.test.ts is its own
+// file: this needs a distinct, focused fixture set rather than bolting
+// anchor assertions onto every existing preset-range test.
+//
+// **Issue #75 rewrote every fixture in this file, not just renamed
+// fields**: the old month scheme let a test pass an arbitrary
+// customRangeAnchors: AnchorMonth[] list independent of the fixture's own
+// price history. Day-granularity anchors are now *derived* from the
+// fixture's own fetched daily-close history (via
+// customRangeAnchors(buildCalendar(windowFetch.history).dates, asOf)
+// inside runPipeline itself, opted into by computeCustomAnchors: true),
+// so a fixture's price-history dates and its expected anchor list can no
+// longer be specified independently -- every anchor below is a real date
+// present in that test's own dailyFixture.
 
 import type { DailyClose, IntradayBar } from "@hadiknowntrades/core";
 import { describe, expect, it } from "vitest";
 
 import { runPipeline, type ResultStore } from "./pipeline.js";
 
+// CUSTOM_RANGE_ANCHOR_YEARS_BACK is 5 (packages/core/src/custom-range-
+// anchors.ts) -- ASOF minus 5 years is the real cutoff every fixture
+// below is built against.
 const ASOF = new Date("2024-06-15T00:00:00Z");
+const CUTOFF = "2019-06-15";
 
 function daily(date: string, close: number): DailyClose {
   return { date, close };
@@ -48,16 +64,17 @@ function validIntradayFixture(): Map<string, IntradayBar[]> {
   ]);
 }
 
-describe("runPipeline custom-range anchors (issue #11)", () => {
-  it("computes and writes a CustomWindowResult for each requested anchor, reusing the window path's own fetched history", async () => {
+describe("runPipeline custom-range anchors (issue #11, day-granularity since issue #75)", () => {
+  it("computes and writes a CustomWindowResult for every real trading day within the lookback window, plus a manifest", async () => {
     const dailyFixture = new Map<string, DailyClose[]>([
       [
         "AAPL",
         [
-          daily("2018-01-02", 5),
-          daily("2019-01-02", 10),
-          daily("2019-05-01", 20),
-          daily("2024-06-14", 50),
+          daily("2018-01-02", 5), // before CUTOFF -- never becomes an anchor
+          daily("2019-06-14", 8), // one day before CUTOFF -- also excluded
+          daily("2019-07-01", 10), // a real trading-day anchor, inside the window
+          daily("2019-08-01", 12),
+          daily("2024-06-14", 50), // the most recent trading day
         ],
       ],
     ]);
@@ -72,49 +89,47 @@ describe("runPipeline custom-range anchors (issue #11)", () => {
       fetchIntraday1mBars: noIntradayData,
       store,
       asOf: ASOF,
-      customRangeAnchors: ["2019-01", "2017-01"],
+      computeCustomAnchors: true,
     });
 
-    expect(summary.customResults).toHaveLength(2);
-    expect(store.objects.has("results/custom/2019-01.json")).toBe(true);
-    expect(store.objects.has("results/custom/2017-01.json")).toBe(true);
+    // Exactly the 3 dates within [CUTOFF, ASOF] -- "2018-01-02" and
+    // "2019-06-14" are both excluded.
+    expect(summary.customResults).toHaveLength(3);
+    expect(store.objects.has("results/custom/2019-07-01.json")).toBe(true);
+    expect(store.objects.has("results/custom/2019-08-01.json")).toBe(true);
+    expect(store.objects.has("results/custom/2024-06-14.json")).toBe(true);
+    expect(store.objects.has("results/custom/2018-01-02.json")).toBe(false);
+    expect(store.objects.has("results/custom/2019-06-14.json")).toBe(false);
 
-    const jan2019 = JSON.parse(store.objects.get("results/custom/2019-01.json")!);
-    expect(jan2019).toMatchObject({
+    const jul2019 = JSON.parse(store.objects.get("results/custom/2019-07-01.json")!);
+    expect(jul2019).toMatchObject({
       model: "custom-window",
-      anchorMonth: "2019-01",
-      // startDate is the anchor's own literal calendar boundary
-      // ("2019-01-01"), not forward-snapped to the nearest real trading
-      // day -- same convention every preset range's own WindowResult
-      // .startDate already follows (see buildWindowResults). The actual
-      // trade data below is what naturally reflects the forward-snap,
-      // via the same >= slicing filter every preset range's window also
-      // goes through.
-      startDate: "2019-01-01",
+      anchorDate: "2019-07-01",
+      // startDate is exactly the anchor itself -- every anchor is
+      // already a real trading day (issue #75), so there's no forward
+      // snapping like the old month scheme needed.
+      startDate: "2019-07-01",
       endDate: "2024-06-15",
       startingCapital: 20,
       maxTrades: 3,
     });
-    expect(Array.isArray(jan2019.trades)).toBe(true);
-    // The earliest bar actually >= the anchor's boundary is 2019-01-02
-    // (2019-01-01 itself has no bar in the fixture) -- confirms the
-    // slicing filter's forward-snap behavior end to end, not just as a
-    // documented claim.
-    expect(jan2019.trades[0].openDate).toBe("2019-01-02");
+    expect(Array.isArray(jul2019.trades)).toBe(true);
+    expect(jul2019.trades[0].openDate).toBe("2019-07-01");
 
-    // 2017-01 predates AAPL's fixture history entirely -- the slicing
-    // filter naturally includes every bar from the earliest one present
-    // onward, same "MAX-style, use whatever's earliest" behavior
-    // presetRangeStartDate("MAX", ...) already gets for an unbounded
-    // window (see buildWindowResults' own startDateString handling).
-    const jan2017 = JSON.parse(store.objects.get("results/custom/2017-01.json")!);
-    expect(jan2017.startDate).toBe("2017-01-01");
-    expect(jan2017.trades[0].openDate).toBe("2018-01-02");
+    // The newest anchor's own window has only one price point (itself),
+    // so no trade is possible -- a real, expected edge case, not a bug.
+    const jun2024 = JSON.parse(store.objects.get("results/custom/2024-06-14.json")!);
+    expect(jun2024.trades).toEqual([]);
+    expect(jun2024.endingBalance).toBe(20);
 
     // The preset ranges (6) are unaffected/still written normally
-    // alongside the 2 custom anchors.
+    // alongside the 3 custom anchors, plus the new manifest object.
     expect(summary.results).toHaveLength(6);
-    expect(store.objects.size).toBe(8);
+    expect(store.objects.size).toBe(6 + 3 + 1);
+
+    // The manifest publishes exactly the 3 written anchors, ascending.
+    const manifest = JSON.parse(store.objects.get("results/custom/index.json")!);
+    expect(manifest.anchors).toEqual(["2019-07-01", "2019-08-01", "2024-06-14"]);
   });
 
   // Regression test for the issue #11/#13 integration: buildCustomWindowResults
@@ -132,7 +147,7 @@ describe("runPipeline custom-range anchors (issue #11)", () => {
       // (endingBalance stays at startingCapital) -- but shorting the
       // same decline (open 100, close 10 -> payoff 100/10 = 10x) is
       // exactly what the long+short search should find instead.
-      ["AAPL", [daily("2019-01-02", 100), daily("2024-06-14", 10)]],
+      ["AAPL", [daily("2019-07-01", 100), daily("2024-06-14", 10)]],
     ]);
     const intradayFixture = validIntradayFixture();
     const store = memoryStore();
@@ -145,10 +160,10 @@ describe("runPipeline custom-range anchors (issue #11)", () => {
       fetchIntraday1mBars: noIntradayData,
       store,
       asOf: ASOF,
-      customRangeAnchors: ["2019-01"],
+      computeCustomAnchors: true,
     });
 
-    const [custom] = summary.customResults;
+    const custom = summary.customResults.find((r) => r.anchorDate === "2019-07-01");
     expect(custom).toBeDefined();
     // Long-only: no trade beats holding cash on a pure decline.
     expect(custom!.trades).toEqual([]);
@@ -163,14 +178,14 @@ describe("runPipeline custom-range anchors (issue #11)", () => {
     // Round-trips through the actual written+parsed JSON too, confirming
     // this passed validateCustomWindowResult's own longShort cross-checks
     // (see results-schema.ts) at write time, not just an in-memory shape.
-    const stored = JSON.parse(store.objects.get("results/custom/2019-01.json")!);
+    const stored = JSON.parse(store.objects.get("results/custom/2019-07-01.json")!);
     expect(stored.longShort.endingBalance).toBe(200);
     expect(stored.longShort.trades[0].direction).toBe("short");
   });
 
-  it("defaults to zero custom anchors when customRangeAnchors is omitted", async () => {
+  it("defaults to zero custom anchors, and writes no manifest, when computeCustomAnchors is omitted", async () => {
     const dailyFixture = new Map<string, DailyClose[]>([
-      ["AAPL", [daily("2019-01-02", 10), daily("2024-06-14", 50)]],
+      ["AAPL", [daily("2019-07-01", 10), daily("2024-06-14", 50)]],
     ]);
     const intradayFixture = validIntradayFixture();
     const store = memoryStore();
@@ -190,7 +205,7 @@ describe("runPipeline custom-range anchors (issue #11)", () => {
     expect([...store.objects.keys()].some((key) => key.startsWith("results/custom/"))).toBe(false);
   });
 
-  it("produces no custom results when the window path itself has no usable data", async () => {
+  it("produces no custom results or manifest when the window path itself has no usable data", async () => {
     const intradayFixture = validIntradayFixture();
     const store = memoryStore();
     const noDailyData = async (): Promise<DailyClose[]> => [];
@@ -204,62 +219,17 @@ describe("runPipeline custom-range anchors (issue #11)", () => {
         fetchIntraday1mBars: noIntradayData,
         store,
         asOf: ASOF,
-        customRangeAnchors: ["2019-01"],
+        computeCustomAnchors: true,
       }),
     ).rejects.toThrow();
 
     expect([...store.objects.keys()].some((key) => key.startsWith("results/custom/"))).toBe(false);
   });
 
-  it("skips a malformed anchor string rather than crashing the whole run", async () => {
-    const dailyFixture = new Map<string, DailyClose[]>([
-      ["AAPL", [daily("2019-01-02", 10), daily("2024-06-14", 50)]],
-    ]);
-    const intradayFixture = validIntradayFixture();
-    const store = memoryStore();
-
-    const summary = await runPipeline({
-      tickers: ["AAPL"],
-      fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
-      fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
-      fetchFiveMinuteBars: noIntradayData,
-      fetchIntraday1mBars: noIntradayData,
-      store,
-      asOf: ASOF,
-      customRangeAnchors: ["not-a-month", "2019-01"],
-    });
-
-    expect(summary.customResults).toHaveLength(1);
-    expect(summary.customResults[0]!.anchorMonth).toBe("2019-01");
-    expect(store.objects.has("results/custom/not-a-month.json")).toBe(false);
-  });
-
-  it("skips an anchor whose start date is later than the requested end date", async () => {
-    const dailyFixture = new Map<string, DailyClose[]>([
-      ["AAPL", [daily("2019-01-02", 10), daily("2024-06-14", 50)]],
-    ]);
-    const intradayFixture = validIntradayFixture();
-    const store = memoryStore();
-
-    const summary = await runPipeline({
-      tickers: ["AAPL"],
-      fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
-      fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
-      fetchFiveMinuteBars: noIntradayData,
-      fetchIntraday1mBars: noIntradayData,
-      store,
-      asOf: ASOF,
-      customRangeAnchors: ["2024-07"], // after ASOF (2024-06-15)
-    });
-
-    expect(summary.customResults).toEqual([]);
-    expect(store.objects.has("results/custom/2024-07.json")).toBe(false);
-  });
-
   it("computes each anchor's own benchmark from its own start date, not a preset range's", async () => {
     const dailyFixture = new Map<string, DailyClose[]>([
-      ["AAPL", [daily("2019-01-02", 10), daily("2024-06-14", 50)]],
-      ["SPY", [daily("2015-01-02", 200), daily("2019-01-02", 250), daily("2024-06-14", 500)]],
+      ["AAPL", [daily("2019-07-01", 10), daily("2024-06-14", 50)]],
+      ["SPY", [daily("2015-01-02", 200), daily("2019-07-01", 250), daily("2024-06-14", 500)]],
     ]);
     const intradayFixture = validIntradayFixture();
     const store = memoryStore();
@@ -272,18 +242,18 @@ describe("runPipeline custom-range anchors (issue #11)", () => {
       fetchIntraday1mBars: noIntradayData,
       store,
       asOf: ASOF,
-      customRangeAnchors: ["2019-01"],
+      computeCustomAnchors: true,
     });
 
-    const [custom] = summary.customResults;
+    const custom = summary.customResults.find((r) => r.anchorDate === "2019-07-01");
     expect(custom!.benchmark).not.toBeNull();
-    expect(custom!.benchmark!.startDate).toBe("2019-01-02");
+    expect(custom!.benchmark!.startDate).toBe("2019-07-01");
     expect(custom!.benchmark!.truncated).toBe(false);
   });
 
   it("is idempotent: running twice for the same day produces byte-identical custom-anchor content", async () => {
     const dailyFixture = new Map<string, DailyClose[]>([
-      ["AAPL", [daily("2019-01-02", 10), daily("2024-06-14", 50)]],
+      ["AAPL", [daily("2019-07-01", 10), daily("2024-06-14", 50)]],
     ]);
     const intradayFixture = validIntradayFixture();
     const store = memoryStore();
@@ -295,28 +265,31 @@ describe("runPipeline custom-range anchors (issue #11)", () => {
       fetchIntraday1mBars: noIntradayData,
       store,
       asOf: ASOF,
-      customRangeAnchors: ["2019-01"],
+      computeCustomAnchors: true,
     };
 
     await runPipeline(options);
-    const first = store.objects.get("results/custom/2019-01.json")!;
+    const first = store.objects.get("results/custom/2019-07-01.json")!;
+    const firstManifest = store.objects.get("results/custom/index.json")!;
     await runPipeline(options);
-    const second = store.objects.get("results/custom/2019-01.json")!;
+    const second = store.objects.get("results/custom/2019-07-01.json")!;
+    const secondManifest = store.objects.get("results/custom/index.json")!;
 
     const stripGeneratedAt = (raw: string) =>
       JSON.parse(raw, (key, value) => (key === "generatedAt" ? undefined : value));
     expect(stripGeneratedAt(first)).toEqual(stripGeneratedAt(second));
+    expect(firstManifest).toBe(secondManifest);
   });
 
   it("a custom-anchor write failure aggregates into the same thrown error as a preset failure, without blocking sibling writes", async () => {
     const dailyFixture = new Map<string, DailyClose[]>([
-      ["AAPL", [daily("2019-01-02", 10), daily("2024-06-14", 50)]],
+      ["AAPL", [daily("2019-07-01", 10), daily("2024-06-14", 50)]],
     ]);
     const intradayFixture = validIntradayFixture();
     const objects = new Map<string, string>();
     const store: ResultStore = {
       async putObject(key, body) {
-        if (key === "results/custom/2019-01.json") {
+        if (key === "results/custom/2019-07-01.json") {
           throw new Error("simulated S3 failure for this one key");
         }
         objects.set(key, body);
@@ -331,7 +304,7 @@ describe("runPipeline custom-range anchors (issue #11)", () => {
       fetchIntraday1mBars: noIntradayData,
       store,
       asOf: ASOF,
-      customRangeAnchors: ["2019-01"],
+      computeCustomAnchors: true,
     }).then(
       () => {
         throw new Error("expected runPipeline to reject");
@@ -339,11 +312,23 @@ describe("runPipeline custom-range anchors (issue #11)", () => {
       (rejection: unknown) => rejection as Error,
     );
 
-    expect(error.message).toMatch(/custom:2019-01: simulated S3 failure/);
-    // The 6 preset ranges still landed despite the one custom-anchor
-    // write failure -- "write whatever succeeded" is preserved across
-    // both families, not just within the preset-range set.
-    expect(objects.size).toBe(6);
-    expect(objects.has("results/custom/2019-01.json")).toBe(false);
+    expect(error.message).toMatch(/custom:2019-07-01: simulated S3 failure/);
+    // The 6 preset ranges, the other custom anchor, and the manifest all
+    // still landed despite the one custom-anchor write failure -- "write
+    // whatever succeeded" is preserved across every family, not just
+    // within the preset-range set.
+    expect(objects.size).toBe(6 + 1 + 1);
+    expect(objects.has("results/custom/2019-07-01.json")).toBe(false);
+    expect(objects.has("results/custom/2024-06-14.json")).toBe(true);
+    expect(objects.has("results/custom/index.json")).toBe(true);
+
+    // Regression test (code review finding): the manifest must be built
+    // from real per-anchor *write* outcomes, not from which anchors
+    // merely computed successfully -- a stale manifest listing
+    // "2019-07-01" as selectable, despite its own write having failed,
+    // would 404 for any user who picked it until the next nightly run.
+    const manifest = JSON.parse(objects.get("results/custom/index.json")!);
+    expect(manifest.anchors).toEqual(["2024-06-14"]);
+    expect(manifest.anchors).not.toContain("2019-07-01");
   });
 });

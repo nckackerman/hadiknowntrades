@@ -2,12 +2,13 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 
-import type { AnchorMonth, PresetRange } from "@hadiknowntrades/core";
+import type { AnchorDate, PresetRange } from "@hadiknowntrades/core";
 
 import { useResults } from "@/lib/use-results";
 import { useCustomResults } from "@/lib/use-custom-results";
+import { useCustomAnchors } from "@/lib/use-custom-anchors";
 import { useStartingCapital } from "@/lib/use-starting-capital";
-import { parseAnchorMonth, parseRange } from "@/lib/results-api";
+import { parseAnchorDate, parseRange } from "@/lib/results-api";
 import { DEFAULT_MODE, parseMode, type Mode } from "@/lib/mode";
 import { AboutSection } from "@/components/AboutSection";
 import { CustomRangeSelector } from "@/components/CustomRangeSelector";
@@ -30,11 +31,12 @@ export function ResultsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // Custom-range mode (issue #11) wins when a well-formed ?anchor= is
-  // present; otherwise falls back to the ordinary ?range= (or its own
-  // default). The two are deliberately mutually exclusive -- see
-  // selectRange/selectAnchor, which each clear the other on selection.
-  const anchor: AnchorMonth | null = parseAnchorMonth(searchParams.get("anchor"));
+  // Custom-range mode (issue #11, day-granularity anchors since issue
+  // #75) wins when a well-formed ?anchor= is present; otherwise falls
+  // back to the ordinary ?range= (or its own default). The two are
+  // deliberately mutually exclusive -- see selectRange/selectAnchor,
+  // which each clear the other on selection.
+  const anchor: AnchorDate | null = parseAnchorDate(searchParams.get("anchor"));
   const range: PresetRange | null = anchor
     ? null
     : (parseRange(searchParams.get("range")) ?? DEFAULT_RANGE);
@@ -48,6 +50,26 @@ export function ResultsPage() {
   const state = anchor
     ? (customState ?? { status: "loading" as const })
     : (rangeState ?? { status: "loading" as const });
+
+  // The published custom-range anchors manifest (issue #75) -- fetched
+  // exactly **once** here and threaded down to both mounted
+  // CustomRangeSelector instances as a prop (issue #63's own
+  // desktop/mobile duplication, see the header JSX below), rather than
+  // each instance calling useCustomAnchors() independently (a real bug,
+  // found in code review, fixed): the old per-instance-fetch version
+  // doubled the GET /api/custom-anchors request on every page load, and
+  // risked visibly inconsistent UI if one request failed while the
+  // other (a genuinely separate in-flight fetch) succeeded -- one
+  // instance showing a working calendar, its sibling showing "Start-date
+  // picker unavailable," on the same page. This is the same class of
+  // "two mounted instances redo the same work independently" bug this
+  // file's own CLAUDE.md already documents fixing once before for the
+  // old month-scheme picker's purely local `customRangeAnchors(new
+  // Date())` computation (a `useMemo` fix, issue #63) -- but a `useMemo`
+  // *inside* the component can't fix this one, since the duplicated work
+  // here is a real network fetch, not a pure computation two mounted
+  // instances could each memoize away on their own.
+  const anchorsState = useCustomAnchors();
 
   // Which day is selected for the intraday model (issue #28) -- null
   // means "none set," and ResultsPanel falls back to the most recent
@@ -83,7 +105,7 @@ export function ResultsPage() {
     router.replace(`/?${params.toString()}`, { scroll: false });
   }
 
-  function selectAnchor(next: AnchorMonth) {
+  function selectAnchor(next: AnchorDate) {
     const params = new URLSearchParams(searchParams);
     params.set("anchor", next);
     // Mutually exclusive with a preset range -- see selectRange's
@@ -153,7 +175,11 @@ export function ResultsPage() {
             className="hidden flex-wrap items-center gap-3 sm:flex"
           >
             <span className="text-sm text-[var(--text-muted)]">or</span>
-            <CustomRangeSelector selected={anchor} onSelect={selectAnchor} />
+            <CustomRangeSelector
+              selected={anchor}
+              onSelect={selectAnchor}
+              anchorsState={anchorsState}
+            />
             <ModeToggle selected={mode} onSelect={selectMode} />
           </div>
         </div>
@@ -166,7 +192,11 @@ export function ResultsPage() {
             className="mt-3 flex flex-wrap items-center gap-3"
           >
             <span className="text-sm text-[var(--text-muted)]">or</span>
-            <CustomRangeSelector selected={anchor} onSelect={selectAnchor} />
+            <CustomRangeSelector
+              selected={anchor}
+              onSelect={selectAnchor}
+              anchorsState={anchorsState}
+            />
             <ModeToggle selected={mode} onSelect={selectMode} />
           </div>
         </details>

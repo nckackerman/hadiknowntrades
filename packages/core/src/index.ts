@@ -28,6 +28,7 @@ export type { DailyClose, IntradayBar } from "./yahoo-client";
 
 export {
   buildCalendar,
+  collectTradingDates,
   optimizeTrades,
   optimizeWorstTrades,
   optimizeBothDirections,
@@ -59,18 +60,19 @@ export { toDateString, daysBeforeUtc } from "./date-utils";
 
 export {
   CUSTOM_RANGE_ANCHOR_YEARS_BACK,
-  anchorMonthToDate,
+  anchorDateToDate,
   customRangeAnchors,
-  toAnchorMonth,
 } from "./custom-range-anchors";
-export type { AnchorMonth } from "./custom-range-anchors";
+export type { AnchorDate } from "./custom-range-anchors";
 
 export {
   resultKey,
   customResultKey,
+  CUSTOM_ANCHORS_MANIFEST_KEY,
   RESULTS_SCHEMA_VERSION,
   validatePrecomputedResult,
   validateCustomWindowResult,
+  validateCustomAnchorsManifest,
   ResultValidationError,
 } from "./results-schema";
 export type {
@@ -78,6 +80,7 @@ export type {
   WindowResult,
   IntradayResult,
   CustomWindowResult,
+  CustomAnchorsManifest,
   ResultModel,
   WorstCaseResult,
   LongShortResult,

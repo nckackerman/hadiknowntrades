@@ -20,10 +20,10 @@ import { PRESET_RANGES, type PresetRange } from "./preset-ranges";
 import type { Trade } from "./optimizer";
 import type { IntradayDayResult, IntradayLongShortResult } from "./intraday-optimizer";
 import { isValidPrice } from "./is-valid-price";
-import { anchorMonthToDate, type AnchorMonth } from "./custom-range-anchors";
+import { anchorDateToDate, type AnchorDate } from "./custom-range-anchors";
 
 /** Bumped whenever the shape of PrecomputedResult changes in a way a reader needs to know about. */
-export const RESULTS_SCHEMA_VERSION = 5;
+export const RESULTS_SCHEMA_VERSION = 6;
 
 /**
  * The S3 key a precomputed result is stored/read under for a given range.
@@ -37,17 +37,38 @@ export function resultKey(range: PresetRange): string {
 }
 
 /**
- * The S3 key a custom-range anchor's precomputed result (issue #11) is
- * stored/read under -- same single-source-of-truth role as resultKey
- * above, just for CustomWindowResult instead of PrecomputedResult.
- * Namespaced under `results/custom/` (not flat alongside the 6 preset
- * keys) so the two families are trivially distinguishable by key prefix
- * alone, and so an S3 listing of one family never accidentally includes
- * the other.
+ * The S3 key a custom-range anchor's precomputed result (issue #11,
+ * day-granularity since issue #75) is stored/read under -- same
+ * single-source-of-truth role as resultKey above, just for
+ * CustomWindowResult instead of PrecomputedResult. Namespaced under
+ * `results/custom/` (not flat alongside the 6 preset keys) so the two
+ * families are trivially distinguishable by key prefix alone, and so an
+ * S3 listing of one family never accidentally includes the other.
+ *
+ * **Issue #75 migrated the identifier from `YYYY-MM` to `YYYY-MM-DD`**
+ * -- the key *shape* (`results/custom/` prefix + identifier + `.json`)
+ * is unchanged, only the identifier's own format grows two extra digit
+ * groups. The old `results/custom/{YYYY-MM}.json` keys this function
+ * used to produce are left in place, not retired -- see
+ * apps/pipeline/CLAUDE.md's "Day-granularity extension" section for why.
  */
-export function customResultKey(anchorMonth: AnchorMonth): string {
-  return `results/custom/${anchorMonth}.json`;
+export function customResultKey(anchorDate: AnchorDate): string {
+  return `results/custom/${anchorDate}.json`;
 }
+
+/**
+ * The S3 key the custom-anchors manifest (CustomAnchorsManifest, below)
+ * is stored/read under (issue #75) -- a single fixed key, not a function
+ * of an identifier, since there's exactly one manifest per pipeline run.
+ * `index.json` deliberately can't collide with a real per-anchor key
+ * (`\d{4}-\d{2}-\d{2}\.json`): a plain prefix listing of `results/custom/`
+ * trivially distinguishes "the one manifest object" from "every
+ * individual anchor result" by filename shape alone, the same
+ * by-prefix-alone distinguishability principle issue #11's own doc
+ * comment already established for why `results/custom/` is a separate
+ * prefix from the 6 flat preset-range keys in the first place.
+ */
+export const CUSTOM_ANCHORS_MANIFEST_KEY = "results/custom/index.json";
 
 /** Which trading model produced a given PrecomputedResult -- see the module header comment. */
 export type ResultModel = "window" | "intraday-daily";
@@ -186,22 +207,23 @@ export type PrecomputedResult = WindowResult | IntradayResult;
 
 /**
  * A custom-range anchor's precomputed result (issue #11's coarsened
- * design -- see docs/plans/issue-11-plan.md): the same whole-window,
- * daily-close, up-to-`maxTrades` model as WindowResult (same optimizer,
- * same machinery -- see apps/pipeline/src/pipeline.ts's
- * computeWindowOptimization, shared by both), just keyed by a
- * month-granularity `anchorMonth` (packages/core/src/custom-range-
- * anchors.ts) instead of a `PresetRange`.
+ * design, day-granularity anchors since issue #75 -- see
+ * docs/plans/issue-11-plan.md and docs/plans/issue-75-plan.md): the same
+ * whole-window, daily-close, up-to-`maxTrades` model as WindowResult
+ * (same optimizer, same machinery -- see apps/pipeline/src/pipeline.ts's
+ * computeWindowOptimization, shared by both), just keyed by a real
+ * trading-day `anchorDate` (packages/core/src/custom-range-anchors.ts)
+ * instead of a `PresetRange`.
  *
  * Deliberately a type *separate from* the PrecomputedResult union above,
  * not a third member of it -- PresetRange is a closed, exhaustively-
  * iterated 5-member union throughout this codebase (PRESET_RANGES itself,
  * apps/pipeline's WINDOW_RANGES/INTRADAY_RANGES split, apps/web's
- * isCanonicalRange/parseRange), and folding a ~252-member anchor set into
- * that same `range` field would mean loosening PresetRange everywhere it
- * appears, not just here. A sibling type with its own `anchorMonth`
- * identifying field avoids that blast radius entirely while still
- * sharing every other field/shape/validation convention below.
+ * isCanonicalRange/parseRange), and folding a multi-hundred-member anchor
+ * set into that same `range` field would mean loosening PresetRange
+ * everywhere it appears, not just here. A sibling type with its own
+ * `anchorDate` identifying field avoids that blast radius entirely while
+ * still sharing every other field/shape/validation convention below.
  *
  * **Still gated by the same RESULTS_SCHEMA_VERSION as PrecomputedResult**
  * (see `schemaVersion` below) -- unlike the live-compute design this
@@ -227,16 +249,23 @@ export type PrecomputedResult = WindowResult | IntradayResult;
 export interface CustomWindowResult {
   schemaVersion: number;
   model: "custom-window";
-  /** The anchor identifying this result -- see custom-range-anchors.ts. */
-  anchorMonth: AnchorMonth;
+  /**
+   * The anchor identifying this result -- see custom-range-anchors.ts.
+   * **Renamed from `anchorMonth` (issue #75)**: now a real
+   * `YYYY-MM-DD` trading day, not a `YYYY-MM` calendar month -- the
+   * field itself was renamed, not just retyped, since "month" stopped
+   * being an accurate name for what it holds.
+   */
+  anchorDate: AnchorDate;
   generatedAt: string;
   /** Same meaning as PrecomputedResultBase.dataAsOf. */
   dataAsOf: string;
   /**
-   * Always a real, non-null date string (the anchor month's 1st, or
-   * later once forward-snapped to a real trading day by the same slicing
-   * filter every preset range's own startDate already goes through --
-   * see custom-range-anchors.ts's own doc comment) -- unlike
+   * Always exactly equal to `anchorDate` -- every anchor is already a
+   * real trading day (see custom-range-anchors.ts's own doc comment on
+   * why day-granularity anchors need no forward-snapping the way the
+   * month scheme once did), so there's no separate "nominal start" vs.
+   * "actual snapped start" to distinguish here, unlike
    * WindowResult.startDate, which can be null for the unbounded MAX
    * range. A custom anchor is never unbounded.
    */
@@ -253,6 +282,32 @@ export interface CustomWindowResult {
   worstCase: WorstCaseResult;
   /** The long+short counterpart to this anchor's own long-only fields (issue #13) -- see LongShortResult, and this interface's own doc comment for why it's here at all. */
   longShort: LongShortResult;
+}
+
+/**
+ * The published list of valid custom-start-date anchors (issue #75) --
+ * stored at `CUSTOM_ANCHORS_MANIFEST_KEY` (`results/custom/index.json`),
+ * written once per pipeline run alongside every individual
+ * `CustomWindowResult`. Exists because day-granularity anchors are no
+ * longer computable from calendar math alone the way the old
+ * month-granularity scheme's anchors were (see custom-range-anchors.ts's
+ * own doc comment) -- `apps/web`'s calendar-grid picker needs a real
+ * network fetch to know which specific days are real, precomputed,
+ * selectable anchors, and this manifest is what it fetches
+ * (`GET /api/custom-anchors`, `apps/web/src/lib/results-api.ts`'s
+ * `getCustomAnchorsResponse`).
+ *
+ * **Reuses `RESULTS_SCHEMA_VERSION`, the same global constant, rather
+ * than inventing a second parallel version number** -- the same
+ * writer/reader-drift risk every other `PrecomputedResult`/
+ * `CustomWindowResult` already guards against via this constant applies
+ * here too: this manifest is written by a separate process (the nightly
+ * pipeline) from the one that reads it (`apps/web`'s API route).
+ */
+export interface CustomAnchorsManifest {
+  schemaVersion: number;
+  /** Every currently-published anchor, ascending (oldest first) -- deliberately NOT customRangeAnchors' own newest-first order, since a calendar UI wants to walk forward through months. */
+  anchors: AnchorDate[];
 }
 
 // --- Write-time self-validation (issue #47) ---------------------------
@@ -675,11 +730,11 @@ function validateBenchmark(value: unknown, problems: string[]): void {
 /**
  * Validates the fields shared by *every* whole-result shape this file
  * validates, regardless of whether it's identified by `range`
- * (PrecomputedResult) or `anchorMonth` (CustomWindowResult, issue #11) --
+ * (PrecomputedResult) or `anchorDate` (CustomWindowResult, issue #11) --
  * schemaVersion, generatedAt, dataAsOf, startingCapital, universeSize,
  * skippedTickers, benchmark. Called by both validateBase (below, which
  * additionally validates `range`) and validateCustomWindowResult (which
- * additionally validates `anchorMonth`) so the two can't independently
+ * additionally validates `anchorDate`) so the two can't independently
  * drift on what these shared fields require.
  *
  * **Extracted from what used to be two ~50-line-overlapping copies of
@@ -792,7 +847,7 @@ function validateWindowLikeFields(r: Record<string, unknown>, problems: string[]
   );
 }
 
-/** Validates the fields every PrecomputedResult shares, regardless of `model`: everything validateSharedResultFields covers, plus `range` (the one field CustomWindowResult doesn't have -- it has `anchorMonth` instead, validated separately by validateCustomWindowResult). */
+/** Validates the fields every PrecomputedResult shares, regardless of `model`: everything validateSharedResultFields covers, plus `range` (the one field CustomWindowResult doesn't have -- it has `anchorDate` instead, validated separately by validateCustomWindowResult). */
 function validateBase(result: Record<string, unknown>, problems: string[]): void {
   validateSharedResultFields(result, problems);
   if (!(PRESET_RANGES as readonly string[]).includes(result.range as string)) {
@@ -883,9 +938,9 @@ export function validateCustomWindowResult(result: CustomWindowResult): void {
   if (r.model !== "custom-window") {
     problems.push(`model must be "custom-window", got ${describe(r.model)}`);
   }
-  if (!isNonEmptyString(r.anchorMonth) || anchorMonthToDate(r.anchorMonth) === null) {
+  if (!isNonEmptyString(r.anchorDate) || anchorDateToDate(r.anchorDate) === null) {
     problems.push(
-      `anchorMonth must be a well-formed YYYY-MM string, got ${describe(r.anchorMonth)}`,
+      `anchorDate must be a well-formed YYYY-MM-DD string, got ${describe(r.anchorDate)}`,
     );
   }
   if (!isNonEmptyString(r.startDate)) {
@@ -895,7 +950,81 @@ export function validateCustomWindowResult(result: CustomWindowResult): void {
 
   if (problems.length > 0) {
     throw new ResultValidationError(
-      `CustomWindowResult for anchor ${describe(r.anchorMonth)} failed schema self-validation (${problems.length} problem${problems.length === 1 ? "" : "s"}):\n` +
+      `CustomWindowResult for anchor ${describe(r.anchorDate)} failed schema self-validation (${problems.length} problem${problems.length === 1 ? "" : "s"}):\n` +
+        problems.map((p) => `  - ${p}`).join("\n"),
+    );
+  }
+}
+
+/**
+ * Validates that `result` actually satisfies CustomAnchorsManifest's own
+ * declared shape (issue #75) -- the same runtime-self-check discipline
+ * every other stored result gets (issue #47), called immediately before
+ * the manifest's own `putObject` by apps/pipeline, the same "last line
+ * of defense before this becomes what a reader trusts" discipline issue
+ * #47 established for every other write.
+ *
+ * Checks `schemaVersion` exact-equality (same reasoning as every other
+ * validator in this file -- see validateSharedResultFields' own
+ * schemaVersion check), that `anchors` is a non-empty array of
+ * well-formed AnchorDate strings (via anchorDateToDate, reusing the same
+ * parse this file already trusts for CustomWindowResult.anchorDate), and
+ * that it's strictly ascending with no duplicates -- the manifest's own
+ * documented "ascending, oldest first" contract
+ * (CustomAnchorsManifest.anchors' own doc comment) that apps/web's
+ * calendar picker relies on.
+ */
+export function validateCustomAnchorsManifest(result: CustomAnchorsManifest): void {
+  const problems: string[] = [];
+  if (result === null || typeof result !== "object") {
+    throw new ResultValidationError(`result must be an object, got ${describe(result)}`);
+  }
+  const r = result as unknown as Record<string, unknown>;
+
+  if (r.schemaVersion !== RESULTS_SCHEMA_VERSION) {
+    problems.push(
+      `schemaVersion must be exactly ${RESULTS_SCHEMA_VERSION}, got ${describe(r.schemaVersion)}`,
+    );
+  }
+
+  if (!Array.isArray(r.anchors) || r.anchors.length === 0) {
+    problems.push(`anchors must be a non-empty array, got ${describe(r.anchors)}`);
+  } else {
+    // Tracks the most recent *well-formed* anchor and its own real index
+    // -- not just "the previous array index" -- so the
+    // duplicate/out-of-order messages below always cite the actual
+    // preceding well-formed anchor, even when one or more malformed
+    // entries sit between it and the current one (a real, if
+    // diagnostic-only, bug found in code review: `previous` used to stay
+    // unset across a malformed entry's early `return`, but the message
+    // still hardcoded `anchors[i - 1]` as if it always held that
+    // skipped entry's own value).
+    let previous: string | null = null;
+    let previousIndex: number | null = null;
+    r.anchors.forEach((anchor, i) => {
+      if (!isNonEmptyString(anchor) || anchorDateToDate(anchor) === null) {
+        problems.push(
+          `anchors[${i}] must be a well-formed YYYY-MM-DD string, got ${describe(anchor)}`,
+        );
+        return;
+      }
+      if (previous !== null && previousIndex !== null) {
+        if (anchor === previous) {
+          problems.push(`anchors[${i}] ("${anchor}") duplicates anchors[${previousIndex}]`);
+        } else if (anchor < previous) {
+          problems.push(
+            `anchors[${i}] ("${anchor}") is out of order -- must be strictly ascending, but comes before anchors[${previousIndex}] ("${previous}")`,
+          );
+        }
+      }
+      previous = anchor;
+      previousIndex = i;
+    });
+  }
+
+  if (problems.length > 0) {
+    throw new ResultValidationError(
+      `CustomAnchorsManifest failed schema self-validation (${problems.length} problem${problems.length === 1 ? "" : "s"}):\n` +
         problems.map((p) => `  - ${p}`).join("\n"),
     );
   }

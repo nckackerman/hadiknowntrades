@@ -121,17 +121,39 @@ export interface Calendar {
 }
 
 /**
+ * The sorted union of every date present in any ticker's series -- the
+ * trading-day calendar's own date axis, without the per-ticker
+ * price-reindex `buildCalendar` also builds. Factored out (issue #75
+ * code review finding) so a caller that only needs the trading-day
+ * calendar itself -- `apps/pipeline`'s `customRangeAnchors(...)` call,
+ * which only ever reads `buildCalendar(history).dates` and discards the
+ * reindexed `pricesByTicker` map entirely -- doesn't pay for reindexing
+ * every ticker's full price series into a `Map` it never uses, on every
+ * nightly run. Given this whole issue's own live-benchmarked finding
+ * that pipeline compute time is the binding constraint against the
+ * Lambda's 900s budget (`docs/plans/issue-75-plan.md` section 2), that
+ * reindex was real, avoidable overhead, not a rounding error.
+ *
+ * `buildCalendar` itself calls this for its own date axis (below) --
+ * one implementation of "what counts as a trading day," not two that
+ * could drift.
+ */
+export function collectTradingDates(priceSeriesByTicker: Map<string, DailyClose[]>): string[] {
+  const dateSet = new Set<string>();
+  for (const series of priceSeriesByTicker.values()) {
+    for (const point of series) dateSet.add(point.date);
+  }
+  return [...dateSet].sort();
+}
+
+/**
  * Builds the unified trading calendar the DP operates over: the sorted
  * union of every date present in any ticker's series, with each ticker's
  * prices reindexed onto that shared axis (null on days that ticker has
  * no data for — before its IPO, after delisting, a data gap, etc).
  */
 export function buildCalendar(priceSeriesByTicker: Map<string, DailyClose[]>): Calendar {
-  const dateSet = new Set<string>();
-  for (const series of priceSeriesByTicker.values()) {
-    for (const point of series) dateSet.add(point.date);
-  }
-  const dates = [...dateSet].sort();
+  const dates = collectTradingDates(priceSeriesByTicker);
   const dateIndex = new Map(dates.map((date, i) => [date, i]));
 
   const pricesByTicker = new Map<string, (number | null)[]>();

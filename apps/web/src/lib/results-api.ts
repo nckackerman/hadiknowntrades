@@ -4,12 +4,14 @@
 // request/response cycle.
 
 import {
-  anchorMonthToDate,
+  anchorDateToDate,
+  CUSTOM_ANCHORS_MANIFEST_KEY,
   PRESET_RANGES,
   resultKey,
   customResultKey,
   RESULTS_SCHEMA_VERSION,
-  type AnchorMonth,
+  type AnchorDate,
+  type CustomAnchorsManifest,
   type CustomWindowResult,
   type PrecomputedResult,
   type PresetRange,
@@ -104,14 +106,124 @@ interface ResultRouteConfig<TParsed> {
   isValidModel: (model: unknown) => boolean;
 }
 
+/** The outcome of `readCurrentSchemaObject` below -- either the successfully-read, schema-current object, or an already-built error `Response` the caller should return as-is. */
+type StoredObjectOutcome =
+  { ok: true; value: Record<string, unknown> } | { ok: false; response: Response };
+
+/**
+ * Shared "read raw body from `key`, JSON.parse it, and confirm it's a
+ * non-null object at the current RESULTS_SCHEMA_VERSION" skeleton --
+ * every stored-object route this file backs needs exactly these steps
+ * (the reader-configured check, the `getObject` try/catch, the
+ * `not_found` check, the `JSON.parse` try/catch, the object-shape
+ * guard, the `schemaVersion` check), differing only in the log label
+ * embedded in error messages and the 404 body's own `notFoundMessage`.
+ *
+ * **Factored out of `getPrecomputedResultResponse` (issue #75 code
+ * review finding, fixed)**: `getCustomAnchorsResponse` (below) has no
+ * identifier to parse and therefore can't reuse
+ * `getPrecomputedResultResponse`'s own `ResultRouteConfig` abstraction
+ * (which is built around "parse an identifier, then build a key from
+ * it") -- before this extraction, it hand-typed a second copy of this
+ * exact read/parse/validate sequence instead, the same class of
+ * duplication `getPrecomputedResultResponse` itself already exists to
+ * prevent between `getResultsResponse`/`getCustomResultsResponse` (see
+ * that function's own doc comment). `getPrecomputedResultResponse` now
+ * calls this too, rather than keeping its own now-redundant inline copy.
+ *
+ * Returns the parsed object as an untyped `Record<string, unknown>`,
+ * not yet cast to any specific result shape -- callers still need their
+ * own further checks (a `model` discriminant, or `Array.isArray(anchors)`)
+ * before trusting it further; this function's job stops at "well-formed
+ * object, current schema version."
+ */
+async function readCurrentSchemaObject(
+  key: string,
+  reader: ResultReader | null,
+  label: string,
+  notFoundMessage: string,
+): Promise<StoredObjectOutcome> {
+  if (!reader) {
+    console.error("[api/results] RESULTS_BUCKET environment variable is not set");
+    return {
+      ok: false,
+      response: errorResponse(500, "server_misconfigured", "Results storage is not configured."),
+    };
+  }
+
+  let raw: string | null;
+  try {
+    raw = await reader.getObject(key);
+  } catch (error) {
+    console.error(`[api/results] failed to read ${label}:`, error);
+    return {
+      ok: false,
+      response: errorResponse(502, "upstream_error", "Failed to read precomputed results."),
+    };
+  }
+
+  if (raw === null) {
+    return { ok: false, response: errorResponse(404, "not_found", notFoundMessage) };
+  }
+
+  let parsedBody: unknown;
+  try {
+    parsedBody = JSON.parse(raw);
+  } catch (error) {
+    console.error(`[api/results] stored ${label} is not valid JSON:`, error);
+    return {
+      ok: false,
+      response: errorResponse(502, "corrupt_data", "Stored results could not be parsed."),
+    };
+  }
+
+  // JSON.parse succeeds on plenty of shapes that aren't a usable result
+  // object -- `null`, a bare number/string/boolean, or an array -- any of
+  // which is a plausible shape for a partially-written S3 object (this
+  // codebase's own docs note apps/pipeline's writes are non-atomic, see
+  // packages/core/CLAUDE.md's write-time validation notes). Without this
+  // check, a caller's own `result.schemaVersion` read below would throw
+  // an uncaught TypeError for a `null` parse result (reading a property
+  // off `null`) and escape this route as a raw, undocumented 500 instead
+  // of the same 502 `corrupt_data` response every other malformed-data
+  // path here returns.
+  if (typeof parsedBody !== "object" || parsedBody === null) {
+    console.error(`[api/results] stored ${label} did not parse to a JSON object`);
+    return {
+      ok: false,
+      response: errorResponse(502, "corrupt_data", "Stored results could not be parsed."),
+    };
+  }
+  const result = parsedBody as Record<string, unknown>;
+
+  // apps/pipeline (writer) and this API (reader) are independently
+  // deployable -- a schema bump on one side without the other must not
+  // silently serve a shape this reader doesn't understand.
+  if (result.schemaVersion !== RESULTS_SCHEMA_VERSION) {
+    console.error(
+      `[api/results] stored ${label} has schemaVersion ${String(result.schemaVersion)}, expected ${RESULTS_SCHEMA_VERSION}`,
+    );
+    return {
+      ok: false,
+      response: errorResponse(
+        502,
+        "schema_mismatch",
+        "Stored results are in an unrecognized format.",
+      ),
+    };
+  }
+
+  return { ok: true, value: result };
+}
+
 /**
  * The shared request-handling skeleton behind both GET /api/results?range=
- * and GET /api/results?anchor=YYYY-MM (issue #11's custom-range feature):
- * parse the identifier -> check the reader is configured -> read the
- * object -> parse its JSON -> check schemaVersion -> check the
- * discriminant `model` -> return it with the standard caching headers,
- * or a clear JSON error response (with an appropriate status code) at
- * whichever step fails first.
+ * and GET /api/results?anchor=YYYY-MM-DD (issue #11's custom-range
+ * feature): parse the identifier -> read+validate the object through
+ * `readCurrentSchemaObject` above -> check the discriminant `model` ->
+ * return it with the standard caching headers, or a clear JSON error
+ * response (with an appropriate status code) at whichever step fails
+ * first.
  *
  * **Extracted from what used to be two independent, near-identical
  * copies of this entire skeleton (code review finding, issue #11)**:
@@ -137,56 +249,14 @@ async function getPrecomputedResultResponse<
     return errorResponse(400, config.invalidError.code, config.invalidError.message(rawParam));
   }
 
-  if (!reader) {
-    console.error("[api/results] RESULTS_BUCKET environment variable is not set");
-    return errorResponse(500, "server_misconfigured", "Results storage is not configured.");
-  }
-
-  const label = config.logLabel(parsed);
-  let raw: string | null;
-  try {
-    raw = await reader.getObject(config.buildKey(parsed));
-  } catch (error) {
-    console.error(`[api/results] failed to read ${label}:`, error);
-    return errorResponse(502, "upstream_error", "Failed to read precomputed results.");
-  }
-
-  if (raw === null) {
-    return errorResponse(404, "not_found", config.notFoundMessage(parsed));
-  }
-
-  let parsedBody: unknown;
-  try {
-    parsedBody = JSON.parse(raw);
-  } catch (error) {
-    console.error(`[api/results] stored ${label} is not valid JSON:`, error);
-    return errorResponse(502, "corrupt_data", "Stored results could not be parsed.");
-  }
-
-  // JSON.parse succeeds on plenty of shapes that aren't a usable result
-  // object -- `null`, a bare number/string/boolean, or an array -- any of
-  // which is a plausible shape for a partially-written S3 object (this
-  // codebase's own docs note apps/pipeline's writes are non-atomic, see
-  // packages/core/CLAUDE.md's write-time validation notes). Without this
-  // check, `result.schemaVersion` below would throw an uncaught TypeError
-  // for a `null` parse result (reading a property off `null`) and escape
-  // this route as a raw, undocumented 500 instead of the same 502
-  // `corrupt_data` response every other malformed-data path here returns.
-  if (typeof parsedBody !== "object" || parsedBody === null) {
-    console.error(`[api/results] stored ${label} did not parse to a JSON object`);
-    return errorResponse(502, "corrupt_data", "Stored results could not be parsed.");
-  }
-  const result = parsedBody as TResult;
-
-  // apps/pipeline (writer) and this API (reader) are independently
-  // deployable -- a schema bump on one side without the other must not
-  // silently serve a shape this reader doesn't understand.
-  if (result.schemaVersion !== RESULTS_SCHEMA_VERSION) {
-    console.error(
-      `[api/results] stored ${label} has schemaVersion ${String(result.schemaVersion)}, expected ${RESULTS_SCHEMA_VERSION}`,
-    );
-    return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
-  }
+  const outcome = await readCurrentSchemaObject(
+    config.buildKey(parsed),
+    reader,
+    config.logLabel(parsed),
+    config.notFoundMessage(parsed),
+  );
+  if (!outcome.ok) return outcome.response;
+  const result = outcome.value as unknown as TResult;
 
   // A stored object with a corrupted/wrong `model` (e.g. a partial write
   // -- apps/pipeline's own writes are explicitly documented as
@@ -196,7 +266,7 @@ async function getPrecomputedResultResponse<
   // mismatch already does.
   if (!config.isValidModel(result.model)) {
     console.error(
-      `[api/results] stored ${label} has an unrecognized model ${JSON.stringify(result.model)}`,
+      `[api/results] stored ${config.logLabel(parsed)} has an unrecognized model ${JSON.stringify(result.model)}`,
     );
     return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
   }
@@ -236,35 +306,40 @@ export async function getResultsResponse(
 }
 
 /**
- * Parses a raw `anchor` query-string value into a well-formed AnchorMonth
- * (YYYY-MM, a real month 01-12), or null if it isn't one -- reuses
- * packages/core's anchorMonthToDate for the actual month-range check
+ * Parses a raw `anchor` query-string value into a well-formed AnchorDate
+ * (YYYY-MM-DD, a real calendar day), or null if it isn't one -- reuses
+ * packages/core's anchorDateToDate for the actual parse/range check
  * rather than re-deriving a second regex here, the same "one source of
  * truth" discipline parseRange/isCanonicalRange already follow for
  * PresetRange above.
  *
- * Deliberately does NOT also check the parsed anchor against
- * customRangeAnchors(asOf)'s current bounded list -- see
- * getCustomResultsResponse's own doc comment for why: this route's
- * server-side "now" and the pipeline's own last-run "now" can disagree
- * by up to one anchor right around a month boundary, and re-validating
- * against a live-computed bound here would risk rejecting a genuinely
- * still-published anchor. A syntactically well-formed but never-computed
- * anchor (out of range, or just not published yet) is handled by the
- * ordinary not_found path below instead, exactly like any preset range
- * not yet computed on a first-ever pipeline run.
+ * Deliberately does NOT also check the parsed anchor against the live
+ * published anchors manifest -- see getCustomResultsResponse's own doc
+ * comment for why: this route's server-side "now" and the pipeline's
+ * own last-run "now" can disagree by up to one anchor right around a day
+ * boundary, and re-validating against a live-read manifest here would
+ * mean an extra S3 read on every single `?anchor=` request just to
+ * duplicate a check `getPrecomputedResultResponse`'s own not_found path
+ * already gives for free. A syntactically well-formed but never-computed
+ * anchor (out of range, or just not published yet) is handled by that
+ * ordinary not_found path instead, exactly like any preset range not yet
+ * computed on a first-ever pipeline run.
+ *
+ * **Issue #75 renamed this from `parseAnchorMonth`** (YYYY-MM) to match
+ * the day-granularity anchor scheme.
  */
-export function parseAnchorMonth(raw: string | null): AnchorMonth | null {
+export function parseAnchorDate(raw: string | null): AnchorDate | null {
   if (!raw) return null;
-  return anchorMonthToDate(raw) ? raw : null;
+  return anchorDateToDate(raw) ? raw : null;
 }
 
 /**
- * Handles GET /api/results?anchor=YYYY-MM (issue #11's coarsened custom
- * date-range feature) -- validates the anchor's *shape*, reads the
- * corresponding precomputed CustomWindowResult via `reader`, and returns
- * it with the same caching headers/error-response shape
- * getResultsResponse already establishes for `?range=`.
+ * Handles GET /api/results?anchor=YYYY-MM-DD (issue #11's coarsened
+ * custom date-range feature, day-granularity anchors since issue #75) --
+ * validates the anchor's *shape*, reads the corresponding precomputed
+ * CustomWindowResult via `reader`, and returns it with the same caching
+ * headers/error-response shape getResultsResponse already establishes
+ * for `?range=`.
  *
  * Deliberately a sibling function, not a branch merged into
  * getResultsResponse itself: the two read genuinely different S3 key
@@ -280,17 +355,82 @@ export async function getCustomResultsResponse(
   rawAnchor: string | null,
   reader: ResultReader | null,
 ): Promise<Response> {
-  return getPrecomputedResultResponse<AnchorMonth, CustomWindowResult>(rawAnchor, reader, {
-    parse: parseAnchorMonth,
+  return getPrecomputedResultResponse<AnchorDate, CustomWindowResult>(rawAnchor, reader, {
+    parse: parseAnchorDate,
     invalidError: {
       code: "invalid_anchor",
       message: (raw) =>
-        `Unsupported or missing "anchor" query parameter. Expected a YYYY-MM month (e.g. "2019-03"). Received: ${raw ?? "(none)"}.`,
+        `Unsupported or missing "anchor" query parameter. Expected a YYYY-MM-DD date (e.g. "2019-03-15"). Received: ${raw ?? "(none)"}.`,
     },
     buildKey: customResultKey,
     notFoundMessage: (anchor) =>
       `No precomputed results are available for the custom start date "${anchor}" -- it may be outside the supported range, or not published yet.`,
     logLabel: (anchor) => `custom-range result for anchor ${anchor}`,
     isValidModel: (model) => model === "custom-window",
+  });
+}
+
+/**
+ * Handles GET /api/custom-anchors (issue #75) -- reads the published
+ * anchors manifest (packages/core's CustomAnchorsManifest, written to
+ * `CUSTOM_ANCHORS_MANIFEST_KEY` by apps/pipeline every nightly run
+ * alongside every individual CustomWindowResult) and returns the full
+ * manifest object for apps/web's calendar-grid picker
+ * (CustomRangeSelector.tsx's useCustomAnchors hook) to consume.
+ *
+ * **Deliberately NOT a `ResultRouteConfig` instantiation of
+ * getPrecomputedResultResponse above**, unlike getResultsResponse/
+ * getCustomResultsResponse: this route has no identifier to parse (the
+ * manifest lives at one fixed key, not one per request) and returns a
+ * different shape entirely (a flat `CustomAnchorsManifest`, not a
+ * `model`-discriminated result) -- forcing it through that abstraction
+ * would mean stretching it to cover a case it wasn't designed for.
+ * Still built on `readCurrentSchemaObject` above (the reader-configured
+ * check, the getObject try/catch, the not_found check, the JSON.parse
+ * try/catch, the schemaVersion check -- all genuinely shared with
+ * getPrecomputedResultResponse, not a second copy of any of it) plus its
+ * own `Array.isArray(anchors)` check, the one thing specific to this
+ * shape.
+ *
+ * **Returns the full parsed object (`{ schemaVersion, anchors }`), not
+ * a narrowed `{ anchors }` projection (issue #75 code review finding,
+ * fixed)** -- the old `{ anchors: manifest.anchors }` response body
+ * didn't actually match `CustomAnchorsManifest` (missing
+ * `schemaVersion`), while `useCustomAnchors()` (`use-custom-anchors.ts`)
+ * always typed the fetched payload as the full `CustomAnchorsManifest`
+ * regardless -- nothing enforced the two stayed in sync, and every
+ * existing test's own hand-built mock response happened to include
+ * `schemaVersion` anyway, masking the mismatch. Returning the real
+ * validated object as-is (it already passed the schemaVersion check
+ * above) closes that gap directly, the same "return the real read
+ * object" pattern getPrecomputedResultResponse already uses.
+ *
+ * Checks `schemaVersion` exact-equality (via `readCurrentSchemaObject`)
+ * and `Array.isArray(anchors)` only -- a lighter check than
+ * packages/core's own `validateCustomAnchorsManifest` (which
+ * apps/pipeline already runs immediately before this exact object's own
+ * `putObject`, issue #47's write-time discipline): a stored manifest
+ * that already passed that validator once is trusted not to have been
+ * corrupted in transit, the same trust level `getPrecomputedResultResponse`
+ * gives every other stored result after its own schemaVersion/model
+ * check.
+ */
+export async function getCustomAnchorsResponse(reader: ResultReader | null): Promise<Response> {
+  const outcome = await readCurrentSchemaObject(
+    CUSTOM_ANCHORS_MANIFEST_KEY,
+    reader,
+    "the anchors manifest",
+    "No custom-range start dates are available yet -- the anchors manifest hasn't been published by a pipeline run.",
+  );
+  if (!outcome.ok) return outcome.response;
+  const manifest = outcome.value;
+
+  if (!Array.isArray(manifest.anchors)) {
+    console.error("[api/custom-anchors] stored anchors manifest's anchors field isn't an array");
+    return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
+  }
+
+  return Response.json(manifest as unknown as CustomAnchorsManifest, {
+    headers: { "Cache-Control": CACHE_CONTROL },
   });
 }

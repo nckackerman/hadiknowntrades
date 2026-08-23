@@ -250,11 +250,12 @@ function HeroAndWorstCase({
 /**
  * The fields WindowResultBody actually reads -- satisfied structurally by
  * both WindowResult (5Y/MAX) and CustomWindowResult (issue #11's custom
- * start-date anchors), which share this exact shape apart from their own
- * identifying field (`range` vs. `anchorMonth`). Neither `range` nor
- * `anchorMonth` is read here at all -- the caller derives its own
- * `rangeLabel`/`heroKey`/`emptyCopy` from whichever identifying field it
- * has, so this component never needs to know which one it got.
+ * start-date anchors, day-granularity since issue #75), which share this
+ * exact shape apart from their own identifying field (`range` vs.
+ * `anchorDate`). Neither `range` nor `anchorDate` is read here at all --
+ * the caller derives its own `rangeLabel`/`heroKey`/`emptyCopy` from
+ * whichever identifying field it has, so this component never needs to
+ * know which one it got.
  *
  * **Includes `longShort` (issue #13/#11 integration)**: CustomWindowResult
  * gained the same long+short sibling field WindowResult already had, once
@@ -464,7 +465,7 @@ export function ResultsPanel({
     // start-date anchors) share the exact same whole-window portfolio
     // series derivation -- both are the same underlying model
     // (packages/core's optimizeAllVariants over a daily-close window,
-    // issue #13), just keyed differently (range vs. anchorMonth). See
+    // issue #13), just keyed differently (range vs. anchorDate). See
     // WindowResultBody below for the same "shared rendering" reasoning
     // applied to the JSX, not just this derivation.
     if (data.model === "window" || data.model === "custom-window") {
@@ -770,9 +771,10 @@ export function ResultsPanel({
   }
 
   if (data.model === "custom-window") {
-    // Issue #11's coarsened custom-date-range feature: the exact same
-    // whole-window model as "window" below (see WindowResultBody's own
-    // doc comment), just keyed by anchorMonth instead of range -- so
+    // Issue #11's coarsened custom-date-range feature (day-granularity
+    // anchors since issue #75): the exact same whole-window model as
+    // "window" below (see WindowResultBody's own doc comment), just
+    // keyed by anchorDate instead of range -- so
     // rangeLabel/heroKey/emptyCopy are derived from the anchor's own
     // startDate rather than RANGE_COPY[range] (the `range` prop is a
     // harmless placeholder in this mode -- see ResultsPanelProps' own
@@ -786,7 +788,7 @@ export function ResultsPanel({
         data={data}
         points={points}
         descriptionPhrase={`since ${formatDate(data.startDate)}`}
-        heroKey={`custom-${data.anchorMonth}-${data.dataAsOf}-${mode}`}
+        heroKey={`custom-${data.anchorDate}-${data.dataAsOf}-${mode}`}
         emptyCopy={`No trade would have beaten holding cash since ${formatDate(data.startDate)}.`}
         mode={mode}
         startingCapital={startingCapital}

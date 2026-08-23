@@ -1,85 +1,199 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  anchorMonthToDate,
+  anchorDateToDate,
   CUSTOM_RANGE_ANCHOR_YEARS_BACK,
   customRangeAnchors,
-  toAnchorMonth,
+  yearsBeforeUtc,
 } from "./custom-range-anchors.js";
 import { toDateString } from "./date-utils.js";
 
-describe("anchorMonthToDate", () => {
-  it("parses a well-formed YYYY-MM anchor to the 1st of that month, UTC", () => {
-    expect(toDateString(anchorMonthToDate("2019-03")!)).toBe("2019-03-01");
+describe("anchorDateToDate", () => {
+  it("parses a well-formed YYYY-MM-DD anchor to that exact UTC day", () => {
+    expect(toDateString(anchorDateToDate("2019-03-15")!)).toBe("2019-03-15");
   });
 
   it("returns null for a malformed string", () => {
-    expect(anchorMonthToDate("not-a-month")).toBeNull();
-    expect(anchorMonthToDate("2019-3")).toBeNull();
-    expect(anchorMonthToDate("2019/03")).toBeNull();
-    expect(anchorMonthToDate("")).toBeNull();
+    expect(anchorDateToDate("not-a-date")).toBeNull();
+    expect(anchorDateToDate("2019-3-15")).toBeNull();
+    expect(anchorDateToDate("2019/03/15")).toBeNull();
+    expect(anchorDateToDate("2019-03")).toBeNull();
+    expect(anchorDateToDate("")).toBeNull();
   });
 
   it("returns null for a month outside 01-12", () => {
-    expect(anchorMonthToDate("2019-00")).toBeNull();
-    expect(anchorMonthToDate("2019-13")).toBeNull();
+    expect(anchorDateToDate("2019-00-15")).toBeNull();
+    expect(anchorDateToDate("2019-13-15")).toBeNull();
+  });
+
+  it("returns null for a day outside 01-31", () => {
+    expect(anchorDateToDate("2019-03-00")).toBeNull();
+    expect(anchorDateToDate("2019-03-32")).toBeNull();
   });
 
   it("accepts every real month 01-12", () => {
     for (let month = 1; month <= 12; month++) {
-      const anchor = `2019-${String(month).padStart(2, "0")}`;
-      expect(anchorMonthToDate(anchor)).not.toBeNull();
+      const anchor = `2019-${String(month).padStart(2, "0")}-01`;
+      expect(anchorDateToDate(anchor)).not.toBeNull();
     }
   });
-});
 
-describe("toAnchorMonth", () => {
-  it("round-trips with anchorMonthToDate", () => {
-    expect(toAnchorMonth(anchorMonthToDate("2019-03")!)).toBe("2019-03");
+  it("accepts every real day 01-31", () => {
+    for (let day = 1; day <= 31; day++) {
+      const anchor = `2019-01-${String(day).padStart(2, "0")}`;
+      expect(anchorDateToDate(anchor)).not.toBeNull();
+    }
   });
 
-  it("formats a Date's UTC year/month, zero-padded", () => {
-    expect(toAnchorMonth(new Date("2024-01-15T00:00:00Z"))).toBe("2024-01");
+  it("returns null for a year before MIN_ANCHOR_YEAR (the two-digit-year Date.UTC reinterpretation bug)", () => {
+    // A syntactically well-formed 4-digit year like "0099" still hits
+    // JS's legacy Date.UTC two-digit-year reinterpretation rule -- see
+    // this function's own doc comment. Without the explicit floor this
+    // would otherwise silently resolve to 1999-06-01, not year 99.
+    expect(anchorDateToDate("0099-06-01")).toBeNull();
+  });
+
+  it("returns null for a year far in the future", () => {
+    expect(anchorDateToDate("9999-06-01")).toBeNull();
   });
 });
+
+/**
+ * A dense (every calendar day, no weekend/holiday gaps) synthetic
+ * trading-day calendar for testing customRangeAnchors' own date-range
+ * filtering logic in isolation from real market-holiday data -- see
+ * "only ever returns dates present in the input" below for a test that a
+ * genuinely gappy input (the realistic shape a real
+ * buildCalendar(history).dates would have) is respected as-is, not
+ * forward-filled the way the old month scheme's slicing filter used to.
+ */
+function denseTradingDates(fromYear: number, toDateStr: string): string[] {
+  const dates: string[] = [];
+  const cursor = new Date(Date.UTC(fromYear, 0, 1));
+  const end = new Date(`${toDateStr}T00:00:00Z`);
+  while (cursor.getTime() <= end.getTime()) {
+    dates.push(toDateString(cursor));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return dates;
+}
 
 describe("customRangeAnchors", () => {
   const asOf = new Date("2024-06-15T00:00:00Z");
+  const tradingDates = denseTradingDates(2000, "2024-06-15");
 
-  it("returns CUSTOM_RANGE_ANCHOR_YEARS_BACK * 12 anchors", () => {
-    expect(customRangeAnchors(asOf)).toHaveLength(CUSTOM_RANGE_ANCHOR_YEARS_BACK * 12);
+  it(`returns every trading date within CUSTOM_RANGE_ANCHOR_YEARS_BACK (${CUSTOM_RANGE_ANCHOR_YEARS_BACK}) years of asOf, newest first`, () => {
+    const anchors = customRangeAnchors(tradingDates, asOf);
+    expect(anchors[0]).toBe("2024-06-15");
+    expect(anchors[1]).toBe("2024-06-14");
   });
 
-  it("starts with the current (possibly partial) month, newest first", () => {
-    expect(customRangeAnchors(asOf)[0]).toBe("2024-06");
-    expect(customRangeAnchors(asOf)[1]).toBe("2024-05");
+  it("includes the exact cutoff date (an inclusive lower bound)", () => {
+    const anchors = customRangeAnchors(tradingDates, asOf);
+    expect(anchors[anchors.length - 1]).toBe("2019-06-15");
   });
 
-  it("ends CUSTOM_RANGE_ANCHOR_YEARS_BACK years back", () => {
-    const anchors = customRangeAnchors(asOf);
-    expect(anchors[anchors.length - 1]).toBe("2003-07");
+  it("excludes a trading date one day before the cutoff", () => {
+    const anchors = customRangeAnchors(tradingDates, asOf);
+    expect(anchors).not.toContain("2019-06-14");
   });
 
-  it("every returned anchor round-trips through anchorMonthToDate", () => {
-    for (const anchor of customRangeAnchors(asOf)) {
-      expect(anchorMonthToDate(anchor)).not.toBeNull();
-    }
+  it("only ever returns dates actually present in the input tradingDates -- no forward-snapping/synthesis of a missing day", () => {
+    const gappy = tradingDates.filter((d) => d !== "2024-06-10");
+    const anchors = customRangeAnchors(gappy, asOf);
+    expect(anchors).not.toContain("2024-06-10");
+    // Its neighbors are still independently present -- the gap doesn't
+    // widen or shift anything around it.
+    expect(anchors).toContain("2024-06-11");
+    expect(anchors).toContain("2024-06-09");
+  });
+
+  it("excludes a date after asOf even if the input contains one", () => {
+    const withFuture = [...tradingDates, "2024-06-16"];
+    const anchors = customRangeAnchors(withFuture, asOf);
+    expect(anchors).not.toContain("2024-06-16");
   });
 
   it("has no duplicates", () => {
-    const anchors = customRangeAnchors(asOf);
+    const anchors = customRangeAnchors(tradingDates, asOf);
     expect(new Set(anchors).size).toBe(anchors.length);
   });
 
   it("correctly rolls over a year boundary (asOf in January)", () => {
-    const anchors = customRangeAnchors(new Date("2024-01-15T00:00:00Z"));
-    expect(anchors[0]).toBe("2024-01");
-    expect(anchors[1]).toBe("2023-12");
+    const janAsOf = new Date("2024-01-15T00:00:00Z");
+    const anchors = customRangeAnchors(denseTradingDates(2000, "2024-01-15"), janAsOf);
+    expect(anchors[0]).toBe("2024-01-15");
+    expect(anchors[anchors.length - 1]).toBe("2019-01-15");
   });
 
   it("does not mutate the asOf date passed in", () => {
     const original = new Date(asOf);
-    customRangeAnchors(asOf);
+    customRangeAnchors(tradingDates, asOf);
     expect(asOf.getTime()).toBe(original.getTime());
+  });
+
+  it("does not mutate the tradingDates array passed in", () => {
+    const original = [...tradingDates];
+    customRangeAnchors(tradingDates, asOf);
+    expect(tradingDates).toEqual(original);
+  });
+
+  it("returns an empty array when no trading dates fall in the window", () => {
+    expect(customRangeAnchors([], asOf)).toEqual([]);
+    expect(customRangeAnchors(["1999-01-01"], asOf)).toEqual([]);
+  });
+
+  it("every returned anchor round-trips through anchorDateToDate", () => {
+    for (const anchor of customRangeAnchors(tradingDates, asOf)) {
+      expect(anchorDateToDate(anchor)).not.toBeNull();
+    }
+  });
+
+  describe("leap-day cutoff (code review finding)", () => {
+    // 2024 is a leap year (has Feb 29); 2024 - 5 = 2019 is not. Naively
+    // constructing Date.UTC(2019, 1, 29) silently normalizes to
+    // 2019-03-01 -- see yearsBeforeUtc's own doc comment for why this
+    // would otherwise push the cutoff a day later than intended and
+    // silently exclude a real trading-day anchor landing on 2019-02-28
+    // from the result.
+    it("clamps a Feb 29 asOf's cutoff to Feb 28 when the target year isn't a leap year", () => {
+      const leapAsOf = new Date("2024-02-29T00:00:00Z");
+      const dates = denseTradingDates(2000, "2024-02-29");
+      const anchors = customRangeAnchors(dates, leapAsOf);
+      expect(anchors[0]).toBe("2024-02-29");
+      // The cutoff is 2019-02-28, NOT 2019-03-01 -- 2019-02-28 must be
+      // included, and no earlier date should be.
+      expect(anchors).toContain("2019-02-28");
+      expect(anchors[anchors.length - 1]).toBe("2019-02-28");
+      expect(anchors).not.toContain("2019-02-27");
+    });
+  });
+});
+
+describe("yearsBeforeUtc", () => {
+  it("subtracts a plain number of years for an ordinary (non-Feb-29) date", () => {
+    expect(toDateString(yearsBeforeUtc(new Date("2024-06-15T00:00:00Z"), 5))).toBe("2019-06-15");
+  });
+
+  it("clamps Feb 29 to Feb 28 when the target year is not a leap year", () => {
+    // 2024 - 5 = 2019, not a leap year.
+    expect(toDateString(yearsBeforeUtc(new Date("2024-02-29T00:00:00Z"), 5))).toBe("2019-02-28");
+  });
+
+  it("does not clamp when the target year is also a leap year", () => {
+    // 2024 - 4 = 2020, also a leap year -- Feb 29 exists in both, so the
+    // real Feb 29 is preserved, not clamped.
+    expect(toDateString(yearsBeforeUtc(new Date("2024-02-29T00:00:00Z"), 4))).toBe("2020-02-29");
+  });
+
+  it("does not clamp a non-Feb-29 date even when the target year isn't leap", () => {
+    expect(toDateString(yearsBeforeUtc(new Date("2024-02-28T00:00:00Z"), 5))).toBe("2019-02-28");
+  });
+
+  it("does not mutate the date passed in", () => {
+    const date = new Date("2024-02-29T00:00:00Z");
+    const original = new Date(date);
+    yearsBeforeUtc(date, 5);
+    expect(date.getTime()).toBe(original.getTime());
   });
 });
