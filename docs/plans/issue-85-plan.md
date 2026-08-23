@@ -139,7 +139,19 @@ Concretely, in `PortfolioChart.tsx`:
 
 - Delete the `resolveLabelOffsets` import, the `anchorFor` function, the
   `markerLabels`/`labelYs` computations, and the two `<text>` elements
-  per marker in the render `.map`.
+  per marker in the render `.map`. **Worth spelling out explicitly, since
+  it's easy to miss**: today's marker `<circle>` (see the next bullet)
+  renders _inside that same `markerLabels.map()`_ call being deleted here
+  (`PortfolioChart.tsx`'s existing render map iterates `markerLabels`,
+  not `eventMarkers`, and destructures `{ p, event, anchor, primaryText,
+secondaryText }` per entry) -- so it isn't simply "delete the `<text>`
+  elements and leave the rest of the map alone." The circle needs
+  rewiring to iterate the separate `eventMarkers` array instead (already
+  computed above `markerLabels` in the current file, and unaffected by
+  this decision), reading only the `event`/`p` fields it actually needs.
+  Mechanical for an implementer, but worth this note rather than leaving
+  it implicit, given this plan otherwise prides itself on mechanical
+  precision.
 - **Keep** `eventLabelVerb`/`eventTooltipVerb` (from `trade-math.ts`'s
   `tradeVerbs`/`tradeVerbsPast`) -- they're still needed by the hover
   tooltip readout and `ChartDataTable`, neither of which this decision
@@ -167,16 +179,18 @@ concurrently in a sibling worktree this same round) -- it's grounded in
   chains from the _previous_ day's `endingBalance` instead of resetting
   to a fixed value. `HeroStat`/`WorstCaseStat`/`PortfolioChart`/
   `IntradayTradeList` "need to make it visually clear that a day's
-  starting figure came from the previous day's result" -- but #84's own
-  Out of Scope section is explicit that it does **not** implement a
-  continuous multi-day chart: "doesn't require implementing #84's
-  compounding chart here." Today's `DayOverview` + single-selected-day
+  starting figure came from the previous day's result" -- but it is
+  issue #85's _own_ Scope section (not #84's body -- verified via
+  `gh issue view 84/85 --json body`, an earlier draft of this plan
+  misattributed the quote) that's explicit this doesn't require
+  building a continuous multi-day chart: "doesn't require implementing
+  #84's compounding chart here." Today's `DayOverview` + single-selected-day
   drill-down (`deriveIntradayPortfolioSeries`, one day's chart at a time)
   stays the actual per-day UI after #84 ships. #84 only requires that a
   chained-in starting figure read as inherited, not as a reset.
-- **What #84's own issue body flags as a likely-but-not-guaranteed
-  future step**: this issue's (#85's) own Background section names a
-  possible follow-up -- once balances chain, a single continuous curve
+- **What #85's own Background section flags as a likely-but-not-guaranteed
+  future step** (not something #84's own issue body itself proposes):
+  a possible follow-up -- once balances chain, a single continuous curve
   across an entire window's days becomes _possible_ and _would likely be
   a more compelling visual_ than restyling today's isolated-day view.
   That's explicitly framed as a future direction, not something #84
@@ -283,12 +297,37 @@ code for a fancier but not obviously-better effect at this chart's scale):
   rendered from) and conditionally adds the class; a `@media
 (prefers-reduced-motion: reduce)` rule under the keyframe is
   defense-in-depth, matching both existing precedents exactly.
-- **Re-fires on every genuine new result**, the same way `HeroStat`'s
-  reveal already does: since `PortfolioChart` is always freshly mounted
-  by `ResultsPanel`'s existing remount-on-new-result behavior (a changed
-  `heroKey`-equivalent identity), no new key plumbing is needed here --
-  it gets this for free from the same mechanism `HeroStat`'s count-up
-  already relies on.
+- **Needs real, new key plumbing on `<PortfolioChart>` -- it does not
+  get a remount for free today.** An earlier draft of this plan claimed
+  otherwise; checked directly and that claim was wrong.
+  `key={heroKey}` (`ResultsPanel.tsx:233`) is applied only to
+  `<HeroStat>` inside `HeroAndWorstCase`; `<PortfolioChart>` is never
+  keyed at either of its two render sites (window model, ~line 361;
+  intraday model, ~line 755) -- it just receives a new `points` prop on
+  a day/mode switch and re-renders in place, exactly as this file's own
+  CLAUDE.md already documents ("Two result models" section:
+  "`HeroStat`/`PortfolioChart` are reused as-is per selected day"). So
+  without a change, this reveal animation would fire once per range/
+  custom-anchor fetch only (a genuine new mount, matching
+  `FadeInWrapper`'s own trigger condition) -- not on every day switch or
+  mode toggle the way `HeroStat`'s count-up/glow do today.
+  **Decision: add `key={heroKey}` to `<PortfolioChart>` at both render
+  sites**, an explicit scope addition this redesign needs to make, not
+  something already in place. `heroKey` is already computed and in
+  scope at both call sites (it's passed to the adjacent
+  `<HeroAndWorstCase>`/`<HeroStat>` right next to where `<PortfolioChart>`
+  renders), so this is a small, mechanical addition -- but it's still a
+  real behavior change (an actual new remount on day/mode switch, not
+  just a new CSS class) worth calling out explicitly rather than
+  assuming it falls out of existing plumbing. Reasoning for choosing
+  this over leaving the weaker per-fetch-only behavior: `HeroStat` and
+  `PortfolioChart` are presented as one paired "reveal" moment for a
+  given day/mode's result (adjacent in the DOM, sharing the same
+  guess-then-reveal gate for the intraday model) -- without this change,
+  switching days would visibly re-animate the hero number's count-up/
+  glow while the chart line sits static, an inconsistent reveal
+  experience for what a user reads as a single moment. Keying both on
+  the same `heroKey` keeps them in sync.
 
 ### 4.4 Axis / gridline treatment
 
@@ -352,17 +391,33 @@ invitation unaddressed:
 - **`apps/web/src/lib/chart-label-layout.ts`**: deleted.
 - **`apps/web/src/components/PortfolioChart.test.tsx`**: the
   "point-label collision avoidance" describe block is deleted (nothing
-  left to assert -- no on-chart `<text>` per marker any more). New
-  coverage needed: gain/loss color selection (a gain fixture asserts
-  `--status-good` reaches the line/fill/marker `fill`/`stroke`, a loss
-  fixture asserts `--status-critical`, a flat/zero-trade fixture asserts
-  the ">= is good" convention lands on `--status-good`), the reveal
-  animation's class-gating (mirroring `HeroStat.test.tsx`'s "reveal
-  accent" describe block shape: class present with motion allowed, class
-  absent under `prefers-reduced-motion: reduce`, stubbing
-  `matchMedia`/`useReducedMotionAtMount` the way that file already does),
-  and the open/close marker shape distinction (a hollow-ring open marker
-  vs. a filled-dot close marker, if section 4.2's suggestion ships).
+  left to assert -- no on-chart `<text>` per marker any more). **Also
+  deleted, a separate block found while re-checking this plan against
+  the actual test file, not just the "collision avoidance" one**: the
+  first two tests inside the "trade markers (issue #13: long/short
+  direction labels)" describe block (`labels a long's open/close
+markers 'Buy'/'Sell'`, `labels a short's open/close markers
+'Short'/'Cover', not 'Buy'/'Sell'`, ~lines 144-160) assert on-chart
+  SVG label text (`svg.getByText(/Buy AAPL/)` etc.) via `eventLabelVerb`
+  -- exactly what Decision A also removes. The rest of that same
+  describe block (its hover-tooltip-verb test, further down) is
+  unaffected -- `eventLabelVerb`/`eventTooltipVerb` themselves aren't
+  going away (section 2), only their on-chart `<text>` rendering is, so
+  only the two tests that specifically query the SVG's own text content
+  need to go. New coverage needed: gain/loss color selection (a gain
+  fixture asserts `--status-good` reaches the line/fill/marker
+  `fill`/`stroke`, a loss fixture asserts `--status-critical`, a
+  flat/zero-trade fixture asserts the ">= is good" convention lands on
+  `--status-good`), the reveal animation's class-gating (mirroring
+  `HeroStat.test.tsx`'s "reveal accent" describe block shape: class
+  present with motion allowed, class absent under
+  `prefers-reduced-motion: reduce`, stubbing
+  `matchMedia`/`useReducedMotionAtMount` the way that file already does,
+  _plus_ a case asserting the animation re-fires on a `heroKey` change
+  now that `<PortfolioChart>` is keyed -- see section 4.3's revised
+  keying decision), and the open/close marker shape distinction (a
+  hollow-ring open marker vs. a filled-dot close marker, if section
+  4.2's suggestion ships).
 - **No change needed** to `portfolio-series.test.ts` (see section 5) or
   to `chart-scales.test.ts`/`chart-scales.ts` (untouched by this plan's
   direction).
