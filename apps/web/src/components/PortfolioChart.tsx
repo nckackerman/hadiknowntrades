@@ -22,6 +22,7 @@ import { buildLogScale, buildTimeScale, niceLogTicks } from "@/lib/chart-scales"
 import { resolveLabelOffsets } from "@/lib/chart-label-layout";
 import type { PortfolioEvent, PortfolioPoint } from "@/lib/portfolio-series";
 import { tradeVerbs, tradeVerbsPast } from "@/lib/trade-math";
+import { useChartTapHint } from "@/lib/use-chart-tap-hint";
 
 /**
  * Capitalized verb for a marker's own label / the data-table's event
@@ -77,6 +78,7 @@ function anchorFor(x: number): "start" | "middle" | "end" {
 export function PortfolioChart({ points }: PortfolioChartProps) {
   const gradientId = useId();
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [showTapHint, dismissTapHint] = useChartTapHint();
 
   const { yScale, yTicks, plotted } = useMemo(() => {
     const timestamps = points.map((p) => toTimestamp(p.date));
@@ -167,6 +169,13 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
    * the chart, which most touch users won't discover.
    */
   function revealNearestPoint(clientEvent: { clientX: number; currentTarget: SVGSVGElement }) {
+    // Any real interaction with the chart is itself proof the tap hint
+    // (if shown) did its job -- dismiss it for good rather than waiting
+    // for its pulse animation to run its course (see
+    // chart-tap-hint-pulse's own onAnimationEnd below for the other,
+    // no-interaction dismissal path).
+    dismissTapHint();
+
     const rect = clientEvent.currentTarget.getBoundingClientRect();
     const scaleX = WIDTH / rect.width;
     const localX = (clientEvent.clientX - rect.left) * scaleX - MARGIN.left;
@@ -344,6 +353,28 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
             );
           })}
 
+          {/* One-time touch "you can tap this" pulse hint (issue #66) --
+              only rendered for a touch-primary device that hasn't
+              already seen/dismissed it (see use-chart-tap-hint.ts), on
+              the most recent trade marker specifically, since that's
+              the marker a user exploring the chart is most likely to
+              reach for first. No hint at all if there's no marker to
+              point at (a zero-trade window). */}
+          {showTapHint && eventMarkers.length > 0 && (
+            <circle
+              cx={eventMarkers[eventMarkers.length - 1]!.x}
+              cy={eventMarkers[eventMarkers.length - 1]!.y}
+              r={4}
+              fill="none"
+              stroke="var(--series-1)"
+              strokeWidth={2}
+              className="chart-tap-hint-pulse"
+              pointerEvents="none"
+              aria-hidden="true"
+              onAnimationEnd={dismissTapHint}
+            />
+          )}
+
           {/* Hover point */}
           {hovered && (
             <circle
@@ -379,7 +410,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
             )}
           </p>
         ) : (
-          <p>Hover or focus the chart (use the arrow keys) to inspect a point.</p>
+          <p>Tap, hover, or focus the chart (use the arrow keys) to inspect a point.</p>
         )}
       </div>
 

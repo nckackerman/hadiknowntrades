@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { PortfolioChart } from "./PortfolioChart";
 import { boxesOverlap, labelBox, type LabelAnchor } from "@/lib/chart-label-layout";
@@ -10,7 +10,28 @@ const points: PortfolioPoint[] = [
   { date: "2024-01-02", value: 30, event: null },
 ];
 
-const PLACEHOLDER_TEXT = "Hover or focus the chart (use the arrow keys) to inspect a point.";
+const PLACEHOLDER_TEXT = "Tap, hover, or focus the chart (use the arrow keys) to inspect a point.";
+
+/**
+ * Stubs `window.matchMedia` per-query (unlike a single fixed `matches`)
+ * -- use-chart-tap-hint.ts calls it for two independent queries
+ * (`(pointer: coarse)` and `prefersReducedMotion()`'s own
+ * `(prefers-reduced-motion: reduce)`), and the "touch tap hint" tests
+ * below need to control them independently. jsdom in this repo's setup
+ * doesn't implement `matchMedia` at all -- see use-count-up.ts's own
+ * doc comment -- so every one of this describe block's tests needs this
+ * stub even to reach a `false` default deterministically.
+ */
+function stubMatchMedia(overrides: Record<string, boolean>) {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((query: string) => ({
+      matches: overrides[query] ?? false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })),
+  );
+}
 
 /**
  * jsdom's SVG elements report a zero-size getBoundingClientRect by
@@ -352,6 +373,88 @@ describe("PortfolioChart", () => {
       for (const box of boxes) {
         expect(box.top).toBeGreaterThanOrEqual(-MARGIN_TOP);
       }
+    });
+  });
+
+  describe("touch tap hint (issue #66)", () => {
+    const eventPoints: PortfolioPoint[] = [
+      { date: "2024-01-01", value: 20, event: null },
+      {
+        date: "2024-01-02",
+        value: 20,
+        event: { type: "open", direction: "long", ticker: "AAPL", price: 10 },
+      },
+      {
+        date: "2024-01-03",
+        value: 40,
+        event: { type: "close", direction: "long", ticker: "AAPL", price: 20 },
+      },
+    ];
+
+    afterEach(() => {
+      window.localStorage.clear();
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    });
+
+    function getTapHintPulse(container: HTMLElement) {
+      return container.querySelector(".chart-tap-hint-pulse");
+    }
+
+    it("shows a pulsing hint on the most recent marker on a touch-primary device with nothing stored", () => {
+      stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": false });
+
+      const { container } = render(<PortfolioChart points={eventPoints} />);
+
+      expect(getTapHintPulse(container)).not.toBeNull();
+    });
+
+    it("does not show the hint on a mouse/trackpad device", () => {
+      stubMatchMedia({ "(pointer: coarse)": false, "(prefers-reduced-motion: reduce)": false });
+
+      const { container } = render(<PortfolioChart points={eventPoints} />);
+
+      expect(getTapHintPulse(container)).toBeNull();
+    });
+
+    it("does not show the hint when the user prefers reduced motion, even on a touch device", () => {
+      stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": true });
+
+      const { container } = render(<PortfolioChart points={eventPoints} />);
+
+      expect(getTapHintPulse(container)).toBeNull();
+    });
+
+    it("does not show the hint when there are no trade markers to point at", () => {
+      stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": false });
+
+      // The top-level `points` fixture has no trade events at all.
+      const { container } = render(<PortfolioChart points={points} />);
+
+      expect(getTapHintPulse(container)).toBeNull();
+    });
+
+    it("dismisses the hint (and persists the dismissal) on the first tap", () => {
+      stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": false });
+
+      const { container } = render(<PortfolioChart points={eventPoints} />);
+      expect(getTapHintPulse(container)).not.toBeNull();
+
+      const svg = getChartSvg();
+      stubChartRect(svg);
+      fireEvent.pointerDown(svg, { clientX: 860 });
+
+      expect(getTapHintPulse(container)).toBeNull();
+      expect(window.localStorage.getItem("hikt:chart-tap-hint-dismissed")).not.toBeNull();
+    });
+
+    it("never shows the hint on a later mount once it was already dismissed", () => {
+      stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": false });
+      window.localStorage.setItem("hikt:chart-tap-hint-dismissed", "1");
+
+      const { container } = render(<PortfolioChart points={eventPoints} />);
+
+      expect(getTapHintPulse(container)).toBeNull();
     });
   });
 });

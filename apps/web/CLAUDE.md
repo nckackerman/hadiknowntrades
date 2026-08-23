@@ -1642,3 +1642,75 @@ primaryText, secondaryText }` per marker) that both the
   matching the exact "compute once, reuse" pattern the "Long-only vs.
   long+short mode" section above already applied to `tradeVerbs`/
   `tradeVerbsPast` for the same class of duplication.
+
+## Touch discoverability for the chart (issue #66)
+
+Two independent pieces, both scoped by the issue itself as "at minimum"
+vs. "optionally, implementer's call": the idle caption fix (required,
+the actual accessibility floor) and a one-time visual pulse hint for
+touch users specifically (optional, built here). Built both -- the pulse
+hint reuses enough of this app's own established patterns
+(`local-storage.ts`'s two-layer shape, `should-celebrate.ts`'s
+"skip the affordance entirely under reduced motion" precedent) that it
+added real, cheap discoverability value without inventing anything new.
+
+- **Caption fix**: `PortfolioChart.tsx`'s idle readout now reads "Tap,
+  hover, or focus the chart (use the arrow keys) to inspect a point." --
+  unconditional wording rather than branching on touch support, since
+  the sentence reads naturally either way and a conditional version
+  would need its own hydration-safety story (see below) for zero real
+  benefit.
+- **Pulse hint**: `lib/use-chart-tap-hint.ts` + `lib/chart-tap-hint-storage.ts`
+  gate a one-time pulsing ring (`.chart-tap-hint-pulse`, `globals.css`)
+  around the chart's most recent trade marker, shown once per browser
+  on a first-ever touch-primary visit. Three independent conditions, all
+  checked once at mount, ANDed together: `matchMedia("(pointer: coarse)")`
+  matches (a touch-primary device -- a mouse/trackpad user already has
+  the discoverable hover interaction), not already shown/dismissed
+  (`chart-tap-hint-storage.ts`, same single-sentinel shape as
+  `onboarding-storage.ts`, issue #64), and not `prefersReducedMotion()`.
+  Dismissed (persisted, never shown again) either by any real chart
+  interaction (`revealNearestPoint`, shared by pointerdown/pointermove
+  since issue #44) or by the pulse animation completing three cycles on
+  its own (`onAnimationEnd`) -- so a user who never taps still only sees
+  it flash briefly once, not forever.
+- **Deliberately the `use-daily-guess.ts` synchronous-read shortcut, not
+  `use-hydrated-local-storage-state.ts`'s deferred-correction hook** --
+  `use-chart-tap-hint.ts`'s own doc comment spells out why this is safe:
+  `PortfolioChart` is only ever mounted from `ResultsPanel`'s client-only
+  `success` branch (`use-results.ts`'s fetch state machine always starts
+  `"loading"`, matching both server and initial client render), so the
+  branch that actually mounts this hook never renders during SSR and
+  there's no hydration-mismatch risk to guard against. This is the same
+  reasoning this file's own "localStorage pattern" section already gives
+  for `use-daily-guess.ts` -- worth re-checking this precondition still
+  holds before reusing this shortcut for a future feature, per that
+  section's own warning.
+- **Reduced motion skips the affordance entirely, not a static
+  substitute** -- the same choice `should-celebrate.ts` already makes
+  for `HeroStat`'s celebration burst (see the "Client-side animation"
+  section above): a user who prefers reduced motion gets no pulse at
+  all rather than e.g. a static ring, since the caption fix above is
+  already this issue's real accessibility floor for every user
+  regardless of motion preference or pointer type.
+- **CSS mechanics worth knowing for the next SVG-element animation in
+  this app**: `.chart-tap-hint-pulse`'s keyframe animates `transform:
+scale(...)` on an SVG `<circle>`, which needs `transform-box: fill-box`
+  -- without it, `scale()` on an SVG shape transforms around the nearest
+  SVG viewport's own origin (roughly the chart's top-left corner), not
+  the circle's own center, unlike `.confetti-piece`'s identical-looking
+  `transform` keyframe (issue #36), which needs no such property since
+  it animates plain HTML `<span>`s whose default transform origin is
+  already their own box. `animation-fill-mode: forwards` holds the
+  animation's final (invisible) state after its three iterations finish,
+  rather than snapping back to fully visible between/after runs the way
+  an unset fill-mode would.
+- **Screenshot-verified via the established headless-Chromium workaround**
+  (see "Headless-browser screenshot verification" above) using
+  Playwright's own `hasTouch`/`reducedMotion` context options rather than
+  hand-rolling a `matchMedia` stub in the browser itself -- confirmed
+  live across all four combinations (touch device in light and dark, no
+  ring on a non-touch viewport, no ring on a touch device with reduced
+  motion requested) on a throwaway debug route
+  (`debug-chart-tap-hint/page.tsx`, deleted before committing, per this
+  file's own "Screenshotting a component locally" convention).
