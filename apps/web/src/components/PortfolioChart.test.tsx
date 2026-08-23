@@ -443,8 +443,9 @@ describe("PortfolioChart", () => {
      * Regression test for a real bug found in code review: the hint's
      * dismissal used to persist only from an actual tap or the pulse
      * animation's own completion, so a chart that unmounted before
-     * either happened -- e.g. `ResultsPanel`'s `DaySelector` switching
-     * to a different intraday day mid-pulse -- left the "shown" flag
+     * either happened -- e.g. `ResultsPanel`'s `DayOverview` (issue #80;
+     * `DaySelector` before it) switching to a different intraday day
+     * mid-pulse -- left the "shown" flag
      * unset, and the very next `PortfolioChart` mount (a fresh instance,
      * the same way switching days remounts one) showed the pulse again.
      * Unmounting here with no tap at all mirrors exactly that scenario.

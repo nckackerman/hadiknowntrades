@@ -36,10 +36,14 @@ interface CustomRangeSelectorProps {
  * design) -- but deliberately only from the fixed, month-granularity set
  * of anchor points the nightly pipeline actually computes+writes a
  * result for (packages/core's customRangeAnchors), never a truly
- * arbitrary date. A plain `<select>`, same reasoning DaySelector already
- * established (apps/web/CLAUDE.md's "Two result models" section): up to
+ * arbitrary date. A plain `<select>` -- up to
  * CUSTOM_RANGE_ANCHOR_YEARS_BACK*12 options is far too many for a row of
- * pill buttons like RangeSelector.
+ * pill buttons like RangeSelector. (DaySelector used to make this same
+ * "too many for pills" argument for the intraday model's own day picker;
+ * issue #80 replaced it with DayOverview, a scrollable row list rather
+ * than a `<select>`, since that picker also needs to show each day's
+ * trade count/result inline -- CustomRangeSelector has no equivalent
+ * per-option content to show, so a plain `<select>` still fits best here.)
  *
  * The leading, disabled placeholder option ("Choose a start month...")
  * is deliberate, not decorative -- it's what makes "you can only pick

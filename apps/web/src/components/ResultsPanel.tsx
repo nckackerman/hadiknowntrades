@@ -17,6 +17,7 @@ import {
   derivePortfolioSeries,
   type PortfolioPoint,
 } from "@/lib/portfolio-series";
+import { getDailyGuess } from "@/lib/daily-guess-storage";
 import { formatDate } from "@/lib/format-date";
 import { formatHeroCurrency } from "@/lib/format-currency";
 import { DEFAULT_MODE, MODE_LABELS, type Mode } from "@/lib/mode";
@@ -25,7 +26,7 @@ import { useDailyGuess } from "@/lib/use-daily-guess";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
 import { BenchmarkStat } from "@/components/BenchmarkStat";
 import { DailyGuessForm } from "@/components/DailyGuessForm";
-import { DaySelector } from "@/components/DaySelector";
+import { DayOverview } from "@/components/DayOverview";
 import { HeroStat } from "@/components/HeroStat";
 import { IntradayTradeList } from "@/components/IntradayTradeList";
 import { PortfolioChart } from "@/components/PortfolioChart";
@@ -396,7 +397,7 @@ interface ResultsPanelProps {
   state: ResultsState<PrecomputedResult | CustomWindowResult>;
   /** The day currently selected in the URL for the intraday model (issue #28), or null if none is set (or the range/data is window-model) -- ResultsPanel falls back to the most recent day in that case. */
   selectedDay?: string | null;
-  /** Called when the user picks a different day from the DaySelector. Required whenever the data can be intraday-model; omit only where a caller (e.g. a window-only test) never needs it. */
+  /** Called when the user picks a different day from DayOverview (issue #80; DaySelector before it). Required whenever the data can be intraday-model; omit only where a caller (e.g. a window-only test) never needs it. */
   onSelectDay?: (day: string) => void;
   /**
    * Long-only vs. long+short (issue #13) -- which of a result's two
@@ -499,6 +500,64 @@ export function ResultsPanel({
     mode,
   );
 
+  // One row per trading day in the window (issue #80) -- feeds
+  // DayOverview below, which is what makes the per-day breadth of this
+  // range's result ("N independently-computed days, not just this one")
+  // visible at a glance, not just whichever single day `activeDay`
+  // happens to be. Trade count is read straight off each day's own
+  // selected variant (unconditionally -- see DayOverview's own doc
+  // comment for why that's never a guess-gate spoiler); endingBalance
+  // stays `null` (a locked placeholder) unless a stored guess already
+  // exists for that exact (range, date, mode) triple, the same
+  // guess-then-reveal protection the single-day drill-down below already
+  // gives its own `dayVariant.endingBalance`.
+  //
+  // **Memoized (found in `high` code review, fixed)**: this used to be a
+  // plain computation inside the intraday-daily render branch below,
+  // recomputed on *every* ResultsPanel render -- including every
+  // keystroke in StartingCapitalInput, since each successfully-parsed
+  // keystroke changes the `startingCapital` prop and re-renders this
+  // whole panel. Each recompute does one `getDailyGuess` (a synchronous
+  // `localStorage.getItem` + `JSON.parse`) per day, up to ~252 for 1Y --
+  // real, needless work on every keystroke, not just on an actual
+  // day/mode/guess change. Hoisted to a top-level `useMemo` (unconditional,
+  // per the Rules of Hooks -- the same reason `activeDay`/`points` above
+  // are hooks too, not plain computations inside the branch below) so it
+  // only recomputes when one of its real inputs actually changes.
+  //
+  // **`guess` is a deliberate dependency even though it's never read
+  // directly in the body below** -- each row re-derives its own guessed
+  // status independently via `getDailyGuess`, so `guess` (the *active*
+  // day's own guess, from `useDailyGuess` above) isn't itself part of the
+  // computation. It's still required in the dependency array: submitting
+  // a guess changes `guess` from `null` to a value without changing
+  // `state`/`activeDay`/`startingCapital`/`mode`/`range`, and without
+  // `guess` here, this memo would keep returning the stale pre-guess rows
+  // array (the just-revealed day's row would keep showing "Guess to
+  // reveal") until some unrelated dependency happened to change too.
+  const dayOverviewRows = useMemo(() => {
+    if (state.status !== "success" || state.data.model !== "intraday-daily") return [];
+    if (!activeDay) return [];
+    const { days } = state.data;
+    const effectiveStartingCapital = startingCapital ?? activeDay.startingCapital;
+    return days.map((day) => {
+      const variant = selectVariant<IntradayTrade>(day, day.longShort, mode);
+      const alreadyGuessed = range !== null && getDailyGuess(range, day.date, mode) !== null;
+      return {
+        date: day.date,
+        tradeCount: variant.trades.length,
+        endingBalance: alreadyGuessed
+          ? rescaleFromStartingCapital(
+              variant.endingBalance,
+              day.startingCapital,
+              effectiveStartingCapital,
+            )
+          : null,
+      };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `guess` is intentionally listed despite not being read in the body above; see this hook's own doc comment for why it still has to be a dependency.
+  }, [state, activeDay, startingCapital, mode, range, guess]);
+
   if (state.status === "loading") {
     return <LoadingSkeleton />;
   }
@@ -545,8 +604,27 @@ export function ResultsPanel({
     const isEmptyDay = dayVariant.trades.length === 0;
     const effectiveStartingCapital = startingCapital ?? activeDay.startingCapital;
 
+    // dayOverviewRows itself is computed once, unconditionally, above
+    // (a top-level useMemo alongside activeDay/points -- see its own
+    // comment there for why it's hoisted out of this branch and memoized).
+
     return (
       <FadeInWrapper>
+        <DayOverview
+          rows={dayOverviewRows}
+          selected={activeDay.date}
+          // Unlike DaySelector (removed by this issue), DayOverview always
+          // renders even when onSelectDay is omitted -- the whole point of
+          // this component is making the range's per-day breadth visible
+          // regardless of whether a caller wired up day-switching (in
+          // practice, only tests that don't care about it omit this prop;
+          // ResultsPage always provides a real handler). The no-op
+          // fallback just means a click is inert in that case, not that
+          // the list itself disappears.
+          onSelect={onSelectDay ?? (() => {})}
+          maxTradesPerDay={data.maxTradesPerDay}
+        />
+
         {/* Announces the guess -> reveal swap below to screen reader users
             (issue #67) -- always present in the DOM (not conditionally
             mounted alongside the revealed content) so assistive tech has
@@ -598,7 +676,7 @@ export function ResultsPanel({
               // submitted would partially spoil "the real answer" the
               // guessing game is built around. `heroKey` is the active
               // day's date plus mode (issue #13) so switching days (via
-              // DaySelector) or modes (via ModeToggle) remounts HeroStat
+              // DayOverview, issue #80) or modes (via ModeToggle) remounts HeroStat
               // instead of just updating its props in place -- useCountUp's
               // reveal animation only fires on mount (see HeroStat's own
               // doc comment), so without this key the visible figure would
@@ -621,13 +699,6 @@ export function ResultsPanel({
                 <StartingCapitalInput
                   value={effectiveStartingCapital}
                   onChange={onStartingCapitalChange}
-                />
-              )}
-              {onSelectDay && (
-                <DaySelector
-                  days={data.days.map((d) => d.date)}
-                  selected={activeDay.date}
-                  onSelect={onSelectDay}
                 />
               )}
             </div>

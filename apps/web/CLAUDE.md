@@ -228,10 +228,11 @@ ladder if so" shape applies.
 - `"window"` (5Y/MAX, and every range before #28): unchanged rendering
   path -- `HeroStat` + `PortfolioChart` + `TradeList` over the whole
   window's trades.
-- `"intraday-daily"` (1W/1M/3M/1Y, 1W since issue #60): a `DaySelector` (plain `<select>`, not
-  a pill toggle like `RangeSelector` -- a window can hold ~252 trading
-  days, too many for buttons) picks which day's `IntradayDayResult` to
-  view, defaulting to the most recent day. Selected day is URL state
+- `"intraday-daily"` (1W/1M/3M/1Y, 1W since issue #60): a `DayOverview`
+  (issue #80; a scrollable row list, replacing the original `DaySelector`
+  plain `<select>` -- see "Per-day breadth made visible" below) picks
+  which day's `IntradayDayResult` to view, defaulting to the most recent
+  day. Selected day is URL state
   (`?day=YYYY-MM-DD`, owned by `ResultsPage.tsx` the same way `?range=`
   already is) -- cleared on range change, since a day selected under one
   range's data isn't meaningful for another range's day list.
@@ -728,10 +729,11 @@ above) gates `HeroStat`, `PortfolioChart`, and the trade list behind a
 {date}?") for whichever day is currently active - the window model
 (5Y/MAX) is untouched, since a whole-window result barely changes day to
 day and was never a meaningful thing to guess against (see the issue's
-own rationale). `DaySelector` and the day-picker row itself stay visible
-throughout - browsing to a different day never requires guessing the day
-you're passing through, only whichever day is currently selected when
-its content would otherwise render.
+own rationale). `DayOverview` (issue #80; `DaySelector` before it) and
+the day-picker row itself stay visible throughout - browsing to a
+different day never requires guessing the day you're passing through,
+only whichever day is currently selected when its content would
+otherwise render.
 
 - `guess === null` (`useDailyGuess`, backed by `daily-guess-storage.ts`)
   is the single gate: `null` renders `DailyGuessForm` in `HeroStat`'s
@@ -798,6 +800,132 @@ its content would otherwise render.
   tests within one file (one jsdom `window` per test file, not per test),
   so this describe block clears it in an `afterEach` to keep tests from
   leaking guesses into each other.
+
+## Per-day breadth made visible: `DayOverview` (issue #80)
+
+Before this issue, an intraday-daily range (1W/1M/3M/1Y) showed exactly
+one day's <=`maxTradesPerDay` result at a time -- correct (every trading
+day is independently computed, see `intraday-optimizer.ts`), but nothing
+in the UI communicated that a range like 3M actually holds ~62 of these
+independent results, easy to misread as "the whole window only produced
+3 trades." `DayOverview.tsx` replaces `DaySelector.tsx` (deleted by this
+issue, not kept alongside it -- two controls for picking the same day
+would just compete) with a scrollable list of row buttons, one per
+trading day in `data.days`, rendered above the existing single-day
+drill-down in `ResultsPanel.tsx`'s intraday-daily branch.
+
+- **The real design decision this issue's own Scope section flagged as
+  requiring a documented call**: what happens to the existing
+  guess-then-reveal gate (`DailyGuessForm`, issue #34) in the new view.
+  Answer: **the single-day drill-down's guess gate is completely
+  untouched** -- `DayOverview` doesn't bypass it, doesn't add a second
+  gate, and doesn't reveal anything the gate already protects. Instead,
+  each row's own **trade count** (`variant.trades.length`) is shown
+  _ungated_, for every day, guessed or not, while each row's own
+  **dollar ending balance** stays gated exactly like the drill-down
+  below it -- `null` (a "Guess to reveal" placeholder) until
+  `getDailyGuess(range, date, mode)` finds a stored guess for that
+  specific day. The reasoning: a trade count carries none of the
+  dollar-outcome information the guessing game actually tests ("what did
+  $20 turn into"), so showing it for every day is exactly what makes the
+  range's breadth visible at a glance without spoiling a single day's
+  answer -- while the one thing worth protecting (the dollar figure)
+  gets the identical per-`(range, date, mode)` protection every other
+  guess-gated figure on the page already has.
+- **Row click both picks a day and reveals what it is** -- one control
+  doing what `DaySelector`'s bare `<select>` plus the guess gate used to
+  take two ("pick a day," then separately, "guess before you see its
+  trade count") for one of those two things (trade count). Clicking an
+  unguessed day's row still routes to that day's own fresh
+  `DailyGuessForm` for its dollar figure, same as picking it via the old
+  `DaySelector` did.
+- `<ul>`/`<li>` of full-width `<button>` rows, not a `<table>` -- unlike
+  `PortfolioChart.tsx`'s own read-only `ChartDataTable` disclosure
+  ("View chart data as a table"), every row here is a primary
+  interactive control, and a `<button>` isn't a valid direct child of
+  `<tr>` per the HTML spec. See `DayOverview.tsx`'s own doc comment for
+  the full reasoning.
+- `ResultsPanel.tsx`'s `dayOverviewRows` calls `daily-guess-storage.ts`'s
+  exported `getDailyGuess` directly (not through the `useDailyGuess`
+  hook, which only ever tracks one `(range, date, mode)` triple at a
+  time -- the one currently active below) once per day in `data.days`.
+  **A top-level `useMemo`, not a plain computation inside the
+  intraday-daily render branch (real bug, found in `high` code review on
+  this issue's own PR, fixed)**: the first version recomputed this --
+  up to ~252 `localStorage.getItem` + `JSON.parse` calls for 1Y -- on
+  _every_ `ResultsPanel` render, contradicting this very section's own
+  original "not on every keystroke" claim; in reality every successfully-
+  parsed `StartingCapitalInput` keystroke changes the `startingCapital`
+  prop and re-renders the whole panel, which re-ran the full per-day
+  scan each time. Hoisted to a top-level `useMemo` (unconditional, per
+  the Rules of Hooks, alongside `activeDay`/`points`) with dependency
+  array `[state, activeDay, startingCapital, mode, range, guess]` fixes
+  this for real: it now only recomputes on an actual fetch/day/mode/
+  capital/range/guess change, not on every render. **`guess` (from
+  `useDailyGuess`, the _active_ day's own guess) is a deliberate
+  dependency despite never being read in the memo's body** -- each row
+  re-derives its own guessed status independently via `getDailyGuess`,
+  but submitting a guess changes only `guess`, none of the other five
+  dependencies, so without it in the array this memo would keep
+  returning the stale pre-guess rows (the just-revealed day's row stuck
+  on "Guess to reveal") until some unrelated dependency happened to
+  change too -- an `eslint-disable-next-line react-hooks/exhaustive-deps`
+  on that line documents why, the same precedented pattern
+  `use-count-up.ts`/`use-chart-tap-hint.ts`/
+  `use-hydrated-local-storage-state.ts` already use for an intentional
+  hook-dependency deviation.
+- **The selected row scrolls into view on mount and on every selection
+  change (real bug, found in the same `high` code review, fixed)**: the
+  list is height-capped (`max-h-72 overflow-y-auto`) and the selected
+  day defaults to the _most recent_ one (`ResultsPanel`'s own fallback)
+  -- the last entry in this ascending-date list. Without an explicit
+  scroll, the list always rendered scrolled to the top on load for any
+  range with more days than fit in ~288px (1M/3M/1Y), leaving the
+  actually-active row below the fold -- defeating the "at a glance"
+  point of this whole component. Fixed with a `selectedRef` attached
+  only to the currently-selected row's `<button>` and a `useEffect`
+  keyed on `selected` calling `scrollIntoView({ block: "nearest",
+behavior })`. Guarded two ways, both matching this app's established
+  conventions for a browser API jsdom doesn't fully implement (see
+  `prefers-reduced-motion.ts`'s own `matchMedia` guard): a
+  `typeof element.scrollIntoView === "function"` check -- confirmed live
+  against the actual jsdom install that it has **no** `scrollIntoView`
+  at all, not even a no-op stub, unlike `getBoundingClientRect` (see
+  "Chart pointer interaction" above); and `behavior: "auto"` instead of
+  `"smooth"` under `prefersReducedMotion()` -- still scrolls (this is
+  functionally necessary, not decorative motion worth skipping
+  entirely, unlike `.chart-tap-hint-pulse`'s own reduced-motion
+  treatment), just without the animation. `DayOverview.test.tsx`
+  regression-tests all of this directly (mount, a `selected` change, no
+  redundant scroll on an unrelated re-render, both motion branches, and
+  that the component never throws under jsdom's real scrollIntoView-less
+  default) by assigning a `vi.fn()` onto `Element.prototype.scrollIntoView`
+  per test and reading `.mock.instances[0]` to confirm which row's
+  button it was actually called on.
+- No `.surface-card` shadow elevation on `DayOverview`'s list container
+  -- same "control chrome, not a content card" bucket issue #77's
+  surface-elevation pass put `DaySelector`'s own `<select>` in (see
+  `globals.css`'s own comment), despite this list showing more
+  information per row than a bare `<select>` ever did.
+- **Verified live against a real, fresh local pipeline run** (not just
+  fixtures), the same throwaway technique documented in this issue's own
+  Background section: `apps/pipeline/src/local-run.ts` (real
+  `runPipeline`, a reduced ~20-ticker universe for speed, real Yahoo
+  network calls, writing to local disk) + `apps/web/src/lib/local-file-
+result-reader.ts` (a `ResultReader` reading that local directory,
+  swapped in via a `LOCAL_RESULTS_DIR` env var in
+  `app/api/results/route.ts`) + `next dev` + a headless-Chromium
+  screenshot (see "Headless-browser screenshot verification" above).
+  Confirmed on 3M (62 real trading days, real per-day trade counts):
+  every day's row shows its own trade count immediately; every row's
+  dollar figure reads "Guess to reveal" until guessed; submitting a
+  guess for the active day reveals only that row's balance, leaving
+  every other unguessed day's placeholder intact; clicking an earlier,
+  unguessed day's row both highlights it (`aria-current`) and re-prompts
+  a fresh `DailyGuessForm` scoped to that day. All scaffolding (the two
+  files above, the route.ts env-var branch, a temporary `tsx`/
+  `playwright` devDependency) was reverted before the PR's final commit,
+  per this same convention.
 
 ## Worst-case contrast stat (issue #31)
 
@@ -1293,9 +1421,14 @@ left to justify a second route.
   with a regression test in `ResultsPanel.test.tsx` -- the original gap
   was untested, which is how it shipped unnoticed.
 - **`CustomRangeSelector.tsx`** is a plain `<select>` next to
-  `RangeSelector`, same reasoning `DaySelector` already established (see
-  "Two result models" above): up to 252 anchor options is far too many
-  for pill buttons. Its leading, disabled placeholder option ("Choose a
+  `RangeSelector`: up to 252 anchor options is far too many for pill
+  buttons. (`DaySelector` used to make this same argument for the
+  intraday model's own day picker; issue #80 replaced it with
+  `DayOverview`, a scrollable row list rather than a `<select>`, since
+  that picker also needs to show each day's trade count/result inline --
+  `CustomRangeSelector` has no equivalent per-option content, so a plain
+  `<select>` still fits best here.) Its leading, disabled placeholder
+  option ("Choose a
   start month...") is deliberate, not decorative -- it's what makes "you
   can only pick from this fixed list, not any date" discoverable just by
   opening the dropdown, rather than a silent limitation a user only
@@ -1681,8 +1814,9 @@ added real, cheap discoverability value without inventing anything new.
     review, fixed).** The first version only wrote to storage from those
     two dismiss paths -- fine for a chart that stays mounted, but
     `ResultsPanel`'s intraday-daily model unmounts `PortfolioChart`
-    entirely on a `DaySelector` day switch (see "Two result models"
-    above), well within the pulse's own ~4.2s three-cycle runtime. A
+    entirely on a `DayOverview` day switch (issue #80; `DaySelector`
+    before it -- see "Two result models" above), well within the pulse's
+    own ~4.2s three-cycle runtime. A
     touch user who switched days mid-pulse, before tapping or waiting it
     out, left `isChartTapHintDismissed()` still reading `false` -- so
     the next `PortfolioChart` mount (any day, including the one just
@@ -2002,7 +2136,9 @@ values were live).
   `high` code review, fixed): `color-scheme` also needed setting
   explicitly.** Before this issue, this app's own painted colors and the
   browser's _native_ UA-widget theming (a `<select>`'s dropdown popup --
-  `CustomRangeSelector.tsx`/`DaySelector.tsx`; `StartingCapitalInput.tsx`'s
+  `CustomRangeSelector.tsx` (`DaySelector.tsx` too, before issue #80
+  replaced it with `DayOverview.tsx`, a `<button>` list with no native
+  popup of its own); `StartingCapitalInput.tsx`'s
   `type="number"` spin-button chrome; scrollbars) both happened to track
   the same `prefers-color-scheme` signal independently, so they always
   agreed by coincidence, not by any explicit link between them. Once the
@@ -2068,7 +2204,9 @@ the issue itself left open:
   housings (control chrome, not a content card), the various form
   controls that use `--surface-1` as their own background
   (`DailyGuessForm`, `StartingCapitalInput`, `CustomRangeSelector`,
-  `DaySelector`), and `ResultsPanel`'s `LoadingSkeleton` placeholders (a
+  `DaySelector` at the time -- superseded by `DayOverview`, issue #80,
+  which kept the same no-elevation treatment, see that section above),
+  and `ResultsPanel`'s `LoadingSkeleton` placeholders (a
   transient loading state, not worth its own elevation) -- a shadow on a
   small pill or an input field read as visual noise, not polish, in a
   quick live check. If a future surface-toned element genuinely reads as
