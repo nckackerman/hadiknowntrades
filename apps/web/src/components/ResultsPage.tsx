@@ -12,6 +12,7 @@ import { DEFAULT_MODE, parseMode, type Mode } from "@/lib/mode";
 import { AboutSection } from "@/components/AboutSection";
 import { CustomRangeSelector } from "@/components/CustomRangeSelector";
 import { ModeToggle } from "@/components/ModeToggle";
+import { OnboardingIntro } from "@/components/OnboardingIntro";
 import { RangeSelector } from "@/components/RangeSelector";
 import { ResultsPanel } from "@/components/ResultsPanel";
 
@@ -106,6 +107,8 @@ export function ResultsPage() {
 
   return (
     <div className="flex w-full max-w-3xl flex-col gap-8 px-6 py-16 sm:px-8">
+      <OnboardingIntro />
+
       <header className="flex flex-col gap-4">
         <div>
           <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Had I Known Trades</h1>
