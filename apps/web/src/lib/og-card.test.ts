@@ -79,6 +79,7 @@ describe("buildOgCardContent", () => {
 
 describe("rangeLabel", () => {
   it("has a human-readable label for every preset range", () => {
+    expect(rangeLabel("1W")).toBe("1 week");
     expect(rangeLabel("1M")).toBe("1 month");
     expect(rangeLabel("3M")).toBe("3 months");
     expect(rangeLabel("1Y")).toBe("1 year");

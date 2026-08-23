@@ -10,6 +10,10 @@ describe("presetRangeStartDate", () => {
     expect(presetRangeStartDate("MAX", asOf)).toBeNull();
   });
 
+  it("subtracts 7 days for 1W", () => {
+    expect(toDateString(presetRangeStartDate("1W", asOf)!)).toBe("2024-06-08");
+  });
+
   it("subtracts 1 month for 1M", () => {
     expect(toDateString(presetRangeStartDate("1M", asOf)!)).toBe("2024-05-15");
   });
@@ -60,6 +64,14 @@ describe("presetRangeStartDate", () => {
     it("5Y from Feb 29 (leap day) clamps to Feb 28 when the target year isn't a leap year", () => {
       expect(toDateString(presetRangeStartDate("5Y", new Date("2024-02-29T00:00:00Z"))!)).toBe(
         "2019-02-28",
+      );
+    });
+  });
+
+  describe("1W day-count arithmetic (plain days-back, not subtractCalendar's month/year semantics)", () => {
+    it("subtracts 7 calendar days even when that crosses a month boundary", () => {
+      expect(toDateString(presetRangeStartDate("1W", new Date("2024-03-05T00:00:00Z"))!)).toBe(
+        "2024-02-27",
       );
     });
   });

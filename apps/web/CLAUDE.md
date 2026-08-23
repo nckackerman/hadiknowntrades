@@ -228,7 +228,7 @@ ladder if so" shape applies.
 - `"window"` (5Y/MAX, and every range before #28): unchanged rendering
   path -- `HeroStat` + `PortfolioChart` + `TradeList` over the whole
   window's trades.
-- `"intraday-daily"` (1M/3M/1Y): a `DaySelector` (plain `<select>`, not
+- `"intraday-daily"` (1W/1M/3M/1Y, 1W since issue #60): a `DaySelector` (plain `<select>`, not
   a pill toggle like `RangeSelector` -- a window can hold ~252 trading
   days, too many for buttons) picks which day's `IntradayDayResult` to
   view, defaulting to the most recent day. Selected day is URL state
@@ -532,7 +532,7 @@ below).
 
 - **Scope: only the "window" result model (5Y, MAX today) gets a card.**
   `buildOgCardContent` returns `null` for an "intraday-daily" result
-  (1M/3M/1Y, issue #28) and the route turns that into a 404 -- not an
+  (1W/1M/3M/1Y, issue #28; 1W since issue #60) and the route turns that into a 404 -- not an
   oversight. That model has no single top-level `endingBalance` to
   headline (per-day results don't compound, see
   `packages/core/CLAUDE.md`), and picking which day's result a card
@@ -1219,7 +1219,7 @@ mode)`, not just `(range, date)`** -- the identical argument this
   this issue (neither file touches `Trade`'s renamed fields or
   `longShort` at all, only `endingBalance`/`startingCapital`/`dataAsOf`,
   none of which changed meaning). A `mode`-aware share card would double
-  its own cached-variant matrix (5 ranges -> 10 range x mode combos) for
+  its own cached-variant matrix (6 ranges -> 12 range x mode combos) for
   a feature this issue's own scope never asked for -- left as a possible
   follow-up issue, not silently bundled in here.
 - **Live-verified** (real S&P 500 data, full 503-ticker universe, no S3

@@ -60,6 +60,8 @@ export function buildOgCardContent(result: PrecomputedResult): OgCardContent | n
 /** Human-readable label for a preset range, for the card's caption. */
 export function rangeLabel(range: PrecomputedResult["range"]): string {
   switch (range) {
+    case "1W":
+      return "1 week";
     case "1M":
       return "1 month";
     case "3M":

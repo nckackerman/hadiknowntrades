@@ -1,8 +1,10 @@
-// The five preset timeline windows the app supports (see README). Shared
+// The six preset timeline windows the app supports (see README). Shared
 // vocabulary between the nightly pipeline (which precomputes one result
 // per range) and, later, the API/frontend (which serve/select by range).
 
-export const PRESET_RANGES = ["1M", "3M", "1Y", "5Y", "MAX"] as const;
+import { daysBeforeUtc } from "./date-utils";
+
+export const PRESET_RANGES = ["1W", "1M", "3M", "1Y", "5Y", "MAX"] as const;
 
 export type PresetRange = (typeof PRESET_RANGES)[number];
 
@@ -40,6 +42,8 @@ function subtractCalendar(date: Date, delta: { months?: number; years?: number }
  */
 export function presetRangeStartDate(range: PresetRange, asOf: Date): Date | null {
   switch (range) {
+    case "1W":
+      return daysBeforeUtc(asOf, 7);
     case "1M":
       return subtractCalendar(asOf, { months: 1 });
     case "3M":

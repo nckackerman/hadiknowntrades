@@ -88,8 +88,8 @@ describe("runPipeline", () => {
       asOf,
     });
 
-    expect(store.objects.size).toBe(5);
-    expect(summary.results).toHaveLength(5);
+    expect(store.objects.size).toBe(6);
+    expect(summary.results).toHaveLength(6);
 
     const generatedAts = new Set<string>();
     for (const range of ["5Y", "MAX"]) {
@@ -274,7 +274,7 @@ describe("runPipeline", () => {
           store,
           asOf,
         }),
-      ).rejects.toThrow(/wrote 3 of 5 expected result/);
+      ).rejects.toThrow(/wrote 4 of 6 expected result/);
 
       // The intraday path's real results were still written -- a single
       // failed path doesn't hold the other path's good data hostage --
@@ -283,7 +283,7 @@ describe("runPipeline", () => {
       // comment on why this must still fail the Lambda invocation).
       expect(store.objects.has("results/5Y.json")).toBe(false);
       expect(store.objects.has("results/MAX.json")).toBe(false);
-      expect(store.objects.size).toBe(3);
+      expect(store.objects.size).toBe(4);
     });
 
     it("computes a worst-case counterpart alongside the optimal window result, never better than it (issue #31)", async () => {
@@ -416,8 +416,9 @@ describe("runPipeline", () => {
           store,
           asOf,
         }),
-      ).rejects.toThrow(/wrote 2 of 5 expected result/);
+      ).rejects.toThrow(/wrote 2 of 6 expected result/);
 
+      expect(store.objects.has("results/1W.json")).toBe(false);
       expect(store.objects.has("results/1M.json")).toBe(false);
       expect(store.objects.has("results/3M.json")).toBe(false);
       expect(store.objects.has("results/1Y.json")).toBe(false);
@@ -594,7 +595,7 @@ describe("runPipeline", () => {
         asOf,
       });
 
-      expect(summary.results).toHaveLength(5);
+      expect(summary.results).toHaveLength(6);
       const threeMonth = JSON.parse(store.objects.get("results/3M.json")!);
       expect(threeMonth.days).toHaveLength(1);
       expect(threeMonth.days[0].barIntervalMinutes).toBe(60);
@@ -922,11 +923,18 @@ describe("runPipeline", () => {
         asOf,
       });
 
-      expect(summary.results).toHaveLength(5);
+      expect(summary.results).toHaveLength(6);
       const oneMonth = JSON.parse(store.objects.get("results/1M.json")!);
       expect(oneMonth.days).toHaveLength(1);
       expect(oneMonth.days[0].barIntervalMinutes).toBe(60);
       expect(oneMonth.days[0].endingBalance / oneMonth.days[0].startingCapital).toBeCloseTo(2, 6);
+
+      // 1W shares 1M's 1-minute override (issue #60) -- when that fetch
+      // is blocked, 1W falls back to 60-minute bars too, the same as 1M.
+      const oneWeek = JSON.parse(store.objects.get("results/1W.json")!);
+      expect(oneWeek.days).toHaveLength(1);
+      expect(oneWeek.days[0].barIntervalMinutes).toBe(60);
+      expect(oneWeek.days[0].endingBalance / oneWeek.days[0].startingCapital).toBeCloseTo(2, 6);
     });
 
     it("a ticker skipped only on the 1-minute fetch surfaces in 1M's skippedTickers, but not 3M/1Y's", async () => {
@@ -1014,6 +1022,76 @@ describe("runPipeline", () => {
       // ...but 3M never reads 1-minute data, so it stays anchored to the
       // 60-minute fetch's own (older) most-recent date.
       expect(threeMonth.dataAsOf).toBe(toDateString(daysBack(3)(asOf)));
+    });
+  });
+
+  describe("1-week path (1W, issue #60)", () => {
+    it("1W's days are sourced from the shared 1-minute override -- confirms 1W reuses 1M's already-fetched data instead of triggering a second fetch", async () => {
+      let oneMinuteFetchCallCount = 0;
+      const intradayFixture = new Map<string, IntradayBar[]>([
+        ["AAPL", [bar(daysBack(2), "09:30:00", 10), bar(daysBack(2), "10:30:00", 20)]], // 2x, 60-minute
+      ]);
+      const oneMinuteFixture = new Map<string, IntradayBar[]>([
+        ["AAPL", [bar(daysBack(2), "09:30:00", 10), bar(daysBack(2), "10:30:00", 50)]], // 5x, 1-minute
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: noDailyData,
+        fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: async (symbol) => {
+          oneMinuteFetchCallCount++;
+          return oneMinuteFixture.get(symbol) ?? [];
+        },
+        store,
+        asOf,
+      }).catch(() => {});
+
+      // Exactly one fetchIntraday1mBars call for the whole run (one per
+      // ticker, since only one ticker is fetched here) -- the issue's own
+      // "no new Yahoo fetch call" acceptance criterion: 1W must not
+      // trigger a second 1-minute fetch alongside 1M's.
+      expect(oneMinuteFetchCallCount).toBe(1);
+
+      const oneWeek = JSON.parse(store.objects.get("results/1W.json")!);
+      expect(oneWeek.days).toHaveLength(1);
+      expect(oneWeek.days[0].barIntervalMinutes).toBe(1);
+      expect(oneWeek.days[0].trades[0].closePrice).toBe(50); // from the 1-minute fixture, not the 60-minute one's 20
+      expect(oneWeek.days[0].endingBalance / oneWeek.days[0].startingCapital).toBeCloseTo(5, 6);
+    });
+
+    it("1W's window excludes a day inside 1M's window but outside 1W's own past-7-days window", async () => {
+      const intradayFixture = new Map<string, IntradayBar[]>([
+        [
+          "AAPL",
+          [
+            bar(daysBack(3), "09:30:00", 10), // inside 1W's 7-day window
+            bar(daysBack(3), "10:30:00", 20),
+            bar(daysBack(20), "09:30:00", 10), // inside 1M's window, outside 1W's
+            bar(daysBack(20), "10:30:00", 15),
+          ],
+        ],
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: noDailyData,
+        fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
+        store,
+        asOf,
+      }).catch(() => {});
+
+      const oneWeek = JSON.parse(store.objects.get("results/1W.json")!);
+      expect(oneWeek.days).toHaveLength(1);
+      expect(oneWeek.days[0].date).toBe(toDateString(daysBack(3)(asOf)));
+
+      const oneMonth = JSON.parse(store.objects.get("results/1M.json")!);
+      expect(oneMonth.days).toHaveLength(2);
     });
   });
 
@@ -1179,7 +1257,7 @@ describe("runPipeline", () => {
         asOf,
       });
 
-      expect(summary.results).toHaveLength(5);
+      expect(summary.results).toHaveLength(6);
       for (const range of PRESET_RANGES) {
         const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
         expect(parsed.benchmark).toBeNull();
@@ -1285,11 +1363,11 @@ describe("runPipeline", () => {
         store,
         asOf,
       }),
-    ).rejects.toThrow(/wrote 3 of 5 expected result/);
+    ).rejects.toThrow(/wrote 4 of 6 expected result/);
 
     expect(store.objects.has("results/5Y.json")).toBe(false);
     expect(store.objects.has("results/MAX.json")).toBe(false);
-    expect(store.objects.size).toBe(3);
+    expect(store.objects.size).toBe(4);
   });
 
   it("aborts only the intraday path on an intraday-fetch UnexpectedResponseError, still writing (but failing the run over) the window path's results", async () => {
@@ -1307,8 +1385,9 @@ describe("runPipeline", () => {
         store,
         asOf,
       }),
-    ).rejects.toThrow(/wrote 2 of 5 expected result/);
+    ).rejects.toThrow(/wrote 2 of 6 expected result/);
 
+    expect(store.objects.has("results/1W.json")).toBe(false);
     expect(store.objects.has("results/1M.json")).toBe(false);
     expect(store.objects.has("results/3M.json")).toBe(false);
     expect(store.objects.has("results/1Y.json")).toBe(false);

@@ -166,7 +166,7 @@ export interface WindowResult extends PrecomputedResultBase {
 }
 
 /**
- * The per-day intraday model (issue #28; 1M/3M/1Y only): for every
+ * The per-day intraday model (issue #28; 1W/1M/3M/1Y, 1W since issue #60): for every
  * trading day in the window, the best up-to-`maxTradesPerDay` same-day
  * trades achievable using that day's real 60-minute price bars, solved
  * independently per day (see intraday-optimizer.ts) -- results do not

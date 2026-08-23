@@ -1,5 +1,5 @@
 // The nightly precompute job: fetches full daily-close history for the
-// whole ticker universe once, then for each preset range (1M/3M/1Y/5Y/
+// whole ticker universe once, then for each preset range (1W/1M/3M/1Y/5Y/
 // MAX) slices that history to the range's window and runs the optimizer,
 // writing one result JSON per range.
 //
@@ -15,15 +15,15 @@
 //   - the "window" path (5Y/MAX): unchanged from before #28 -- one daily-
 //     close fetch (from earliestDate), sliced per range, run through
 //     optimizeTrades.
-//   - the "intraday" path (1M/3M/1Y): one 60-minute-bar fetch (from the
-//     1Y start date -- comfortably covers all three, same "fetch once,
+//   - the "intraday" path (1W/1M/3M/1Y): one 60-minute-bar fetch (from the
+//     1Y start date -- comfortably covers all four, same "fetch once,
 //     slice many" pattern), then optimizeIntradayDays run ONCE over the
 //     full fetched history and sliced per range afterward (a given day's
 //     own result never depends on which range window it falls inside --
 //     range slicing only ever drops whole out-of-range days, never bars
 //     within an in-range one -- so running the DP once and filtering its
 //     output is equivalent to, and much cheaper than, re-running it per
-//     range given 1M/3M/1Y are nested subsets of each other).
+//     range given 1W/1M/3M/1Y are nested subsets of each other).
 // These two paths' fetches run concurrently and fail independently: a
 // systemic failure (BlockedError/UnexpectedResponseError, or literally
 // zero usable data) on one path refuses to overwrite *that path's*
@@ -113,8 +113,8 @@ const DEFAULT_FETCH_CONCURRENCY = 10;
 // vs. S3's), even though they happen to default to the same number today
 // (code review finding, issue #11): before this, the write loop fired
 // every job's putObject via one unbounded Promise.allSettled, unlike
-// every fetch pool's own bounded worker count -- up to 257 concurrent
-// S3 writes (5 preset ranges + up to 252 custom anchors) with no cap,
+// every fetch pool's own bounded worker count -- up to 258 concurrent
+// S3 writes (6 preset ranges + up to 252 custom anchors) with no cap,
 // never exercised against real S3 (this PR's own live verification
 // explicitly excluded S3 writes -- see packages/core/CLAUDE.md's
 // "Custom date-range anchors" section).
@@ -154,7 +154,7 @@ const BENCHMARK_TICKER = "SPY";
 // this against the real PRESET_RANGES export rather than leaving it an
 // unenforced comment.
 const WINDOW_RANGES: readonly PresetRange[] = ["5Y", "MAX"];
-const INTRADAY_RANGES: readonly PresetRange[] = ["1M", "3M", "1Y"];
+const INTRADAY_RANGES: readonly PresetRange[] = ["1W", "1M", "3M", "1Y"];
 
 export interface ResultStore {
   putObject(key: string, body: string): Promise<void>;
@@ -162,7 +162,7 @@ export interface ResultStore {
 
 export interface PipelineRunSummary {
   results: PrecomputedResult[];
-  /** One entry per successfully-written custom-range anchor (issue #11) -- kept separate from `results` (which stays exactly the 5 preset ranges, matching every prior release's shape) rather than merged into it. Empty whenever RunPipelineOptions.customRangeAnchors was omitted or empty (the default). */
+  /** One entry per successfully-written custom-range anchor (issue #11) -- kept separate from `results` (which stays exactly the 6 preset ranges, matching every prior release's shape) rather than merged into it. Empty whenever RunPipelineOptions.customRangeAnchors was omitted or empty (the default). */
   customResults: CustomWindowResult[];
   /** Union of tickers skipped by any fetch path -- window, intraday, or any granularity override (issue #30 added the first override, #29 a second) -- a ticker can be skipped from one path's fetch but not another's, but this summary doesn't distinguish which. */
   skippedTickers: string[];
@@ -182,7 +182,7 @@ export interface RunPipelineOptions {
   startingCapital?: number;
   /** Max whole-window trades for the window (5Y/MAX) path. */
   maxTrades?: number;
-  /** Max same-day trades per day for the intraday (1M/3M/1Y) path. */
+  /** Max same-day trades per day for the intraday (1W/1M/3M/1Y) path. */
   maxTradesPerDay?: number;
   earliestDate?: Date;
   fetchConcurrency?: number;
@@ -191,7 +191,7 @@ export interface RunPipelineOptions {
   /**
    * Custom start-date anchor points (issue #11's coarsened design -- see
    * docs/plans/issue-11-plan.md) to compute+write a CustomWindowResult
-   * for, alongside the 5 preset ranges -- reuses the exact same
+   * for, alongside the 6 preset ranges -- reuses the exact same
    * already-fetched window-path history (windowFetch.history below), no
    * separate fetch. Defaults to empty (no custom anchors computed at
    * all) -- deliberately, unlike every other RunPipelineOptions default
@@ -1364,8 +1364,8 @@ function buildCustomWindowResults({
  * nothing else in this file.
  */
 interface GranularityOverrideSpec {
-  /** Which range this override upgrades. */
-  range: PresetRange;
+  /** Every range this override's fetch serves (issue #60: 1W reuses 1M's 1-minute fetch, so this is a set, not a single range). */
+  ranges: readonly PresetRange[];
   /** Human label for fetchPathHistory's logging and the final status message (e.g. "5-minute", "1-minute"). */
   label: string;
   /** Bar granularity in minutes, stamped onto every day optimizeIntradayDays produces from this override's history. */
@@ -1400,14 +1400,18 @@ function buildGranularityOverrideSpecs(
 ): GranularityOverrideSpec[] {
   return [
     {
-      range: "3M",
+      ranges: ["3M"],
       label: "5-minute",
       barIntervalMinutes: 5,
       from: daysBeforeUtc(asOf, FIVE_MINUTE_LOOKBACK_DAYS),
       fetchBars: options.fetchFiveMinuteBars,
     },
     {
-      range: "1M",
+      // 1W reuses this exact fetch/solve/merge output wholesale (issue
+      // #60) -- 1W's own 7-day window sits comfortably inside this
+      // override's ~29-day lookback, so no second fetch spec is needed;
+      // see packages/core/CLAUDE.md's "1-week (1W) preset range" section.
+      ranges: ["1M", "1W"],
       label: "1-minute",
       barIntervalMinutes: 1,
       // Deliberately NOT presetRangeStartDate("1M", asOf) -- that can
@@ -1532,7 +1536,7 @@ function buildIntradayResults({
   // only at endDateString, same "don't trust data past what was
   // requested" reasoning as findMaxDate above) -- a given day's own
   // optimizeIntradayDays result never depends on which range window it
-  // happens to fall inside, since 1M/3M/1Y range-slicing only ever drops
+  // happens to fall inside, since 1W/1M/3M/1Y range-slicing only ever drops
   // whole out-of-range days, never bars within an in-range one. Re-
   // running the DP separately per range (as an earlier version of this
   // function did) redundantly re-solved the same day up to 3 times,
@@ -1578,7 +1582,7 @@ function buildIntradayResults({
       },
     );
     for (const entry of overrideSkippedDays) {
-      overrideSolveFailures.push(`${spec.label} override (${spec.range}): ${entry}`);
+      overrideSolveFailures.push(`${spec.label} override (${spec.ranges.join("/")}): ${entry}`);
     }
     // This override's actual per-day results: whichever of the two
     // granularities produced the better outcome for each day (see
@@ -1596,14 +1600,17 @@ function buildIntradayResults({
       overrideDays,
     );
     for (const entry of mergeFailures) {
-      overrideSolveFailures.push(`${spec.label} override (${spec.range}): ${entry}`);
+      overrideSolveFailures.push(`${spec.label} override (${spec.ranges.join("/")}): ${entry}`);
     }
-    granularityOverrides.set(spec.range, {
+    const override: GranularityOverride = {
       days: mergedDays,
       extraHistories: [cappedOverrideHistory],
       extraSkipped: outcome.skipped,
       extraDataAsOf: outcome.dataAsOf,
-    });
+    };
+    for (const range of spec.ranges) {
+      granularityOverrides.set(range, override);
+    }
   }
 
   const results: IntradayResult[] = INTRADAY_RANGES.map((range) => {
@@ -1878,7 +1885,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     // just one.
     throw new Error(
       `pipeline aborted: neither the daily-close nor intraday fetch produced usable data -- refusing to overwrite existing results with empty output. ` +
-        `Window (5Y/MAX) path: ${windowFetch.failureReason}. Intraday (1M/3M/1Y) path: ${intradayFetch.failureReason}.`,
+        `Window (5Y/MAX) path: ${windowFetch.failureReason}. Intraday (1W/1M/3M/1Y) path: ${intradayFetch.failureReason}.`,
     );
   }
 
@@ -2048,7 +2055,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     const overrideStatusLines = overrideInputs
       .map(
         ({ spec, outcome }) =>
-          `${spec.label} path (${spec.range} only, non-fatal): ${outcome.failureReason ?? "ok"}.`,
+          `${spec.label} path (${spec.ranges.join("/")} only, non-fatal): ${outcome.failureReason ?? "ok"}.`,
       )
       .join(" ");
     const benchmarkStatusLine = `Benchmark (${BENCHMARK_TICKER}, non-fatal): ${benchmarkFetch.error ?? "ok"}.`;
@@ -2087,7 +2094,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
       `pipeline: wrote ${writtenCount} of ${expectedResultCount} expected result(s) (${PRESET_RANGES.length} preset range(s), ${options.customRangeAnchors?.length ?? 0} custom anchor(s) requested; ${writeJobs.length} actually computed), but at least one path or write failed -- ` +
         `failing this run so it doesn't silently succeed while that path goes stale. ` +
         `Window (5Y/MAX) path: ${windowFetch.failureReason ?? "ok"}. ` +
-        `Intraday (1M/3M/1Y) path: ${intradayFetch.failureReason ?? "ok"}. ` +
+        `Intraday (1W/1M/3M/1Y) path: ${intradayFetch.failureReason ?? "ok"}. ` +
         `${overrideStatusLines} ` +
         `${benchmarkStatusLine} ` +
         `Skipped tickers: ${skippedTickers.length > 0 ? skippedTickers.join(", ") : "(none)"}.` +

@@ -55,7 +55,7 @@ export type {
 export { PRESET_RANGES, presetRangeStartDate } from "./preset-ranges";
 export type { PresetRange } from "./preset-ranges";
 
-export { toDateString } from "./date-utils";
+export { toDateString, daysBeforeUtc } from "./date-utils";
 
 export {
   CUSTOM_RANGE_ANCHOR_YEARS_BACK,

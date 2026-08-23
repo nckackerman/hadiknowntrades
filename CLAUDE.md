@@ -12,7 +12,7 @@ re-investigating something rather than guessing from scratch.
 A hindsight data visualizer: starting from $20, using only closed (EOD)
 market data, what's the best possible outcome from **at most 3 sequential,
 all-in, long-only trades** across the entire S&P 500 over a preset window
-(1M / 3M / 1Y / 5Y / Max)? Not investment advice, not a predictor — a
+(1W / 1M / 3M / 1Y / 5Y / Max)? Not investment advice, not a predictor — a
 retrospective "what was optimal" toy. Explicitly a learning exercise in
 agent-first development (see "Working agreements" below), not a
 production/high-stakes app — keep that in mind when deciding how much
@@ -41,7 +41,7 @@ infra/
 
 Data flow: `packages/core`'s Yahoo client fetches daily closes ->
 `packages/core`'s optimizer (a DP) finds the best 3-trade sequence ->
-`apps/pipeline` runs this nightly for all 5 preset ranges and writes JSON
+`apps/pipeline` runs this nightly for all 6 preset ranges and writes JSON
 to S3 -> apps/web's thin API (`/api/results`) serves it to the frontend.
 No live recomputation per request -- everything is precomputed nightly.
 

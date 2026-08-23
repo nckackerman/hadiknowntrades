@@ -3,6 +3,7 @@
 import { PRESET_RANGES, type PresetRange } from "@hadiknowntrades/core";
 
 const RANGE_LABELS: Record<PresetRange, string> = {
+  "1W": "1W",
   "1M": "1M",
   "3M": "3M",
   "1Y": "1Y",

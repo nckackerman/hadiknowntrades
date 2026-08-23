@@ -11,7 +11,7 @@ section's own "verified" note. `git status` is clean as of this plan.
 ## 0. One-paragraph summary
 
 1W is additive in every sense that matters: no new `PresetRange` union
-member's *plumbing* is genuinely hard, no new Yahoo fetch, no new
+member's _plumbing_ is genuinely hard, no new Yahoo fetch, no new
 pipeline compute, no `RESULTS_SCHEMA_VERSION` bump. The one real design
 decision is section 2 below (how the granularity-override lookup
 resolves 1W to 1M's already-fetched 1-minute data) — everything else is
@@ -141,13 +141,13 @@ narrow 1W-specific side-mapping.**
 the final per-range lookup site, e.g. `granularityOverrides.get(ALIAS[range] ?? range)`):
 it would work, but this repo has a direct, on-point precedent for why
 that's the wrong level to solve this at. `packages/core/CLAUDE.md`'s own
-"Granularity overrides" section documents that issue #29's *first draft*
+"Granularity overrides" section documents that issue #29's _first draft_
 added 1M's override by hand-duplicating fields through
 `BuildIntradayResultsOptions` instead of generalizing
 `GranularityOverrideSpec`'s own list — caught in code review as "a real
 violation of the exact promise this mechanism's own #30 code comment
 made" and fixed before merging. A range-alias map bolted onto the
-*lookup* site (rather than the *spec* itself) is a smaller version of
+_lookup_ site (rather than the _spec_ itself) is a smaller version of
 the same mistake: it works for exactly one case (1W→1M) and any future
 range wanting to piggyback on a different override (e.g. a hypothetical
 future "3D" riding 3M's 5-minute data) would need its own alias entry
@@ -204,7 +204,7 @@ message) — mechanical, cosmetic-only changes; the actual computed data
 is unaffected.
 
 **Why this is provably correct, not just "seems to work"**: `mergeDaysByGranularity`
-merges `primaryDays` (the *full* base 60-minute fetch, from
+merges `primaryDays` (the _full_ base 60-minute fetch, from
 `presetRangeStartDate("1Y", asOf)` — i.e. covering up to a year back)
 with `overrideDays` — every day is set from `primaryDays` first, then
 overlaid by `overrideDays` for any date it also covers (`pipeline.ts:493-514`).
@@ -212,7 +212,7 @@ So a spec's resulting `mergedDays` array is **not** truncated to that
 spec's own lookback window (~29 days for the 1-minute override) — it
 spans the full base fetch's range, with only the days inside the
 override's own lookback upgraded to finer granularity. This is exactly
-why reusing the *same* `GranularityOverride.days` array for both "1M"
+why reusing the _same_ `GranularityOverride.days` array for both "1M"
 and "1W" is safe: 1W's own final per-range filter narrows that already-full
 array down to its own 7-day window, and every day in that 7-day window
 is guaranteed to already be present (sourced from `primaryDays` at
@@ -220,7 +220,7 @@ minimum, upgraded to 1-minute wherever the override's ~29-day lookback
 reaches — which fully covers 1W's 7-day window in every case, since 7 <
 29). The same reasoning applies to `extraHistories`/`extraSkipped`/
 `extraDataAsOf`: they're `override.extraHistories`/`extraSkipped`/
-`extraDataAsOf` from the *same* 1-minute fetch outcome, and the
+`extraDataAsOf` from the _same_ 1-minute fetch outcome, and the
 `universeSize`/`skippedTickers`/`dataAsOf` computations already scope
 themselves to each range's own `startDateString`/`endDateString` window
 when consuming them (see `pipeline.ts`'s per-range loop, `tickersInRange`
@@ -246,10 +246,10 @@ both — no S3 write, no real network I/O, synthetic fixture only):
   fixture's price (`20`) — confirms 1W actually gets the upgraded
   granularity, not silently falling back to 60-minute bars.
 - The aggregated status message correctly read `1-minute path (1M/1W
-  only, non-fatal): ok.` — confirms the `spec.ranges.join("/")` status-line
+only, non-fatal): ok.` — confirms the `spec.ranges.join("/")` status-line
   change reads sensibly.
 
-### 2.3 What does *not* need to change in `apps/pipeline`
+### 2.3 What does _not_ need to change in `apps/pipeline`
 
 - `run.ts`: **no change**. No new `fetch*Bars` field is added to
   `RunPipelineOptions` (1W reuses `fetchIntraday1mBars`, already wired),
@@ -338,7 +338,7 @@ above:
   `PresetRange` usage here is a plain type annotation on state, not a
   switch/map.
 - **`packages/core/src/results-schema.ts`**: zero change needed, but
-  worth being precise about *why*, since this one is more subtle than
+  worth being precise about _why_, since this one is more subtle than
   "no switch exists." `validateBase`'s own range check
   (`(PRESET_RANGES as readonly string[]).includes(result.range as string)`)
   is already a generic membership check against the live `PRESET_RANGES`
@@ -354,7 +354,7 @@ generically (`for (const range of PRESET_RANGES) ...`) and pass
 unmodified once `"1W"` exists — verified: the full `apps/web` suite (361
 tests, 37 files) passed with **zero** test-file changes, only the two
 `Record` fixes in section 3.1. But no existing test asserts pill
-*order*, which the acceptance criteria explicitly calls out ("positioned
+_order_, which the acceptance criteria explicitly calls out ("positioned
 before 1M"). Add one new test asserting the rendered button order
 matches `PRESET_RANGES`'s own order (or more narrowly, that "1W"'s
 button precedes "1M"'s in the DOM) — this is a real, currently-untested
@@ -398,8 +398,7 @@ as stated.
 `pnpm --filter web test` with `"1W"` wired all the way through
 (`PRESET_RANGES`, `presetRangeStartDate`, `INTRADAY_RANGES`, and the
 `GranularityOverrideSpec.ranges` generalization from section 2) and
-reading the real failures — not guessed at from grepping for the number
-5.
+reading the real failures — not guessed at from grepping for the number 5.
 
 ### 5.1 New tests
 
@@ -408,7 +407,7 @@ reading the real failures — not guessed at from grepping for the number
   tests, asserting `presetRangeStartDate("1W", asOf)` → `"2024-06-08"`
   for the file's existing `asOf = 2024-06-15` fixture. Also worth a
   month-boundary-crossing case (e.g. `asOf` early in a month, so the
-  7-day-back date falls in the *previous* month) exercising plain
+  7-day-back date falls in the _previous_ month) exercising plain
   day-count arithmetic near a month boundary — the existing
   month-end-clamping `describe` block doesn't cover this since it's
   about `subtractCalendar`'s clamping, not `daysBeforeUtc`'s much
@@ -432,40 +431,40 @@ reading the real failures — not guessed at from grepping for the number
 failing-test run with 1W fully wired — 8 of 56 tests in this file failed
 before any fix):
 
-| Line | Current | Needs to become |
-|---|---|---|
-| 91 | `expect(store.objects.size).toBe(5)` | `6` |
-| 92 | `expect(summary.results).toHaveLength(5)` | `6` |
-| 277 | `.rejects.toThrow(/wrote 3 of 5 expected result/)` | `/wrote 4 of 6 expected result/` (verified exact count via the real thrown message) |
-| 419 | `.rejects.toThrow(/wrote 2 of 5 expected result/)` | `/wrote 2 of 6 expected result/` |
-| 597 | `expect(summary.results).toHaveLength(5)` | `6` |
-| 925 | `expect(summary.results).toHaveLength(5)` | `6` |
-| 1182 | `expect(summary.results).toHaveLength(5)` | `6` |
-| 1288 | `.rejects.toThrow(/wrote 3 of 5 expected result/)` | `/wrote 4 of 6 expected result/` |
-| 1310 | `.rejects.toThrow(/wrote 2 of 5 expected result/)` | `/wrote 2 of 6 expected result/` |
+| Line | Current                                            | Needs to become                                                                     |
+| ---- | -------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| 91   | `expect(store.objects.size).toBe(5)`               | `6`                                                                                 |
+| 92   | `expect(summary.results).toHaveLength(5)`          | `6`                                                                                 |
+| 277  | `.rejects.toThrow(/wrote 3 of 5 expected result/)` | `/wrote 4 of 6 expected result/` (verified exact count via the real thrown message) |
+| 419  | `.rejects.toThrow(/wrote 2 of 5 expected result/)` | `/wrote 2 of 6 expected result/`                                                    |
+| 597  | `expect(summary.results).toHaveLength(5)`          | `6`                                                                                 |
+| 925  | `expect(summary.results).toHaveLength(5)`          | `6`                                                                                 |
+| 1182 | `expect(summary.results).toHaveLength(5)`          | `6`                                                                                 |
+| 1288 | `.rejects.toThrow(/wrote 3 of 5 expected result/)` | `/wrote 4 of 6 expected result/`                                                    |
+| 1310 | `.rejects.toThrow(/wrote 2 of 5 expected result/)` | `/wrote 2 of 6 expected result/`                                                    |
 
 Line 157 (`expect(writtenRanges).toEqual([...PRESET_RANGES].sort())`)
 needs **no change** — it's already generic, this is the test that
-*catches* the "forgot to wire up 1W" mistake (section 2.1), not one
+_catches_ the "forgot to wire up 1W" mistake (section 2.1), not one
 that needs updating for it.
 
 **`apps/pipeline/src/pipeline.custom-range.test.ts`** (3 of its own
 tests failed in the same verification run):
 
-| Line | Current | Needs to become |
-|---|---|---|
-| 116 | `expect(summary.results).toHaveLength(5)` | `6` |
-| 117 | `expect(store.objects.size).toBe(7)` | `8` (6 preset + 2 custom anchors, was 5+2) |
-| 189 | `expect(store.objects.size).toBe(5)` | `6` |
-| 346 | `expect(objects.size).toBe(5)` | `6` |
+| Line | Current                                   | Needs to become                            |
+| ---- | ----------------------------------------- | ------------------------------------------ |
+| 116  | `expect(summary.results).toHaveLength(5)` | `6`                                        |
+| 117  | `expect(store.objects.size).toBe(7)`      | `8` (6 preset + 2 custom anchors, was 5+2) |
+| 189  | `expect(store.objects.size).toBe(5)`      | `6`                                        |
+| 346  | `expect(objects.size).toBe(5)`            | `6`                                        |
 
 **`apps/pipeline/src/pipeline.write-validation.test.ts`** (2 tests
 failed):
 
-| Line | Current | Needs to become |
-|---|---|---|
-| 140 | `expect(store.objects.size).toBe(4)` | `5` |
-| 198 | `expect(store.objects.size).toBe(3)` | `4` |
+| Line | Current                              | Needs to become |
+| ---- | ------------------------------------ | --------------- |
+| 140  | `expect(store.objects.size).toBe(4)` | `5`             |
+| 198  | `expect(store.objects.size).toBe(3)` | `4`             |
 
 **`apps/web`**: **verified zero test changes needed** beyond the two
 `Record` fixes already covered in section 3.1/3.3 — the full 361-test,
@@ -478,7 +477,7 @@ the full 1141-test suite passed unmodified with `"1W"` added to
 `PRESET_RANGES` and the new switch case in place; only a new test needs
 adding (section 5.1).
 
-### 5.3 What this list does *not* cover
+### 5.3 What this list does _not_ cover
 
 The counting-literal updates in 5.2 are almost certainly not exhaustive
 for every conceivable future fixture combination in `pipeline.test.ts`
@@ -504,7 +503,7 @@ validator in `results-schema.ts` are unaffected. **No
 precedent citation (`barIntervalMinutes` landing additively at schema
 version 5 without a bump, per `packages/core/CLAUDE.md`'s "Mixed-granularity
 1M/3M assembly" section, is the same class of change: a genuinely new
-*value* the schema already generically accommodates, not a new *field*
+_value_ the schema already generically accommodates, not a new _field_
 either, which is an even smaller change than that precedent).
 
 This means 1W's code can land and merge without the "pipeline must write
