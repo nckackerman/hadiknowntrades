@@ -1891,11 +1891,11 @@ or custom-anchor switch, since `useFetchResultsState` resets state to
 fresh one once the new fetch resolves.
 
 - **Mechanism: a plain CSS `@keyframes` opacity fade (`globals.css`'s
-  `results-fade-in`, 300ms ease-out), appended to the className of
-  `ResultsPanel.tsx`'s three success-branch outer wrapper `<div>`s** --
-  `WindowResultBody`'s own wrapper (shared by the `"window"` and
-  `"custom-window"` branches, via a new required `fadeInClassName: string`
-  prop) and the `"intraday-daily"` branch's own wrapper. No library, same
+  `results-fade-in`, 300ms ease-out), applied via a shared
+  `FadeInWrapper` component (`ResultsPanel.tsx`) that wraps each of the
+  three success-branch outer `<div>`s** -- `WindowResultBody`'s own
+  wrapper (shared by the `"window"` and `"custom-window"` branches) and
+  the `"intraday-daily"` branch's own wrapper. No library, same
   convention `.confetti-piece`/`.chart-tap-hint-pulse` already establish.
 - **No JS toggle is needed to keep mode/day switching from replaying
   this** -- both are plain prop/local-state changes within an
@@ -1905,17 +1905,43 @@ fresh one once the new fetch resolves.
   re-triggers without a fresh DOM node. Verified live (below) alongside
   confirming the animation _does_ play on an actual loading -> success
   transition.
-- **`fadeInClassName` is computed once in `ResultsPanel`, not per-branch**
-  (`prefersReducedMotion() ? "" : " results-fade-in"`), then threaded to
-  all three wrappers -- reusing `lib/prefers-reduced-motion.ts` rather
-  than a second `matchMedia` check, and only ever reached once
+- **`FadeInWrapper` reads `prefersReducedMotion()` via a `useState` lazy
+  initializer, not a plain expression recomputed on every render (real
+  bug, found in `high` code review, fixed).** The first version computed
+  `prefersReducedMotion() ? "" : " results-fade-in"` once per
+  `ResultsPanel` render and threaded the resulting string down as a
+  `fadeInClassName` prop -- which re-evaluated `prefersReducedMotion()`
+  on _every_ render, including the mode/day/starting-capital re-renders
+  that leave an already-mounted wrapper's own DOM node in place the
+  whole time (per the point above). If the OS-level reduced-motion
+  preference actually changed value _between_ two such re-renders (e.g.
+  toggled mid-session, then the user clicks `ModeToggle`), the computed
+  className string would flip on an element already on screen -- and
+  per the CSS Animations spec, `animation-name` newly entering an
+  element's computed style (even via a plain class-attribute change on
+  an existing node) starts that animation fresh, so an "instant, always"
+  mode/day switch could suddenly flash opacity 0 -> 1 on already-visible
+  content. `useState`'s lazy initializer runs exactly once, at the
+  moment React actually creates a new `FadeInWrapper` instance -- which,
+  given where it's used, only happens on a genuine `"loading"` ->
+  `"success"` transition (a real range/custom-anchor switch, or first
+  load), never a mode/day/starting-capital change; no extra key or
+  memoization bookkeeping is needed to replicate that "was this a
+  genuine mount?" check by hand, since it falls straight out of React's
+  own reconciliation rules for this component's two call sites.
+  Regression-tested in `ResultsPanel.test.tsx`: render a success state,
+  flip the stubbed `matchMedia` preference, then `rerender` the _same_
+  mounted tree with an unrelated prop change (`mode`) and assert the
+  wrapper's fade-in class doesn't move.
+- Still reuses `lib/prefers-reduced-motion.ts` rather than a second
+  `matchMedia` check, and `FadeInWrapper` is only ever rendered once
   `state.status === "success"` (both early returns for `"loading"`/
-  `"error"` already ran), so -- like `use-daily-guess.ts`/
-  `use-chart-tap-hint.ts` (see their own doc comments) -- this is
-  client-only by construction and needs no separate hydration-safety
-  story. Mirrors `should-celebrate.ts`'s own primary-gate pattern (skip
-  the class outright under reduced motion, don't rely on the CSS
-  `@media` guard alone); `results-fade-in`'s own
+  `"error"` already ran before either call site), so -- like
+  `use-daily-guess.ts`/`use-chart-tap-hint.ts` (see their own doc
+  comments) -- it's client-only by construction and needs no separate
+  hydration-safety story. Mirrors `should-celebrate.ts`'s own
+  primary-gate pattern (skip the class outright under reduced motion,
+  don't rely on the CSS `@media` guard alone); `results-fade-in`'s own
   `@media (prefers-reduced-motion: reduce)` block in `globals.css` is
   defense-in-depth on top, the same two-layer approach that keyframe's
   own doc comment already documents for `.confetti-piece`/
@@ -1926,11 +1952,24 @@ fresh one once the new fetch resolves.
   `"success"` fixture (the actual transition this issue targets, not
   just a static before/after screenshot) and sampled the wrapper's
   `getComputedStyle(...).opacity` at several points after the switch.
-  With no reduced-motion preference: `0` at 20ms, `0.09` at 100ms,
-  `0.56` at 200ms, `0.98` at 350ms -- a real, visible fade, not an
-  instant snap. With `reducedMotion: "reduce"` (Playwright's own context
-  option, not a hand-rolled `matchMedia` stub): opacity was `1` at every
-  sampled point from 20ms on, confirming the transition is fully skipped,
-  not just slowed down. Playwright itself was temporarily added
-  (`pnpm add -D -w playwright`) and reverted afterward, per this file's
-  own "Headless-browser screenshot verification" convention above.
+  With no reduced-motion preference, opacity climbed from `0` shortly
+  after the switch up to `~0.98` by 350ms later -- a real, visible fade
+  over roughly the animation's own 300ms duration, not an instant snap.
+  With `reducedMotion: "reduce"` (Playwright's own context option, not a
+  hand-rolled `matchMedia` stub): opacity was `1` at every sampled point,
+  confirming the transition is fully skipped, not just slowed down.
+  **Caveat (found in `high` code review):** the intermediate samples
+  (`0.09` at 100ms, `0.56` at 200ms after the triggering click) don't
+  cleanly match a textbook `ease-out` curve's own shape -- they're
+  backloaded relative to what `cubic-bezier(0, 0, 0.58, 1)` predicts for
+  those elapsed fractions. That's expected and not a sign the CSS itself
+  is wrong: the samples are timestamped from the _click_ that flips
+  `state`, not from the animation's own actual start (the React
+  re-render, commit, and paint that create the fresh wrapper node all
+  happen somewhere in between, an unmeasured lag this script never
+  isolated) -- so don't read these specific numbers as characterizing
+  the curve's shape, only as confirming a real, gradual fade happens
+  under normal motion and none happens under reduced motion. Playwright
+  itself was temporarily added (`pnpm add -D -w playwright`) and reverted
+  afterward, per this file's own "Headless-browser screenshot
+  verification" convention above.

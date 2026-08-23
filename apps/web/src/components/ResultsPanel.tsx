@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import type {
   BenchmarkResult,
@@ -134,6 +134,49 @@ function LoadingSkeleton() {
   );
 }
 
+/**
+ * Wraps a success-branch's outer content and applies the range/custom-
+ * anchor switch fade-in (issue #65) exactly once per genuine *mount* of
+ * this wrapper, not once per render of whatever already-mounted instance
+ * happens to be showing.
+ *
+ * **A real bug (found in `high` code review, fixed) with the first version
+ * of this feature is why this is a component with its own `useState`,
+ * not a plain `prefersReducedMotion() ? "" : " results-fade-in"`
+ * expression computed inline in `ResultsPanel`'s render body.** That
+ * plain-expression version re-evaluated `prefersReducedMotion()` on
+ * *every* render of `ResultsPanel`, including the mode/day/starting-
+ * capital re-renders that leave this wrapper's own div instance mounted
+ * the whole time (see the "Two result models" section in
+ * apps/web/CLAUDE.md for why those never remount it). If the OS-level
+ * reduced-motion preference actually changed value *between* two such
+ * re-renders -- toggled mid-session, then the user clicks ModeToggle --
+ * the computed className string would flip too, adding or removing the
+ * `results-fade-in` class on an element that's already on screen. Per
+ * the CSS Animations spec, an element's `animation-name` newly entering
+ * its computed style (even via a plain class-attribute change on an
+ * existing DOM node) starts that animation fresh -- so an "instant,
+ * always" mode/day switch could suddenly flash opacity 0 -> 1 on
+ * already-visible content, exactly the replay this issue's own out-of-
+ * scope section says must never happen.
+ *
+ * `useState`'s lazy initializer runs exactly once, at the moment React
+ * actually creates a new instance of this component -- which, given
+ * where this is used below (only ever swapped in for `LoadingSkeleton`
+ * on a genuine `"loading"` -> `"success"` transition), only happens on a
+ * real range/custom-anchor switch or first load, never a mode/day/
+ * starting-capital change. No extra key/memoization bookkeeping is
+ * needed to replicate that "was this a genuine mount?" check by hand --
+ * it falls straight out of React's own reconciliation rules for this
+ * component's call sites.
+ */
+function FadeInWrapper({ children }: { children: ReactNode }) {
+  const [shouldFadeIn] = useState(() => !prefersReducedMotion());
+  return (
+    <div className={`flex flex-col gap-8${shouldFadeIn ? " results-fade-in" : ""}`}>{children}</div>
+  );
+}
+
 interface HeroAndWorstCaseProps {
   /**
    * Passed straight through as HeroStat's own `key` -- must change
@@ -249,15 +292,6 @@ interface WindowResultBodyProps {
   mode: Mode;
   startingCapital?: number;
   onStartingCapitalChange?: (value: number) => void;
-  /**
-   * Softens the LoadingSkeleton -> success-tree handoff for a range or
-   * custom-anchor switch (issue #65) -- appended to this component's own
-   * outer wrapper's className. See ResultsPanel's own `fadeInClassName`
-   * doc comment (its single computation site) for why this is safe to
-   * apply unconditionally here and why it never replays on a mode/day
-   * switch.
-   */
-  fadeInClassName: string;
 }
 
 /**
@@ -283,14 +317,13 @@ function WindowResultBody({
   mode,
   startingCapital,
   onStartingCapitalChange,
-  fadeInClassName,
 }: WindowResultBodyProps) {
   const variant = selectVariant<Trade>(data, data.longShort, mode);
   const isEmpty = variant.trades.length === 0;
   const effectiveStartingCapital = startingCapital ?? data.startingCapital;
 
   return (
-    <div className={`flex flex-col gap-8${fadeInClassName}`}>
+    <FadeInWrapper>
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <HeroAndWorstCase
@@ -330,7 +363,7 @@ function WindowResultBody({
           <TradeList trades={variant.trades} startingCapital={effectiveStartingCapital} />
         )}
       </div>
-    </div>
+    </FadeInWrapper>
   );
 }
 
@@ -480,36 +513,6 @@ export function ResultsPanel({
 
   const { data } = state;
 
-  // Softens the LoadingSkeleton -> success-tree handoff for a range or
-  // custom-anchor switch (issue #65) -- appended to the className of each
-  // of the three success-branch outer wrappers below ("window",
-  // "custom-window" via WindowResultBody, and "intraday-daily"). Computed
-  // once here, not per-branch, since it's identical either way.
-  //
-  // Only ever reached once state.status is "success" (both early returns
-  // above have already run), so -- like use-chart-tap-hint.ts/
-  // use-daily-guess.ts (see their own doc comments) -- this never runs
-  // during SSR and needs no separate hydration-safety story of its own:
-  // useResults'/useCustomResults' fetch state machine always starts
-  // "loading" on both the server and the initial client render, so a
-  // "success" render is client-only by construction.
-  //
-  // Deliberately mirrors shouldCelebrate.ts's own primary-gate pattern
-  // (skip the animation class entirely rather than rely on the CSS
-  // keyframe's @media guard alone) -- the CSS's own
-  // @media (prefers-reduced-motion: reduce) guard in globals.css is
-  // defense-in-depth on top, the same two-layer approach that keyframe
-  // already documents for .confetti-piece/.chart-tap-hint-pulse.
-  //
-  // No JS-level toggle is needed to keep this from replaying on a mode or
-  // day switch (both explicitly out of scope, see the issue) -- neither
-  // switch ever unmounts/remounts these wrapper divs in the first place
-  // (mode/day are plain prop/local-state changes within an
-  // already-mounted success tree, not a new fetch), so the animation
-  // naturally never re-triggers for them; only an actual fresh mount
-  // (a genuine range/custom-anchor switch, or first load) ever plays it.
-  const fadeInClassName = prefersReducedMotion() ? "" : " results-fade-in";
-
   if (data.model === "intraday-daily") {
     if (range === null) {
       // Invariant violation, not a reachable product state: an
@@ -538,7 +541,7 @@ export function ResultsPanel({
     const effectiveStartingCapital = startingCapital ?? activeDay.startingCapital;
 
     return (
-      <div className={`flex flex-col gap-8${fadeInClassName}`}>
+      <FadeInWrapper>
         {/* Announces the guess -> reveal swap below to screen reader users
             (issue #67) -- always present in the DOM (not conditionally
             mounted alongside the revealed content) so assistive tech has
@@ -686,7 +689,7 @@ export function ResultsPanel({
             </div>
           </>
         )}
-      </div>
+      </FadeInWrapper>
     );
   }
 
@@ -712,7 +715,6 @@ export function ResultsPanel({
         mode={mode}
         startingCapital={startingCapital}
         onStartingCapitalChange={onStartingCapitalChange}
-        fadeInClassName={fadeInClassName}
       />
     );
   }
@@ -753,7 +755,6 @@ export function ResultsPanel({
       mode={mode}
       startingCapital={startingCapital}
       onStartingCapitalChange={onStartingCapitalChange}
-      fadeInClassName={fadeInClassName}
     />
   );
 }
