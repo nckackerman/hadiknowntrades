@@ -1173,6 +1173,33 @@ effectiveStartingCapital)` -- the same general-purpose helper this
   write -- a cache, a network-backed store), confirmed to fail without
   the `userSetRef` guard and pass with it.
 
+### `rescaleFromStartingCapital`'s per-day pattern silently cancels out any future per-day capital chaining (found while planning issue #84, plan-only as of this writing)
+
+Worth knowing before reusing the established
+`rescaleFromStartingCapital(dayEndingBalance, day.startingCapital,
+effectiveStartingCapital)` pattern (`HeroStat`, `WorstCaseStat`,
+`DayOverview`'s per-row figure all call it this way) for any future
+feature that makes a day's own `startingCapital` vary from day to day
+(e.g. issue #84's proposed chaining, where day N's `startingCapital`
+becomes day N-1's `endingBalance` instead of a flat constant): this
+call shape is `value * (to / from)` where `value` is always `from *
+someRatio` for that same day -- algebraically, `from` cancels out of
+the result completely, leaving `to * someRatio`, **regardless of what
+`from` actually equals**. That's exactly why every existing call site
+keeps working unmodified even if a day's own `startingCapital` starts
+varying: they all still show "as if this one day started fresh at
+`$[to]`," never the day's _actual_ absolute dollar amount. Fine (even
+desirable) for a per-day, ratio-based display that's meant to be
+capital-invariant either way -- but a real, easy-to-miss trap for any
+future feature that wants to show a day's _true_ chained absolute
+figure: reusing this exact per-day call shape for that would silently
+produce the wrong (ratio-only) number, not the real carried-over
+amount. The correct rescale for a true chained figure is a _single_
+rescale from the range's own root capital (`data.days[0].startingCapital`,
+not the specific day's own), applied once to whatever chained balance
+you're displaying -- see `docs/plans/issue-84-plan.md` section 5 for
+the full derivation and the exact call shape that avoids this trap.
+
 ## Buy-and-hold (SPY) comparison stat (issue #12)
 
 `components/BenchmarkStat.tsx` is a single prose `<p>`, not a
