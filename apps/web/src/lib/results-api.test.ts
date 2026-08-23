@@ -7,10 +7,11 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  getCustomAnchorsResponse,
   getCustomResultsResponse,
   getResultsResponse,
   isCanonicalRange,
-  parseAnchorMonth,
+  parseAnchorDate,
   parseRange,
   type ResultReader,
 } from "./results-api";
@@ -36,14 +37,14 @@ function fixtureResult(range: (typeof PRESET_RANGES)[number]): PrecomputedResult
   };
 }
 
-function fixtureCustomResult(anchorMonth: string): CustomWindowResult {
+function fixtureCustomResult(anchorDate: string): CustomWindowResult {
   return {
     schemaVersion: RESULTS_SCHEMA_VERSION,
     model: "custom-window",
-    anchorMonth,
+    anchorDate,
     generatedAt: "2024-06-15T00:00:00.000Z",
     dataAsOf: "2024-06-14",
-    startDate: "2019-03-01",
+    startDate: anchorDate,
     endDate: "2024-06-15",
     maxTrades: 3,
     startingCapital: 20,
@@ -247,22 +248,28 @@ describe("getResultsResponse", () => {
   });
 });
 
-describe("parseAnchorMonth", () => {
-  it("accepts a well-formed YYYY-MM anchor", () => {
-    expect(parseAnchorMonth("2019-03")).toBe("2019-03");
+describe("parseAnchorDate", () => {
+  it("accepts a well-formed YYYY-MM-DD anchor", () => {
+    expect(parseAnchorDate("2019-03-15")).toBe("2019-03-15");
   });
 
   it("rejects null, empty, and malformed values", () => {
-    expect(parseAnchorMonth(null)).toBeNull();
-    expect(parseAnchorMonth("")).toBeNull();
-    expect(parseAnchorMonth("2019-3")).toBeNull();
-    expect(parseAnchorMonth("2019/03")).toBeNull();
-    expect(parseAnchorMonth("bogus")).toBeNull();
+    expect(parseAnchorDate(null)).toBeNull();
+    expect(parseAnchorDate("")).toBeNull();
+    expect(parseAnchorDate("2019-3-15")).toBeNull();
+    expect(parseAnchorDate("2019/03/15")).toBeNull();
+    expect(parseAnchorDate("2019-03")).toBeNull();
+    expect(parseAnchorDate("bogus")).toBeNull();
   });
 
   it("rejects a month outside 01-12", () => {
-    expect(parseAnchorMonth("2019-00")).toBeNull();
-    expect(parseAnchorMonth("2019-13")).toBeNull();
+    expect(parseAnchorDate("2019-00-15")).toBeNull();
+    expect(parseAnchorDate("2019-13-15")).toBeNull();
+  });
+
+  it("rejects a day outside 01-31", () => {
+    expect(parseAnchorDate("2019-03-00")).toBeNull();
+    expect(parseAnchorDate("2019-03-32")).toBeNull();
   });
 });
 
@@ -276,16 +283,16 @@ describe("getCustomResultsResponse", () => {
   });
 
   it("returns a clear 400 error for a malformed anchor", async () => {
-    const response = await getCustomResultsResponse("not-a-month", memoryReader(new Map()));
+    const response = await getCustomResultsResponse("not-a-date", memoryReader(new Map()));
 
     expect(response.status).toBe(400);
     const body = await response.json();
     expect(body.error).toBe("invalid_anchor");
-    expect(body.message).toContain("not-a-month");
+    expect(body.message).toContain("not-a-date");
   });
 
   it("returns a 500 when no reader is configured (RESULTS_BUCKET unset)", async () => {
-    const response = await getCustomResultsResponse("2019-03", null);
+    const response = await getCustomResultsResponse("2019-03-15", null);
 
     expect(response.status).toBe(500);
     const body = await response.json();
@@ -293,7 +300,7 @@ describe("getCustomResultsResponse", () => {
   });
 
   it("returns a 404 when the anchor hasn't been published yet (or is out of the supported range)", async () => {
-    const response = await getCustomResultsResponse("2019-03", memoryReader(new Map()));
+    const response = await getCustomResultsResponse("2019-03-15", memoryReader(new Map()));
 
     expect(response.status).toBe(404);
     const body = await response.json();
@@ -305,7 +312,7 @@ describe("getCustomResultsResponse", () => {
       getObject: vi.fn().mockRejectedValue(new Error("access denied")),
     };
 
-    const response = await getCustomResultsResponse("2019-03", reader);
+    const response = await getCustomResultsResponse("2019-03-15", reader);
 
     expect(response.status).toBe(502);
     const body = await response.json();
@@ -313,9 +320,9 @@ describe("getCustomResultsResponse", () => {
   });
 
   it("returns a 502 when the stored object isn't valid JSON", async () => {
-    const objects = new Map([["results/custom/2019-03.json", "{not json"]]);
+    const objects = new Map([["results/custom/2019-03-15.json", "{not json"]]);
 
-    const response = await getCustomResultsResponse("2019-03", memoryReader(objects));
+    const response = await getCustomResultsResponse("2019-03-15", memoryReader(objects));
 
     expect(response.status).toBe(502);
     const body = await response.json();
@@ -323,10 +330,10 @@ describe("getCustomResultsResponse", () => {
   });
 
   it("reads the anchor-specific key and returns the parsed result with 200 and caching headers", async () => {
-    const result = fixtureCustomResult("2019-03");
-    const objects = new Map([["results/custom/2019-03.json", JSON.stringify(result)]]);
+    const result = fixtureCustomResult("2019-03-15");
+    const objects = new Map([["results/custom/2019-03-15.json", JSON.stringify(result)]]);
 
-    const response = await getCustomResultsResponse("2019-03", memoryReader(objects));
+    const response = await getCustomResultsResponse("2019-03-15", memoryReader(objects));
 
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -337,19 +344,19 @@ describe("getCustomResultsResponse", () => {
   });
 
   it("reads a distinct key per anchor, namespaced under results/custom/", async () => {
-    const getObject = vi.fn().mockResolvedValue(JSON.stringify(fixtureCustomResult("2019-03")));
+    const getObject = vi.fn().mockResolvedValue(JSON.stringify(fixtureCustomResult("2019-03-15")));
     const reader: ResultReader = { getObject };
 
-    await getCustomResultsResponse("2019-03", reader);
+    await getCustomResultsResponse("2019-03-15", reader);
 
-    expect(getObject).toHaveBeenCalledWith("results/custom/2019-03.json");
+    expect(getObject).toHaveBeenCalledWith("results/custom/2019-03-15.json");
   });
 
   it("returns a 502 when the stored object's schemaVersion doesn't match the reader's", async () => {
-    const stale = { ...fixtureCustomResult("2019-03"), schemaVersion: 999 };
-    const objects = new Map([["results/custom/2019-03.json", JSON.stringify(stale)]]);
+    const stale = { ...fixtureCustomResult("2019-03-15"), schemaVersion: 999 };
+    const objects = new Map([["results/custom/2019-03-15.json", JSON.stringify(stale)]]);
 
-    const response = await getCustomResultsResponse("2019-03", memoryReader(objects));
+    const response = await getCustomResultsResponse("2019-03-15", memoryReader(objects));
 
     expect(response.status).toBe(502);
     const body = await response.json();
@@ -357,10 +364,10 @@ describe("getCustomResultsResponse", () => {
   });
 
   it("returns a 502 when the stored object has an unrecognized model", async () => {
-    const corrupted = { ...fixtureCustomResult("2019-03"), model: "window" };
-    const objects = new Map([["results/custom/2019-03.json", JSON.stringify(corrupted)]]);
+    const corrupted = { ...fixtureCustomResult("2019-03-15"), model: "window" };
+    const objects = new Map([["results/custom/2019-03-15.json", JSON.stringify(corrupted)]]);
 
-    const response = await getCustomResultsResponse("2019-03", memoryReader(objects));
+    const response = await getCustomResultsResponse("2019-03-15", memoryReader(objects));
 
     expect(response.status).toBe(502);
     const body = await response.json();
@@ -370,8 +377,118 @@ describe("getCustomResultsResponse", () => {
   it("sets Cache-Control: no-store on every error response", async () => {
     const responses = await Promise.all([
       getCustomResultsResponse(null, memoryReader(new Map())),
-      getCustomResultsResponse("2019-03", null),
-      getCustomResultsResponse("2019-03", memoryReader(new Map())),
+      getCustomResultsResponse("2019-03-15", null),
+      getCustomResultsResponse("2019-03-15", memoryReader(new Map())),
+    ]);
+
+    for (const response of responses) {
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+    }
+  });
+});
+
+describe("getCustomAnchorsResponse", () => {
+  it("returns a 500 when no reader is configured (RESULTS_BUCKET unset)", async () => {
+    const response = await getCustomAnchorsResponse(null);
+
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body.error).toBe("server_misconfigured");
+  });
+
+  it("returns a 404 when the manifest hasn't been published yet", async () => {
+    const response = await getCustomAnchorsResponse(memoryReader(new Map()));
+
+    expect(response.status).toBe(404);
+    const body = await response.json();
+    expect(body.error).toBe("not_found");
+  });
+
+  it("returns a 502 when the S3 read fails", async () => {
+    const reader: ResultReader = {
+      getObject: vi.fn().mockRejectedValue(new Error("access denied")),
+    };
+
+    const response = await getCustomAnchorsResponse(reader);
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("upstream_error");
+  });
+
+  it("returns a 502 when the stored manifest isn't valid JSON", async () => {
+    const objects = new Map([["results/custom/index.json", "{not json"]]);
+
+    const response = await getCustomAnchorsResponse(memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("corrupt_data");
+  });
+
+  it("returns a 502 (not an uncaught TypeError) when the stored manifest parses to `null`", async () => {
+    const objects = new Map([["results/custom/index.json", "null"]]);
+
+    const response = await getCustomAnchorsResponse(memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("corrupt_data");
+  });
+
+  it("returns a 502 when schemaVersion doesn't match", async () => {
+    const objects = new Map([
+      [
+        "results/custom/index.json",
+        JSON.stringify({ schemaVersion: 999, anchors: ["2019-03-15"] }),
+      ],
+    ]);
+
+    const response = await getCustomAnchorsResponse(memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("schema_mismatch");
+  });
+
+  it("returns a 502 when anchors isn't an array", async () => {
+    const objects = new Map([
+      [
+        "results/custom/index.json",
+        JSON.stringify({ schemaVersion: RESULTS_SCHEMA_VERSION, anchors: "2019-03-15" }),
+      ],
+    ]);
+
+    const response = await getCustomAnchorsResponse(memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("schema_mismatch");
+  });
+
+  it("reads the manifest key and returns { anchors } with 200 and caching headers", async () => {
+    const anchors = ["2019-03-14", "2019-03-15", "2024-06-14"];
+    const objects = new Map([
+      [
+        "results/custom/index.json",
+        JSON.stringify({ schemaVersion: RESULTS_SCHEMA_VERSION, anchors }),
+      ],
+    ]);
+
+    const response = await getCustomAnchorsResponse(memoryReader(objects));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({ anchors });
+    const cacheControl = response.headers.get("Cache-Control");
+    expect(cacheControl).toContain("max-age=300");
+    expect(cacheControl).toContain("stale-while-revalidate");
+  });
+
+  it("sets Cache-Control: no-store on every error response", async () => {
+    const responses = await Promise.all([
+      getCustomAnchorsResponse(null),
+      getCustomAnchorsResponse(memoryReader(new Map())),
     ]);
 
     for (const response of responses) {

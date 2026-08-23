@@ -7,7 +7,6 @@
 // invocation).
 
 import {
-  customRangeAnchors,
   fetchDailyCloses,
   fetchFiveMinuteBars,
   fetchIntraday1mBars,
@@ -24,12 +23,13 @@ export async function runNightlyPipeline(): Promise<void> {
     throw new Error("RESULTS_BUCKET environment variable is required");
   }
 
-  // Resolved once, up front, so the same "now" backs both runPipeline's
-  // own default asOf (passed through explicitly here rather than left
-  // implicit) and this call's customRangeAnchors(asOf) -- the two must
-  // agree on what "today" is, or the anchor list handed to runPipeline
-  // could disagree with the endDateString it derives internally from its
-  // own asOf default.
+  // Resolved once, up front, so the same "now" backs runPipeline's own
+  // default asOf (passed through explicitly here rather than left
+  // implicit) -- the anchor list runPipeline derives internally (issue
+  // #75: customRangeAnchors(buildCalendar(windowFetch.history).dates,
+  // asOf), computed from *this* asOf, not a second, potentially
+  // disagreeing "now") must agree with the endDateString it derives from
+  // the same value.
   const asOf = new Date();
 
   const summary = await runPipeline({
@@ -41,11 +41,14 @@ export async function runNightlyPipeline(): Promise<void> {
     store: new S3ResultStore(bucket),
     asOf,
     // The one real opt-in for issue #11's coarsened custom-date-range
-    // feature -- runPipeline itself defaults customRangeAnchors to empty
-    // (see RunPipelineOptions's own doc comment for why), so every
+    // feature -- runPipeline itself defaults computeCustomAnchors to
+    // false (see RunPipelineOptions's own doc comment for why), so every
     // custom anchor result only ever gets computed/written because this
-    // real nightly entry point explicitly asks for it here.
-    customRangeAnchors: customRangeAnchors(asOf),
+    // real nightly entry point explicitly asks for it here. Issue #75:
+    // the actual anchor list is now derived *inside* runPipeline (it
+    // needs the window path's own fetched history, not available yet at
+    // this call site) -- this flag just turns that derivation on.
+    computeCustomAnchors: true,
   });
 
   console.log(

@@ -1,13 +1,14 @@
 "use client";
 
 // Client-side fetch of GET /api/results?anchor=... (issue #11's coarsened
-// custom date-range feature -- see ../app/api/results/route.ts). A thin
-// wrapper around use-results.ts's shared useFetchResultsState state
-// machine, not a second independent copy of it (see that function's own
-// doc comment for why): the two are only ever active one at a time on
-// ResultsPage (range mode XOR anchor mode -- see ResultsPage.tsx).
+// custom date-range feature, day-granularity anchors since issue #75 --
+// see ../app/api/results/route.ts). A thin wrapper around use-results.ts's
+// shared useFetchResultsState state machine, not a second independent
+// copy of it (see that function's own doc comment for why): the two are
+// only ever active one at a time on ResultsPage (range mode XOR anchor
+// mode -- see ResultsPage.tsx).
 
-import type { AnchorMonth, CustomWindowResult } from "@hadiknowntrades/core";
+import type { AnchorDate, CustomWindowResult } from "@hadiknowntrades/core";
 
 import { useFetchResultsState, type ResultsState } from "./use-results";
 
@@ -22,7 +23,7 @@ import { useFetchResultsState, type ResultsState } from "./use-results";
  * selected.
  */
 export function useCustomResults(
-  anchor: AnchorMonth | null,
+  anchor: AnchorDate | null,
 ): ResultsState<CustomWindowResult> | null {
   return useFetchResultsState<CustomWindowResult>(
     anchor === null ? null : `/api/results?anchor=${encodeURIComponent(anchor)}`,

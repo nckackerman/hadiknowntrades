@@ -2,12 +2,12 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 
-import type { AnchorMonth, PresetRange } from "@hadiknowntrades/core";
+import type { AnchorDate, PresetRange } from "@hadiknowntrades/core";
 
 import { useResults } from "@/lib/use-results";
 import { useCustomResults } from "@/lib/use-custom-results";
 import { useStartingCapital } from "@/lib/use-starting-capital";
-import { parseAnchorMonth, parseRange } from "@/lib/results-api";
+import { parseAnchorDate, parseRange } from "@/lib/results-api";
 import { DEFAULT_MODE, parseMode, type Mode } from "@/lib/mode";
 import { AboutSection } from "@/components/AboutSection";
 import { CustomRangeSelector } from "@/components/CustomRangeSelector";
@@ -30,11 +30,12 @@ export function ResultsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // Custom-range mode (issue #11) wins when a well-formed ?anchor= is
-  // present; otherwise falls back to the ordinary ?range= (or its own
-  // default). The two are deliberately mutually exclusive -- see
-  // selectRange/selectAnchor, which each clear the other on selection.
-  const anchor: AnchorMonth | null = parseAnchorMonth(searchParams.get("anchor"));
+  // Custom-range mode (issue #11, day-granularity anchors since issue
+  // #75) wins when a well-formed ?anchor= is present; otherwise falls
+  // back to the ordinary ?range= (or its own default). The two are
+  // deliberately mutually exclusive -- see selectRange/selectAnchor,
+  // which each clear the other on selection.
+  const anchor: AnchorDate | null = parseAnchorDate(searchParams.get("anchor"));
   const range: PresetRange | null = anchor
     ? null
     : (parseRange(searchParams.get("range")) ?? DEFAULT_RANGE);
@@ -83,7 +84,7 @@ export function ResultsPage() {
     router.replace(`/?${params.toString()}`, { scroll: false });
   }
 
-  function selectAnchor(next: AnchorMonth) {
+  function selectAnchor(next: AnchorDate) {
     const params = new URLSearchParams(searchParams);
     params.set("anchor", next);
     // Mutually exclusive with a preset range -- see selectRange's

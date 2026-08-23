@@ -892,7 +892,20 @@ every range this run if SPY's fetch fails outright.
   `buildCustomWindowResults`'s per-anchor benchmark (see below) with no
   PresetRange-specific branching anywhere in the function.
 
-## Custom date-range anchors (issue #11)
+## Custom date-range anchors (issue #11, month-granularity mechanics superseded by issue #75)
+
+**The bullets immediately below describe issue #11's original
+month-granularity design** (`AnchorMonth`,
+`RunPipelineOptions.customRangeAnchors` as a precomputed list, ~252
+anchors) -- most of the underlying mechanics (`computeWindowOptimization`
+reuse, binary-search slicing, per-anchor write-failure standard, the
+cache/invalidation answer) carried forward unchanged into issue #75's
+day-granularity replacement, but the concrete field names/types/numbers
+did not. **See "Day-precision extension (issue #75)" below for the
+current, shipped design** (`AnchorDate`,
+`RunPipelineOptions.computeCustomAnchors: boolean`, ~1,255 anchors at the
+shipped 5-year lookback) before relying on any specific name/number in
+this subsection.
 
 `buildCustomWindowResults` computes one `CustomWindowResult` per
 requested anchor (`packages/core`'s `AnchorMonth`, see that package's own
@@ -1018,7 +1031,86 @@ references are historical, not current).
   custom-anchor compute addition specifically, not a clean marginal
   delta.
 
-### Day-granularity extension (issue #75, plan-only as of 2026-08-23) does NOT fit the Lambda timeout at the naive 21-year scope
+### Day-precision extension (issue #75) -- shipped, current design
+
+**This subsection is what actually shipped.** The two subsections
+immediately below it (the 21-year/5,282-anchor benchmark, and "plan-only
+as of 2026-08-23") are the historical record of the benchmark that
+justified the design -- still accurate as history, just not the current
+state.
+
+- **`RunPipelineOptions.customRangeAnchors` (a precomputed
+  `readonly AnchorMonth[]` list) is gone, replaced by
+  `computeCustomAnchors?: boolean`** (default `false`, same "off unless a
+  real caller opts in" property the old default had). The real anchor
+  list is now computed _inside_ `runPipeline` itself, right where
+  `buildCustomWindowResults` is called:
+  `customRangeAnchors(buildCalendar(windowFetch.history).dates, asOf)`
+  -- gated behind `options.computeCustomAnchors && !windowFetch.failureReason`,
+  the same gating `buildCustomWindowResults` itself already had. This is
+  a real, deliberate architectural shift, not just a rename: day-
+  granularity anchors need the real fetched trading-day calendar
+  (`buildCalendar`, from `windowFetch.history`), which only exists
+  _after_ the fetch completes -- `src/run.ts` (the one real caller)
+  can no longer compute the anchor list itself before calling
+  `runPipeline` the way it could for the old, pure-calendar-math month
+  scheme. `src/run.ts` now just passes `computeCustomAnchors: true`.
+- **`buildCustomWindowResults`'s per-anchor loop variable is `anchor:
+AnchorDate`, not `anchorMonth: AnchorMonth`** -- and its startDate
+  derivation got _simpler_, not just renamed: the old month scheme had
+  to convert `anchorMonth` (`YYYY-MM`) to a real `Date` via
+  `anchorMonthToDate`, then back to a `startDateString` via
+  `toDateString` (the month's 1st). A day-granularity `anchor`
+  (`YYYY-MM-DD`) _is already_ the exact `startDateString` this function
+  needs -- `anchorDateToDate` is still called, but purely as a defensive
+  well-formedness check, not to derive a different string from its
+  result.
+- **New: the anchors manifest write.** After `buildCustomWindowResults`
+  runs, `runPipeline` builds a `CustomAnchorsManifest`
+  (`packages/core/src/results-schema.ts`) from `customBuild.results` --
+  every anchor that actually got a _written_ result (not the raw
+  requested `customAnchors` list, and not anchors
+  `buildCustomWindowResults` itself validly skipped or failed to
+  compute -- publishing one of those as "selectable" would just be a
+  404 waiting to happen), sorted ascending. Skipped entirely (no
+  manifest write attempted, leaving any previously-published manifest
+  untouched) when there's nothing to publish -- an empty manifest would
+  itself fail `validateCustomAnchorsManifest`'s own non-empty check.
+  Folded into the same `WriteJob` list / `mapWithConcurrency` write loop
+  every preset range and custom anchor already goes through, validated
+  via `validateCustomAnchorsManifest` immediately before its own
+  `putObject`, and held to the exact same "must fail the run" standard
+  as a custom-anchor write failure (same reasoning: derived from the
+  same already-required-to-succeed data, not a granularity-override-
+  style best-effort write). Written to the new fixed key
+  `CUSTOM_ANCHORS_MANIFEST_KEY` (`results/custom/index.json`).
+- **`expectedResultCount`'s denominator gained a `+1` for the manifest**
+  whenever one was actually attempted (`customAnchorsManifest !== null`)
+  -- same "the ideal total for a fully-healthy run" reasoning the
+  existing preset-range/custom-anchor denominator already used, just
+  extended to cover the one new object type this issue adds.
+- **Real numbers at the shipped 5-year lookback, live-verified via a
+  real local pipeline run** (20 real tickers, real Yahoo network calls,
+  `asOf` 2026-08-23, writing to local disk instead of S3 -- see this
+  file's own "Live verification without a headless browser or real S3"-
+  style technique, `apps/pipeline/src/local-run.ts` + `apps/web/src/lib/
+local-file-result-reader.ts`, both deleted before the final commit):
+  **1,255 real trading-day anchors**, 6 preset results, 0 tickers
+  skipped, all real S3-shaped keys (`results/custom/{YYYY-MM-DD}.json`
+  plus `results/custom/index.json`) written correctly with schema
+  version 6. Confirmed end to end through `apps/web` too: `GET
+/api/custom-anchors` returned the real manifest, `GET
+/api/results?anchor=2024-01-10` returned a real `CustomWindowResult`
+  with `anchorDate`/`startDate` both `"2024-01-10"`, and a request for an
+  anchor before the 5-year cutoff correctly 404'd.
+- **Old `results/custom/{YYYY-MM}.json` keys are left in place**, per the
+  plan's own recommendation (confirmed with the user) -- see
+  `packages/core/CLAUDE.md`'s own note on this for the full reasoning
+  (inert the moment this code ships, trivial fixed storage cost, a real
+  deletion pass is a real-AWS action out of this issue's code-only
+  scope).
+
+### 21-year/5,282-anchor benchmark (historical -- the numbers that ruled out the naive extension)
 
 **Don't re-run this benchmark before reading `docs/plans/issue-75-plan.md`
 section 2 -- it took 67 real minutes the one time it ran.** Live-verified
@@ -1053,9 +1145,11 @@ inside the 900s budget with real margin. See
 data this is derived from (not just the summary above) before relying on
 this for a real implementation decision -- **the exact depth (7 vs. 8
 years) was deliberately left as an open product question for the user's
-sign-off, not decided in that plan.** As of this note, issue #75 is
-plan-only -- none of this has been implemented; `customRangeAnchors`
-still generates 252 month anchors over 21 years, unchanged.
+sign-off, not decided in that plan.** **Resolved (see "Day-precision
+extension (issue #75) -- shipped" above): the user chose 5 years, more
+conservative than this benchmark's own confirmed-safe 7-8 year range, as
+a deliberate extra-headroom starting point with room to grow later via
+one constant.**
 
 ### Merged with issue #13's short-selling mode
 

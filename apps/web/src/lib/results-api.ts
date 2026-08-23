@@ -4,12 +4,14 @@
 // request/response cycle.
 
 import {
-  anchorMonthToDate,
+  anchorDateToDate,
+  CUSTOM_ANCHORS_MANIFEST_KEY,
   PRESET_RANGES,
   resultKey,
   customResultKey,
   RESULTS_SCHEMA_VERSION,
-  type AnchorMonth,
+  type AnchorDate,
+  type CustomAnchorsManifest,
   type CustomWindowResult,
   type PrecomputedResult,
   type PresetRange,
@@ -236,35 +238,40 @@ export async function getResultsResponse(
 }
 
 /**
- * Parses a raw `anchor` query-string value into a well-formed AnchorMonth
- * (YYYY-MM, a real month 01-12), or null if it isn't one -- reuses
- * packages/core's anchorMonthToDate for the actual month-range check
+ * Parses a raw `anchor` query-string value into a well-formed AnchorDate
+ * (YYYY-MM-DD, a real calendar day), or null if it isn't one -- reuses
+ * packages/core's anchorDateToDate for the actual parse/range check
  * rather than re-deriving a second regex here, the same "one source of
  * truth" discipline parseRange/isCanonicalRange already follow for
  * PresetRange above.
  *
- * Deliberately does NOT also check the parsed anchor against
- * customRangeAnchors(asOf)'s current bounded list -- see
- * getCustomResultsResponse's own doc comment for why: this route's
- * server-side "now" and the pipeline's own last-run "now" can disagree
- * by up to one anchor right around a month boundary, and re-validating
- * against a live-computed bound here would risk rejecting a genuinely
- * still-published anchor. A syntactically well-formed but never-computed
- * anchor (out of range, or just not published yet) is handled by the
- * ordinary not_found path below instead, exactly like any preset range
- * not yet computed on a first-ever pipeline run.
+ * Deliberately does NOT also check the parsed anchor against the live
+ * published anchors manifest -- see getCustomResultsResponse's own doc
+ * comment for why: this route's server-side "now" and the pipeline's
+ * own last-run "now" can disagree by up to one anchor right around a day
+ * boundary, and re-validating against a live-read manifest here would
+ * mean an extra S3 read on every single `?anchor=` request just to
+ * duplicate a check `getPrecomputedResultResponse`'s own not_found path
+ * already gives for free. A syntactically well-formed but never-computed
+ * anchor (out of range, or just not published yet) is handled by that
+ * ordinary not_found path instead, exactly like any preset range not yet
+ * computed on a first-ever pipeline run.
+ *
+ * **Issue #75 renamed this from `parseAnchorMonth`** (YYYY-MM) to match
+ * the day-granularity anchor scheme.
  */
-export function parseAnchorMonth(raw: string | null): AnchorMonth | null {
+export function parseAnchorDate(raw: string | null): AnchorDate | null {
   if (!raw) return null;
-  return anchorMonthToDate(raw) ? raw : null;
+  return anchorDateToDate(raw) ? raw : null;
 }
 
 /**
- * Handles GET /api/results?anchor=YYYY-MM (issue #11's coarsened custom
- * date-range feature) -- validates the anchor's *shape*, reads the
- * corresponding precomputed CustomWindowResult via `reader`, and returns
- * it with the same caching headers/error-response shape
- * getResultsResponse already establishes for `?range=`.
+ * Handles GET /api/results?anchor=YYYY-MM-DD (issue #11's coarsened
+ * custom date-range feature, day-granularity anchors since issue #75) --
+ * validates the anchor's *shape*, reads the corresponding precomputed
+ * CustomWindowResult via `reader`, and returns it with the same caching
+ * headers/error-response shape getResultsResponse already establishes
+ * for `?range=`.
  *
  * Deliberately a sibling function, not a branch merged into
  * getResultsResponse itself: the two read genuinely different S3 key
@@ -280,12 +287,12 @@ export async function getCustomResultsResponse(
   rawAnchor: string | null,
   reader: ResultReader | null,
 ): Promise<Response> {
-  return getPrecomputedResultResponse<AnchorMonth, CustomWindowResult>(rawAnchor, reader, {
-    parse: parseAnchorMonth,
+  return getPrecomputedResultResponse<AnchorDate, CustomWindowResult>(rawAnchor, reader, {
+    parse: parseAnchorDate,
     invalidError: {
       code: "invalid_anchor",
       message: (raw) =>
-        `Unsupported or missing "anchor" query parameter. Expected a YYYY-MM month (e.g. "2019-03"). Received: ${raw ?? "(none)"}.`,
+        `Unsupported or missing "anchor" query parameter. Expected a YYYY-MM-DD date (e.g. "2019-03-15"). Received: ${raw ?? "(none)"}.`,
     },
     buildKey: customResultKey,
     notFoundMessage: (anchor) =>
@@ -293,4 +300,92 @@ export async function getCustomResultsResponse(
     logLabel: (anchor) => `custom-range result for anchor ${anchor}`,
     isValidModel: (model) => model === "custom-window",
   });
+}
+
+/**
+ * Handles GET /api/custom-anchors (issue #75) -- reads the published
+ * anchors manifest (packages/core's CustomAnchorsManifest, written to
+ * `CUSTOM_ANCHORS_MANIFEST_KEY` by apps/pipeline every nightly run
+ * alongside every individual CustomWindowResult) and returns
+ * `{ anchors }` for apps/web's calendar-grid picker
+ * (CustomRangeSelector.tsx's useCustomAnchors hook) to consume.
+ *
+ * **Deliberately NOT a `ResultRouteConfig` instantiation of
+ * getPrecomputedResultResponse above**, unlike getResultsResponse/
+ * getCustomResultsResponse: this route has no identifier to parse (the
+ * manifest lives at one fixed key, not one per request) and returns a
+ * different shape entirely (a flat `{ anchors }`, not a
+ * `schemaVersion`+`model`-discriminated result) -- forcing it through
+ * that abstraction would mean stretching it to cover a case it wasn't
+ * designed for. Still reuses the genuinely shared plumbing
+ * (`ResultReader`, `CACHE_CONTROL`, `errorResponse`, the same
+ * server_misconfigured/upstream_error/not_found/corrupt_data/
+ * schema_mismatch error vocabulary) rather than a second copy of any of
+ * it.
+ *
+ * Checks `schemaVersion` exact-equality and `Array.isArray(anchors)`
+ * only -- a lighter check than packages/core's own
+ * `validateCustomAnchorsManifest` (which apps/pipeline already runs
+ * immediately before this exact object's own `putObject`, issue #47's
+ * write-time discipline): a stored manifest that already passed that
+ * validator once is trusted not to have been corrupted in transit, the
+ * same trust level `getPrecomputedResultResponse` gives every other
+ * stored result after its own schemaVersion/model check.
+ */
+export async function getCustomAnchorsResponse(reader: ResultReader | null): Promise<Response> {
+  if (!reader) {
+    console.error("[api/custom-anchors] RESULTS_BUCKET environment variable is not set");
+    return errorResponse(500, "server_misconfigured", "Results storage is not configured.");
+  }
+
+  let raw: string | null;
+  try {
+    raw = await reader.getObject(CUSTOM_ANCHORS_MANIFEST_KEY);
+  } catch (error) {
+    console.error("[api/custom-anchors] failed to read the anchors manifest:", error);
+    return errorResponse(502, "upstream_error", "Failed to read precomputed results.");
+  }
+
+  if (raw === null) {
+    return errorResponse(
+      404,
+      "not_found",
+      "No custom-range start dates are available yet -- the anchors manifest hasn't been published by a pipeline run.",
+    );
+  }
+
+  let parsedBody: unknown;
+  try {
+    parsedBody = JSON.parse(raw);
+  } catch (error) {
+    console.error("[api/custom-anchors] stored anchors manifest is not valid JSON:", error);
+    return errorResponse(502, "corrupt_data", "Stored results could not be parsed.");
+  }
+
+  // Same "JSON.parse succeeds on plenty of non-object shapes" defense as
+  // getPrecomputedResultResponse above -- see that function's own doc
+  // comment for why this check exists before ever reading a property off
+  // parsedBody.
+  if (typeof parsedBody !== "object" || parsedBody === null) {
+    console.error("[api/custom-anchors] stored anchors manifest did not parse to a JSON object");
+    return errorResponse(502, "corrupt_data", "Stored results could not be parsed.");
+  }
+  const manifest = parsedBody as CustomAnchorsManifest;
+
+  if (manifest.schemaVersion !== RESULTS_SCHEMA_VERSION) {
+    console.error(
+      `[api/custom-anchors] stored anchors manifest has schemaVersion ${String(manifest.schemaVersion)}, expected ${RESULTS_SCHEMA_VERSION}`,
+    );
+    return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
+  }
+
+  if (!Array.isArray(manifest.anchors)) {
+    console.error("[api/custom-anchors] stored anchors manifest's anchors field isn't an array");
+    return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
+  }
+
+  return Response.json(
+    { anchors: manifest.anchors },
+    { headers: { "Cache-Control": CACHE_CONTROL } },
+  );
 }

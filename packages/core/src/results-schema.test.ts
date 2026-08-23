@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   RESULTS_SCHEMA_VERSION,
+  CUSTOM_ANCHORS_MANIFEST_KEY,
   customResultKey,
   resultKey,
   ResultValidationError,
+  validateCustomAnchorsManifest,
   validateCustomWindowResult,
   validatePrecomputedResult,
   type BenchmarkResult,
+  type CustomAnchorsManifest,
   type CustomWindowResult,
   type IntradayResult,
   type WindowResult,
@@ -545,8 +548,14 @@ describe("validatePrecomputedResult", () => {
 });
 
 describe("customResultKey", () => {
-  it("builds the results/custom/{anchorMonth}.json key", () => {
-    expect(customResultKey("2019-03")).toBe("results/custom/2019-03.json");
+  it("builds the results/custom/{anchorDate}.json key", () => {
+    expect(customResultKey("2019-03-15")).toBe("results/custom/2019-03-15.json");
+  });
+});
+
+describe("CUSTOM_ANCHORS_MANIFEST_KEY", () => {
+  it("is the fixed results/custom/index.json key", () => {
+    expect(CUSTOM_ANCHORS_MANIFEST_KEY).toBe("results/custom/index.json");
   });
 });
 
@@ -563,10 +572,10 @@ function validCustomWindowResult(): CustomWindowResult {
   return {
     schemaVersion: RESULTS_SCHEMA_VERSION,
     model: "custom-window",
-    anchorMonth: "2019-03",
+    anchorDate: "2019-03-15",
     generatedAt: "2024-06-15T00:00:00.000Z",
     dataAsOf: "2024-06-14",
-    startDate: "2019-03-01",
+    startDate: "2019-03-15",
     endDate: "2024-06-15",
     maxTrades: 3,
     startingCapital: 20,
@@ -670,11 +679,11 @@ describe("validateCustomWindowResult", () => {
     expect(() => validateCustomWindowResult(result)).toThrow(/schemaVersion/);
   });
 
-  it("rejects a result with a malformed anchorMonth", () => {
+  it("rejects a result with a malformed anchorDate", () => {
     const result = validCustomWindowResult() as unknown as Record<string, unknown>;
-    result.anchorMonth = "2019-13";
+    result.anchorDate = "2019-13-01";
     expect(() => validateCustomWindowResult(result as unknown as CustomWindowResult)).toThrow(
-      /anchorMonth/,
+      /anchorDate/,
     );
   });
 
@@ -763,5 +772,77 @@ describe("validateCustomWindowResult", () => {
     expect(() => validateCustomWindowResult(result)).toThrow(
       /trades\[0\]\.direction must be "long"/,
     );
+  });
+});
+
+/** A well-formed CustomAnchorsManifest (issue #75), cloned and mutated by individual tests below rather than shared by reference. */
+function validCustomAnchorsManifest(): CustomAnchorsManifest {
+  return {
+    schemaVersion: RESULTS_SCHEMA_VERSION,
+    anchors: ["2019-03-14", "2019-03-15", "2019-03-18"],
+  };
+}
+
+describe("validateCustomAnchorsManifest", () => {
+  it("passes a well-formed manifest", () => {
+    expect(() => validateCustomAnchorsManifest(validCustomAnchorsManifest())).not.toThrow();
+  });
+
+  it("passes a single-anchor manifest", () => {
+    expect(() =>
+      validateCustomAnchorsManifest({
+        schemaVersion: RESULTS_SCHEMA_VERSION,
+        anchors: ["2019-03-15"],
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects a manifest whose schemaVersion doesn't exactly match RESULTS_SCHEMA_VERSION", () => {
+    const manifest = validCustomAnchorsManifest();
+    manifest.schemaVersion = RESULTS_SCHEMA_VERSION - 1;
+    expect(() => validateCustomAnchorsManifest(manifest)).toThrow(/schemaVersion/);
+  });
+
+  it("rejects a manifest with an empty anchors array", () => {
+    const manifest = validCustomAnchorsManifest();
+    manifest.anchors = [];
+    expect(() => validateCustomAnchorsManifest(manifest)).toThrow(
+      /anchors must be a non-empty array/,
+    );
+  });
+
+  it("rejects a manifest whose anchors isn't an array", () => {
+    const manifest = validCustomAnchorsManifest() as unknown as Record<string, unknown>;
+    manifest.anchors = "2019-03-15";
+    expect(() =>
+      validateCustomAnchorsManifest(manifest as unknown as CustomAnchorsManifest),
+    ).toThrow(/anchors must be a non-empty array/);
+  });
+
+  it("rejects a manifest containing a malformed anchor string", () => {
+    const manifest = validCustomAnchorsManifest();
+    manifest.anchors = ["2019-03-15", "not-a-date"];
+    expect(() => validateCustomAnchorsManifest(manifest)).toThrow(
+      /anchors\[1\] must be a well-formed YYYY-MM-DD string/,
+    );
+  });
+
+  it("rejects a manifest with a duplicate anchor", () => {
+    const manifest = validCustomAnchorsManifest();
+    manifest.anchors = ["2019-03-15", "2019-03-15"];
+    expect(() => validateCustomAnchorsManifest(manifest)).toThrow(/anchors\[1\].*duplicates/);
+  });
+
+  it("rejects a manifest whose anchors aren't strictly ascending", () => {
+    const manifest = validCustomAnchorsManifest();
+    manifest.anchors = ["2019-03-15", "2019-03-14"];
+    expect(() => validateCustomAnchorsManifest(manifest)).toThrow(/anchors\[1\].*out of order/);
+  });
+
+  it("reports every problem, not just the first", () => {
+    const manifest = validCustomAnchorsManifest();
+    manifest.schemaVersion = RESULTS_SCHEMA_VERSION - 1;
+    manifest.anchors = ["2019-03-15", "not-a-date"];
+    expect(() => validateCustomAnchorsManifest(manifest)).toThrow(/2 problems/);
   });
 });

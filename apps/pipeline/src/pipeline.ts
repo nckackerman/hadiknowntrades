@@ -67,21 +67,26 @@
 // comment.
 
 import {
-  anchorMonthToDate,
+  anchorDateToDate,
   BlockedError,
+  buildCalendar,
+  customRangeAnchors,
   optimizeIntradayDays,
   optimizeAllVariants,
   PRESET_RANGES,
   presetRangeStartDate,
   resultKey,
   customResultKey,
+  CUSTOM_ANCHORS_MANIFEST_KEY,
   RESULTS_SCHEMA_VERSION,
   toDateString,
   UnexpectedResponseError,
   validatePrecomputedResult,
   validateCustomWindowResult,
-  type AnchorMonth,
+  validateCustomAnchorsManifest,
+  type AnchorDate,
   type BenchmarkResult,
+  type CustomAnchorsManifest,
   type CustomWindowResult,
   type DailyClose,
   type IntradayBar,
@@ -162,7 +167,7 @@ export interface ResultStore {
 
 export interface PipelineRunSummary {
   results: PrecomputedResult[];
-  /** One entry per successfully-written custom-range anchor (issue #11) -- kept separate from `results` (which stays exactly the 6 preset ranges, matching every prior release's shape) rather than merged into it. Empty whenever RunPipelineOptions.customRangeAnchors was omitted or empty (the default). */
+  /** One entry per successfully-written custom-range anchor (issue #11) -- kept separate from `results` (which stays exactly the 6 preset ranges, matching every prior release's shape) rather than merged into it. Empty whenever RunPipelineOptions.computeCustomAnchors was false (the default). */
   customResults: CustomWindowResult[];
   /** Union of tickers skipped by any fetch path -- window, intraday, or any granularity override (issue #30 added the first override, #29 a second) -- a ticker can be skipped from one path's fetch but not another's, but this summary doesn't distinguish which. */
   skippedTickers: string[];
@@ -189,24 +194,30 @@ export interface RunPipelineOptions {
   /** Caps concurrent S3 putObject calls in the final write loop -- see DEFAULT_WRITE_CONCURRENCY's own comment for why this is a separate knob from fetchConcurrency despite sharing its default value. */
   writeConcurrency?: number;
   /**
-   * Custom start-date anchor points (issue #11's coarsened design -- see
-   * docs/plans/issue-11-plan.md) to compute+write a CustomWindowResult
-   * for, alongside the 6 preset ranges -- reuses the exact same
-   * already-fetched window-path history (windowFetch.history below), no
-   * separate fetch. Defaults to empty (no custom anchors computed at
-   * all) -- deliberately, unlike every other RunPipelineOptions default
-   * above (which are sourced inside this file): src/run.ts (the real
-   * nightly entry point) is the one place that opts in for real, passing
-   * customRangeAnchors(asOf) (packages/core). This keeps every existing
-   * test of this file that doesn't care about this feature completely
-   * unaffected by its introduction -- retrofitting ~250 extra anchor
-   * results' worth of assertions into every unrelated existing test
-   * would have been pure test-maintenance churn with no correctness
-   * value; see apps/pipeline/CLAUDE.md's "Custom date-range anchors"
-   * section for the full reasoning and the real nightly-cost numbers
-   * behind CUSTOM_RANGE_ANCHOR_YEARS_BACK.
+   * Opts into computing+writing a CustomWindowResult (plus the anchors
+   * manifest, CustomAnchorsManifest) for every custom start-date anchor
+   * (issue #11's coarsened design, day-granularity anchors since issue
+   * #75 -- see docs/plans/issue-75-plan.md), alongside the 6 preset
+   * ranges. Defaults to `false` -- deliberately, unlike every other
+   * RunPipelineOptions default above (which are sourced inside this
+   * file): src/run.ts (the real nightly entry point) is the one place
+   * that opts in for real. This keeps every existing test of this file
+   * that doesn't care about this feature completely unaffected by its
+   * introduction -- see apps/pipeline/CLAUDE.md's "Custom date-range
+   * anchors" section for the full reasoning.
+   *
+   * **Issue #75 changed this from a precomputed `readonly AnchorMonth[]`
+   * list to this boolean** -- day-granularity anchors can only be
+   * derived from the window path's own already-fetched history (via
+   * `customRangeAnchors(buildCalendar(windowFetch.history).dates,
+   * asOf)`, packages/core), which isn't available until *after*
+   * `runPipeline`'s own fetch completes, unlike the month scheme's
+   * anchors (a pure function of calendar time alone, computable by
+   * `src/run.ts` before ever calling `runPipeline`). The anchor list
+   * itself is now computed inside `runPipeline`, right where
+   * `buildCustomWindowResults` is called, not passed in from outside.
    */
-  customRangeAnchors?: readonly AnchorMonth[];
+  computeCustomAnchors?: boolean;
 }
 
 interface UniverseFetchResult<TBar> {
@@ -941,9 +952,11 @@ function upperBoundByDate(series: readonly DailyClose[], endDateString: string):
 }
 
 // computeWindowOptimization is called once per preset window range (2x,
-// buildWindowResults) and up to 252 times against the *exact same*
-// `history` Map reference (buildCustomWindowResults, issue #11's custom
-// anchors -- see runPipeline, which builds windowFetch.history once and
+// buildWindowResults) and once per custom anchor (up to a few thousand
+// at the day-granularity anchor scale issue #75 introduced, well past
+// the original month scheme's 252) against the *exact same* `history`
+// Map reference (buildCustomWindowResults, issue #11's custom anchors --
+// see runPipeline, which builds windowFetch.history once and
 // passes it to both callers unmodified). A WeakMap keyed by that Map's
 // own object identity means the one-time cost of sorting every ticker's
 // series is paid at most once per pipeline run, however many times
@@ -962,8 +975,9 @@ const sortedHistoryCache = new WeakMap<Map<string, DailyClose[]>, Map<string, Da
  * order (issue #11 code review finding)**: computeWindowOptimization
  * used to slice each ticker's window via a plain `Array.prototype.filter`
  * scan -- correct regardless of array order, but O(days) per call, which
- * buildCustomWindowResults pays up to 252 times per ticker per run.
- * Replacing that with a binary search (lowerBoundByDate/upperBoundByDate
+ * buildCustomWindowResults pays once per anchor per ticker per run (up to
+ * a few thousand anchors at issue #75's day granularity). Replacing that
+ * with a binary search (lowerBoundByDate/upperBoundByDate
  * above) cuts each call to O(log days), but a binary search is only
  * correct over a genuinely sorted array -- and this codebase deliberately
  * does NOT treat fetchDailyCloses's return order as a trusted contract
@@ -1175,8 +1189,8 @@ interface BuildCustomWindowResultsOptions {
   skipped: readonly string[];
   /** SPY's raw fetched closes (issue #12) -- computeBenchmark is called once per anchor here, mirroring buildWindowResults/buildIntradayResults's per-range calls, since a custom anchor's own start date isn't one of the 6 PRESET_RANGES benchmarksByRange is keyed by. */
   benchmarkCloses: readonly DailyClose[];
-  /** The anchor points to compute a result for -- see RunPipelineOptions.customRangeAnchors's own doc comment for why this defaults to empty at the runPipeline level. */
-  anchors: readonly AnchorMonth[];
+  /** The anchor points to compute a result for -- see RunPipelineOptions.computeCustomAnchors's own doc comment for why this is empty unless the caller opted in. */
+  anchors: readonly AnchorDate[];
 }
 
 /**
@@ -1200,8 +1214,9 @@ interface CustomWindowResultsBuild {
    * optimizeAllVariants-backed computeWindowOptimization buildWindowResults
    * does, a custom anchor's window is exposed to the exact same short-
    * payoff-overflow risk a preset range's window is (see that doc comment
-   * for the mechanism), and with up to ~252 anchors computed per run,
-   * containing a failure to just the one affected anchor -- rather than
+   * for the mechanism), and with up to a few thousand anchors computed
+   * per run (issue #75's day granularity), containing a failure to just
+   * the one affected anchor -- rather than
    * letting it propagate out of this whole loop and abort every other
    * already-computable anchor too -- matters even more here than it does
    * for the 2 window ranges. Folded by runPipeline into the same
@@ -1215,13 +1230,22 @@ interface CustomWindowResultsBuild {
 
 /**
  * Computes one CustomWindowResult per requested anchor (issue #11's
- * coarsened design) -- structurally the same per-window computation as
- * buildWindowResults above (same computeWindowOptimization call, same
- * DailyClose history, same long-only + long+short variants via issue
- * #13's optimizeAllVariants), just keyed by AnchorMonth instead of
- * PresetRange and with no "MAX-style unbounded start" case (every
- * anchor's start is always a real, bounded calendar month -- see
- * custom-range-anchors.ts).
+ * coarsened design, day-granularity anchors since issue #75) --
+ * structurally the same per-window computation as buildWindowResults
+ * above (same computeWindowOptimization call, same DailyClose history,
+ * same long-only + long+short variants via issue #13's
+ * optimizeAllVariants), just keyed by AnchorDate instead of PresetRange
+ * and with no "MAX-style unbounded start" case (every anchor's start is
+ * always a real, bounded trading day -- see custom-range-anchors.ts).
+ *
+ * **Issue #75 simplified the per-anchor startDate derivation**: the old
+ * month scheme's anchor (`YYYY-MM`) needed converting to a real date (the
+ * 1st of that month) via `anchorMonthToDate` before it could be used as
+ * a `startDateString`. A day-granularity anchor (`YYYY-MM-DD`) *is*
+ * already the exact `startDateString` this function needs -- no
+ * Date-and-back round trip required. `anchorDateToDate` is still called,
+ * purely as a defensive well-formedness check (see the malformed-anchor
+ * skip branch below), not to derive a different string from its result.
  */
 function buildCustomWindowResults({
   history,
@@ -1238,46 +1262,49 @@ function buildCustomWindowResults({
   let validlySkippedCount = 0;
   const failures: string[] = [];
   // Defensive de-dup guard (code review finding, issue #11): customResultKey
-  // is a pure function of anchorMonth alone, so two anchors list entries
-  // sharing the same anchorMonth would otherwise silently collide on the
+  // is a pure function of anchorDate alone, so two anchors list entries
+  // sharing the same anchorDate would otherwise silently collide on the
   // same S3 key with no error surfaced -- not reachable via the one real
   // caller today (customRangeAnchors, packages/core, which never
   // produces a duplicate -- see that function's own "has no duplicates"
   // test), but nothing stops a future/test caller from passing a
   // caller-supplied `anchors` list that does.
-  const seenAnchors = new Set<AnchorMonth>();
+  const seenAnchors = new Set<AnchorDate>();
 
-  for (const anchorMonth of anchors) {
-    if (seenAnchors.has(anchorMonth)) {
+  for (const anchor of anchors) {
+    if (seenAnchors.has(anchor)) {
       console.warn(
-        `[pipeline] skipping duplicate custom-range anchor "${anchorMonth}" (already computed a result for it this run)`,
+        `[pipeline] skipping duplicate custom-range anchor "${anchor}" (already computed a result for it this run)`,
       );
       validlySkippedCount++;
       continue;
     }
-    seenAnchors.add(anchorMonth);
+    seenAnchors.add(anchor);
 
-    const anchorDate = anchorMonthToDate(anchorMonth);
-    if (!anchorDate) {
+    if (!anchorDateToDate(anchor)) {
       // Defensive only -- customRangeAnchors (packages/core) never
       // produces a malformed anchor itself, but a caller could in
       // principle pass an arbitrary list (e.g. a test). Skip rather than
       // crash the whole nightly run over one bad string.
-      console.warn(`[pipeline] skipping malformed custom-range anchor "${anchorMonth}"`);
+      console.warn(`[pipeline] skipping malformed custom-range anchor "${anchor}"`);
       validlySkippedCount++;
       continue;
     }
-    const startDateString = toDateString(anchorDate);
+    // The anchor string itself IS the startDateString (see this
+    // function's own doc comment) -- no Date-and-back conversion needed
+    // at day granularity, unlike the old month scheme.
+    const startDateString = anchor;
     // Defensive only, not expected in practice: customRangeAnchors's
-    // newest anchor is always "the current month," which can never be
-    // later than endDateString (today) -- but a caller-supplied anchor
-    // list (tests, or a future asOf/anchor-list mismatch) could in
-    // principle include one. A future-dated anchor has literally nothing
-    // to compute (there's no data past endDateString), so skip it rather
-    // than writing a degenerate always-empty CustomWindowResult.
+    // newest anchor is always "today" (or the most recent real trading
+    // day at/before it), which can never be later than endDateString --
+    // but a caller-supplied anchor list (tests, or a future asOf/anchor-
+    // list mismatch) could in principle include one. A future-dated
+    // anchor has literally nothing to compute (there's no data past
+    // endDateString), so skip it rather than writing a degenerate
+    // always-empty CustomWindowResult.
     if (startDateString > endDateString) {
       console.warn(
-        `[pipeline] skipping future-dated custom-range anchor "${anchorMonth}" (starts ${startDateString}, after endDate ${endDateString})`,
+        `[pipeline] skipping future-dated custom-range anchor "${anchor}" (starts ${startDateString}, after endDate ${endDateString})`,
       );
       validlySkippedCount++;
       continue;
@@ -1300,7 +1327,7 @@ function buildCustomWindowResults({
       results.push({
         schemaVersion: RESULTS_SCHEMA_VERSION,
         model: "custom-window",
-        anchorMonth,
+        anchorDate: anchor,
         generatedAt,
         dataAsOf,
         startDate: startDateString,
@@ -1332,8 +1359,8 @@ function buildCustomWindowResults({
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[pipeline] skipping custom-range anchor "${anchorMonth}": ${message}`);
-      failures.push(`custom:${anchorMonth}: ${message}`);
+      console.error(`[pipeline] skipping custom-range anchor "${anchor}": ${message}`);
+      failures.push(`custom:${anchor}: ${message}`);
     }
   }
 
@@ -1842,14 +1869,30 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
       });
   const intradayResults = intradayBuild.results;
 
-  // Custom start-date anchors (issue #11's coarsened design) -- purely
-  // derived compute over the window path's *already-fetched* history, no
-  // separate fetch, so this is gated behind windowFetch.failureReason the
-  // exact same way windowResults itself is above: if the window path has
-  // no usable history, there's nothing to slice for any anchor either.
-  // Defaults to zero anchors unless the caller opts in (see
-  // RunPipelineOptions.customRangeAnchors's own doc comment) -- src/run.ts
-  // is the one real caller that does, for the actual nightly run.
+  // Custom start-date anchors (issue #11's coarsened design, real
+  // trading-day anchors since issue #75) -- purely derived compute over
+  // the window path's *already-fetched* history, no separate fetch, so
+  // this is gated behind windowFetch.failureReason the exact same way
+  // windowResults itself is above: if the window path has no usable
+  // history, there's nothing to slice (or derive a trading-day calendar
+  // from) for any anchor either. Empty unless the caller opts in via
+  // `computeCustomAnchors` (see RunPipelineOptions' own doc comment) --
+  // src/run.ts is the one real caller that does, for the actual nightly
+  // run.
+  //
+  // **Computed here, not passed in from outside (issue #75's real,
+  // deliberate shift -- see RunPipelineOptions.computeCustomAnchors's own
+  // doc comment)**: `customRangeAnchors` (packages/core) needs a real
+  // trading-day calendar, which only exists once `buildCalendar` has run
+  // over `windowFetch.history` -- data this function only has *after*
+  // its own fetch above completes, unlike the old month scheme's anchors
+  // (a pure function of calendar time alone, computable before ever
+  // calling runPipeline).
+  const customAnchors: readonly AnchorDate[] =
+    options.computeCustomAnchors && !windowFetch.failureReason
+      ? customRangeAnchors(buildCalendar(windowFetch.history).dates, asOf)
+      : [];
+
   const customBuild: CustomWindowResultsBuild = windowFetch.failureReason
     ? { results: [], validlySkippedCount: 0, failures: [] }
     : buildCustomWindowResults({
@@ -1861,7 +1904,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         maxTrades,
         skipped: windowFetch.skipped,
         benchmarkCloses: benchmarkFetch.closes,
-        anchors: options.customRangeAnchors ?? [],
+        anchors: customAnchors,
       });
   const customResults = customBuild.results;
   // Folded into the same aggregated compute-failures list as the window/
@@ -1876,6 +1919,36 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     ...intradayBuild.failures,
     ...customBuild.failures,
   ];
+
+  // The published anchors manifest (issue #75) -- the picker-facing list
+  // of which specific days apps/web's calendar UI may offer, published
+  // as its own small S3 object (results-schema.ts's CustomAnchorsManifest,
+  // read by apps/web's GET /api/custom-anchors) since day-granularity
+  // anchors are no longer derivable client-side the way the old month
+  // scheme's were (see custom-range-anchors.ts's own doc comment).
+  //
+  // Only the anchors that actually got a *written* CustomWindowResult
+  // (customBuild.results, not the raw customAnchors list) go in the
+  // manifest -- an anchor buildCustomWindowResults validly skipped
+  // (duplicate/malformed/future-dated, none reachable via the one real
+  // caller today) or whose own compute failed has no stored result to
+  // serve, and publishing it as "selectable" would just be a 404 waiting
+  // to happen. Sorted ascending (oldest first) per
+  // CustomAnchorsManifest.anchors' own documented contract -- the
+  // opposite of customRangeAnchors' own newest-first convention, since a
+  // calendar UI wants to walk forward through months. Skipped entirely
+  // (leaving any previously-published manifest untouched, same
+  // "gracefully stale" posture as every preset range's own written-if-
+  // succeeded behavior) when there's nothing to publish -- an empty
+  // manifest would itself fail validateCustomAnchorsManifest's own
+  // non-empty check below.
+  const customAnchorsManifest: CustomAnchorsManifest | null =
+    options.computeCustomAnchors && customBuild.results.length > 0
+      ? {
+          schemaVersion: RESULTS_SCHEMA_VERSION,
+          anchors: customBuild.results.map((result) => result.anchorDate).sort(),
+        }
+      : null;
 
   if (windowResults.length === 0 && intradayResults.length === 0) {
     // Refuse to overwrite S3's existing (presumably good) results with
@@ -1966,12 +2039,31 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     body: JSON.stringify(result, null, 2),
   }));
   const customWriteJobs: WriteJob[] = customResults.map((result) => ({
-    key: customResultKey(result.anchorMonth),
-    label: `custom:${result.anchorMonth}`,
+    key: customResultKey(result.anchorDate),
+    label: `custom:${result.anchorDate}`,
     validate: () => validateCustomWindowResult(result),
     body: JSON.stringify(result, null, 2),
   }));
-  const writeJobs = [...presetWriteJobs, ...customWriteJobs];
+  // The anchors manifest (issue #75) -- one more WriteJob, held to the
+  // exact same "must fail the run" standard as every preset/custom-anchor
+  // write (see customAnchorsManifest's own comment above for why it's
+  // derived from the same already-required-to-succeed window-path
+  // history, not a looser-standard granularity-override-style write):
+  // a manifest write failure means apps/web's picker either serves a
+  // stale anchor list or 404s its own fetch entirely, which is exactly
+  // the "silently stale forever" failure mode this system's alerting
+  // exists to catch.
+  const manifestWriteJobs: WriteJob[] = customAnchorsManifest
+    ? [
+        {
+          key: CUSTOM_ANCHORS_MANIFEST_KEY,
+          label: "custom-anchors-manifest",
+          validate: () => validateCustomAnchorsManifest(customAnchorsManifest),
+          body: JSON.stringify(customAnchorsManifest, null, 2),
+        },
+      ]
+    : [];
+  const writeJobs = [...presetWriteJobs, ...customWriteJobs, ...manifestWriteJobs];
 
   const writeOutcomes = await mapWithConcurrency(writeJobs, writeConcurrency, async (job) => {
     job.validate();
@@ -2085,13 +2177,19 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     // for a future caller whose anchor list isn't as clean as
     // customRangeAnchors's own (which never produces one of these today
     // -- see that function's own tests). Zero for the one real production
-    // caller in practice, so this is a no-op there.
+    // caller in practice, so this is a no-op there. Adds 1 for the
+    // manifest whenever it was actually attempted (issue #75) --
+    // `customAnchorsManifest !== null`, not just `options.computeCustomAnchors`,
+    // since the manifest is skipped entirely (no write attempted) when
+    // there were zero custom-anchor results to publish -- see that
+    // constant's own comment above.
     const expectedResultCount =
       PRESET_RANGES.length +
-      (options.customRangeAnchors?.length ?? 0) -
-      customBuild.validlySkippedCount;
+      customAnchors.length -
+      customBuild.validlySkippedCount +
+      (customAnchorsManifest ? 1 : 0);
     throw new Error(
-      `pipeline: wrote ${writtenCount} of ${expectedResultCount} expected result(s) (${PRESET_RANGES.length} preset range(s), ${options.customRangeAnchors?.length ?? 0} custom anchor(s) requested; ${writeJobs.length} actually computed), but at least one path or write failed -- ` +
+      `pipeline: wrote ${writtenCount} of ${expectedResultCount} expected result(s) (${PRESET_RANGES.length} preset range(s), ${customAnchors.length} custom anchor(s) requested; ${writeJobs.length} actually computed), but at least one path or write failed -- ` +
         `failing this run so it doesn't silently succeed while that path goes stale. ` +
         `Window (5Y/MAX) path: ${windowFetch.failureReason ?? "ok"}. ` +
         `Intraday (1W/1M/3M/1Y) path: ${intradayFetch.failureReason ?? "ok"}. ` +
