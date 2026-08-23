@@ -1469,3 +1469,72 @@ guessed $X" line, `PortfolioChart`, the trade list) had just appeared.
   block: guess both modes for the same day first, then assert the
   announcement text actually changes on a mode switch alone (date
   unchanged).
+
+## First-visit onboarding intro banner (issue #64)
+
+`OnboardingIntro.tsx` is a one-line, dismissible callout rendered above
+`ResultsPage.tsx`'s `<header>`, framing what the page is for a first-time
+visitor who otherwise lands directly on a fully-resolved result (default
+range is 1Y, see `DEFAULT_RANGE`) with no context beyond the terse
+one-line disclaimer already under the `<h1>`. `AboutSection`'s fuller
+methodology/disclaimer sits at the very bottom of the page and isn't a
+substitute -- unlikely to be the first thing read.
+
+- **Storage is the simplest possible shape in this app so far**:
+  `lib/onboarding-storage.ts` is one namespaced key
+  (`hikt:onboarding-dismissed`) holding a single sentinel string, no
+  keying and no re-prompt logic at all -- unlike `daily-guess-storage.ts`
+  (keyed per `(range, date, mode)`) or `use-starting-capital.ts` (a
+  numeric value), once dismissed on a browser it never shows again,
+  full stop, per the issue's own scope. Still built on
+  `lib/local-storage.ts`'s `readLocalStorage`/`writeLocalStorage` rather
+  than touching `window.localStorage` directly, per this file's
+  "localStorage pattern" section above.
+- **Hydration safety follows `use-starting-capital.ts`'s pattern, not
+  `use-daily-guess.ts`'s shortcut -- this was the one real trap in this
+  issue.** `use-daily-guess.ts` is safe reading storage synchronously in
+  a `useState` initializer only because it's exclusively mounted from
+  `ResultsPanel`'s client-only `success` branch, which never renders
+  during SSR (see that hook's own doc comment). `OnboardingIntro` is
+  mounted unconditionally on the root page, which _can_ render during
+  SSR, so `use-onboarding-dismissed.ts` instead always starts `false`
+  (banner visible) on every render including the first client render
+  during hydration, and only corrects to `true` from a `queueMicrotask`
+  inside a mount effect if a previous dismissal is actually found in
+  storage -- identical shape to `use-starting-capital.ts`, including its
+  `userSetRef` guard against the same mount-to-microtask race window (a
+  fast `dismiss()` call landing before the deferred hydration read runs
+  must not get clobbered back to "not dismissed").
+- **Verified live** (this dev environment has no `RESULTS_BUCKET`/AWS
+  credentials -- see this file's own "Live verification without a
+  headless browser or real S3" note for the general shape of this
+  workaround): no throwaway route was actually needed here, since
+  `use-results.ts`'s fetch happens in a client-only effect, not during
+  SSR -- the page shell (header, `OnboardingIntro`) renders fully
+  server-side even with `/api/results` 500ing, confirmed by building
+  and starting the real production server (`next build`, `next start`)
+  and driving it with a headless-Chromium Playwright script (installed
+  and reverted for one verification session only, per the "Headless-
+  browser screenshot verification" note above) that loaded the real
+  page, asserted no console message matched `/hydration|did not
+match|server rendered/i`, clicked dismiss, then did a real
+  `page.reload()` and asserted the banner stayed gone. Screenshotted in
+  both light and dark.
+- **Duplication found in code review, fixed by extracting
+  `lib/use-hydrated-local-storage-state.ts`.** `use-onboarding-dismissed.ts`
+  originally reimplemented the exact mount-hydration + `userSetRef`
+  race-guard shape `use-starting-capital.ts` already had, near-verbatim
+  -- a real reuse finding, not just a style nit, since a future fix to
+  that logic (like the race-guard fix `use-starting-capital.ts` itself
+  needed once, see its own git history) would otherwise have to be
+  manually re-applied to both copies. Both hooks are now thin wrappers
+  around one generic `useHydratedLocalStorageState<T>(defaultValue,
+readStored, writeStored)` -- see that file's own doc comment for the
+  full hydration-safety/race-guard reasoning, now told in one place
+  instead of two. `use-onboarding-dismissed.ts`'s own race-guard
+  behavior is no longer independently tested (see that test file's own
+  comment on why: its `readStored` can only ever report `true` or
+  `null`, and its setter only ever writes `true`, so there's no pair of
+  differing stale/fresh values that could actually exercise a clobber
+  for this particular caller) -- the guard itself is covered once,
+  generically, in `use-hydrated-local-storage-state.test.ts`.
