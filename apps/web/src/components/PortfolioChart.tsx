@@ -226,8 +226,15 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
         }}
       >
         <defs>
+          {/* Area-fill gradient beneath the line (issue #77) -- was
+              already present but faint enough (a flat 10% -> 0%) to read
+              as "no fill" on a live screenshot against this app's dark
+              background. A middle stop gives the falloff a visibly
+              curved (not linear) taper, reading as a proper wash rather
+              than a flat tint that just stops abruptly. */}
           <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--series-1)" stopOpacity="0.1" />
+            <stop offset="0%" stopColor="var(--series-1)" stopOpacity="0.32" />
+            <stop offset="55%" stopColor="var(--series-1)" stopOpacity="0.08" />
             <stop offset="100%" stopColor="var(--series-1)" stopOpacity="0" />
           </linearGradient>
         </defs>

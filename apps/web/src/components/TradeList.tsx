@@ -55,14 +55,14 @@ export function TradeList({ trades, startingCapital }: TradeListProps) {
   // if that guard is ever missing for a future caller.
   if (narrations.length === 0) {
     return (
-      <div className="rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
+      <div className="surface-card rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
         No trades to show.
       </div>
     );
   }
 
   return (
-    <ol className="rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-3 text-sm leading-relaxed text-[var(--text-primary)]">
+    <ol className="surface-card rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-3 text-sm leading-relaxed text-[var(--text-primary)]">
       {narrations.map((narration, index) => {
         // Built as plain JS template-literal strings (not raw JSX text)
         // so the exact wording/spacing is deterministic -- JSX's own
