@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { PortfolioChart } from "./PortfolioChart";
+import { boxesOverlap, labelBox, type LabelAnchor } from "@/lib/chart-label-layout";
 import type { PortfolioPoint } from "@/lib/portfolio-series";
 
 const points: PortfolioPoint[] = [
@@ -188,6 +189,169 @@ describe("PortfolioChart", () => {
       expect(within(table).getByText(/Short MSFT @/)).toBeInTheDocument();
       expect(within(table).getByText(/Cover MSFT @/)).toBeInTheDocument();
       expect(within(table).queryByText(/Buy MSFT/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe("point-label collision avoidance (issue #68)", () => {
+    /**
+     * The real-world case the issue was filed from ("a sell a few days
+     * after a buy"): AAPL's own open and close land only 4 days apart
+     * (matching the issue's own acceptance criteria) within a much
+     * longer overall window (~5 years, matching the originally-observed
+     * 5Y-range screenshot), so the two dates land only a handful of
+     * pixels apart on the x-axis -- and a moderate ~50% gain moves the
+     * close point up the log-scaled y-axis just enough to put the
+     * close's below-label in range of the open's above-label (see
+     * chart-label-layout.test.ts's own equivalent fixture and comment
+     * for why a moderate gain, not a huge one, is what actually
+     * collides). MSFT's own trade, later in the window with a much
+     * bigger gain, doubles as a second, differently-shaped pair.
+     *
+     * The window's own start value is deliberately lower (5) than
+     * AAPL's own open value (20), not equal to it -- matching the
+     * live-verification debug fixture (see apps/web/CLAUDE.md's own
+     * "Chart point-label collision avoidance" section): pinning AAPL's
+     * open at the domain's own minimum would put it right at the plot's
+     * bottom edge, where resolveLabelOffsets' bounds (issue #68 code
+     * review follow-up) correctly refuse to stack a label past the
+     * visible canvas -- a *different*, out-of-scope collision (label vs.
+     * plot edge) this fixture isn't meant to exercise.
+     */
+    const closeTogetherPoints: PortfolioPoint[] = [
+      { date: "2020-01-01", value: 5, event: null },
+      {
+        date: "2022-06-01",
+        value: 20,
+        event: { type: "open", direction: "long", ticker: "AAPL", price: 10 },
+      },
+      {
+        date: "2022-06-05",
+        value: 30,
+        event: { type: "close", direction: "long", ticker: "AAPL", price: 15 },
+      },
+      {
+        date: "2023-01-10",
+        value: 30,
+        event: { type: "open", direction: "long", ticker: "MSFT", price: 310.55 },
+      },
+      {
+        date: "2023-01-14",
+        value: 300,
+        event: { type: "close", direction: "long", ticker: "MSFT", price: 3105.5 },
+      },
+      { date: "2025-01-01", value: 300, event: null },
+    ];
+
+    /**
+     * Reads each rendered marker's own two <text> lines straight out of
+     * the DOM and rebuilds the bounding box chart-label-layout.ts itself
+     * would compute for that exact content/position -- so this checks
+     * the real wiring (component -> resolveLabelOffsets -> rendered
+     * attributes), not just the pure layout function in isolation
+     * (already covered by chart-label-layout.test.ts).
+     */
+    function renderedLabelBoxes() {
+      const svg = getChartSvg();
+      const markerGroups = within(svg)
+        .getAllByText(/^(Buy|Sell) /)
+        .map((el) => el.closest("g")!);
+
+      return markerGroups.map((g) => {
+        const [primaryEl, secondaryEl] = g.querySelectorAll("text");
+        const x = Number(primaryEl!.getAttribute("x"));
+        const y = Number(primaryEl!.getAttribute("y"));
+        const anchor = primaryEl!.getAttribute("text-anchor") as LabelAnchor;
+        return labelBox(
+          {
+            x,
+            y,
+            isAbove: true, // unused by labelBox itself, only by resolveLabelOffsets
+            anchor,
+            primaryText: primaryEl!.textContent ?? "",
+            secondaryText: secondaryEl!.textContent ?? "",
+          },
+          y,
+        );
+      });
+    }
+
+    it("renders no two overlapping label bounding boxes for dates ~4 days apart", () => {
+      render(<PortfolioChart points={closeTogetherPoints} />);
+
+      const boxes = renderedLabelBoxes();
+      expect(boxes).toHaveLength(4); // AAPL open/close + MSFT open/close
+
+      for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+          expect(boxesOverlap(boxes[i]!, boxes[j]!)).toBe(false);
+        }
+      }
+    });
+
+    it("still renders every marker's own gain/loss-independent verb+ticker text (collision avoidance doesn't drop labels)", () => {
+      render(<PortfolioChart points={closeTogetherPoints} />);
+      const svg = within(getChartSvg());
+
+      expect(svg.getByText("Buy AAPL")).toBeInTheDocument();
+      expect(svg.getByText("Sell AAPL")).toBeInTheDocument();
+      expect(svg.getByText("Buy MSFT")).toBeInTheDocument();
+      expect(svg.getByText("Sell MSFT")).toBeInTheDocument();
+    });
+
+    /**
+     * Code review finding, fixed: without a bound, stacking a heavily
+     * crowded cluster of labels can push one past the outer <svg>'s own
+     * viewBox and get silently clipped -- worse than the overlap this
+     * issue exists to fix. Six "open" markers (the max this chart ever
+     * renders -- one open+close pair per trade, up to 3 trades) all
+     * within a single pixel of each other, near the very top of the
+     * plot (where there's the least headroom above y=0 to begin with),
+     * forces several stack levels for the later ones -- enough to go
+     * out of bounds without the fix.
+     */
+    it("keeps every label's box within the visible SVG canvas even under a heavily crowded cluster near the plot's top edge", () => {
+      const crowdedPoints: PortfolioPoint[] = [
+        { date: "2020-01-01", value: 5, event: null },
+        ...Array.from({ length: 6 }, (_, i) => ({
+          date: `2024-01-0${i + 1}`,
+          value: 990 + i, // clustered near the window's own max (1000) -- near the plot's top edge
+          event: {
+            type: "open" as const,
+            direction: "long" as const,
+            ticker: `TICK${i}`,
+            price: 10 + i,
+          },
+        })),
+        { date: "2025-01-01", value: 1000, event: null },
+      ];
+
+      render(<PortfolioChart points={crowdedPoints} />);
+      const svg = within(getChartSvg());
+
+      const boxes = Array.from({ length: 6 }, (_, i) => {
+        const primaryEl = svg.getByText(`Buy TICK${i}`);
+        const g = primaryEl.closest("g")!;
+        const [, secondaryEl] = g.querySelectorAll("text");
+        const y = Number(primaryEl.getAttribute("y"));
+        return labelBox(
+          {
+            x: Number(primaryEl.getAttribute("x")),
+            y,
+            isAbove: true,
+            anchor: primaryEl.getAttribute("text-anchor") as LabelAnchor,
+            primaryText: primaryEl.textContent ?? "",
+            secondaryText: secondaryEl!.textContent ?? "",
+          },
+          y,
+        );
+      });
+
+      // Matches this component's own MARGIN.top -- content above this
+      // local y is clipped by the outer <svg>'s viewBox.
+      const MARGIN_TOP = 56;
+      for (const box of boxes) {
+        expect(box.top).toBeGreaterThanOrEqual(-MARGIN_TOP);
+      }
     });
   });
 });

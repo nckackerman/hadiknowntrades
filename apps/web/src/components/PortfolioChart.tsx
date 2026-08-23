@@ -19,6 +19,7 @@ import { memo, useId, useMemo, useState } from "react";
 import { formatAxisCurrency, formatHeroCurrency } from "@/lib/format-currency";
 import { formatDateTime, isPortfolioDatetime } from "@/lib/format-date";
 import { buildLogScale, buildTimeScale, niceLogTicks } from "@/lib/chart-scales";
+import { resolveLabelOffsets } from "@/lib/chart-label-layout";
 import type { PortfolioEvent, PortfolioPoint } from "@/lib/portfolio-series";
 import { tradeVerbs, tradeVerbsPast } from "@/lib/trade-math";
 
@@ -114,6 +115,47 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
   const areaPath = `${linePath} L ${plotted[plotted.length - 1]!.x.toFixed(2)},${PLOT_HEIGHT} L ${plotted[0]!.x.toFixed(2)},${PLOT_HEIGHT} Z`;
 
   const eventMarkers = plotted.filter((p) => p.event !== null);
+
+  // Each marker's anchor/label text, computed exactly once and shared
+  // between the collision-avoidance pass below and the actual render
+  // map further down (code review finding, fixed -- these used to be
+  // computed independently in both places, a real duplication risk if
+  // the two ever drifted on label text/anchor).
+  const markerLabels = eventMarkers.map((p) => {
+    const event = p.event!;
+    return {
+      p,
+      event,
+      isAbove: event.type === "open",
+      anchor: anchorFor(p.x),
+      primaryText: `${eventLabelVerb(event)} ${event.ticker}`,
+      secondaryText: `${formatDateTime(p.date)} · ${formatHeroCurrency(event.price)}`,
+    };
+  });
+
+  // Collision-avoided label y-positions (issue #68), one per
+  // markerLabels entry in the same order. `bounds` caps how far a
+  // still-colliding label can be pushed to the plot's own vertical
+  // extent (in the <g>'s local, MARGIN.top-translated coordinate space)
+  // so the greedy stacking below can never push a label past the outer
+  // <svg>'s own viewBox and get silently clipped -- see
+  // chart-label-layout.ts's own LabelLayoutBounds doc comment (code
+  // review finding, fixed). Not useMemo'd: markerLabels is a fresh
+  // array every render (built from the already-memoized `plotted`),
+  // same as linePath/areaPath above, and the input is at most 6
+  // markers -- too small to be worth memoizing against a dependency
+  // that itself changes identity every render.
+  const labelYs = resolveLabelOffsets(
+    markerLabels.map(({ p, isAbove, anchor, primaryText, secondaryText }) => ({
+      x: p.x,
+      y: p.y,
+      isAbove,
+      anchor,
+      primaryText,
+      secondaryText,
+    })),
+    { minY: -MARGIN.top, maxY: HEIGHT - MARGIN.top },
+  );
 
   const hovered = hoverIndex !== null ? plotted[hoverIndex] : null;
 
@@ -267,10 +309,8 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
           {/* Open/close markers with direct labels (ticker, date, price) --
               "Buy"/"Sell" for a long, "Short"/"Cover" for a short (issue
               #13, see eventLabelVerb). */}
-          {eventMarkers.map((p, i) => {
-            const event = p.event!;
-            const isAbove = event.type === "open";
-            const labelY = isAbove ? p.y - 14 : p.y + 24;
+          {markerLabels.map(({ p, event, anchor, primaryText, secondaryText }, i) => {
+            const labelY = labelYs[i]!;
             return (
               <g key={`${p.date}-${event.type}-${event.ticker}-${i}`}>
                 <circle
@@ -284,21 +324,21 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
                 <text
                   x={p.x}
                   y={labelY}
-                  textAnchor={anchorFor(p.x)}
+                  textAnchor={anchor}
                   fontSize={10.5}
                   fontWeight={600}
                   fill="var(--text-primary)"
                 >
-                  {eventLabelVerb(event)} {event.ticker}
+                  {primaryText}
                 </text>
                 <text
                   x={p.x}
                   y={labelY + 13}
-                  textAnchor={anchorFor(p.x)}
+                  textAnchor={anchor}
                   fontSize={10}
                   fill="var(--text-secondary)"
                 >
-                  {formatDateTime(p.date)} · {formatHeroCurrency(event.price)}
+                  {secondaryText}
                 </text>
               </g>
             );
