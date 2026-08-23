@@ -19,7 +19,10 @@ production/high-stakes app — keep that in mind when deciding how much
 process/rigor a given change deserves.
 
 Track build-out via the GitHub milestone **"v1: MVP launch"** (issues
-#1-#10) and the `backlog`-labeled issues (#11-#15) for deferred v2 ideas.
+#1-#10, all shipped) and the `backlog`-labeled issues for deferred v2
+ideas -- #11-#13, #15, #31-#34 have since shipped despite still
+carrying the `backlog` label (a label-hygiene gap, not a scope signal);
+only #14 (Variable position sizing) remains genuinely open/deferred.
 
 ## Architecture
 
