@@ -1018,6 +1018,45 @@ references are historical, not current).
   custom-anchor compute addition specifically, not a clean marginal
   delta.
 
+### Day-granularity extension (issue #75, plan-only as of 2026-08-23) does NOT fit the Lambda timeout at the naive 21-year scope
+
+**Don't re-run this benchmark before reading `docs/plans/issue-75-plan.md`
+section 2 -- it took 67 real minutes the one time it ran.** Live-verified
+(real Yahoo network calls, full 503-ticker universe, all 5,282 real
+trading-day anchors within the existing 21-year lookback, via a throwaway
+Vitest file, deleted before commit, same technique as the 252-anchor
+verification above): extending `customRangeAnchors` from month to
+trading-day granularity **at the same 21-year lookback** takes **4,042.7s
+(67.4 minutes)** of real fetch+compute (11.2s fetch, 4,031.5s compute,
+no S3 write measured) -- **about 4.5x over** the pipeline Lambda's real
+900s timeout, from compute alone. This is **compute-bound, not
+I/O-/write-bound**: per-anchor compute cost is drastically front-loaded
+by window length (>30x spread between the oldest anchors, each costing
+~1.5s, and the newest, each costing ~0.05s) -- consistent with
+`optimizer.ts`'s documented O(days x tickers x maxTrades) complexity,
+since each anchor's window runs from that anchor's date to "today." Peak
+RSS was 1,779MB, reached early (among the oldest/most expensive anchors)
+-- against the pipeline Lambda's 2048MB `memorySize` (itself not yet
+deployed, see `infra/CLAUDE.md`'s "Current deployment state") that's only
+~13% headroom, a second, independent reason the full 21-year scope is the
+wrong target even before the timeout is considered.
+
+**The fix is not more write concurrency or a multi-invocation split** --
+write time is estimated (not directly measured) at roughly 106-159s even
+pessimistically, two orders of magnitude below the compute cost, so it
+isn't the bottleneck; a split doesn't remove the compute cost, only
+redistributes it, and adds real orchestration complexity. **The real
+numbers point at shrinking the lookback window alone**: 7-8 years of
+day-granularity anchors (not 21) keeps compute to 463-607s, comfortably
+inside the 900s budget with real margin. See
+`docs/plans/issue-75-plan.md` sections 2.2-2.5 for the full per-checkpoint
+data this is derived from (not just the summary above) before relying on
+this for a real implementation decision -- **the exact depth (7 vs. 8
+years) was deliberately left as an open product question for the user's
+sign-off, not decided in that plan.** As of this note, issue #75 is
+plan-only -- none of this has been implemented; `customRangeAnchors`
+still generates 252 month anchors over 21 years, unchanged.
+
 ### Merged with issue #13's short-selling mode
 
 Issues #11 and #13 were developed in parallel and merged after both had
