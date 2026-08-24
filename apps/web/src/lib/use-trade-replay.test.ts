@@ -311,7 +311,7 @@ describe("useTradeReplay", () => {
     expect(result.current.frame.activeEvent).toBeNull();
   });
 
-  it("play() while already playing restarts the walk from the beginning -- not reachable via the shipped UI (the button that calls play() is hidden while playing), but a real hook-level API contract (code review, issue #96 follow-up)", () => {
+  it("play() while already playing is a no-op -- not reachable via the shipped UI (the button that calls play() is hidden while playing), but a real hook-level API contract (code review, issue #96 follow-up round four)", () => {
     vi.spyOn(performance, "now").mockReturnValue(1000);
     const raf = createRafPump();
 
@@ -324,23 +324,63 @@ describe("useTradeReplay", () => {
     raf.tick(1300); // paused on the open event, well into the walk
     expect(result.current.frame.revealedCount).toBe(2);
 
-    // Calling play() again while already "playing" -- phase's own value
-    // doesn't change, so bailing out here only works if the hook forces
-    // the RAF effect to restart some other way (see use-trade-replay.ts's
-    // own `runId` doc comment).
+    // Calling play() again while already "playing" must not disturb the
+    // in-flight walk. Simplified in round four from an earlier `runId`-
+    // based "force a restart from the beginning" fix down to a plain
+    // `phase === "playing"` guard inside play() itself, once it was
+    // noticed every reachable call site only ever calls play() from
+    // "idle"/"done", never "playing" -- a no-op is also the more literal
+    // reading of "idempotent," which is what the original round-two fix
+    // was actually named for.
     act(() => {
       result.current.play();
     });
 
     expect(result.current.phase).toBe("playing");
-    expect(result.current.frame.revealedCount).toBe(1);
-    expect(result.current.frame.currentValue).toBe(20);
-    expect(result.current.frame.activeEvent).toBeNull();
-
-    // A fresh RAF loop must actually be running afterward -- not just
-    // the frame state reset with nothing left to advance it.
-    raf.tick(1000);
-    raf.tick(1300);
+    expect(result.current.frame.revealedCount).toBe(2);
     expect(result.current.frame.activeEvent?.event.type).toBe("open");
+
+    // The original walk keeps advancing normally afterward -- the no-op
+    // play() call didn't tear down or otherwise disturb the running RAF
+    // loop.
+    raf.tick(1900);
+    raf.tick(2200);
+    expect(result.current.frame.revealedCount).toBe(3);
+    expect(result.current.frame.activeEvent).toBeNull();
+  });
+
+  it("completedRuns is bumped exactly once per genuine completion (skipToEnd and natural completion), not on play() itself", () => {
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+    const raf = createRafPump();
+
+    const { result } = renderHook(() => useTradeReplay(ONE_TRADE_POINTS));
+    expect(result.current.completedRuns).toBe(0);
+
+    act(() => {
+      result.current.play();
+    });
+    expect(result.current.completedRuns).toBe(0);
+
+    act(() => {
+      result.current.skipToEnd();
+    });
+    expect(result.current.completedRuns).toBe(1);
+
+    // Replaying and letting it walk all the way to a natural completion
+    // (rather than skipToEnd again) bumps it a second time -- confirms
+    // this hook's own `completedRuns` counter is bumped at every one of
+    // its three `setPhase("done")` call sites, not just skipToEnd's.
+    act(() => {
+      result.current.play();
+    });
+    raf.tick(1000);
+    raf.tick(1300); // pauses on the open event
+    raf.tick(1900); // pause elapses, flat vertex reached
+    raf.tick(2200); // tween toward the close event
+    raf.tick(2500); // pauses on the close event
+    raf.tick(3100); // pause elapses, trailing flat point reached
+    raf.tick(3400); // tween settles -- natural completion
+    expect(result.current.phase).toBe("done");
+    expect(result.current.completedRuns).toBe(2);
   });
 });

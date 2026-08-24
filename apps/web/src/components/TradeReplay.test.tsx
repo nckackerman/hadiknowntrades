@@ -255,7 +255,7 @@ describe("TradeReplay (issue #96)", () => {
 
     await user.click(screen.getByRole("button", { name: "Skip to end" }));
 
-    // Landing on "done" bumps TradeReplay's own revealRun counter,
+    // Landing on "done" bumps useTradeReplay's own completedRuns counter,
     // giving HeroStat a fresh key and therefore a fresh mount -- a
     // genuinely different DOM node than before playback started.
     expect(screen.getByText("Starting from")).not.toBe(heroCaptionBeforePlaying);

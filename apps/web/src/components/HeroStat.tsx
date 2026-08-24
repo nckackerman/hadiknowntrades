@@ -98,6 +98,20 @@ const COUNT_UP_DURATION_MS = 1200;
  * The glow itself never touches the sr-only twin span, so it can't
  * disturb what assistive tech reads.
  */
+// Shared with TradeReplay.tsx's own animated "$X -> $Y" figure (issue
+// #96, via HeroAndWorstCase's `heroSlot` prop) -- exported (code review,
+// issue #96 follow-up round four) so that figure's "Starting from"
+// caption and big-number row reuse these classes instead of hand-copying
+// them as literal strings, a real byte-for-byte duplication risk the
+// review flagged: `heroSlot` overlays a purely visual, differently-driven
+// figure (a live RAF tween, not useCountUp) that still needs to read as
+// "the same hero figure, mid-transition" -- matching typography, not
+// matching markup structure or behavior, which is why this shares only
+// the two className strings rather than a bigger chunk of JSX/logic.
+export const heroLabelClassName = "text-sm font-medium text-[var(--text-secondary)]";
+export const heroValueRowClassName =
+  "flex flex-wrap items-baseline gap-3 text-[clamp(2.5rem,6vw,4rem)] font-semibold leading-none tracking-tight text-[var(--text-primary)]";
+
 export function HeroStat({
   startingCapital,
   endingBalance,
@@ -137,12 +151,12 @@ export function HeroStat({
 
   return (
     <div className="flex flex-col items-start gap-1">
-      <p className="text-sm font-medium text-[var(--text-secondary)]">Starting from</p>
+      <p className={heroLabelClassName}>Starting from</p>
       {/* relative + the burst overlay are scoped to just this row (not
           the "Starting from" label above) so the confetti bursts from
           around the figure itself, not the caption. */}
       <div className="relative">
-        <p className="flex flex-wrap items-baseline gap-3 text-[clamp(2.5rem,6vw,4rem)] font-semibold leading-none tracking-tight text-[var(--text-primary)]">
+        <p className={heroValueRowClassName}>
           <span>{formatHeroCurrency(displayStartingCapital)}</span>
           <span aria-hidden="true" className="text-[var(--text-muted)]">
             →

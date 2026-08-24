@@ -33,6 +33,7 @@ import {
 import { tradeVerbs, tradeVerbsPast } from "@/lib/trade-math";
 import { useChartTapHint } from "@/lib/use-chart-tap-hint";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
+import { useResetWhenChanged } from "@/lib/use-reset-when-changed";
 
 /**
  * Capitalized verb for a marker's own label / the data-table's event
@@ -122,36 +123,76 @@ function toTimestamp(date: string): number {
   return new Date(isPortfolioDatetime(date) ? `${date}Z` : `${date}T00:00:00Z`).getTime();
 }
 
-export function PortfolioChart({ points, revealedCount, interactive = true }: PortfolioChartProps) {
+/**
+ * Wrapped in `React.memo` (code review, issue #96 follow-up round four)
+ * -- matches `ChartDataTable` below, which was already memoized for the
+ * identical reason. During TradeReplay.tsx's RAF-driven playback, most
+ * tween frames leave `points`/`revealedCount`/`interactive` completely
+ * unchanged (only the hero figure's own `currentValue`, owned entirely
+ * by TradeReplay.tsx, moves) -- without this, `linePath`/`areaPath`/
+ * `eventMarkers` still recomputed and the full SVG still re-diffed on
+ * every one of those frames for no visible difference. All three props
+ * are safe under `memo`'s default shallow comparison: `points` is a
+ * stable reference for the whole run (TradeReplay.tsx passes the same
+ * array throughout, only `revealedCount` grows -- see that prop's own
+ * doc comment), and `revealedCount`/`interactive` are primitives.
+ */
+export const PortfolioChart = memo(function PortfolioChart({
+  points,
+  revealedCount,
+  interactive = true,
+}: PortfolioChartProps) {
   const gradientId = useId();
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [showTapHint, dismissTapHint] = useChartTapHint();
 
-  // Clears a stale hoverIndex whenever `points` changes identity or
-  // `interactive` flips (code review, issue #96 follow-up round 3) --
-  // previously safe to leave hoverIndex alone across any prop change
-  // because a `points` change always came with a fresh `key` (a remount
-  // resets all state for free); that stopped being true once
-  // TradeReplay.tsx started keeping one PortfolioChart instance mounted
-  // across the live/truncated swap (round two's `key={heroKey}` fix). A
-  // user who hovers/taps a point and then clicks "Watch it happen"
-  // without the pointer leaving the SVG bounds never fires
-  // onPointerLeave/onPointerCancel/onBlur -- hoverIndex stayed set to
-  // the pre-playback index and popped the crosshair/tooltip back into
-  // view once `revealedCount` grew past that stale index mid-replay.
-  // `interactive` is tracked alongside `points` specifically because
-  // TradeReplay.tsx's own `points` prop no longer changes identity at
-  // all across that transition (see `revealedCount`'s own doc comment
-  // above) -- only `interactive` (and `revealedCount`) do.
-  const [trackedPoints, setTrackedPoints] = useState(points);
-  const [trackedInteractive, setTrackedInteractive] = useState(interactive);
-  if (points !== trackedPoints || interactive !== trackedInteractive) {
-    setTrackedPoints(points);
-    setTrackedInteractive(interactive);
+  // Clears a stale hoverIndex, and suppresses the touch tap-hint pulse,
+  // whenever `points` changes identity or `interactive` flips (code
+  // review, issue #96 follow-up rounds 3 and 4) -- previously safe to
+  // leave either alone across any prop change because a `points` change
+  // always came with a fresh `key` (a remount resets all state for
+  // free); that stopped being true once TradeReplay.tsx started keeping
+  // one PortfolioChart instance mounted across the live/truncated swap
+  // (round two's `key={heroKey}` fix). A user who hovers/taps a point
+  // and then clicks "Watch it happen" without the pointer leaving the
+  // SVG bounds never fires onPointerLeave/onPointerCancel/onBlur --
+  // hoverIndex stayed set to the pre-playback index and popped the
+  // crosshair/tooltip back into view once `revealedCount` grew past that
+  // stale index mid-replay. `interactive` is tracked alongside `points`
+  // specifically because TradeReplay.tsx's own `points` prop no longer
+  // changes identity at all across that transition (see
+  // `revealedCount`'s own doc comment above) -- only `interactive` (and
+  // `revealedCount`) do.
+  //
+  // **Round four's own addition**: the same reset also dismisses the
+  // touch tap-hint pulse (`showTapHint`, below) the instant `interactive`
+  // goes false. That pulse targets `eventMarkers[eventMarkers.length -
+  // 1]` (see the JSX below), and `eventMarkers` derives from `drawn` --
+  // the `revealedCount`-truncated prefix TradeReplay.tsx's playback
+  // grows one marker at a time. Without this, a touch-primary first-time
+  // visitor who saw the pulse on the chart's final marker and then
+  // clicked "Watch it happen" mid-animation would see the hint circle
+  // relocate between successive trade markers as `revealedCount` grew --
+  // an animated "tap here" invitation jumping around on content that's
+  // simultaneously `inert` (pointer events disabled) via this
+  // component's own root wrapper below. Gating the pulse's own render on
+  // `interactive` (see the JSX below) independently prevents it from
+  // ever painting while non-interactive; this reset is defense-in-depth
+  // on top of that gate, the same "belt and suspenders" posture this
+  // component's `aria-hidden` + `inert` pairing already uses -- and it's
+  // genuinely correct on its own terms too, since `dismissTapHint` is
+  // idempotent (a no-op if the hint was never shown, or already
+  // dismissed) and playback starting is itself a real interaction with
+  // the chart, the same class of event `revealNearestPoint` already
+  // treats as "the hint did its job."
+  useResetWhenChanged([points, interactive], () => {
     if (hoverIndex !== null) {
       setHoverIndex(null);
     }
-  }
+    if (!interactive) {
+      dismissTapHint();
+    }
+  });
   // Same "on mount only, not a live subscription" hook HeroStat's own
   // reveal accent (issue #77) and ResultsPanel's FadeInWrapper already
   // share -- see that hook's own doc comment for the hydration-safety
@@ -222,7 +263,19 @@ export function PortfolioChart({ points, revealedCount, interactive = true }: Po
   // a caller growing `revealedCount` frame by frame (TradeReplay.tsx's
   // playback) never defeats that useMemo or moves the axis it defines
   // (see this component's own `revealedCount` prop doc comment).
-  const revealed = revealedCount ?? points.length;
+  //
+  // Clamped to `[1, plotted.length]` (code review, issue #96 follow-up
+  // round four) -- `revealedCount` is a public, unvalidated prop, and
+  // without a lower bound a caller passing `0` (or a negative number)
+  // produces an empty `drawn` array, which every non-null assertion
+  // below (`drawn[drawn.length - 1]!`, `drawn[0]!`) assumes can never
+  // happen. Today that's only true by an emergent combination of
+  // independently-maintained checks elsewhere -- use-trade-replay.ts's
+  // own `play()` length guard, `buildSegments`'s 1-indexed loop, and
+  // TradeReplay.tsx's own `showLive` gating -- not one explicit
+  // invariant at this component's own boundary. This clamp makes that
+  // invariant real here, regardless of what any future caller passes.
+  const revealed = Math.min(Math.max(revealedCount ?? points.length, 1), plotted.length);
   const drawn = useMemo(() => plotted.slice(0, revealed), [plotted, revealed]);
 
   const linePath = drawn
@@ -476,8 +529,16 @@ export function PortfolioChart({ points, revealedCount, interactive = true }: Po
               the most recent trade marker specifically, since that's
               the marker a user exploring the chart is most likely to
               reach for first. No hint at all if there's no marker to
-              point at (a zero-trade window). */}
-          {showTapHint && eventMarkers.length > 0 && (
+              point at (a zero-trade window). Also gated on `interactive`
+              (code review, issue #96 follow-up round four) -- defense-
+              in-depth alongside the `useResetWhenChanged` dismissal
+              above: `eventMarkers` derives from `drawn`, the
+              `revealedCount`-truncated prefix during TradeReplay.tsx's
+              playback, so without this gate the pulse could relocate
+              between successive markers as `revealedCount` grows, on
+              content that's simultaneously `inert` (see this
+              component's root wrapper below). */}
+          {interactive && showTapHint && eventMarkers.length > 0 && (
             <circle
               cx={eventMarkers[eventMarkers.length - 1]!.x}
               cy={eventMarkers[eventMarkers.length - 1]!.y}
@@ -534,7 +595,7 @@ export function PortfolioChart({ points, revealedCount, interactive = true }: Po
       <ChartDataTable points={drawn} />
     </div>
   );
-}
+});
 
 /**
  * The accessible data-table fallback, split out and memoized on `points`

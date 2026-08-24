@@ -15,6 +15,7 @@ import { useCallback, useEffect, useState } from "react";
 import { tweenValue } from "./easing";
 import type { PortfolioEvent, PortfolioPoint } from "./portfolio-series";
 import { computeTradeReturn, type TradeReturn } from "./trade-math";
+import { useResetWhenChanged } from "./use-reset-when-changed";
 
 export type ReplayPhase = "idle" | "playing" | "done";
 
@@ -139,10 +140,23 @@ function replayEventFor(segment: Segment): ReplayEvent | null {
 export interface UseTradeReplayResult {
   phase: ReplayPhase;
   frame: ReplayFrame;
-  /** Starts (or restarts, from "done") playback from the very beginning. */
+  /** Starts (or restarts, from "done") playback from the very beginning. A no-op while already `"playing"` -- see this hook's own doc comment. */
   play: () => void;
   /** Jumps straight to the final state and marks playback "done" -- always available during playback, per the issue's own "give me the answer fast" scope note. */
   skipToEnd: () => void;
+  /**
+   * Bumped every time `phase` actually *lands on* `"done"` -- natural
+   * completion, `skipToEnd`, or the corrupted-price defensive catch, the
+   * same three call sites that call `setPhase("done")` below. Lets a
+   * caller (TradeReplay.tsx) detect "playback just finished" directly
+   * from this hook's own state, instead of shadow-tracking `phase`
+   * itself with a second local state variable purely to notice the same
+   * transition this hook already owns (code review, issue #96 follow-up
+   * round four) -- this hook is the one place that actually knows when a
+   * "done" landing is genuine, so it's the natural owner of counting
+   * them.
+   */
+  completedRuns: number;
 }
 
 /**
@@ -175,43 +189,45 @@ export interface UseTradeReplayResult {
  * mid-trade "flat" vertex, or the window's own start/end) is passed
  * straight through with no pause.
  *
- * `runId` is real React state (not a ref) specifically so `play()` is
- * safe to call even while `phase` is already `"playing"` (not reachable
- * via the shipped UI today -- the button that calls `play()` is hidden
- * while playing -- but a real bug in this hook's own public API,
- * code-review found and fixed): bumping `phase` from `"playing"` to
- * `"playing"` again is a no-op by React's own `Object.is` bail-out, so
- * without a second, always-genuinely-different value in the effect's
- * dependency array, the effect below would never restart and no RAF
- * loop would be left to advance the freshly-reset `frame`. Every
- * `play()`/`skipToEnd()` call bumps `runId`, which *always* differs
- * from its previous value, guaranteeing the effect's cleanup
- * (`cancelAnimationFrame`) tears down any prior loop and a fresh one
- * starts -- the same "force a restart via a real dependency, not a
- * value that might legitimately repeat" fix use-trade-replay.ts's own
- * points-reference reset (below) already relies on for a different
- * trigger. No separate "is this tick stale?" check is needed inside
- * `tick` any more either, now that every genuine restart is guaranteed
- * to actually cancel the previous loop via the effect's own cleanup --
- * the earlier `runIdRef`-based version needed that check only because a
- * same-value `phase` update couldn't force a restart at all.
+ * `play()` is a no-op while `phase` is already `"playing"` (not
+ * reachable via the shipped UI today -- the button that calls `play()`
+ * is hidden while playing, replaced by "Skip to end" -- but a real
+ * contract this hook's own public API needs regardless, code-review
+ * found and fixed). **Simplified in round four** from an earlier
+ * `runId` state variable (bumped on every `play()`/`skipToEnd()` call,
+ * included in the effect's own dependency array purely to force a
+ * restart even when `phase`'s own value happened to repeat) down to a
+ * plain guard at the top of `play()` itself: since every reachable
+ * caller only ever invokes `play()` from `"idle"` or `"done"`, never
+ * `"playing"`, a guard that simply declines to act while already
+ * `"playing"` is behaviorally identical for every real call site, and
+ * is arguably the more literal reading of "idempotent" the original
+ * round-two fix was named for (repeating the call has no additional
+ * effect, rather than restarting the walk). No `runId` needed, and no
+ * "is this tick stale?" check inside `tick` either -- the effect's own
+ * `[phase, points]` dependency array still forces a genuine restart
+ * (and its cleanup's `cancelAnimationFrame` still tears down the prior
+ * loop first) on every *real* transition, which is now the only kind
+ * `play()`/`skipToEnd()` ever produce.
  */
 export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeReplayResult {
   const [phase, setPhase] = useState<ReplayPhase>("idle");
   const [frame, setFrame] = useState<ReplayFrame>(() => initialFrame(points));
-  const [runId, setRunId] = useState(0);
+  // Bumped at every one of the three `setPhase("done")` call sites below
+  // -- see `UseTradeReplayResult.completedRuns`'s own doc comment for why
+  // this hook (not a caller shadow-tracking `phase`) owns the count.
+  const [completedRuns, setCompletedRuns] = useState(0);
 
   const play = useCallback(() => {
-    if (points.length < 2) return;
-    setRunId((id) => id + 1);
+    if (points.length < 2 || phase === "playing") return;
     setFrame(initialFrame(points));
     setPhase("playing");
-  }, [points]);
+  }, [points, phase]);
 
   const skipToEnd = useCallback(() => {
-    setRunId((id) => id + 1);
     setFrame(finalFrame(points));
     setPhase("done");
+    setCompletedRuns((run) => run + 1);
   }, [points]);
 
   // If `points` changes identity while a replay is mid-flight (or just
@@ -220,31 +236,49 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
   // unmounting `TradeReplay` -- treat it as a fresh mount rather than
   // silently rebuilding `segments` under the effect below while `frame`
   // still holds stale mid-playback values from the *old* points. The
-  // effect's own `[phase, points, runId]` dependency array already
-  // restarts `segmentIndex`/`phaseStart` from scratch in that case
-  // regardless (and its cleanup's `cancelAnimationFrame` already stops
-  // the old points' in-flight loop before the new effect body ever
-  // runs); without this reset, `frame` wouldn't catch up until the next
-  // tick fires, and even then would resume mid-walk through data that no
+  // effect's own `[phase, points]` dependency array already restarts
+  // `segmentIndex`/`phaseStart` from scratch in that case regardless
+  // (and its cleanup's `cancelAnimationFrame` already stops the old
+  // points' in-flight loop before the new effect body ever runs);
+  // without this reset, `frame` wouldn't catch up until the next tick
+  // fires, and even then would resume mid-walk through data that no
   // longer matches what's on screen -- visibly snapping the chart/hero
   // backward and re-narrating an already-shown trade with no indication
   // anything reset. Resetting to "idle" here (not "done") means the
   // user sees the plain, real hero row/chart again and a fresh "Watch
-  // it happen" button, exactly as if this were the first time -- the
-  // same "adjust state during render when a prop changes" idiom
-  // `use-results.ts`'s own `trackedUrl` check and `use-range-guess.ts`'s
-  // `tracked` check already use, so this stays lint-safe (a plain
-  // render-time setState, not one inside an effect body) and needs no
-  // extra render before it applies.
-  const [trackedPoints, setTrackedPoints] = useState(points);
-  if (points !== trackedPoints) {
-    setTrackedPoints(points);
+  // it happen" button, exactly as if this were the first time. Uses the
+  // shared useResetWhenChanged helper (code review, issue #96 follow-up
+  // round four) rather than a hand-rolled `trackedPoints` companion
+  // state -- the same "adjust state during render when a prop changes"
+  // idiom `use-results.ts`'s own reset and `use-range-guess.ts`'s reset
+  // already use, so this stays lint-safe (a plain render-time setState,
+  // not one inside an effect body) and needs no extra render before it
+  // applies.
+  useResetWhenChanged([points], () => {
     if (phase !== "idle") {
       setPhase("idle");
       setFrame(initialFrame(points));
     }
-  }
+  });
 
+  // The `let frameId; function tick(now) {...}; frameId =
+  // requestAnimationFrame(tick); return () => cancelAnimationFrame(frameId)`
+  // scaffold below structurally mirrors use-count-up.ts's own RAF loop --
+  // considered extracting a shared "run this RAF loop, call me each tick,
+  // support cancel/restart" primitive (code review, issue #96 follow-up
+  // round four), but the two loops' actual substance genuinely diverges
+  // enough that it didn't compose cleanly: use-count-up.ts's tick closes
+  // over a single fixed `startTime` captured once and runs unconditionally
+  // on a mount-only `[]` effect, while this one restarts a multi-segment
+  // tween/pause state machine (`segmentIndex`/`subPhase`/`phaseStart`, all
+  // reassigned mid-loop as segments advance, not just read) on every
+  // `[phase, points]` change. A shared primitive would need the caller to
+  // hand it a memoized "build my own tick(now)" callback and thread that
+  // through its own dependency array -- a genuine dependency-array-of-a-
+  // dependency-array layer of indirection for what's otherwise ~5 lines of
+  // schedule/cleanup boilerplate, likely making both hooks harder to read
+  // rather than easier. Left un-extracted; only `tweenValue`'s own curve
+  // math (lib/easing.ts, round three) is actually shared between them.
   useEffect(() => {
     if (phase !== "playing") return;
 
@@ -309,6 +343,7 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
           );
           setFrame(finalFrame(points));
           setPhase("done");
+          setCompletedRuns((run) => run + 1);
           return;
         }
         setFrame({
@@ -345,6 +380,7 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
         // on the most recent trading day).
         setFrame(finalFrame(points));
         setPhase("done");
+        setCompletedRuns((run) => run + 1);
         return;
       }
       subPhase = "tween";
@@ -354,7 +390,7 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
 
     frameId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frameId);
-  }, [phase, points, runId]);
+  }, [phase, points]);
 
-  return { phase, frame, play, skipToEnd };
+  return { phase, frame, play, skipToEnd, completedRuns };
 }

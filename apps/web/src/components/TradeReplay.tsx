@@ -6,7 +6,7 @@
 // PortfolioPoint[]) rather than computing or fetching anything new. See
 // use-trade-replay.ts for the RAF-driven state machine this orchestrates.
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 
 import { formatHeroCurrency, formatPercent } from "@/lib/format-currency";
 import { formatDateTime } from "@/lib/format-date";
@@ -15,8 +15,9 @@ import { spansMultipleDays } from "@/lib/portfolio-series";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { tradeVerbsPastCapitalized } from "@/lib/trade-math";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
-import { useTradeReplay, type ReplayEvent, type ReplayPhase } from "@/lib/use-trade-replay";
+import { useTradeReplay, type ReplayEvent } from "@/lib/use-trade-replay";
 import { HeroAndWorstCase } from "@/components/HeroAndWorstCase";
+import { heroLabelClassName, heroValueRowClassName } from "@/components/HeroStat";
 import { PortfolioChart } from "@/components/PortfolioChart";
 
 interface TradeReplayProps {
@@ -81,7 +82,7 @@ const buttonClassName =
  * Idle and done both render the *real*, untouched `HeroAndWorstCase`
  * pairing -- `HeroStat` inside it reveals fresh (a genuinely new
  * `key`) only on a genuine new result (a fetch, or a mode switch) or
- * when playback actually *finishes* (see `revealRun` below), never
+ * when playback actually *finishes* (see `completedRuns` below), never
  * merely because playback started or was aborted early. Only while
  * `phase === "playing"` does the hero slot additionally overlay a
  * plain, non-animated "$X -> $Y" figure (driven by the replay hook's
@@ -92,41 +93,52 @@ const buttonClassName =
  * array -- see that component's own prop doc comments, code review
  * issue #96 follow-up round 3).
  *
- * **`heroKey` carries a `revealRun` suffix, bumped only when phase
- * *lands on* "done" (code review, issue #96 follow-up round 3) --
- * this is the mechanism that decides when HeroStat gets a fresh
- * count-up/confetti reveal, now that `HeroAndWorstCase` keeps HeroStat
- * continuously mounted across every phase (see that component's own
- * `heroSlot` doc comment) instead of unmounting it whenever playback
- * starts.** Before this fix, the hero slot swapped between two
- * different *element types* (`<HeroStat>` vs. a plain `<div>`) depending
- * on phase -- any element-type change at a JSX position is an
- * unconditional fresh mount by React's own reconciliation rules,
- * independent of `key`, so *every* transition out of "playing" (whether
- * landing on "done" -- a genuine completion, meant to replay the reveal
- * as a reward -- or aborted back to "idle" by a live points-reference
- * change, e.g. a starting-capital edit mid-playback) forced the exact
- * same remount. That's exactly right for a genuine completion (verified
- * live: "Skip to end landing on the real final state with a fresh
- * HeroStat count-up/glow replaying"), but wrong for an abort: a
- * starting-capital edit mid-playback resetting `use-trade-replay.ts`'s
- * own `phase` to "idle" (its render-time `trackedPoints` reset, see
- * that hook's own doc comment) doesn't change `heroKey` -- capital isn't
- * part of it -- so the *type-swap* alone was what forced the remount,
- * re-triggering a full reveal/celebration burst on a plain rescale and
- * directly contradicting `HeroStat.tsx`'s own documented contract
- * ("rescale instantly ... without re-triggering the count-up animation
- * or the celebration burst"). With HeroStat now always mounted, the
- * *only* remaining trigger for a fresh reveal is a `key` change --
- * either `heroKey` itself changing upstream (a mode switch, which
- * folds `mode` into `heroKey` -- see this prop's own doc comment, so a
- * genuinely different trade sequence still gets a fresh reveal exactly
- * as before) or this file's own `revealRun` counter, bumped
- * specifically (and only) when `phase` transitions *to* "done" --
- * natural completion or "Skip to end," never a mid-flight abort back to
- * "idle." A starting-capital edit mid-playback now aborts back to idle
- * with HeroStat's already-settled figure simply re-rendering at the new
- * scale in place, exactly like an edit made while never playing at all.
+ * **`heroKey` carries `useTradeReplay`'s own `completedRuns` counter as a
+ * suffix, bumped only when phase *lands on* "done" (code review, issue
+ * #96 follow-up rounds 3 and 4) -- this is the mechanism that decides
+ * when HeroStat gets a fresh count-up/confetti reveal, now that
+ * `HeroAndWorstCase` keeps HeroStat continuously mounted across every
+ * phase (see that component's own `heroSlot` doc comment) instead of
+ * unmounting it whenever playback starts.** Before this fix, the hero
+ * slot swapped between two different *element types* (`<HeroStat>` vs. a
+ * plain `<div>`) depending on phase -- any element-type change at a JSX
+ * position is an unconditional fresh mount by React's own reconciliation
+ * rules, independent of `key`, so *every* transition out of "playing"
+ * (whether landing on "done" -- a genuine completion, meant to replay
+ * the reveal as a reward -- or aborted back to "idle" by a live
+ * points-reference change, e.g. a starting-capital edit mid-playback)
+ * forced the exact same remount. That's exactly right for a genuine
+ * completion (verified live: "Skip to end landing on the real final
+ * state with a fresh HeroStat count-up/glow replaying"), but wrong for
+ * an abort: a starting-capital edit mid-playback resetting
+ * `use-trade-replay.ts`'s own `phase` to "idle" (its render-time
+ * points-reference reset, see that hook's own doc comment) doesn't
+ * change `heroKey` -- capital isn't part of it -- so the *type-swap*
+ * alone was what forced the remount, re-triggering a full
+ * reveal/celebration burst on a plain rescale and directly contradicting
+ * `HeroStat.tsx`'s own documented contract ("rescale instantly ...
+ * without re-triggering the count-up animation or the celebration
+ * burst"). With HeroStat now always mounted, the *only* remaining
+ * trigger for a fresh reveal is a `key` change -- either `heroKey` itself
+ * changing upstream (a mode switch, which folds `mode` into `heroKey` --
+ * see this prop's own doc comment, so a genuinely different trade
+ * sequence still gets a fresh reveal exactly as before) or
+ * `completedRuns`, bumped specifically (and only) when `phase`
+ * transitions *to* "done" -- natural completion or "Skip to end," never
+ * a mid-flight abort back to "idle." A starting-capital edit
+ * mid-playback now aborts back to idle with HeroStat's already-settled
+ * figure simply re-rendering at the new scale in place, exactly like an
+ * edit made while never playing at all.
+ *
+ * **`completedRuns` is owned by `useTradeReplay` itself, not
+ * shadow-tracked here (code review, issue #96 follow-up round four).**
+ * An earlier version of this file kept its own `revealRun` counter,
+ * bumped via a second `trackedPhase` state variable that existed purely
+ * to detect "the hook's own `phase` just became `\"done\"`" -- but the
+ * hook already owns that exact transition at its own three
+ * `setPhase("done")` call sites, so it's the more natural (and simpler)
+ * owner of counting them; see `UseTradeReplayResult.completedRuns`'s own
+ * doc comment.
  *
  * `WorstCaseStat` (via `HeroAndWorstCase`) renders unconditionally, in
  * every phase -- it has no animation of its own to protect, and the
@@ -172,22 +184,7 @@ export function TradeReplay({
   children,
 }: TradeReplayProps) {
   const reducedMotionAtMount = useReducedMotionAtMount();
-  const { phase, frame, play, skipToEnd } = useTradeReplay(points);
-
-  // Bumped only when `phase` actually *lands on* "done" -- see this
-  // component's own doc comment above for the full reasoning (code
-  // review, issue #96 follow-up round 3). Read during render (not an
-  // effect) via the same "adjust state when a prop/value changes" idiom
-  // use-trade-replay.ts's own `trackedPoints` reset and use-results.ts's
-  // `trackedUrl` check already use elsewhere in this app.
-  const [revealRun, setRevealRun] = useState(0);
-  const [trackedPhase, setTrackedPhase] = useState<ReplayPhase>(phase);
-  if (phase !== trackedPhase) {
-    setTrackedPhase(phase);
-    if (phase === "done") {
-      setRevealRun((run) => run + 1);
-    }
-  }
+  const { phase, frame, play, skipToEnd, completedRuns } = useTradeReplay(points);
 
   // Memoized (code-review finding, issue #96 follow-up): constant for
   // the whole result, but this component re-renders on every one of the
@@ -257,7 +254,7 @@ export function TradeReplay({
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <HeroAndWorstCase
-            heroKey={`${heroKey}:${revealRun}`}
+            heroKey={`${heroKey}:${completedRuns}`}
             startingCapital={startingCapital}
             endingBalance={endingBalance}
             worstCaseEndingBalance={worstCaseEndingBalance}
@@ -272,13 +269,20 @@ export function TradeReplay({
                 // Absolutely positioned over HeroAndWorstCase's own
                 // (visually hidden, but still mounted) real HeroStat --
                 // see that component's own `heroSlot` doc comment for
-                // why this overlays rather than replaces it.
+                // why this overlays rather than replaces it. Reuses
+                // HeroStat.tsx's own exported `heroLabelClassName`/
+                // `heroValueRowClassName` (code review, issue #96
+                // follow-up round four) rather than hand-copying those
+                // two classes as literal strings, so this figure reads
+                // as "the same hero figure, mid-transition" without
+                // risking drift if HeroStat's own typography ever
+                // changes.
                 <div
                   aria-hidden="true"
                   className="absolute inset-0 flex flex-col items-start gap-1"
                 >
-                  <p className="text-sm font-medium text-[var(--text-secondary)]">Starting from</p>
-                  <p className="flex flex-wrap items-baseline gap-3 text-[clamp(2.5rem,6vw,4rem)] font-semibold leading-none tracking-tight text-[var(--text-primary)]">
+                  <p className={heroLabelClassName}>Starting from</p>
+                  <p className={heroValueRowClassName}>
                     <span>{displayStartingCapitalFormatted}</span>
                     <span className="text-[var(--text-muted)]">→</span>
                     <span>{formatHeroCurrency(frame.currentValue)}</span>

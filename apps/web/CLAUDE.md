@@ -3563,3 +3563,189 @@ $17.2K`, `WorstCaseStat`'s own $4.20 -> $10.50). The contrast case
   `pnpm add -D -w playwright` for one verification session) were both
   reverted before committing -- `git status`/`git diff --stat` on
   `package.json`/`pnpm-lock.yaml` show no trace of either afterward.
+
+### Code-review follow-up, round four -- eight more findings (two real bugs, six cleanups)
+
+A fourth `high` review of the PR above, after the seven-, nine-, and
+ten-finding rounds already documented, caught eight more, tagged by
+confidence (3 CONFIRMED, 5 PLAUSIBLE) -- two real bugs, six
+duplication/perf/simplification cleanups. Two other candidates the
+reviewer flagged were checked and refuted before this list was even
+handed off, so they're not discussed here.
+
+- **A touch-only regression from round 3's own `revealedCount`/
+  `interactive` redesign: the one-time tap-hint pulse could relocate
+  between successive trade markers mid-playback, animating on content
+  that's simultaneously `inert`.** `PortfolioChart.tsx`'s pulse targets
+  `eventMarkers[eventMarkers.length - 1]`, and round 3 changed
+  `eventMarkers` to derive from `drawn` -- the `revealedCount`-truncated
+  prefix TradeReplay.tsx's playback grows one marker at a time -- without
+  updating the pulse's own gating to match. A touch-primary first-time
+  visitor who saw the pulse on the chart's final marker, then clicked
+  "Watch it happen" before the pulse's own multi-second animation
+  finished, would see the hint circle jump backward to whatever's
+  currently the last _revealed_ marker and keep relocating forward as
+  `revealedCount` grew -- an animated "tap here" invitation moving around
+  on content the same render also marks `inert` (pointer events
+  disabled) and `aria-hidden`. Fixed two ways together, the same "belt
+  and suspenders" posture this component's `aria-hidden`+`inert` pairing
+  already uses: (1) the pulse's own render condition now also checks
+  `interactive`, so it can never paint at all while non-interactive; (2)
+  the existing `useResetWhenChanged` reset that already clears a stale
+  `hoverIndex` on an `interactive` flip (round 3) now also calls
+  `dismissTapHint()` whenever `interactive` goes `false` -- `dismissTapHint`
+  is idempotent (a no-op if the hint was never shown, or already
+  dismissed), and playback starting is itself a real interaction with
+  the chart, the same class of event `revealNearestPoint` already treats
+  as "the hint did its job." **Live-verified**, not just unit-tested: a
+  Playwright script emulating a touch-primary device (`(pointer: coarse)`
+  stubbed via `matchMedia`) against a throwaway debug route confirmed the
+  pulse present before playback, confirmed absent across ten ~150ms
+  samples spanning the whole playback run, and confirmed still absent
+  once playback finished -- the debug route and the temporary
+  `playwright` devDependency were both reverted before committing (same
+  pattern as every prior round). A jsdom regression test was also added
+  (`PortfolioChart.test.tsx`) covering both the "never renders while
+  `interactive` is false, even as `revealedCount` grows" case and the
+  "stays dismissed once `interactive` flips back to `true`" case, since
+  jsdom can assert the DOM-presence half of this bug (the pulse element
+  existing or not) even though it can't assert the CSS animation motion
+  itself -- the same distinction round 2's own `inert` live-verification
+  note already drew between what jsdom can and can't confirm.
+- **`drawn = plotted.slice(0, revealedCount)` had no lower bound, and
+  `revealedCount` is a public, unvalidated prop.** A `revealedCount` of
+  `0` (or negative) produced an empty `drawn` array, and the non-null
+  assertions built on top of it (`drawn[drawn.length - 1]!.x`,
+  `drawn[0]!.x`, the gain/loss color's own `drawn[drawn.length - 1]!
+.value`) would then crash on `undefined!.x` instead of rendering
+  anything -- today prevented only by an emergent combination of
+  independently-maintained checks elsewhere (`use-trade-replay.ts`'s
+  `play()` length guard, `buildSegments`'s 1-indexed loop, `TradeReplay`'s
+  `showLive` gating), not one explicit invariant at this component's own
+  boundary. Fixed with an explicit clamp,
+  `Math.min(Math.max(revealedCount ?? points.length, 1), plotted.length)`
+  -- `PortfolioChart` is now safe regardless of what a future caller
+  passes, matching this codebase's established defense-in-depth posture.
+  Regression-tested (`revealedCount={0}`, a negative value, and a value
+  larger than the series) in `PortfolioChart.test.tsx`.
+- **The "track a value during render, react the instant it changes"
+  idiom was hand-duplicated six times** (three pre-existing:
+  `use-results.ts`'s `trackedUrl`, `use-range-guess.ts`'s `tracked`,
+  `StartingCapitalInput.tsx`'s `trackedValue`; three new from this PR:
+  `use-trade-replay.ts`'s `trackedPoints`, `PortfolioChart.tsx`'s
+  `trackedPoints`/`trackedInteractive`, `TradeReplay.tsx`'s
+  `trackedPhase`) -- despite several of those sites' own comments
+  explicitly cross-referencing the others by name as precedent for the
+  same pattern, with no shared helper. Extracted `useResetWhenChanged`
+  (`lib/use-reset-when-changed.ts`): pass an array of values to track
+  (`useEffect`-style, compared element-by-element via `Object.is`, so it
+  handles `PortfolioChart`'s own two-value `[points, interactive]` case
+  the same way single-value callers use `[value]`) and a callback to run
+  synchronously during render the instant any of them changes. All five
+  remaining sites (see the next bullet for why `TradeReplay.tsx`'s own
+  instance disappeared entirely rather than becoming a sixth caller) now
+  share this one implementation, with a dedicated
+  `use-reset-when-changed.test.ts` covering the multi-value and
+  `Object.is`-not-deep-equality behavior directly.
+- **`TradeReplay.tsx`'s own `revealRun`/`trackedPhase` pair (a
+  lower-priority "consider simplifying" candidate, item 8 below) turned
+  out foldable into `useTradeReplay` itself rather than needing the
+  shared helper above at all.** `trackedPhase` existed purely to detect
+  "the hook's own `phase` just became `\"done\"`" -- but the hook already
+  owns that exact transition at its own three `setPhase("done")` call
+  sites (natural completion, `skipToEnd`, and the corrupted-price
+  defensive catch), so it's the more natural owner of counting them.
+  `useTradeReplay` now returns a `completedRuns` counter, bumped at all
+  three sites; `TradeReplay.tsx` suffixes `heroKey` with it directly and
+  no longer tracks `phase` itself at all. Net effect: one fewer
+  duplicate-idiom site than the finding originally counted (five
+  `useResetWhenChanged` callers, not six), and a simpler
+  `TradeReplay.tsx` besides.
+- **`PortfolioChart` was not wrapped in `React.memo`, even though its own
+  child `ChartDataTable` already was, for the identical reason.** During
+  RAF-driven replay playback most tween frames leave
+  `points`/`revealedCount`/`interactive` completely unchanged (only the
+  hero figure's own `currentValue`, owned entirely by `TradeReplay.tsx`,
+  moves), yet `linePath`/`areaPath`/`eventMarkers` still recomputed and
+  the full SVG still re-diffed every frame for no visible difference.
+  Wrapped in `React.memo` -- safe under the default shallow comparison
+  since `points` is a stable reference for the whole run (only
+  `revealedCount` grows) and `revealedCount`/`interactive` are
+  primitives. Deliberately **not** applied to `HeroAndWorstCase`, whose
+  `heroSlot` content changes nearly every tick during playback -- memo
+  would buy nothing there and was correctly left alone.
+- **`use-trade-replay.ts`'s `runId` state (added in round 2 solely to
+  force `play()`'s RAF effect to restart even when `phase`'s own value
+  repeated) was simplified to a plain guard.** Round 2's fix made
+  `play()` safe to call while already `"playing"` -- not reachable via
+  the shipped UI, but a real hook-level API gap -- by bumping a `runId`
+  state variable on every `play()`/`skipToEnd()` call and including it in
+  the effect's own dependency array, so a same-value `phase` update could
+  still force a teardown/restart. Round 4 simplified this to
+  `if (points.length < 2 || phase === "playing") return;` at the top of
+  `play()` itself: every reachable caller only ever invokes `play()` from
+  `"idle"`/`"done"`, never `"playing"`, so a guard that simply declines to
+  act while already playing is behaviorally identical for every real call
+  site -- and is arguably the more literal reading of "idempotent," which
+  is what round 2's fix was actually named for (repeating the call has no
+  additional effect, vs. round 2's chosen behavior of restarting the
+  walk). `runId` state, and its dependency-array entry, were removed
+  entirely. The one existing regression test that asserted the old
+  "restarts from the beginning" behavior was updated to assert the new
+  "no-op, original walk keeps advancing undisturbed" behavior instead --
+  a deliberate behavior change to the hook's own unreachable-in-practice
+  edge case, not an oversight; the reasoning is recorded in both the
+  hook's own doc comment and the test's own name.
+- **The RAF scheduling scaffold in `use-trade-replay.ts` (start-time
+  capture, `tick(now)`/elapsed computation, `requestAnimationFrame`
+  reschedule, `cancelAnimationFrame` cleanup) structurally mirrors
+  `use-count-up.ts`'s own RAF loop -- considered for extraction, not
+  extracted.** Only `tweenValue`'s own curve math (round 3, `lib/
+easing.ts`) was ever actually shared between the two; the scheduling
+  boilerplate itself was not, because the two loops' substance genuinely
+  diverges: `use-count-up.ts`'s tick closes over a single fixed
+  `startTime` captured once and runs unconditionally on a mount-only `[]`
+  effect, while `use-trade-replay.ts`'s tick restarts a multi-segment
+  tween/pause state machine (`segmentIndex`/`subPhase`/`phaseStart`, all
+  _reassigned_ mid-loop as segments advance, not just read) on every
+  `[phase, points]` change. A shared primitive would need the caller to
+  hand it a memoized "build my own `tick(now)`" callback and thread that
+  through its own dependency array -- a genuine dependency-array-of-a-
+  dependency-array layer of indirection for what's otherwise ~5 lines of
+  schedule/cleanup boilerplate, likely making both hooks harder to read
+  rather than easier. Left un-extracted, with the reasoning recorded as a
+  comment directly above `use-trade-replay.ts`'s own effect, per the
+  review's own explicit "if it doesn't compose cleanly, leave a comment
+  explaining why rather than forcing a bad abstraction" guidance.
+- **`HeroAndWorstCase.tsx`'s generic `heroSlot?: ReactNode` prop has
+  exactly one real caller (`TradeReplay.tsx`), which used to hand-copy
+  `HeroStat`'s own "Starting from" label and big-number-row `className`
+  strings byte-for-byte instead of reusing them.** Considered narrowing
+  `heroSlot` itself to something more purpose-built, but that would mean
+  splitting `HeroStat`'s own label+wrapper markup out from its
+  count-up/celebration-burst/accessibility machinery -- a real
+  restructuring of a component whose mount/reveal timing and
+  accessibility behavior have already needed careful, hard-won fixes
+  across rounds 1-3, for a prop with a single caller. Took the cheaper,
+  equally-effective fix instead: `HeroStat.tsx` now exports
+  `heroLabelClassName`/`heroValueRowClassName` as named constants, and
+  `TradeReplay.tsx`'s `heroSlot` content imports and reuses them rather
+  than hand-copying the literal strings -- the actual duplication risk
+  (drift if `HeroStat`'s own typography ever changes) is eliminated with
+  zero behavior change and no risk to `HeroStat`'s own careful reveal
+  machinery. `heroSlot` itself stays a generic `ReactNode` prop.
+- **Two other candidates the round-four reviewer flagged were checked
+  and refuted before this list was finalized**, per the same "verify a
+  suspicious finding before trusting it" discipline round 2's own false
+  positive (a stale-`main` diff artifact) already established --
+  specifics not repeated here since they were dropped before reaching
+  this file, the same treatment round 2's refuted finding got.
+- **Verified all five routine checks green** (lint, `next typegen &&
+tsc --noEmit`, `pnpm build`, `pnpm test`, `pnpm format:check`) after
+  every fix in this round, plus a full `.next` cache clear once the
+  throwaway debug route was deleted -- `next typegen`'s generated route
+  validator otherwise keeps a stale reference to a route file that no
+  longer exists on disk, failing typecheck for a reason unrelated to any
+  real code change (worth remembering for the next debug-route cleanup:
+  delete `.next` too, not just the route file itself, before trusting a
+  typecheck run).
