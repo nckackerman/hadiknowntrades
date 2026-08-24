@@ -78,6 +78,7 @@ import {
   resultKey,
   customResultKey,
   CUSTOM_ANCHORS_MANIFEST_KEY,
+  daysBeforeUtc,
   RESULTS_SCHEMA_VERSION,
   toDateString,
   UnexpectedResponseError,
@@ -132,7 +133,7 @@ const DEFAULT_WRITE_CONCURRENCY = 10;
 // wall rather than right at the boundary. Deliberately NOT reusing
 // presetRangeStartDate here -- that function only subtracts whole
 // months/years, and this needs a plain days-back offset instead (see
-// daysBeforeUtc below).
+// the imported daysBeforeUtc from @hadiknowntrades/core).
 const FIVE_MINUTE_LOOKBACK_DAYS = 59;
 // How far back to fetch 1-minute bars for (issue #29, upgrading 1M --
 // see packages/core/CLAUDE.md's "1-minute intraday bars" section). Same
@@ -404,13 +405,6 @@ function findMaxDate<T>(
 /** The calendar-date (YYYY-MM-DD) prefix of an intraday bar's full local-datetime `date` field ("YYYY-MM-DDTHH:MM:SS"). */
 function localDatePart(datetime: string): string {
   return datetime.slice(0, 10);
-}
-
-/** `date` minus a plain number of calendar days, in UTC (issue #30) -- used for every granularity override's lookback window; presetRangeStartDate's month/year subtraction doesn't cover a plain days-back offset. */
-function daysBeforeUtc(date: Date, days: number): Date {
-  const result = new Date(date);
-  result.setUTCDate(result.getUTCDate() - days);
-  return result;
 }
 
 /**
