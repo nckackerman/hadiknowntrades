@@ -1,6 +1,66 @@
 import { describe, expect, it } from "vitest";
 
-import { buildLogScale, buildTimeScale, niceLogTicks } from "./chart-scales";
+import {
+  buildChainedIntradayXPositions,
+  buildLogScale,
+  buildTimeScale,
+  niceLogTicks,
+} from "./chart-scales";
+
+describe("buildChainedIntradayXPositions", () => {
+  it("gives every day an equal-width slot regardless of how many points that day has", () => {
+    // Day "a": 2 points. Day "b": 5 points (e.g. a day at
+    // DEFAULT_MAX_TRADES_PER_DAY). Day "c": 1 point. An earlier,
+    // per-point ordinal version of this fix would give "b" roughly 5/8 of
+    // the width; day-bucketing gives it the same 1/3 share as "a" and "c".
+    const dayKeys = ["a", "a", "b", "b", "b", "b", "b", "c"];
+    const timestamps = [100, 200, 300, 310, 320, 330, 340, 500];
+
+    const positions = buildChainedIntradayXPositions(dayKeys, timestamps, [0, 90]);
+
+    // Day "a" (slot [0, 30]): its own min/max points land exactly on the
+    // slot's edges.
+    expect(positions[0]).toBe(0);
+    expect(positions[1]).toBe(30);
+    // Day "b" (slot [30, 60]): 5 points, evenly interpolated by real
+    // timestamp within that same 30-wide slot -- not a wider one.
+    expect(positions[2]).toBe(30);
+    expect(positions[3]).toBeCloseTo(37.5, 5);
+    expect(positions[4]).toBeCloseTo(45, 5);
+    expect(positions[5]).toBeCloseTo(52.5, 5);
+    expect(positions[6]).toBe(60);
+    // Day "c" (slot [60, 90]): a single point, but it's also the series'
+    // very last point -- pinned to the range end (see below), not
+    // centered in its slot.
+    expect(positions[7]).toBe(90);
+  });
+
+  it("centers an interior single-point (no-trade) day in its own slot", () => {
+    const dayKeys = ["a", "a", "b", "c", "c"];
+    const timestamps = [0, 10, 999, 20, 30];
+
+    const positions = buildChainedIntradayXPositions(dayKeys, timestamps, [0, 90]);
+
+    expect(positions).toEqual([0, 30, 45, 60, 90]);
+  });
+
+  it("pins the first and last point to the range edges even when the first or last day has only one point", () => {
+    const dayKeys = ["a", "b"];
+    const timestamps = [0, 1];
+
+    const positions = buildChainedIntradayXPositions(dayKeys, timestamps, [0, 90]);
+
+    expect(positions).toEqual([0, 90]);
+  });
+
+  it("returns the range midpoint for a single point overall", () => {
+    expect(buildChainedIntradayXPositions(["a"], [0], [0, 90])).toEqual([45]);
+  });
+
+  it("returns an empty array for no points", () => {
+    expect(buildChainedIntradayXPositions([], [], [0, 90])).toEqual([]);
+  });
+});
 
 describe("buildTimeScale", () => {
   it("maps the domain endpoints to the range endpoints", () => {

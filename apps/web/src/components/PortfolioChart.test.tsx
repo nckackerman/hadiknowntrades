@@ -310,6 +310,164 @@ describe("PortfolioChart", () => {
     });
   });
 
+  describe("x-axis scale by series shape (issue #93)", () => {
+    /** The <circle> markers for whichever points carry an event, in point order (open before close). */
+    function getMarkerCircles() {
+      return getChartSvg().querySelectorAll("circle");
+    }
+
+    it("buckets a chained multi-day intraday series by calendar day, not by point count", () => {
+      // Three trading days chained together: day 1 and day 3 each have a
+      // single trade (4 points apiece: a leading flat point, open,
+      // sell-label duplicate, close); day 2 has three trades (10 points:
+      // a leading flat point plus open/sell-label/close per trade). A
+      // per-point ordinal scale (an earlier, wrong version of this fix)
+      // would give day 2 roughly 10/18 of the chart's width purely
+      // because it has more plotted points; day-bucketing must instead
+      // keep every day to the same 1/3 share (PLOT_WIDTH = 880 - 76 - 16
+      // = 788, so each day's slot is ~262.67 wide) regardless of how many
+      // trades happened that day.
+      const eventPoints: PortfolioPoint[] = [
+        // Day 1 (2024-01-05): one trade.
+        { date: "2024-01-05T09:30:00", value: 20, event: null },
+        {
+          date: "2024-01-05T10:00:00",
+          value: 20,
+          event: { type: "open", direction: "long", ticker: "AAPL", price: 10 },
+        },
+        { date: "2024-01-05T15:00:00", value: 20, event: null },
+        {
+          date: "2024-01-05T15:00:00",
+          value: 24,
+          event: { type: "close", direction: "long", ticker: "AAPL", price: 12 },
+        },
+        // Day 2 (2024-01-08): three trades, DEFAULT_MAX_TRADES_PER_DAY.
+        { date: "2024-01-08T09:30:00", value: 24, event: null },
+        {
+          date: "2024-01-08T10:00:00",
+          value: 24,
+          event: { type: "open", direction: "long", ticker: "MSFT", price: 100 },
+        },
+        { date: "2024-01-08T11:00:00", value: 24, event: null },
+        {
+          date: "2024-01-08T11:00:00",
+          value: 26.4,
+          event: { type: "close", direction: "long", ticker: "MSFT", price: 110 },
+        },
+        {
+          date: "2024-01-08T12:00:00",
+          value: 26.4,
+          event: { type: "open", direction: "long", ticker: "MSFT", price: 110 },
+        },
+        { date: "2024-01-08T13:00:00", value: 26.4, event: null },
+        {
+          date: "2024-01-08T13:00:00",
+          value: 25.2,
+          event: { type: "close", direction: "long", ticker: "MSFT", price: 105 },
+        },
+        {
+          date: "2024-01-08T14:00:00",
+          value: 25.2,
+          event: { type: "open", direction: "long", ticker: "MSFT", price: 105 },
+        },
+        { date: "2024-01-08T15:00:00", value: 25.2, event: null },
+        {
+          date: "2024-01-08T15:00:00",
+          value: 28.8,
+          event: { type: "close", direction: "long", ticker: "MSFT", price: 120 },
+        },
+        // Day 3 (2024-01-09): one trade.
+        { date: "2024-01-09T09:30:00", value: 28.8, event: null },
+        {
+          date: "2024-01-09T10:00:00",
+          value: 28.8,
+          event: { type: "open", direction: "long", ticker: "GOOG", price: 50 },
+        },
+        { date: "2024-01-09T15:00:00", value: 28.8, event: null },
+        {
+          date: "2024-01-09T15:00:00",
+          value: 31.68,
+          event: { type: "close", direction: "long", ticker: "GOOG", price: 55 },
+        },
+      ];
+      render(<PortfolioChart points={eventPoints} />);
+      const circles = getMarkerCircles();
+      expect(circles).toHaveLength(10); // 2 markers/trade * 5 trades
+
+      const cx = (circle: Element) => Number(circle.getAttribute("cx"));
+      const [day1Open, day1Close, ...rest] = Array.from(circles);
+      const day2Markers = rest.slice(0, 6);
+      const [day3Open, day3Close] = rest.slice(6);
+
+      // Day 1's markers stay within day 1's own slot ([0, ~262.67]).
+      expect(cx(day1Open!)).toBeLessThan(263);
+      expect(cx(day1Close!)).toBeLessThan(263);
+      // All 6 of day 2's markers -- despite being 3x as many trades as
+      // day 1 or day 3 -- stay within day 2's own slot
+      // (~[262.67, 525.33]), never spilling into a neighboring day's
+      // share of the width the way per-point ordinal spacing would.
+      for (const marker of day2Markers) {
+        expect(cx(marker!)).toBeGreaterThanOrEqual(262);
+        expect(cx(marker!)).toBeLessThanOrEqual(526);
+      }
+      // Day 3's markers stay within day 3's own slot (~[525.33, 788]).
+      expect(cx(day3Open!)).toBeGreaterThan(525);
+      expect(cx(day3Close!)).toBe(788); // also the series' very last point
+    });
+
+    it("keeps the window model on a real linear time scale, not day-bucketed spacing", () => {
+      // The window model's equivalent shape: a trade opened one day
+      // after the window's start, closed almost a year later. Day-bucketed
+      // spacing would give a 3-day series' middle point 1/2 the width
+      // (x=394, see the chained-intraday test above); a real linear time
+      // scale instead places it close to the left edge, proportional to
+      // how little of the whole window that one day actually was.
+      const eventPoints: PortfolioPoint[] = [
+        { date: "2024-01-01", value: 20, event: null },
+        {
+          date: "2024-01-02",
+          value: 20,
+          event: { type: "open", direction: "long", ticker: "AAPL", price: 10 },
+        },
+        {
+          date: "2025-01-01",
+          value: 40,
+          event: { type: "close", direction: "long", ticker: "AAPL", price: 20 },
+        },
+      ];
+      render(<PortfolioChart points={eventPoints} />);
+      const [openCircle, closeCircle] = getMarkerCircles();
+
+      const PLOT_WIDTH = 788;
+      const span = Date.UTC(2025, 0, 1) - Date.UTC(2024, 0, 1);
+      const expectedOpenCx = (PLOT_WIDTH * (Date.UTC(2024, 0, 2) - Date.UTC(2024, 0, 1))) / span;
+      expect(Number(openCircle!.getAttribute("cx"))).toBeCloseTo(expectedOpenCx, 5);
+      expect(Number(openCircle!.getAttribute("cx"))).toBeLessThan(50);
+      expect(closeCircle).toHaveAttribute("cx", "788");
+    });
+
+    it("stays on the day-bucketed scale for a chained intraday series even with no trade events at all", () => {
+      // A day with no trades still renders a single flat point (see
+      // deriveWholeRangeIntradaySeries) -- confirm two such no-event days
+      // chained together still resolve nearest-point correctly.
+      const flatDays: PortfolioPoint[] = [
+        { date: "2024-01-05T12:00:00", value: 20, event: null },
+        { date: "2024-01-08T12:00:00", value: 20, event: null },
+      ];
+      const { container } = render(<PortfolioChart points={flatDays} />);
+      const svg = getChartSvg();
+      stubChartRect(svg);
+
+      fireEvent.pointerMove(svg, { clientX: 860 });
+      // With only 2 points (each its own single-point day), both the
+      // first and last point pin to their range edges -- same as it
+      // would under a linear scale for just two points, so this mainly
+      // guards against a crash/NaN on a
+      // no-event chained series rather than distinguishing the two scales.
+      expect(getReadout(container).getByText("Jan 8, 12:00 PM")).toBeInTheDocument();
+    });
+  });
+
   describe("touch tap hint (issue #66)", () => {
     const eventPoints: PortfolioPoint[] = [
       { date: "2024-01-01", value: 20, event: null },

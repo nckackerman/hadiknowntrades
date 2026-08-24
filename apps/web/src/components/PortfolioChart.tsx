@@ -18,8 +18,14 @@ import { memo, useId, useMemo, useState } from "react";
 
 import { formatAxisCurrency, formatHeroCurrency } from "@/lib/format-currency";
 import { formatDateTime, isPortfolioDatetime } from "@/lib/format-date";
-import { buildLogScale, buildTimeScale, niceLogTicks } from "@/lib/chart-scales";
 import {
+  buildChainedIntradayXPositions,
+  buildLogScale,
+  buildTimeScale,
+  niceLogTicks,
+} from "@/lib/chart-scales";
+import {
+  calendarDayOf,
   spansMultipleDays,
   type PortfolioEvent,
   type PortfolioPoint,
@@ -88,17 +94,19 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
   // single day's own chart) -- see that function's own doc comment.
   const includeDate = useMemo(() => spansMultipleDays(points), [points]);
 
-  const { yScale, yTicks, plotted } = useMemo(() => {
-    const timestamps = points.map((p) => toTimestamp(p.date));
-    const values = points.map((p) => p.value);
+  // Whether this series is the chained multi-day intraday chart (issue
+  // #91: many real trading days chained together, datetime-labeled points)
+  // rather than the window model (plain calendar-date points, sparse
+  // trade-event spacing) -- see buildChainedIntradayXPositions's own doc
+  // comment for why only the chained-intraday case gets day-bucketed x
+  // positions (issue #93). `includeDate` alone isn't enough: it's true
+  // for almost any real window result too (its points fall on genuinely
+  // different calendar dates), so it's ANDed with isPortfolioDatetime,
+  // the one thing that's actually false for every window-model point.
+  const isChainedIntradaySeries = includeDate && isPortfolioDatetime(points[0]!.date);
 
-    const minTs = Math.min(...timestamps);
-    const maxTs = Math.max(...timestamps);
-    // A single-point series (e.g. a window with no trades and start ===
-    // end) still needs a non-zero domain to lay out -- pad by a day.
-    const dayMs = 24 * 60 * 60 * 1000;
-    const xDomain: [number, number] =
-      minTs === maxTs ? [minTs - dayMs, maxTs + dayMs] : [minTs, maxTs];
+  const { yScale, yTicks, plotted } = useMemo(() => {
+    const values = points.map((p) => p.value);
 
     const rawMin = Math.min(...values);
     const rawMax = Math.max(...values);
@@ -106,18 +114,48 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
     const yDomain: [number, number] =
       rawMin === rawMax ? [rawMin / 1.5, rawMax * 1.5] : [rawMin / padFactor, rawMax * padFactor];
 
-    const xScale = buildTimeScale(xDomain, [0, PLOT_WIDTH]);
     const yScale = buildLogScale(yDomain, [PLOT_HEIGHT, 0]);
     const yTicks = niceLogTicks(yDomain[0], yDomain[1], 5);
 
+    const timestamps = points.map((p) => toTimestamp(p.date));
+
+    // x-positions, one per point, built one of two ways depending on
+    // isChainedIntradaySeries (see that flag's own comment above):
+    //   - chained intraday: day-bucketed (buildChainedIntradayXPositions)
+    //     -- an equal-width slot per calendar day, so neither
+    //     market-closed dead time nor a day's own trade count skews
+    //     pixel width, with real intraday time placing points within
+    //     each day's slot.
+    //   - window model: the original linear scale over real timestamps,
+    //     since the time between points there is meaningful holding
+    //     duration, not dead time.
+    const xPositions: number[] = isChainedIntradaySeries
+      ? buildChainedIntradayXPositions(
+          points.map((p) => calendarDayOf(p.date)),
+          timestamps,
+          [0, PLOT_WIDTH],
+        )
+      : (() => {
+          const minTs = Math.min(...timestamps);
+          const maxTs = Math.max(...timestamps);
+          // A single-point series (e.g. a window with no trades and
+          // start === end) still needs a non-zero domain to lay out --
+          // pad by a day.
+          const dayMs = 24 * 60 * 60 * 1000;
+          const xDomain: [number, number] =
+            minTs === maxTs ? [minTs - dayMs, maxTs + dayMs] : [minTs, maxTs];
+          const timeScale = buildTimeScale(xDomain, [0, PLOT_WIDTH]);
+          return timestamps.map((t) => timeScale(t));
+        })();
+
     const plotted = points.map((p, i) => ({
       ...p,
-      x: xScale(timestamps[i]!),
+      x: xPositions[i]!,
       y: yScale(p.value),
     }));
 
     return { yScale, yTicks, plotted };
-  }, [points]);
+  }, [points, isChainedIntradaySeries]);
 
   const linePath = plotted
     .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(2)},${p.y.toFixed(2)}`)
