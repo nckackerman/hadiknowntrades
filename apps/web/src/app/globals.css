@@ -277,3 +277,45 @@ body {
     animation: none;
   }
 }
+
+/*
+ * PortfolioChart's reveal-on-mount animation (issue #85): the area fill +
+ * line + markers group (not the gridlines/axis, which stay immediately
+ * present so the chart never looks broken mid-animation) fades in and
+ * rises slightly on a fresh mount. Same low-complexity approach
+ * .results-fade-in already uses -- a plain opacity/transform keyframe, no
+ * real path-length stroke-draw-in.
+ *
+ * Two-layer reduced-motion guard, same shape as .results-fade-in/
+ * .hero-figure-accent-animate above: PortfolioChart derives
+ * `animateReveal = !useReducedMotionAtMount()` once at mount (the same
+ * shared hook HeroStat's own reveal accent uses) as the primary gate
+ * deciding whether to add this class at all; the media query below is
+ * defense-in-depth for a future caller that skips the check.
+ *
+ * `<PortfolioChart>` is keyed on `heroKey` at both its render sites
+ * (ResultsPanel.tsx, window and intraday-daily models) specifically so
+ * this animation replays on every day/mode switch, not just on a genuine
+ * range/custom-anchor fetch -- see ResultsPanel.tsx's own comment at each
+ * call site.
+ */
+@keyframes portfolio-chart-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.portfolio-chart-reveal {
+  animation: portfolio-chart-reveal 550ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .portfolio-chart-reveal {
+    animation: none;
+  }
+}

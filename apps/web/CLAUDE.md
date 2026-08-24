@@ -2037,9 +2037,11 @@ scale(...)` on an SVG `<circle>`, which needs `transform-box: fill-box`
   reasoned about: the full suite's file count didn't change by adding
   it. `use-count-up.test.ts`/`HeroStat.test.tsx`'s own older, narrower
   `stubPrefersReducedMotion` (a single fixed `matches`, no per-query
-  control) stays independently duplicated between those two files --
-  out of scope for this issue, not touched here; worth extracting
-  alongside this one if a third caller ever needs it.
+  control) stayed independently duplicated between those two files --
+  out of scope for this issue, not touched here at the time; extracted
+  once a third caller (`PortfolioChart.test.tsx`, issue #85) needed the
+  identical stub, into `lib/stub-prefers-reduced-motion.test-util.ts` --
+  see that issue's own section below.
 
 ## Mobile layout pass for the top controls (issue #63)
 
@@ -2459,3 +2461,75 @@ endingBalance`) is trivially `true` at mount whenever `startingCapital
     (`pnpm add -D -w playwright`) and reverted afterward (confirmed via
     `git diff package.json`/`pnpm install` afterward), per this file's own
     convention.
+
+## Portfolio chart redesign (issue #85)
+
+Per `docs/plans/issue-85-plan.md` (plan-only pass, no re-litigation
+needed at implementation time -- both open design forks it flagged
+already had an explicit answer): on-chart text labels removed entirely,
+`chart-label-layout.ts`/`chart-label-layout.test.ts` deleted outright,
+gain/loss-aware coloring added (`--status-good`/`--status-critical`, the
+same `>= is good` convention `TradeRow`/`HeroStat` already use), a hollow-
+ring-vs-filled-dot marker shape distinction (open vs. close) added, and a
+CSS-only reveal-on-mount animation added, gated the same two-layer
+reduced-motion way `HeroStat`'s own reveal accent already is (see
+"Client-side animation" above).
+
+- **A marker's `<circle>` must render as a _sibling_ `<g>` after the
+  crosshair `<line>`, not nested inside the same `<g>` as the area
+  fill/line (real z-order regression, found in `/code-review`, fixed).**
+  Grouping "area fill + line + markers" into one `<g>` for the reveal
+  animation (as this issue's own plan literally describes it) paints
+  that whole group, markers included, _before_ the crosshair line right
+  below it in the render -- but this chart's pre-#85 stacking always had
+  markers on top of the crosshair (they rendered last, after both the
+  crosshair and the tap-hint pulse). With markers folded into the
+  earlier group, the 1px dashed crosshair would render on top of a
+  marker instead of under it whenever a hovered point snapped near one,
+  visually cutting through the marker's ring/dot. Fixed by keeping two
+  sibling `<g>`s -- one wrapping just the area fill + line (rendered
+  first), a second wrapping just the markers (rendered after the
+  crosshair, restoring the original stacking) -- both carrying the same
+  `animateReveal`-gated `.portfolio-chart-reveal` class so they still
+  animate in together despite not being one DOM node. Worth remembering
+  for any future addition to this render tree: matching the plan's
+  prose literally ("group X, Y, and Z into one wrapper") doesn't by
+  itself preserve paint order against elements _outside_ that wrapper --
+  check the full render order, not just which elements end up animated
+  together.
+- **`lib/stub-prefers-reduced-motion.test-util.ts`** is a new shared
+  single-query `matchMedia` stub, extracted once this issue's own
+  `PortfolioChart.test.tsx` reveal-animation tests became the third
+  independent copy of the identical `stubPrefersReducedMotion` helper
+  (`use-count-up.test.ts` and `HeroStat.test.tsx` each already had their
+  own -- see "Touch discoverability for the chart" above, which flagged
+  exactly this as worth doing once a third caller showed up; found
+  un-done in `/code-review`, fixed). All three files now import the one
+  shared helper; `lib/stub-match-media.test-util.ts` (the per-query
+  sibling, for a caller that needs to control more than one media
+  feature independently) is unchanged.
+- **`<PortfolioChart>` needed real `key={heroKey}` plumbing added at
+  both its render sites in `ResultsPanel.tsx`** (window model, custom-
+  window model via the shared `WindowResultBody`; intraday-daily model)
+  -- it was never keyed before this issue, so a day/mode switch used to
+  just update its `points` prop in place rather than remounting it,
+  meaning the reveal animation would only ever have fired once per
+  range/custom-anchor fetch, out of sync with `HeroStat`'s own count-up/
+  glow replaying on every day/mode switch right next to it. Both call
+  sites now key on the exact same string already passed to the adjacent
+  `HeroAndWorstCase`'s own `heroKey` prop, so the two stay in sync as
+  one paired reveal moment.
+- Marker `<circle>` rendering now iterates the `eventMarkers` array
+  directly (already computed above, for the hover/tap-hint logic) rather
+  than the deleted `markerLabels` array the old label system built --
+  the old render map destructured `{ p, event, anchor, primaryText,
+secondaryText }` per entry; the new one only needs `p`/`event`.
+- Live-verified (this file's own "Screenshotting a component locally"
+  throwaway-debug-route technique, no local `RESULTS_BUCKET`/AWS creds)
+  across a typical gain, a loss, a Max-range astronomical-scale result
+  (log-scale ticks spanning $1K-$10M+), and a zero-trade window (a flat
+  line, rendered "good" per the `>= is good` convention) -- confirmed
+  the hollow-ring/filled-dot marker distinction is visually legible at
+  actual chart scale (not just in a unit test's DOM assertions) and that
+  the hover tooltip/crosshair still render correctly against the new
+  gain/loss-colored line.
