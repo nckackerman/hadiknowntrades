@@ -7,12 +7,8 @@
 
 import { useEffect, useState } from "react";
 
+import { tweenValue } from "./easing";
 import { prefersReducedMotion } from "./prefers-reduced-motion";
-
-/** ease-out cubic: fast start, settles gently into the final value -- reads as a count "arriving," not a linear ticker. */
-function easeOutCubic(t: number): number {
-  return 1 - Math.pow(1 - t, 3);
-}
 
 /**
  * Animates a number counting up from `from` to `to` over `durationMs`
@@ -59,16 +55,14 @@ export function useCountUp(from: number, to: number, durationMs: number): number
       // check below can't catch on its own (NaN >= 1 is false, so it'd
       // otherwise fall through to rendering "--" instead of `to`).
       const t = durationMs <= 0 ? 1 : Math.min(elapsed / durationMs, 1);
+      // tweenValue snaps to the exact `to` once t >= 1 (see lib/easing.ts's
+      // own doc comment) -- the acceptance criteria calls for a
+      // pixel-identical final render, so this lands on `to` precisely
+      // rather than "close enough to round the same way."
+      setValue(tweenValue(from, to, t));
       if (t >= 1) {
-        // Set the exact target rather than `from + (to - from) * 1`,
-        // which is mathematically the same but not guaranteed
-        // bit-for-bit by floating point -- the acceptance criteria
-        // calls for a pixel-identical final render, so land on `to`
-        // precisely rather than "close enough to round the same way."
-        setValue(to);
         return;
       }
-      setValue(from + (to - from) * easeOutCubic(t));
       frameId = requestAnimationFrame(tick);
     }
 

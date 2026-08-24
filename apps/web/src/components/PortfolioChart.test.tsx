@@ -310,6 +310,216 @@ describe("PortfolioChart", () => {
     });
   });
 
+  describe("revealedCount / interactive (issue #96 follow-up round 3)", () => {
+    // A big jump between the two points so the y-domain a partial reveal
+    // would compute on its own (min/max of just the revealed prefix)
+    // differs dramatically from the full series' own domain -- a
+    // deliberately extreme fixture so a domain-rescale regression would
+    // be obvious, not just off by a rounding hair.
+    const seriesPoints: PortfolioPoint[] = [
+      { date: "2024-01-01", value: 20, event: null },
+      {
+        date: "2024-01-02",
+        value: 20,
+        event: { type: "open", direction: "long", ticker: "AAPL", price: 10 },
+      },
+      { date: "2024-01-05", value: 20, event: null },
+      {
+        date: "2024-01-05",
+        value: 4000,
+        event: { type: "close", direction: "long", ticker: "AAPL", price: 2000 },
+      },
+    ];
+
+    function gridlineYs(container: HTMLElement) {
+      return Array.from(container.querySelectorAll('line[stroke="var(--gridline)"]')).map((l) =>
+        l.getAttribute("y1"),
+      );
+    }
+
+    it("keeps the y-axis gridlines fixed to the FULL series' domain regardless of revealedCount, not rescaled to whatever's currently revealed (real bug, fixed)", () => {
+      const { container: partial } = render(
+        <PortfolioChart points={seriesPoints} revealedCount={2} />,
+      );
+      const { container: full } = render(<PortfolioChart points={seriesPoints} />);
+
+      expect(gridlineYs(partial)).toEqual(gridlineYs(full));
+    });
+
+    it("keeps the x-axis end label pinned to the series' real final date regardless of revealedCount (a fixed frame, not a growing one)", () => {
+      const { container: partial } = render(
+        <PortfolioChart points={seriesPoints} revealedCount={2} />,
+      );
+
+      expect(within(partial).getByText("Jan 5, 2024")).toBeInTheDocument();
+    });
+
+    it("places a revealed marker at the same x position it would have in the full/final render -- the axis frame doesn't stretch to fit fewer revealed points", () => {
+      const { container: partial } = render(
+        <PortfolioChart points={seriesPoints} revealedCount={2} />,
+      );
+      const { container: full } = render(<PortfolioChart points={seriesPoints} />);
+
+      // Both renders draw the same open marker (index 1) as their only
+      // (partial) or first (full) circle -- its cx must match: fixed to
+      // the full-series domain either way, not stretched to fill the
+      // plot width because only 2 of 4 points are currently revealed.
+      const partialCx = partial.querySelector("circle")!.getAttribute("cx");
+      const fullCx = full.querySelector("circle")!.getAttribute("cx");
+      expect(partialCx).toBe(fullCx);
+    });
+
+    it("only draws the revealed prefix -- fewer markers/table rows than the full series", () => {
+      const { container } = render(<PortfolioChart points={seriesPoints} revealedCount={2} />);
+
+      // Only the open marker (index 1) is revealed -- the close marker
+      // (index 3, value jumping to 4000) isn't drawn yet.
+      expect(container.querySelectorAll("circle")).toHaveLength(1);
+      expect(screen.getAllByRole("row")).toHaveLength(3); // header + 2 revealed points
+    });
+
+    it("clears a stale hoverIndex when `interactive` flips off, so it can't pop back into view once revealedCount grows past it (real bug, fixed)", () => {
+      const { container, rerender } = render(<PortfolioChart points={seriesPoints} />);
+      const svg = getChartSvg();
+      stubChartRect(svg);
+
+      // Hover the last point while still live/interactive.
+      fireEvent.pointerMove(svg, { clientX: 860 });
+      expect(getReadout(container).queryByText(PLACEHOLDER_TEXT)).not.toBeInTheDocument();
+
+      // Stands in for TradeReplay.tsx starting playback with the pointer
+      // never having left the SVG bounds -- same `points` reference,
+      // `interactive` flips false, `revealedCount` starts low.
+      rerender(<PortfolioChart points={seriesPoints} revealedCount={1} interactive={false} />);
+      expect(getReadout(container).getByText(PLACEHOLDER_TEXT)).toBeInTheDocument();
+
+      // Growing revealedCount back past the stale hoverIndex must not
+      // pop the tooltip/crosshair back into view.
+      rerender(<PortfolioChart points={seriesPoints} revealedCount={3} interactive={false} />);
+      expect(getReadout(container).getByText(PLACEHOLDER_TEXT)).toBeInTheDocument();
+    });
+
+    it("applies inert/aria-hidden to its own root when interactive is false, and neither when true (default)", () => {
+      const { container, rerender } = render(<PortfolioChart points={seriesPoints} />);
+      const root = () => container.firstElementChild!;
+
+      expect(root().hasAttribute("inert")).toBe(false);
+      expect(root().hasAttribute("aria-hidden")).toBe(false);
+
+      rerender(<PortfolioChart points={seriesPoints} interactive={false} />);
+
+      expect(root().hasAttribute("inert")).toBe(true);
+      expect(root().getAttribute("aria-hidden")).toBe("true");
+    });
+
+    /**
+     * Regression test for a real bug found in code review (issue #96
+     * follow-up round four): `revealedCount` is a public, unvalidated
+     * prop, and `drawn = plotted.slice(0, revealedCount)` had no lower
+     * bound -- a `revealedCount` of `0` (or negative) produced an empty
+     * `drawn` array, and `drawn[drawn.length - 1]!`/`drawn[0]!` (used to
+     * build the line/area paths and the gain/loss color) would then
+     * crash on `undefined!.x`/`undefined!.value` instead of rendering
+     * anything.
+     */
+    it("clamps revealedCount to at least 1 rather than crashing on an empty drawn array (real bug, fixed)", () => {
+      const { container } = render(<PortfolioChart points={seriesPoints} revealedCount={0} />);
+
+      // Falls back to drawing exactly the first point -- one row (plus
+      // the header) in the always-present data table, no markers (the
+      // first point carries no event).
+      expect(within(container).getAllByRole("row")).toHaveLength(2);
+      expect(container.querySelectorAll("circle")).toHaveLength(0);
+    });
+
+    it("clamps a negative revealedCount the same way, without throwing", () => {
+      expect(() =>
+        render(<PortfolioChart points={seriesPoints} revealedCount={-3} />),
+      ).not.toThrow();
+    });
+
+    it("clamps a revealedCount larger than the series to the series' own length", () => {
+      const { container } = render(
+        <PortfolioChart points={seriesPoints} revealedCount={seriesPoints.length + 10} />,
+      );
+
+      expect(within(container).getAllByRole("row")).toHaveLength(seriesPoints.length + 1); // header + every point
+      // Both trade markers (open + close) are drawn, nothing more.
+      expect(container.querySelectorAll("circle")).toHaveLength(2);
+    });
+  });
+
+  describe("touch tap hint suppressed during non-interactive playback (issue #96 follow-up round four)", () => {
+    const eventPoints: PortfolioPoint[] = [
+      { date: "2024-01-01", value: 20, event: null },
+      {
+        date: "2024-01-02",
+        value: 20,
+        event: { type: "open", direction: "long", ticker: "AAPL", price: 10 },
+      },
+      {
+        date: "2024-01-03",
+        value: 40,
+        event: { type: "close", direction: "long", ticker: "AAPL", price: 20 },
+      },
+    ];
+
+    afterEach(() => {
+      window.localStorage.clear();
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    });
+
+    function getTapHintPulse(container: HTMLElement) {
+      return container.querySelector(".chart-tap-hint-pulse");
+    }
+
+    /**
+     * Regression test for a real bug found in code review: the tap-hint
+     * pulse targets `eventMarkers[eventMarkers.length - 1]`, and
+     * `eventMarkers` derives from `drawn` -- the `revealedCount`-
+     * truncated prefix during TradeReplay.tsx's playback. Without
+     * suppressing the hint while `interactive` is false, a touch-primary
+     * first-time visitor who saw the pulse on the chart's final marker
+     * and then clicked "Watch it happen" mid-animation would see the
+     * hint circle relocate between successive trade markers as
+     * `revealedCount` grew -- an animated "tap here" invitation jumping
+     * around on content that's simultaneously `inert`.
+     */
+    it("never renders the pulse while interactive is false, even mid-playback with a growing revealedCount", () => {
+      stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": false });
+
+      const { container, rerender } = render(
+        <PortfolioChart points={eventPoints} revealedCount={1} interactive={false} />,
+      );
+      expect(getTapHintPulse(container)).toBeNull();
+
+      // revealedCount grows across playback -- the hint must stay hidden
+      // the whole way, not relocate to whatever's currently the last
+      // revealed marker.
+      rerender(<PortfolioChart points={eventPoints} revealedCount={2} interactive={false} />);
+      expect(getTapHintPulse(container)).toBeNull();
+
+      rerender(<PortfolioChart points={eventPoints} revealedCount={3} interactive={false} />);
+      expect(getTapHintPulse(container)).toBeNull();
+    });
+
+    it("dismisses the hint for good once interactive flips false, so it doesn't reappear once interactive again", () => {
+      stubMatchMedia({ "(pointer: coarse)": true, "(prefers-reduced-motion: reduce)": false });
+
+      const { container, rerender } = render(<PortfolioChart points={eventPoints} />);
+      expect(getTapHintPulse(container)).not.toBeNull();
+
+      // Stands in for TradeReplay.tsx starting playback.
+      rerender(<PortfolioChart points={eventPoints} revealedCount={1} interactive={false} />);
+      expect(getTapHintPulse(container)).toBeNull();
+
+      // Stands in for playback finishing and handing control back.
+      rerender(<PortfolioChart points={eventPoints} interactive={true} />);
+      expect(getTapHintPulse(container)).toBeNull();
+    });
+  });
+
   describe("x-axis scale by series shape (issue #93)", () => {
     /** The <circle> markers for whichever points carry an event, in point order (open before close). */
     function getMarkerCircles() {

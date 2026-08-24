@@ -155,3 +155,35 @@ export function tradeVerbsPast(direction: TradeDirection): TradeVerbs {
     ? { openVerb: "bought", closeVerb: "sold" }
     : { openVerb: "shorted", closeVerb: "covered" };
 }
+
+/** Capitalizes a single word's first letter -- the one bit of logic `tradeVerbsPastCapitalized` below needs that `tradeVerbsPast` doesn't already give it. */
+function capitalize(word: string): string {
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
+/**
+ * "Bought"/"Sold" for a long, "Shorted"/"Covered" for a short -- the
+ * capitalized, past-tense verb pair for the start of a standalone
+ * sentence ("Bought AAPL on Mar 12, 2025 at $142.00."), e.g.
+ * TradeReplay.tsx's own playback callouts (issue #96). Distinct from
+ * both `tradeVerbs` above (capitalized, present tense -- "Buy"/"Sell",
+ * a label prefix) and `tradeVerbsPast` above (lowercase, past tense --
+ * "bought"/"sold", mid-sentence prose): this is the one register
+ * neither of those two already covers. Extracted here rather than a
+ * one-off `capitalize()` helper in a component file, per this module's
+ * own header comment on why this exact class of verb-pair fragmentation
+ * gets centralized once instead of re-derived per caller.
+ *
+ * **Derived from `tradeVerbsPast` (code review, issue #96 follow-up round
+ * 3), not a third independent long/short branch.** The first version of
+ * this function re-encoded the same "long -> X/Y, short -> A/B" branching
+ * a third time instead of building on the sibling that already has the
+ * exact same words, just lowercase -- exactly the class of duplication
+ * this module's own header comment warns against, ironically inside the
+ * function whose own doc comment above already argues for centralizing
+ * verb-pair logic.
+ */
+export function tradeVerbsPastCapitalized(direction: TradeDirection): TradeVerbs {
+  const { openVerb, closeVerb } = tradeVerbsPast(direction);
+  return { openVerb: capitalize(openVerb), closeVerb: capitalize(closeVerb) };
+}

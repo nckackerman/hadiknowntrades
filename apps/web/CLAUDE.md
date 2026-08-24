@@ -2839,3 +2839,970 @@ ranges (5Y/MAX) are untouched -- they never had guessing at all.
   reading "Aug 14, 9:30 AM" -> "Aug 21, 1:30 PM" (confirming the
   `formatDateTime` fix above); and the mobile (390px) layout reflows
   cleanly with no horizontal overflow.
+
+## Trade replay: "Watch it happen" (issue #96)
+
+Opt-in, on-click playback of a window-model result's trades (5Y/MAX, and
+custom-window anchors -- any result rendered via `WindowResultBody`,
+`derivePortfolioSeries`'s points). Deliberately scoped to the window
+model only -- the intraday-daily whole-range chart (up to ~250 chained
+days) is a materially different scale/pacing problem, left to its own
+future issue per #96's own Out of scope. `lib/use-trade-replay.ts` is a
+small `idle -> playing -> done` state machine (mirroring `use-results.ts`'s
+own `ResultsState` shape) driven by one RAF loop, walking
+`portfolio-series.ts`'s already-existing `PortfolioPoint[]` --
+`TradeReplay.tsx` is the orchestrating component that swaps between the
+real hero row/chart and a truncated/interpolated view depending on phase.
+
+- **`HeroAndWorstCase` (previously private to `ResultsPanel.tsx`) is now
+  its own file, `components/HeroAndWorstCase.tsx`** -- `TradeReplay.tsx`
+  needed to render the exact same HeroStat + WorstCaseStat pairing for
+  its own "live" (idle/done) state, and duplicating that ~30-line wrapper
+  a second time would've been exactly the class of drift this codebase's
+  own `selectVariant`/`trade-math.ts` doc comments already warn against.
+  `ResultsPanel.tsx` now imports it instead of defining it locally; no
+  behavior change at either of its two existing call sites.
+- **The chart never interpolates a position between two points during
+  playback -- only the balance figure tweens, and that distinction is
+  deliberate, not an oversight.** `revealedCount` (how much of `points`
+  `PortfolioChart` is fed) always jumps in whole steps, straight from one
+  real precomputed point to the next; `currentValue` (the plain "$X ->
+  $Y" figure shown in place of `HeroStat` during playback) tweens between
+  a segment's two real endpoint values via the same ease-out-cubic curve
+  `useCountUp` uses (now `lib/easing.ts`, extracted from `use-count-up.ts`
+  once this became the second caller -- see that file's own note). Fixing
+  the chart at real points and only tweening the _display_ number is what
+  keeps this honest against `portfolio-series.ts`'s own "flat until
+  realized" model (no fabricated interim mark-to-market price) while
+  still giving the balance figure continuous motion -- the same "tween is
+  a display stylization of a real instantaneous value change, not a claim
+  about how the money literally moved" reasoning `useCountUp` already
+  relies on for `HeroStat`'s own reveal.
+- **A close event's own return is derived by scanning backward through
+  `points` for the nearest prior "open" event** (`findMatchingOpenPrice`),
+  not by threading the raw `Trade[]` array into the hook at all --
+  `derivePortfolioSeries`'s own `appendTradeSteps` never interleaves
+  trades (each trade's open/flat/close points always land strictly in
+  sequence before the next trade's own points begin), so this is safe
+  and keeps the hook working purely off the `PortfolioPoint[]` shape the
+  issue's own Background section calls out as "already the exact data
+  this feature needs," with no second data source to keep in sync.
+- **Reduced motion: the button doesn't render at all, not an instant
+  step-through equivalent** -- the same "skip the affordance entirely"
+  choice `should-celebrate.ts` (the celebration burst) and
+  `use-chart-tap-hint.ts` (the touch pulse hint) already make elsewhere
+  in this app, chosen over the acceptance criteria's other allowed option
+  for simplicity and consistency. Zero information loss either way: every
+  trade is already reachable via the always-present `TradeList`/
+  `ChartDataTable`, unaffected by this feature.
+- **A single `role="status" aria-live="polite"` region announces each
+  trade event once (mirroring its exact wording) and a final "Replay
+  finished. Ending balance $X." sentence** -- never a per-frame value,
+  the same trap this app's own "Client-side animation" section already
+  documents and avoids for `HeroStat`'s count-up. This falls out
+  naturally rather than needing special-casing: `frame.activeEvent` only
+  changes value at the discrete moments a real event is reached (it
+  holds steady for the whole `EVENT_PAUSE_MS` pause), so wiring the
+  region's text straight to it doesn't spam per-tick updates the way a
+  naive `aria-live` binding to `currentValue` would.
+- **Testing the multi-segment RAF loop needed a different mock shape than
+  `useCountUp`'s own single-tween tests use** -- `use-count-up.test.ts`'s
+  `mockImplementation((cb) => { cb(now); return 1; })` fires the callback
+  _immediately_ with one fixed `now`, which works for a lone tween (only
+  ever needs one resolved frame) but hangs a multi-segment machine: each
+  arrival resets its own internal `phaseStart` to whatever `now` the mock
+  just supplied, so an always-fires-immediately mock handing back the
+  same fixed `now` computes `elapsed = now - phaseStart = 0` for every
+  segment after the first, looping in the "not there yet" branch forever
+  (an infinite synchronous `requestAnimationFrame` recursion, not just a
+  slow test -- caught by actually running it, not reasoned about in
+  advance). Fixed with a small shared `lib/raf-pump.test-util.ts`
+  (`createRafPump()`, used by both `use-trade-replay.test.ts` and
+  `TradeReplay.test.tsx`): it only _queues_ the latest scheduled
+  callback, leaving it unfired until the test calls `tick(now)` with its
+  own chosen elapsed-time value -- same "pin `performance.now()`, control
+  `now` directly" approach as `use-count-up.test.ts`'s own tests,
+  generalized to more than one frame.
+- **Live-verified via the "Screenshotting a component locally" throwaway
+  debug-route technique** (a hardcoded 3-trade `WindowResult` fixture, no
+  `RESULTS_BUCKET`/AWS creds needed) plus the documented no-root headless-
+  Chromium workaround: confirmed the idle state (hero row + chart +
+  "Watch it happen" button, unchanged from before this issue), a
+  mid-playback pause on an open event (truncated chart, the interpolated
+  "$20.00 -> $20.00" figure, the "Bought SNDK on Aug 21, 2025 at
+  $45.50." callout, a "Skip to end" button), Skip to end landing on the
+  real final state with a fresh `HeroStat` count-up/glow replaying and a
+  "Replay" button, a full un-skipped playback reaching the same end
+  state on its own, and `prefers-reduced-motion` rendering zero buttons
+  with the real chart/hero shown instantly (no animation at all). No
+  console hydration warning appeared for any of these under normal
+  (non-reduced-motion) emulation.
+  - **One hydration warning did appear, but it's a debug-harness
+    artifact, not a real bug** -- found by combining Playwright's
+    `reducedMotion: "reduce"` context option with this debug route's
+    hardcoded `state={{status:"success", ...}}` prop (bypassing
+    `useResults`'s fetch state machine entirely, which in the _real_ app
+    always starts `"loading"` on both server and initial client render --
+    see this file's own "localStorage pattern" section for the general
+    shape of this precondition). That combination server-renders
+    `WindowResultBody`/`TradeReplay` at all -- a state real production
+    SSR never reaches, since the genuine app never has a `"success"`
+    state before the client-only fetch resolves -- with the server
+    computing `useReducedMotionAtMount()` as `false` (no `matchMedia`
+    during SSR) while the client's very first render already sees the
+    emulated `true`, mismatching `TradeReplay`'s own conditionally-
+    rendered button row. Confirmed this isn't new to issue #96: the
+    _same_ hardcoded-success-state harness already mismatches one level
+    up, on the pre-existing `FadeInWrapper`'s `results-fade-in` class
+    (visible earlier in the same error's diff), for the identical
+    reason. Worth remembering for the next debug-route verification that
+    combines a hardcoded `"success"` state with `reducedMotion: "reduce"`
+    context emulation -- expect this diff to show up and know it's not
+    an actual regression.
+
+### Code-review follow-up, seven findings (all fixed before merge)
+
+A `high` review of the PR above caught seven real issues, none of them
+hypothetical -- worth internalizing before extending this feature again:
+
+- **A component returning more than one logical "block" for a parent's
+  flex-gap layout must return a Fragment of siblings, not one wrapping
+  div, or the parent's own gap collapses to whatever gap the new wrapper
+  happens to use instead.** `TradeReplay`'s first version put the hero
+  row _and_ the chart inside one shared `flex flex-col gap-2` div --
+  which silently shrank the pre-existing spacing between the methodology
+  paragraph/`BenchmarkStat` (rendered as `children`, just above the
+  chart) and the chart itself from `FadeInWrapper`'s own `gap-8` (2rem)
+  down to `gap-2` (0.5rem), on _every_ window-model page load, not just
+  during replay -- exactly the kind of regression a component test can
+  miss entirely if it only asserts on text content, never layout.
+  `TradeReplay` now returns `<>{heroBlock}{chart}</>`, splicing both as
+  direct siblings into `FadeInWrapper`'s own flex column alongside the
+  "Trades" block below, restoring the original three-sibling `gap-8`
+  spacing exactly. Verified live (not just reasoned about): a `document
+.querySelector(".results-fade-in").children` walk measured the real
+  gap between each pair of top-level siblings at exactly `32px` (2rem)
+  both before the chart and after it, matching pre-#96 spacing
+  bit-for-bit. A cheap regression test for the shape of this bug
+  (without needing a real browser layout engine): assert the rendered
+  `container.children.length` is `2` for a component meant to return
+  a same-level Fragment -- jsdom doesn't compute real CSS gaps, but it
+  does faithfully report DOM structure, which is the actual thing that
+  determines which flex container's `gap` value applies.
+- **A "swap the animated version in for the static one" component must
+  scope the swap to only the pieces the issue actually names, not to
+  everything living in the same JSX region.** The first version of
+  `TradeReplay` used the existing `HeroAndWorstCase` wrapper (bundling
+  `HeroStat` + `WorstCaseStat`) as its "live" state and a bespoke
+  replacement for its "playing" state -- which meant `WorstCaseStat`
+  vanished for the whole ~3-6s playback run alongside `HeroStat`, even
+  though the issue's own Scope names "the chart and hero figure"
+  specifically. Fixed by composing `HeroStat`/`WorstCaseStat` directly
+  in `TradeReplay` (not via the shared wrapper) so only `HeroStat`'s own
+  slot swaps between live and animated -- `WorstCaseStat` renders with
+  the exact same wrapper markup in every phase. Worth checking for any
+  future feature that reaches for an existing multi-component wrapper as
+  a shortcut for "the whole row this component sits in": a wrapper
+  bundling N things is the wrong unit to swap out if the feature only
+  actually means to touch a strict subset of those N things.
+- **A live prop that can change reference while a multi-step RAF state
+  machine is mid-flight, without the owning component unmounting, needs
+  its own explicit "is this still the walk I started?" check -- the
+  effect's own dependency array restarting internal loop variables
+  isn't enough on its own, because the _exposed_ state (what the caller
+  actually renders) doesn't get folded back in until the next tick.**
+  `use-trade-replay.ts`'s `points` argument can change identity mid-
+  playback from two real, always-available live controls that don't
+  unmount `TradeReplay` -- `StartingCapitalInput` and the app's
+  always-interactive `ModeToggle` (a mode switch to a zero-trade variant
+  is the sharpest case, see the next finding) -- and the RAF effect's
+  own `[phase, points]` dependency array already rebuilds `segments`
+  from scratch in that case, but `frame` (the state actually rendered)
+  kept whatever mid-playback value it last held from the _old_ points
+  until the next tick fired, and even then resumed walking through data
+  that no longer matched what was on screen -- visibly snapping the
+  chart/hero backward and re-narrating an already-shown trade with no
+  indication anything had reset. Fixed with the exact same "adjust
+  state during render when a prop changes" idiom `use-results.ts`'s own
+  `trackedUrl` check and `use-range-guess.ts`'s `tracked` check already
+  use elsewhere in this app: a `trackedPoints` companion state compared
+  against the live `points` prop during render, resetting `phase` to
+  `"idle"` and `frame` to a fresh initial frame the instant they diverge
+  -- treating a mid-flight `points` identity change as a fresh mount
+  rather than a silent rebuild. **The first draft of this fix also
+  bumped `runIdRef.current` inside that same render-time branch "for
+  extra safety" -- `react-hooks/refs` immediately flagged this
+  (`Cannot access ref value during render` / `Cannot update ref during
+render`), and it turned out to be genuinely unnecessary, not just
+  lint-noisy**: the effect's own cleanup (`cancelAnimationFrame`) already
+  runs before the new effect body does whenever `[phase, points]`
+  actually changes, which this render-time reset guarantees happens on
+  the very next commit -- there's no window where the stale RAF loop
+  could still fire after the reset without the ref bump. Worth the
+  general lesson: reaching for a ref "just to be extra sure" during a
+  render-phase state adjustment is exactly the shape this lint rule
+  exists to catch, and the fix is usually to trust the mechanism you
+  already have (here, the effect's own dependency-driven cleanup)
+  rather than adding a second one.
+- **A control that's the _only_ way to act during one phase of a state
+  machine must never be gated by a condition that can flip based on a
+  prop the _same_ live interaction can change out from under it.**
+  `TradeReplay`'s "Skip to end" button (the only control visible while
+  `phase === "playing"`, `TradeList`/`ChartDataTable`'s own always-
+  present static fallback aside) used to share the same `canReplay =
+tradeCount > 0 && !reducedMotionAtMount` gate the idle/done "Watch it
+  happen"/"Replay" button uses -- so a `ModeToggle` switch to a
+  zero-trade variant mid-playback flipped `canReplay` to `false`
+  _before_ the RAF loop's own phase-to-`"done"` transition could
+  happen, hiding the one clickable control with nothing left to
+  advance playback (the finding above's points-reference reset happens
+  to also resolve this specific scenario as a side effect, since a mode
+  switch always changes `points` too -- but that's an emergent property
+  of _two_ independent fixes interacting, not something to rely on
+  without its own direct fix, since a future edit to either one in
+  isolation could silently reopen this gap). Fixed by decoupling "Skip
+  to end"'s visibility from `canReplay` entirely: it renders whenever
+  `phase === "playing"`, full stop, and the idle/done button is the only
+  one `canReplay` actually gates.
+- **A `computeTradeReturn`/`compoundBalance`-style helper that
+  deliberately throws on corrupted input (see `trade-math.ts`'s own
+  `InvalidTradePriceError` doc comment) is only "contained, not silent"
+  at the call sites that already run inside a React render, where
+  `app/error.tsx`/`app/global-error.tsx` catch it. A RAF callback is not
+  a render** -- `use-trade-replay.ts`'s own call into this same helper
+  (via `replayEventFor`, for a close event's return) would throw
+  uncaught from inside `requestAnimationFrame`'s callback if it ever hit
+  a corrupted stored price, silently freezing the whole replay with
+  `cancelAnimationFrame`'s cleanup left referencing a now-permanently-
+  stale `frameId` and no error surfaced anywhere a user or an error-
+  tracking tool would ever see it. Fixed with a `try`/`catch` around
+  just that call, logging via `console.error` and failing into the same
+  `finalFrame`-shaped final state `skipToEnd` already produces --
+  contained (playback still resolves to something coherent on screen)
+  but not silent (logged), and if the underlying price really is
+  corrupted, the page's own real static render (`TradeList`/
+  `narrate-trades.ts`, once this hands off to the "done" state) still
+  throws its own render-time error there, caught by the existing
+  boundaries exactly as it always would have been. Worth remembering as
+  a general pattern for this app: any shared helper that's designed to
+  throw specifically because render-time boundaries exist to catch it
+  needs a second look at every non-render call site (an event handler,
+  a timer callback, a RAF loop) -- the throw's own safety story doesn't
+  automatically travel with the function.
+- **Two small, easy-to-miss efficiency/duplication findings, both purely
+  mechanical fixes**: the sr-only announced string and the visible
+  callout `<p>` were computing the identical `calloutText(...)` call
+  independently (a drift risk if one call site's wording ever changed
+  without the other, and wasted work every frame) -- now computed once
+  into an `activeCallout` local, used by both. `points.slice(0,
+frame.revealedCount)` was reallocating a new array on every render,
+  including the many mid-tween frames where `revealedCount` itself
+  hasn't advanced (only `currentValue` has) -- defeating `PortfolioChart`'s
+  own `useMemo`s, which are keyed on `points` by reference. Wrapped in
+  `useMemo(() => points.slice(0, frame.revealedCount), [points,
+frame.revealedCount])` so a fresh array only appears when `revealedCount`
+  actually changes.
+- **Live-verified again after all seven fixes**, same throwaway-debug-
+  route + no-root-Chromium technique as the original pass, this time
+  with two interactive controls (a mode toggle, a starting-capital
+  bump) added to the debug page specifically to exercise the
+  points-reference-change fix live, not just in a unit test: clicking
+  "Toggle mode" mid-playback (mid-pause on a real trade callout)
+  cleanly dropped back to the idle view with a fresh "Watch it happen"
+  button and no visible freeze/snap, and clicking it again started a
+  genuinely fresh playback through the new mode's own trade sequence
+  (a real short trade, "Shorted SNDK... Skip to end") -- confirming the
+  reset is a full functional recovery, not just a visual one. The same
+  check with a starting-capital bump mid-playback (the other live
+  control that changes `points`) showed the identical clean reset with
+  correctly rescaled figures ($20 -> $25, `WorstCaseStat`'s own $4.20 ->
+  $5.25). The `.results-fade-in` child-gap measurement mentioned in the
+  first finding above was taken in this same session.
+
+### Code-review follow-up, round two -- nine more findings (all fixed before merge)
+
+A second `high` review of the PR above, after the seven-finding round
+already documented, caught nine more real issues -- several of them
+only reachable because the first round's own fixes changed the shape of
+what there was left to review. Also worth noting up front: this round's
+reviewer flagged a tenth "finding" (the PR supposedly bundling unrelated
+changes from a different issue) that turned out to be a stale-`main`
+artifact on the reviewer's own end, the same class of false positive the
+first round's own process already anticipated -- confirmed via `gh pr
+diff --name-only` that the PR's file scope never changed, and ignored.
+
+- **`aria-hidden` must never wrap a focusable element -- and `inert`,
+  not a `PortfolioChart` API change, turned out to be the right fix,
+  closing a second focusable-descendant instance the original finding
+  didn't even name.** The truncated chart's wrapping div carried
+  `aria-hidden="true"` while playing, but `PortfolioChart`'s own root
+  `<svg>` is focusable (`tabIndex={0}`, with an arrow-key point-
+  inspection handler) -- a real ARIA-spec violation, since browsers
+  disagree on whether focus/keydown still reach a focusable descendant
+  of an `aria-hidden` ancestor. Fixed by adding a real `inert` attribute
+  to that same wrapping div (`inert={!showLive}`, kept alongside
+  `aria-hidden` as defense-in-depth) instead of threading a new
+  `interactive` prop through `PortfolioChart` to conditionally strip its
+  own `tabIndex`/handlers -- `inert` is a DOM/HTML property, not an ARIA
+  attribute, and removes an entire subtree from both the tab order and
+  the accessibility tree together, so there's no "hidden from AT but
+  still focusable" combination possible at all. **This also caught a
+  second instance of the identical violation class the original finding
+  never named**: `PortfolioChart`'s own `ChartDataTable` child renders a
+  native `<details>`/`<summary>` disclosure, whose `<summary>` is _also_
+  natively focusable -- a prop-based `PortfolioChart` fix would have had
+  to remember to guard that too; `inert` on the wrapper catches both for
+  free, with zero `PortfolioChart` changes. React 19's DOM renderer
+  treats `inert` as a genuine boolean HTML attribute (confirmed by
+  reading `react-dom-client.development.js`'s own property-config table,
+  not assumed) -- `true` sets it, `false`/`null`/`undefined` remove it,
+  same handling as `disabled`/`hidden`. **Live-verified as real browser
+  behavior, not just an attribute-presence check**: a real
+  `svg.focus()` call from Playwright's own `page.evaluate` succeeds
+  while idle (`document.activeElement === svg`) and genuinely fails once
+  playing (`document.activeElement` stays whatever was focused before
+  the call, confirmed alongside `svgHasInertAncestor: true` read from
+  the live DOM) -- and a real `Tab` keypress from the focused "Skip to
+  end" button skips straight past the inert chart to the next real
+  focusable element in the document, never landing on the `<svg>`
+  itself. jsdom doesn't implement `inert`'s own behavioral enforcement
+  (focus prevention) at all, only attribute presence/absence -- the unit
+  test (`TradeReplay.test.tsx`) only asserts `hasAttribute("inert")`
+  for this reason; the _actual_ browser-enforced guarantee this fix
+  depends on was only ever confirmed live.
+- **Natural playback completion must land on exactly the same `frame`
+  shape `skipToEnd` and the corrupted-price catch already produce, and
+  didn't.** The "advance past the last segment" branch in
+  `use-trade-replay.ts`'s `tick()` used to only call `setPhase("done")`,
+  leaving `frame.activeEvent` still set to whatever the _last_ segment
+  paused on -- correct as long as `derivePortfolioSeries` appends a
+  trailing flat point after the final trade's close (the common case),
+  but that function appends no such point whenever a trade's own
+  `closeDate` already equals the window's `endDate` (see its own
+  `if (!last || last.date !== endDate)` guard) -- a realistic shape, not
+  a hypothetical one (the best trade in a 5Y/MAX window closing on the
+  most recent trading day is exactly this). In that case the close event
+  _is_ the array's last point, and natural completion landed "done" with
+  a stale `activeEvent` still populated, contradicting this hook's own
+  documented contract that every "reached the end" path agrees on the
+  same shape. Fixed by calling `setFrame(finalFrame(points))` on that
+  branch too (and, for the same consistency reasoning, on the
+  `segments.length === 0` defensive branch, even though `play()`
+  already guards against ever reaching "playing" with zero segments in
+  practice). Regression-tested in `use-trade-replay.test.ts` with a
+  fixture built with no trailing point at all -- deliberately walking
+  the exact same sequence the pre-existing "walks every point" test
+  uses, just truncated at the close event, so the only variable is
+  whether that missing trailing point actually matters.
+- **`PortfolioChart`'s own `key` used to toggle between a real string
+  and `undefined` at exactly the two moments playback starts and
+  stops, forcing an unwanted remount (and reveal-CSS-animation replay)
+  right then.** `HeroStat`'s slot genuinely needs _no_ explicit key
+  suffix to remount correctly at those same two moments (see the next
+  finding) because it's swapped between two different _element types_
+  at that JSX position (`<HeroStat>` vs. a plain `<div>`) -- any type
+  change at a position is _already_ an unconditional fresh mount by
+  React's own reconciliation rules, with or without a matching key.
+  `PortfolioChart`, by contrast, is the _same_ element type in every
+  phase (only its `points`/`key` props differed) -- so toggling its own
+  `key` between `liveKey` and `undefined` was the _only_ thing causing
+  it to remount at those transitions, discarding the gradual per-point
+  reveal the user just watched with an unwanted flash/re-fade right as
+  playback starts, and again right as it finishes. Fixed by giving it a
+  single, always-stable `key={heroKey}` (never toggled, matching this
+  chart's own pre-#96 keying exactly) -- it now only remounts on a
+  genuine new result (a fetch, or a `heroKey`-changing mode switch),
+  never merely because playback started or stopped. **Live-verified as
+  a real absence of motion, not just DOM node identity**: sampled
+  `getComputedStyle(...).opacity` on the chart's own
+  `.portfolio-chart-reveal` group at five points ~30ms apart
+  immediately after both the "Watch it happen" click and the "Skip to
+  end" click -- `1` at every single sample, both times, confirming no
+  fresh 550ms fade-from-zero ever started. The jsdom-level regression
+  test (`container.querySelector("svg")` reference equality across a
+  full idle -> playing -> done -> replay cycle) can only confirm the DOM
+  node itself didn't change identity, not that no animation replayed on
+  it -- worth remembering that distinction for any future "did this
+  remount" fix: a stable node reference is necessary but not sufficient
+  proof that a CSS mount-triggered animation didn't also replay (it
+  happens to be sufficient _here_ specifically because this app's own
+  reveal animations are keyed to a genuine DOM mount, not to a class
+  toggle on an already-mounted node -- a future animation gated some
+  other way could remount-free but still visibly replay).
+- **`play()` wasn't actually safe to call while `phase` was already
+  `"playing"` -- not reachable via the shipped UI (the button that
+  calls `play()` is hidden while playing, replaced by "Skip to end"),
+  but a real latent bug in this hook's own public API.** Bumping `phase`
+  from `"playing"` to `"playing"` again is a no-op by React's own
+  `Object.is` bail-out, so the effect's dependency array never noticed
+  anything changed and never restarted -- meaning `frame` reset to its
+  initial value (via `play()`'s own direct `setFrame` call) but no RAF
+  loop was left running to ever advance it again. Fixed by replacing the
+  previous `runIdRef` (a plain ref, mutated but never read by React's
+  own reconciliation) with real `runId` state, included in the effect's
+  own dependency array (`[phase, points, runId]`) and bumped by every
+  `play()`/`skipToEnd()` call -- a state bump _always_ differs from its
+  previous value, so it forces the effect to tear down (via
+  `cancelAnimationFrame` in cleanup) and restart every single time,
+  independent of whether `phase`'s own value happened to change too.
+  **This also let the old "is this tick stale?" check inside `tick()`
+  itself (`if (runIdRef.current !== runId) return;`) be deleted
+  outright, not just left in place defensively** -- it existed
+  specifically to catch a same-value `phase` update that _couldn't_
+  force a restart on its own; once every restart trigger genuinely
+  forces one via the dependency array, a stale tick can no longer fire
+  in the first place (the effect's own cleanup always cancels it first),
+  so the check became tautological dead code once the actual mechanism
+  it was working around no longer existed. Regression-tested by playing,
+  advancing partway, calling `play()` again mid-flight, and asserting
+  both the immediate reset _and_ that a fresh RAF loop genuinely
+  resumes advancing afterward (not just that `frame` reset once and then
+  froze).
+- **Two per-render rescale computations recomputed on every one of the
+  dozens of RAF-driven frames during playback, for constant-for-the-
+  whole-run inputs -- both purely mechanical `useMemo` fixes.**
+  `TradeReplay.tsx`'s own `endingBalanceDisplayValue` (feeding the
+  "Replay finished..." announcement) is now memoized on
+  `[endingBalance, startingCapital, displayStartingCapital]`. The
+  worst-case figure's own rescale moved location entirely as a side
+  effect of the `HeroAndWorstCase` restructuring below, and is now
+  memoized _there_ instead, on its own three real inputs.
+- **A one-off `capitalize()` helper in `TradeReplay.tsx` reinvented
+  exactly the class of verb-pair fragmentation `trade-math.ts`'s own
+  header comment already documents happening three times independently
+  before centralization.** Added a third verb-pair function there,
+  `tradeVerbsPastCapitalized` ("Bought"/"Sold" for a long,
+  "Shorted"/"Covered" for a short -- the one register neither the
+  existing `tradeVerbs` (capitalized present) nor `tradeVerbsPast`
+  (lowercase past) already covers), and `TradeReplay.tsx`'s own
+  `calloutText` now calls it instead of hand-capitalizing
+  `tradeVerbsPast`'s own output. Not independently unit-tested in
+  `trade-math.test.ts` -- consistent with how its two siblings are
+  tested today (only indirectly, via `TradeRow.test.tsx`/
+  `PortfolioChart.test.tsx`/`TradeReplay.test.tsx`'s own callout
+  assertions), not a gap specific to this addition.
+- **The very fix for the first round's "WorstCaseStat disappears during
+  playback" finding reintroduced the exact duplication
+  `HeroAndWorstCase` was extracted (that same round) to avoid.** That
+  fix stopped using `HeroAndWorstCase` entirely and hand-composed
+  `HeroStat`/`WorstCaseStat` directly in `TradeReplay.tsx` instead --
+  which solved the disappearing-`WorstCaseStat` bug, but meant
+  `TradeReplay.tsx` now carried its own hand-copied version of
+  `HeroAndWorstCase`'s own wrapper `className` and worst-case rescale
+  call, exactly the two-copies-to-keep-in-sync risk that component's own
+  doc comment already argues against. Fixed with a `heroSlot?: ReactNode`
+  prop on `HeroAndWorstCase` itself: when provided, it overrides only
+  the `HeroStat` half of the pairing; `WorstCaseStat` always renders
+  through the same unconditional code path regardless, with the same
+  wrapper markup, in every phase. `TradeReplay.tsx` now composes through
+  `HeroAndWorstCase` again, passing its own animated figure as
+  `heroSlot` only while playing (`undefined`, the default, otherwise) --
+  one wrapper implementation again, not two hand-kept-in-sync copies.
+  Worth the general lesson for this codebase specifically: a fix for one
+  finding can reintroduce a _different_, earlier-fixed finding as a side
+  effect if it isn't checked against the reasoning behind nearby existing
+  code, not just against its own acceptance criteria.
+- **Once the `heroSlot` restructuring above was in place, the
+  `replayRun` state and the `liveKey` string it fed turned out to be
+  dead code -- confirmed by reasoning through _why_, not just by
+  deleting them and seeing tests still pass.** `HeroStat`'s own slot
+  swaps between two different element types (`<HeroStat>` vs. a plain
+  `<div>`) depending on phase -- and _any_ element-type change at a JSX
+  position is already an unconditional fresh mount by React's own
+  reconciliation rules, independent of whether a `key` prop is present
+  or matches a prior value. That means every idle/done <-> playing
+  transition already forces `HeroStat` to fully unmount and remount for
+  free, with no explicit key needed at all -- including "Replay"
+  re-triggering a _second_ "done" landing after an intervening
+  "playing" (a `<div>`) render already tore down the first `HeroStat`
+  instance completely, so React has no "previous same-type instance"
+  left to reconcile against regardless of key value. The one case worth
+  double-checking before deleting the key entirely: a `points`-
+  reference-change reset (the first round's own fix, above) can take
+  `phase` directly from `"done"` to `"idle"` _without_ passing through
+  `"playing"` -- both of which render the _same_ element type
+  (`HeroAndWorstCase`'s own real `HeroStat`), so no type-swap remount
+  happens there. Whether that's actually a bug turns out to depend on
+  _why_ `points` changed: a starting-capital edit deliberately should
+  _not_ remount `HeroStat` (this app's own established "rescale
+  instantly, don't replay the reveal" convention, see the "Configurable
+  starting capital" section above) -- and doesn't need to, since
+  `displayStartingCapital`'s live rescale math already updates the
+  already-settled figure correctly in place; a mode switch genuinely
+  should remount it (a different trade sequence deserves a fresh
+  reveal) -- and does, because `heroKey` itself includes `mode` and
+  therefore already changes value on exactly that transition, forcing a
+  real key-mismatch remount with no `replayRun` counter needed. Both
+  cases land correctly with a bare, unsuffixed `key={heroKey}` -- so
+  `replayRun`/`liveKey` were never actually load-bearing for any
+  reachable case once this was traced through properly. Removed, along
+  with the doc-comment paragraph that described the mechanism as real.
+- **`findMatchingOpenPrice` did a fresh `O(n)` backward scan through
+  `points` from inside the RAF callback every time playback landed on a
+  close segment, instead of being resolved once during `buildSegments`'s
+  own existing single forward pass.** Folded into that forward pass: a
+  `lastOpenPrice` running variable, updated whenever an "open" event is
+  seen and stashed onto each close segment's own new `openPrice` field,
+  removing the separate backward-scan function entirely.
+  `replayEventFor` now takes only a `Segment` (no `points` parameter at
+  all), reading `segment.openPrice`/`segment.point` directly instead of
+  re-deriving either from the raw array -- a narrower, more clearly
+  test-shaped function than an unrelated `points` array pointer, even
+  though `points` itself remains genuinely necessary elsewhere in the
+  hook (`initialFrame`/`finalFrame` both still need it directly). Given
+  `points.length` here never exceeds roughly a dozen (3 trades, worst
+  case), this was never a _real_ performance problem -- worth doing
+  anyway for the interface-narrowing reason above, not because the old
+  O(n) rescan was actually slow in practice.
+- **A false positive, confirmed and dismissed rather than investigated
+  from scratch**: this round's own reviewer flagged the PR as bundling
+  unrelated changes (issue #14's closure, a `daysBeforeUtc` dedup) that
+  actually belong to a _different_, already-merged PR (#95, see the root
+  `CLAUDE.md`'s own commit history) -- a stale-`main` artifact on the
+  reviewer's own end (its local checkout predated #95's merge, so a diff
+  against that stale base spuriously included #95's already-landed
+  changes as if this PR introduced them). Confirmed via `gh pr diff 98
+--name-only` that this PR's own file scope was, and remained, exactly
+  its own ten files throughout both review rounds -- no root `CLAUDE.md`,
+  no `pipeline.ts`, no `packages/core/CLAUDE.md` ever touched here.
+  Worth the general process lesson: a review finding that claims a PR's
+  diff includes files nowhere in its own file list is itself the thing
+  to verify first (a quick `gh pr diff --name-only` check), not the
+  code -- cheap to rule out, and the actual root cause (a stale local
+  base, not a real scope problem) has nothing to do with the PR's own
+  changes at all.
+
+### Code-review follow-up, round three -- ten more findings (all fixed before merge)
+
+A third `high` review of the PR above, after the seven- and nine-finding
+rounds already documented, caught ten more -- three real bugs, seven
+perf/reuse cleanups consistent with rounds one and two's own standard.
+
+- **`PortfolioChart`'s x/y axis domain used to be keyed on whatever
+  `points` array it was currently handed -- fine as long as every caller
+  always passed the full series, which stopped being true the moment
+  `TradeReplay.tsx` started passing an already-truncated
+  `points.slice(0, revealedCount)` during playback.** The chart's own
+  scale-building `useMemo` computed the y-domain (`Math.min`/`Math.max`
+  over `points`) and the x-positions from whatever array it received, so
+  the axis rescaled to fit exactly what was currently revealed at _every
+  single reveal step_ -- the gridlines, their labels, and the two
+  start/end axis-text labels all moved, defeating the entire point of a
+  playback animation (a fixed frame the real trajectory grows into) and
+  instead rendering as the whole chart visibly reflowing every
+  ~300-600ms. Fixed by decoupling "what defines the axis domain" from
+  "what's actually drawn": `PortfolioChart` now always takes the FULL,
+  final `points` series (a new optional `revealedCount` prop says how
+  much of it to actually draw -- the line, its area fill, event markers,
+  and the accessible data table; defaults to `points.length`, so every
+  other caller is unaffected). The scale-building `useMemo` stays keyed
+  purely on the full `points`/`isChainedIntradaySeries`, never on
+  `revealedCount`; a separate `drawn = plotted.slice(0, revealed)` feeds
+  only the rendering/interaction logic. `TradeReplay.tsx` no longer
+  pre-slices `points` itself at all -- it passes the real `points` prop
+  straight through, plus `revealedCount={frame.revealedCount}` while
+  playing (the `truncatedPoints` `useMemo` round two's own fix added is
+  gone entirely, superseded by this). **Live-verified specifically for
+  axis stability, not just remount/opacity behavior (the earlier live
+  verification checked the latter but never the former, which is how
+  this got through two rounds)**: a Playwright script sampled the
+  y-axis gridlines' own `y1` coordinates and the two axis text labels at
+  three points -- idle (before playback), ~150ms into playback (one
+  point revealed), ~1050ms in (several more revealed) -- and after
+  landing on "done": all four snapshots were byte-identical. A
+  deliberately extreme fixture (a flat `$20` point followed by a jump to
+  `$4000`) was also added as a `PortfolioChart.test.tsx` regression test
+  comparing a `revealedCount={2}` render's gridlines/marker positions
+  directly against the full render's own -- a partial-domain regression
+  on a fixture this extreme would be obviously wrong, not just off by a
+  rounding hair.
+- **A starting-capital edit mid-playback replayed `HeroStat`'s
+  count-up/confetti reveal, directly contradicting that component's own
+  documented "rescale instantly, don't re-trigger" contract -- and the
+  actual mechanism was more subtle than "the reset logic is wrong."**
+  Editing starting capital while `phase === "playing"` correctly aborts
+  playback (`use-trade-replay.ts`'s own `trackedPoints` render-time
+  reset, round one's fix, still fires as designed -- `points` genuinely
+  changes identity on a capital edit, since `ResultsPanel.tsx`'s own
+  `points` memo is already display-rescaled). The bug was one level up:
+  aborting sets `phase` to `"idle"`, which flips `showLive` true and
+  swaps the hero slot's JSX at that position from a plain `<div>`
+  (the playing-phase tween figure) back to `<HeroStat>` -- and _any_
+  element-type change at a JSX position is an unconditional fresh mount
+  by React's own reconciliation rules, independent of `key`. That's
+  exactly the mechanism round two's own `PortfolioChart` key-stability
+  fix and its `replayRun`/`liveKey` removal already reasoned about
+  correctly for the _chart_ -- but for the _hero slot_, the type-swap is
+  actually load-bearing: it's what gives "Skip to end" its own fresh
+  reveal/confetti as a deliberate reward (verified and celebrated in
+  rounds one and two). The type-swap can't tell "landed on done, a real
+  completion" apart from "aborted back to idle, a live prop change" --
+  it fires identically for both, which is wrong for the second case.
+  Fixed with two changes together: (1) `HeroAndWorstCase.tsx`'s own
+  `heroSlot` prop now _overlays_ `HeroStat` (a CSS `invisible` wrapper
+  plus an `absolute inset-0` sibling) instead of replacing it via a
+  ternary -- `HeroStat` genuinely never unmounts just because `heroSlot`
+  toggles on or off any more. (2) `TradeReplay.tsx` now owns a small
+  `revealRun` counter, bumped only when `phase` _lands on_ `"done"`
+  (tracked via the same render-time "adjust state when a value changes"
+  idiom this file already uses elsewhere), suffixed onto `heroKey`
+  before it reaches `HeroAndWorstCase` -- so a `key` change (the only
+  remaining remount trigger, now that the type-swap is gone) happens
+  exactly when playback genuinely finishes, and never merely because it
+  was aborted. A mode switch mid-playback still gets its own fresh
+  reveal correctly, with no special-casing needed: `heroKey` itself
+  already folds in `mode` upstream, so that case remounts via its own
+  ordinary key change regardless of `revealRun`. **Live-verified with a
+  real starting-capital edit mid-playback, and it needed two tries to
+  verify correctly**: the first pass compared confetti-element presence
+  before/after the edit and got a false positive (confetti appeared ~2s
+  after the edit) -- turned out to be `HeroStat`'s own ordinary,
+  unrelated page-load count-up (which starts on mount, independent of
+  replay) simply finishing its normal 1.2s reveal on its own schedule,
+  coincidentally inside the observation window, not a re-trigger. Fixed
+  the verification by waiting out that initial reveal fully (tagging its
+  confetti container with a probe attribute) _before_ ever starting
+  playback, then confirming after a mid-playback capital edit: the
+  pre-playback `HeroStat` DOM node (and its confetti container) were
+  still the _exact same_ nodes 1.5s later (no second burst added,
+  `document.querySelectorAll` still returned only the tagged original),
+  while the figures correctly rescaled ($20 -> $50 shown as `$50.00 ->
+$17.2K`, `WorstCaseStat`'s own $4.20 -> $10.50). The contrast case
+  (Skip to end, a genuine completion) was verified in the same session:
+  the pre-playback-tagged confetti node was confirmed _gone_ afterward
+  and a fresh, untagged one present instead -- proof `HeroStat` really
+  did remount there, unlike the abort case.
+- **A stale `hoverIndex` could pop the crosshair/tooltip back into view
+  mid-replay, a regression introduced by round two's own fix for a
+  different problem.** `PortfolioChart`'s `hoverIndex` state only ever
+  cleared on `onPointerLeave`/`onPointerCancel`/`onBlur`/`Escape` --
+  safe as long as a `points` change always came with a fresh `key`
+  (a remount resets all state for free), which stopped being true once
+  round two gave the chart a single always-stable `key={heroKey}` across
+  the live/truncated swap. A user who hovered or tapped a point, then
+  clicked "Watch it happen" without the pointer ever leaving the SVG's
+  bounds, never fired any of those four clearing handlers -- `hoverIndex`
+  stayed pinned to the pre-playback index and popped the tooltip back
+  into view the instant `revealedCount` grew past it mid-replay. Fixed
+  by clearing `hoverIndex` whenever `points` changes identity _or_
+  `interactive` flips (the same render-time-adjustment idiom used
+  throughout this hook/component family) -- `interactive` had to be
+  tracked too, not just `points`, because the redesign for the axis-domain
+  fix above means `TradeReplay.tsx`'s own `points` prop no longer changes
+  identity at all across the live/playing swap; only `revealedCount` and
+  `interactive` do. **Live-verified (not just unit-tested)**: hovering the
+  chart's last point showed a real tooltip (`"Aug 19, 2026 - $2.1K"`),
+  clicking "Watch it happen" from inside the SVG's own bounds immediately
+  reverted the readout to the placeholder text, and it stayed the
+  placeholder a further ~1.2s into playback as `revealedCount` grew well
+  past the stale index -- confirming it never popped back.
+- **`PortfolioChart` now owns its own `interactive` prop instead of every
+  caller re-deriving the `aria-hidden`+`inert` wrapper idiom itself** --
+  this exact concern (the root `<svg>`'s own `tabIndex`, `ChartDataTable`'s
+  `<summary>`) had already needed rediscovering twice in this PR's own
+  history (round two's `inert` finding, and the second focusable-descendant
+  instance it caught along the way) before becoming a documented prop.
+  `interactive` (default `true`) sets `inert`/`aria-hidden` on this
+  component's own root div, which already wraps every focusable
+  descendant -- `TradeReplay.tsx` no longer wraps `PortfolioChart` in a
+  second div of its own for this at all; it just passes
+  `interactive={showLive}`.
+- `spansMultipleDays(points)` in `TradeReplay.tsx` -- constant for the
+  whole run, but this component re-renders on every one of the dozens of
+  RAF-driven frames while playing -- is now wrapped in a `useMemo`,
+  matching the sibling fixes round two already applied to
+  `endingBalanceDisplayValue`/`worstCaseDisplayValue`/`truncatedPoints`
+  (the last of which no longer exists at all, superseded by the axis-domain
+  fix above).
+- `use-trade-replay.ts`'s `tick()` used to open with a defensive
+  `if (segments.length === 0)` branch "just in case" -- confirmed
+  genuinely unreachable (not just defensively guarded): `play()` already
+  guards `points.length < 2` before ever setting `phase` to `"playing"`,
+  the only way this effect ever runs, so `buildSegments` always produces
+  at least one segment by the time `tick` fires. Deleted outright.
+- The play/skip-to-end button row's ternary used to duplicate the
+  identical wrapping `<div className="flex items-center gap-3">` in both
+  branches. Hoisted once; only the inner button varies with phase now.
+- `tradeVerbsPastCapitalized` (`trade-math.ts`) used to re-encode the
+  long/short branching a third time instead of deriving from the
+  existing `tradeVerbsPast` -- ironic, given this function's own doc
+  comment already argues against exactly that class of duplication. Now
+  calls `tradeVerbsPast(direction)` and capitalizes both fields via a
+  small private `capitalize()` helper local to that module.
+- The tween interpolation formula (`from + (to - from) * easeOutCubic(t)`)
+  was duplicated between `use-count-up.ts` and `use-trade-replay.ts` --
+  only the `easeOutCubic` curve itself had been extracted to
+  `lib/easing.ts` (round one's own extraction, prompted by issue #96's
+  Background section), not the linear-interpolation wrapper around it.
+  `use-count-up.ts` carried a deliberate float-precision snap-to-exact-
+  value guard at `t >= 1` that `use-trade-replay.ts`'s independent copy
+  of the same formula lacked (harmless there in practice, since it's only
+  ever reached inside an `if (t < 1)` branch, but still a real
+  duplication of the underlying arithmetic). Extracted a shared
+  `tweenValue(from, to, t)` into `lib/easing.ts`, including the snap
+  guard -- both call sites now share one implementation, with a new
+  `easing.test.ts` covering `tweenValue`'s own boundary/monotonicity
+  behavior directly (the two curves it composes were previously only
+  exercised indirectly, via each hook's own tests).
+- `formatHeroCurrency(displayStartingCapital)` inside `TradeReplay.tsx`'s
+  playing-phase hero slot recomputed on every RAF-driven re-render even
+  though `displayStartingCapital` is constant for the whole run -- hoisted
+  into a `useMemo`, the same pattern as `endingBalanceDisplayValue` above
+  it in the same file.
+- **Live-verified end to end** via the same throwaway-debug-route
+  (a hardcoded 3-trade `WindowResult` fixture, `ResultsPanel` driven
+  directly with a `startingCapital` `useState` standing in for
+  `StartingCapitalInput`'s real wiring) plus the documented no-root
+  headless-Chromium workaround as every prior round: confirmed all three
+  bugs above with real pointer/click interaction and DOM-identity
+  checks (not just code reading or unit tests), screenshotted the
+  mid-playback and post-capital-edit states, and confirmed zero console
+  errors/warnings and zero `pageerror` events across the entire
+  verification run. The debug route and the temporary `playwright`
+  devDependency (added the same way issue #36's own note documents,
+  `pnpm add -D -w playwright` for one verification session) were both
+  reverted before committing -- `git status`/`git diff --stat` on
+  `package.json`/`pnpm-lock.yaml` show no trace of either afterward.
+
+### Code-review follow-up, round four -- eight more findings (two real bugs, six cleanups)
+
+A fourth `high` review of the PR above, after the seven-, nine-, and
+ten-finding rounds already documented, caught eight more, tagged by
+confidence (3 CONFIRMED, 5 PLAUSIBLE) -- two real bugs, six
+duplication/perf/simplification cleanups. Two other candidates the
+reviewer flagged were checked and refuted before this list was even
+handed off, so they're not discussed here.
+
+- **A touch-only regression from round 3's own `revealedCount`/
+  `interactive` redesign: the one-time tap-hint pulse could relocate
+  between successive trade markers mid-playback, animating on content
+  that's simultaneously `inert`.** `PortfolioChart.tsx`'s pulse targets
+  `eventMarkers[eventMarkers.length - 1]`, and round 3 changed
+  `eventMarkers` to derive from `drawn` -- the `revealedCount`-truncated
+  prefix TradeReplay.tsx's playback grows one marker at a time -- without
+  updating the pulse's own gating to match. A touch-primary first-time
+  visitor who saw the pulse on the chart's final marker, then clicked
+  "Watch it happen" before the pulse's own multi-second animation
+  finished, would see the hint circle jump backward to whatever's
+  currently the last _revealed_ marker and keep relocating forward as
+  `revealedCount` grew -- an animated "tap here" invitation moving around
+  on content the same render also marks `inert` (pointer events
+  disabled) and `aria-hidden`. Fixed two ways together, the same "belt
+  and suspenders" posture this component's `aria-hidden`+`inert` pairing
+  already uses: (1) the pulse's own render condition now also checks
+  `interactive`, so it can never paint at all while non-interactive; (2)
+  the existing `useResetWhenChanged` reset that already clears a stale
+  `hoverIndex` on an `interactive` flip (round 3) now also calls
+  `dismissTapHint()` whenever `interactive` goes `false` -- `dismissTapHint`
+  is idempotent (a no-op if the hint was never shown, or already
+  dismissed), and playback starting is itself a real interaction with
+  the chart, the same class of event `revealNearestPoint` already treats
+  as "the hint did its job." **Live-verified**, not just unit-tested: a
+  Playwright script emulating a touch-primary device (`(pointer: coarse)`
+  stubbed via `matchMedia`) against a throwaway debug route confirmed the
+  pulse present before playback, confirmed absent across ten ~150ms
+  samples spanning the whole playback run, and confirmed still absent
+  once playback finished -- the debug route and the temporary
+  `playwright` devDependency were both reverted before committing (same
+  pattern as every prior round). A jsdom regression test was also added
+  (`PortfolioChart.test.tsx`) covering both the "never renders while
+  `interactive` is false, even as `revealedCount` grows" case and the
+  "stays dismissed once `interactive` flips back to `true`" case, since
+  jsdom can assert the DOM-presence half of this bug (the pulse element
+  existing or not) even though it can't assert the CSS animation motion
+  itself -- the same distinction round 2's own `inert` live-verification
+  note already drew between what jsdom can and can't confirm.
+- **`drawn = plotted.slice(0, revealedCount)` had no lower bound, and
+  `revealedCount` is a public, unvalidated prop.** A `revealedCount` of
+  `0` (or negative) produced an empty `drawn` array, and the non-null
+  assertions built on top of it (`drawn[drawn.length - 1]!.x`,
+  `drawn[0]!.x`, the gain/loss color's own `drawn[drawn.length - 1]!
+.value`) would then crash on `undefined!.x` instead of rendering
+  anything -- today prevented only by an emergent combination of
+  independently-maintained checks elsewhere (`use-trade-replay.ts`'s
+  `play()` length guard, `buildSegments`'s 1-indexed loop, `TradeReplay`'s
+  `showLive` gating), not one explicit invariant at this component's own
+  boundary. Fixed with an explicit clamp,
+  `Math.min(Math.max(revealedCount ?? points.length, 1), plotted.length)`
+  -- `PortfolioChart` is now safe regardless of what a future caller
+  passes, matching this codebase's established defense-in-depth posture.
+  Regression-tested (`revealedCount={0}`, a negative value, and a value
+  larger than the series) in `PortfolioChart.test.tsx`.
+- **The "track a value during render, react the instant it changes"
+  idiom was hand-duplicated six times** (three pre-existing:
+  `use-results.ts`'s `trackedUrl`, `use-range-guess.ts`'s `tracked`,
+  `StartingCapitalInput.tsx`'s `trackedValue`; three new from this PR:
+  `use-trade-replay.ts`'s `trackedPoints`, `PortfolioChart.tsx`'s
+  `trackedPoints`/`trackedInteractive`, `TradeReplay.tsx`'s
+  `trackedPhase`) -- despite several of those sites' own comments
+  explicitly cross-referencing the others by name as precedent for the
+  same pattern, with no shared helper. Extracted `useResetWhenChanged`
+  (`lib/use-reset-when-changed.ts`): pass an array of values to track
+  (`useEffect`-style, compared element-by-element via `Object.is`, so it
+  handles `PortfolioChart`'s own two-value `[points, interactive]` case
+  the same way single-value callers use `[value]`) and a callback to run
+  synchronously during render the instant any of them changes. All five
+  remaining sites (see the next bullet for why `TradeReplay.tsx`'s own
+  instance disappeared entirely rather than becoming a sixth caller) now
+  share this one implementation, with a dedicated
+  `use-reset-when-changed.test.ts` covering the multi-value and
+  `Object.is`-not-deep-equality behavior directly.
+- **`TradeReplay.tsx`'s own `revealRun`/`trackedPhase` pair (a
+  lower-priority "consider simplifying" candidate, item 8 below) turned
+  out foldable into `useTradeReplay` itself rather than needing the
+  shared helper above at all.** `trackedPhase` existed purely to detect
+  "the hook's own `phase` just became `\"done\"`" -- but the hook already
+  owns that exact transition at its own three `setPhase("done")` call
+  sites (natural completion, `skipToEnd`, and the corrupted-price
+  defensive catch), so it's the more natural owner of counting them.
+  `useTradeReplay` now returns a `completedRuns` counter, bumped at all
+  three sites; `TradeReplay.tsx` suffixes `heroKey` with it directly and
+  no longer tracks `phase` itself at all. Net effect: one fewer
+  duplicate-idiom site than the finding originally counted (five
+  `useResetWhenChanged` callers, not six), and a simpler
+  `TradeReplay.tsx` besides.
+- **`PortfolioChart` was not wrapped in `React.memo`, even though its own
+  child `ChartDataTable` already was, for the identical reason.** During
+  RAF-driven replay playback most tween frames leave
+  `points`/`revealedCount`/`interactive` completely unchanged (only the
+  hero figure's own `currentValue`, owned entirely by `TradeReplay.tsx`,
+  moves), yet `linePath`/`areaPath`/`eventMarkers` still recomputed and
+  the full SVG still re-diffed every frame for no visible difference.
+  Wrapped in `React.memo` -- safe under the default shallow comparison
+  since `points` is a stable reference for the whole run (only
+  `revealedCount` grows) and `revealedCount`/`interactive` are
+  primitives. Deliberately **not** applied to `HeroAndWorstCase`, whose
+  `heroSlot` content changes nearly every tick during playback -- memo
+  would buy nothing there and was correctly left alone.
+- **`use-trade-replay.ts`'s `runId` state (added in round 2 solely to
+  force `play()`'s RAF effect to restart even when `phase`'s own value
+  repeated) was simplified to a plain guard.** Round 2's fix made
+  `play()` safe to call while already `"playing"` -- not reachable via
+  the shipped UI, but a real hook-level API gap -- by bumping a `runId`
+  state variable on every `play()`/`skipToEnd()` call and including it in
+  the effect's own dependency array, so a same-value `phase` update could
+  still force a teardown/restart. Round 4 simplified this to
+  `if (points.length < 2 || phase === "playing") return;` at the top of
+  `play()` itself: every reachable caller only ever invokes `play()` from
+  `"idle"`/`"done"`, never `"playing"`, so a guard that simply declines to
+  act while already playing is behaviorally identical for every real call
+  site -- and is arguably the more literal reading of "idempotent," which
+  is what round 2's fix was actually named for (repeating the call has no
+  additional effect, vs. round 2's chosen behavior of restarting the
+  walk). `runId` state, and its dependency-array entry, were removed
+  entirely. The one existing regression test that asserted the old
+  "restarts from the beginning" behavior was updated to assert the new
+  "no-op, original walk keeps advancing undisturbed" behavior instead --
+  a deliberate behavior change to the hook's own unreachable-in-practice
+  edge case, not an oversight; the reasoning is recorded in both the
+  hook's own doc comment and the test's own name.
+- **The RAF scheduling scaffold in `use-trade-replay.ts` (start-time
+  capture, `tick(now)`/elapsed computation, `requestAnimationFrame`
+  reschedule, `cancelAnimationFrame` cleanup) structurally mirrors
+  `use-count-up.ts`'s own RAF loop -- considered for extraction, not
+  extracted.** Only `tweenValue`'s own curve math (round 3, `lib/
+easing.ts`) was ever actually shared between the two; the scheduling
+  boilerplate itself was not, because the two loops' substance genuinely
+  diverges: `use-count-up.ts`'s tick closes over a single fixed
+  `startTime` captured once and runs unconditionally on a mount-only `[]`
+  effect, while `use-trade-replay.ts`'s tick restarts a multi-segment
+  tween/pause state machine (`segmentIndex`/`subPhase`/`phaseStart`, all
+  _reassigned_ mid-loop as segments advance, not just read) on every
+  `[phase, points]` change. A shared primitive would need the caller to
+  hand it a memoized "build my own `tick(now)`" callback and thread that
+  through its own dependency array -- a genuine dependency-array-of-a-
+  dependency-array layer of indirection for what's otherwise ~5 lines of
+  schedule/cleanup boilerplate, likely making both hooks harder to read
+  rather than easier. Left un-extracted, with the reasoning recorded as a
+  comment directly above `use-trade-replay.ts`'s own effect, per the
+  review's own explicit "if it doesn't compose cleanly, leave a comment
+  explaining why rather than forcing a bad abstraction" guidance.
+- **`HeroAndWorstCase.tsx`'s generic `heroSlot?: ReactNode` prop has
+  exactly one real caller (`TradeReplay.tsx`), which used to hand-copy
+  `HeroStat`'s own "Starting from" label and big-number-row `className`
+  strings byte-for-byte instead of reusing them.** Considered narrowing
+  `heroSlot` itself to something more purpose-built, but that would mean
+  splitting `HeroStat`'s own label+wrapper markup out from its
+  count-up/celebration-burst/accessibility machinery -- a real
+  restructuring of a component whose mount/reveal timing and
+  accessibility behavior have already needed careful, hard-won fixes
+  across rounds 1-3, for a prop with a single caller. Took the cheaper,
+  equally-effective fix instead: `HeroStat.tsx` now exports
+  `heroLabelClassName`/`heroValueRowClassName` as named constants, and
+  `TradeReplay.tsx`'s `heroSlot` content imports and reuses them rather
+  than hand-copying the literal strings -- the actual duplication risk
+  (drift if `HeroStat`'s own typography ever changes) is eliminated with
+  zero behavior change and no risk to `HeroStat`'s own careful reveal
+  machinery. `heroSlot` itself stays a generic `ReactNode` prop.
+- **Two other candidates the round-four reviewer flagged were checked
+  and refuted before this list was finalized**, per the same "verify a
+  suspicious finding before trusting it" discipline round 2's own false
+  positive (a stale-`main` diff artifact) already established --
+  specifics not repeated here since they were dropped before reaching
+  this file, the same treatment round 2's refuted finding got.
+- **Verified all five routine checks green** (lint, `next typegen &&
+tsc --noEmit`, `pnpm build`, `pnpm test`, `pnpm format:check`) after
+  every fix in this round, plus a full `.next` cache clear once the
+  throwaway debug route was deleted -- `next typegen`'s generated route
+  validator otherwise keeps a stale reference to a route file that no
+  longer exists on disk, failing typecheck for a reason unrelated to any
+  real code change (worth remembering for the next debug-route cleanup:
+  delete `.next` too, not just the route file itself, before trusting a
+  typecheck run).
+
+### Code-review follow-up, round five -- one real bug, the rest left alone
+
+A fifth `high` review of the PR above, after the seven-, nine-, ten-, and
+eight-finding rounds already documented, found exactly one thing worth
+fixing -- everything else it raised was explicitly assessed by the
+reviewer itself as minor cleanup, not a correctness bug, and was
+deliberately left alone (four rounds is already more scrutiny than this
+feature needs).
+
+- **`TradeReplay.tsx`'s playing-phase hero overlay omitted the "(Nx)"
+  multiplier badge `HeroStat.tsx` always renders in the same row.** The
+  overlay only ever showed the tweening "$X -> $Y" dollar figures, so a
+  user viewing e.g. a big-multiplier result who clicked "Watch it happen"
+  saw the badge disappear for the whole ~3-6s playback, then pop back in
+  once phase returned to idle/done -- visually jarring for exactly the
+  results where the badge matters most. Fixed by computing the multiplier
+  the same way `HeroStat.tsx` does (`endingBalance / startingCapital`,
+  the real final figures -- deliberately _not_ tied to
+  `frame.currentValue`'s tween, matching `HeroStat`'s own badge, which
+  isn't tied to its count-up tween either) and rendering it with that
+  component's own formatting/threshold logic, following the same
+  extraction pattern round four already used for
+  `heroLabelClassName`/`heroValueRowClassName`: `HeroStat.tsx` now also
+  exports `heroMultiplierClassName` (the static text classes) and
+  `heroMultiplierColor(multiplier)` (the `>= 1` gain/loss threshold,
+  colored the same as `TradeRow.tsx`'s own per-trade return badge) --
+  `HeroStat` itself now calls these rather than hand-inlining the same
+  logic, so there's exactly one implementation instead of two kept in
+  sync by hand. `formatMultiplier` (`lib/format-currency.ts`) was already
+  exported and reused as-is; only the className/color piece needed a new
+  export. The multiplier is memoized (`useMemo` on
+  `[endingBalance, startingCapital]`) for the same reason the other
+  constant-per-run values in this file already are -- it re-renders on
+  every RAF-driven frame while playing, but the value itself never
+  changes across those frames.
+- **Regression-tested** in `TradeReplay.test.tsx`: a `$20 -> $40` (2x)
+  fixture asserts `(2x)` is present at idle, still present (two matches --
+  the real, visually-hidden `HeroStat`'s own badge plus the overlay's,
+  see `HeroAndWorstCase.tsx`'s own `heroSlot` doc comment for why
+  `HeroStat` stays mounted underneath the overlay) once playing, and
+  still present after landing on done.
+- **Live-verified** via the same throwaway-debug-route (a hardcoded
+  $20 -> $250, 12.5x/"13x"-displayed `WindowResult`-shaped fixture) plus
+  the documented no-root headless-Chromium workaround as every prior
+  round: a Playwright script sampled the badge's own text continuously
+  across the entire playback run (idle, ~15 samples ~300ms apart spanning
+  the full ~2.4s playback, and done) and confirmed `(13x)` present at
+  every single sample, never missing -- plus zero console/`pageerror`
+  events across the whole run. The debug route and the temporary
+  `playwright` devDependency were both reverted before committing, same
+  as every prior round; confirmed via `git status`/`git diff --stat`
+  showing no trace of either afterward. Re-ran all five routine checks
+  (lint, `next typegen && tsc --noEmit`, `pnpm build`, `pnpm test`,
+  `pnpm format:check`) green on the clean tree after cleanup, including
+  the `.next` cache clear round four's own note already flags as
+  necessary post-debug-route-deletion.

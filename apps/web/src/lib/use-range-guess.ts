@@ -12,6 +12,7 @@ import type { PresetRange } from "@hadiknowntrades/core";
 
 import type { Mode } from "./mode";
 import { getRangeGuess, saveRangeGuess } from "./range-guess-storage";
+import { useResetWhenChanged } from "./use-reset-when-changed";
 
 interface UseRangeGuessResult {
   /** The user's stored guess for `range` under `mode`, or `null` if they haven't guessed it yet. */
@@ -31,7 +32,9 @@ interface UseRangeGuessResult {
  * `range` or `mode` changing (the user switched range tabs, or toggled
  * long-only/long+short via ModeToggle) re-checks that pair's own stored
  * guess during render, the same "adjust state during render when a prop
- * changes" pattern use-daily-guess.ts established.
+ * changes" pattern use-daily-guess.ts established -- via the shared
+ * useResetWhenChanged helper (code review, issue #96 follow-up round
+ * four), not a hand-rolled `tracked` companion state any more.
  *
  * `range === null` means custom-range mode is active (issue #11) -- this
  * hook is still called unconditionally (Rules of Hooks) from
@@ -41,13 +44,11 @@ interface UseRangeGuessResult {
  * guessed" when `range` is null.
  */
 export function useRangeGuess(range: PresetRange | null, mode: Mode): UseRangeGuessResult {
-  const [tracked, setTracked] = useState({ range, mode });
   const [stored, setStored] = useState(() => (range === null ? null : getRangeGuess(range, mode)));
 
-  if (range !== tracked.range || mode !== tracked.mode) {
-    setTracked({ range, mode });
+  useResetWhenChanged([range, mode], () => {
     setStored(range === null ? null : getRangeGuess(range, mode));
-  }
+  });
 
   function submitGuess(value: number, startingCapital: number) {
     if (range === null) return; // no-op: nothing to key a guess under outside a preset range

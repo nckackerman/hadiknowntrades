@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import type { PrecomputedResult, PresetRange } from "@hadiknowntrades/core";
 
 import type { ApiErrorCode } from "./results-api";
+import { useResetWhenChanged } from "./use-reset-when-changed";
 
 /**
  * Every error code a consumer of useResults can see -- the server's own
@@ -72,21 +73,22 @@ export function isApiErrorBody(value: unknown): value is ApiErrorBody {
  * `"loading"` state that would never resolve.
  */
 export function useFetchResultsState<T>(url: string | null): ResultsState<T> | null {
-  const [trackedUrl, setTrackedUrl] = useState(url);
   const [state, setState] = useState<ResultsState<T> | null>(
     url === null ? null : { status: "loading" },
   );
 
   // Reset to "loading" (or null) the moment `url` changes, during render
   // rather than in the effect below -- React's own "adjusting state when
-  // a prop changes" pattern. Calling setState synchronously as the first
-  // thing an effect does triggers an avoidable extra render (and trips
-  // the react-hooks/set-state-in-effect lint); this way the reset and
-  // the render that shows it happen together.
-  if (url !== trackedUrl) {
-    setTrackedUrl(url);
+  // a prop changes" pattern, via the shared useResetWhenChanged helper
+  // (code review, issue #96 follow-up round four -- this hand-rolled
+  // `trackedUrl` companion state used to be one of six independent copies
+  // of this exact idiom across the app). Calling setState synchronously
+  // as the first thing an effect does triggers an avoidable extra render
+  // (and trips the react-hooks/set-state-in-effect lint); this way the
+  // reset and the render that shows it happen together.
+  useResetWhenChanged([url], () => {
     setState(url === null ? null : { status: "loading" });
-  }
+  });
 
   useEffect(() => {
     if (url === null) return;

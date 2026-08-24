@@ -24,13 +24,13 @@ import { useRangeGuess } from "@/lib/use-range-guess";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
 import { BenchmarkStat } from "@/components/BenchmarkStat";
 import { DayOverview } from "@/components/DayOverview";
-import { HeroStat } from "@/components/HeroStat";
+import { HeroAndWorstCase } from "@/components/HeroAndWorstCase";
 import { IntradayTradeList } from "@/components/IntradayTradeList";
 import { PortfolioChart } from "@/components/PortfolioChart";
 import { StartingCapitalInput } from "@/components/StartingCapitalInput";
 import { TradeList } from "@/components/TradeList";
+import { TradeReplay } from "@/components/TradeReplay";
 import { WholeRangeBalance } from "@/components/WholeRangeBalance";
-import { WorstCaseStat } from "@/components/WorstCaseStat";
 
 const RANGE_COPY: Record<PresetRange, string> = {
   "1W": "the past week",
@@ -181,95 +181,6 @@ function FadeInWrapper({ children }: { children: ReactNode }) {
   );
 }
 
-interface HeroAndWorstCaseProps {
-  /**
-   * Passed straight through as HeroStat's own `key` -- must change
-   * whenever the underlying result changes (a newly-selected intraday
-   * day, or a new range/dataAsOf for the window model) so useCountUp's
-   * reveal animation remounts and fires fresh instead of leaving the
-   * visible figure frozen at a stale animated value. See each call
-   * site's own key expression for what identifies "changed" for that
-   * model.
-   */
-  heroKey: string;
-  /** This *track's* own starting capital (the same track endingBalance below was computed from) -- HeroStat rescales endingBalance from this value, never from a different track's. */
-  startingCapital: number;
-  endingBalance: number;
-  worstCaseEndingBalance: number;
-  /**
-   * The worst-case track's *own* starting capital (issue #84) -- separate
-   * from `startingCapital` above on purpose. Pre-chaining, every track
-   * shared one identical flat `startingCapital`, so a single prop could
-   * safely serve both `HeroStat` and `WorstCaseStat`'s rescale; once
-   * apps/pipeline chains each of the four tracks independently (see
-   * apps/pipeline/CLAUDE.md), the worst-case track's own chained capital
-   * can genuinely differ from the (best-case) `startingCapital` above,
-   * and rescaling `worstCaseEndingBalance` from the wrong track's capital
-   * would silently produce a wrong number -- see
-   * apps/web/CLAUDE.md's "Configurable starting capital" section (the
-   * `effectiveStartingCapital`-miss history) for the exact class of bug
-   * this field exists to prevent from recurring a fourth time. For the
-   * window model (WorstCaseResult/LongShortResult), which has no
-   * per-track startingCapital of its own (never chained -- see
-   * results-schema.ts), this is always identical to `startingCapital`
-   * itself; callers there just pass the same value twice.
-   */
-  worstCaseStartingCapital: number;
-  /**
-   * The user's chosen starting capital (issue #15) to display-rescale
-   * both stats to -- defaults to `startingCapital` (a no-op ratio of 1)
-   * at each call site, the same optional-in-spirit convention `HeroStat`
-   * itself uses. Passed straight through to `HeroStat` as its own
-   * `displayStartingCapital` prop (layered on top of, not fed into, its
-   * count-up tween -- see that prop's own doc comment); `WorstCaseStat`
-   * has no animation to protect, so it's simpler here: rescale
-   * `worstCaseEndingBalance` directly via `rescaleFromStartingCapital`
-   * and pass the rescaled pair straight in. The multiplier either
-   * component derives (`endingBalance / startingCapital`) is unaffected
-   * either way, since rescaling multiplies both sides by the same ratio.
-   */
-  displayStartingCapital: number;
-}
-
-/**
- * The HeroStat + WorstCaseStat pairing shared by both the intraday-daily
- * and window-model success branches below -- same wrapper layout, same
- * two stats side by side, differing only in which day's or range's
- * numbers feed them and what identifies "the result changed" for
- * `heroKey`.
- */
-function HeroAndWorstCase({
-  heroKey,
-  startingCapital,
-  endingBalance,
-  worstCaseEndingBalance,
-  worstCaseStartingCapital,
-  displayStartingCapital,
-}: HeroAndWorstCaseProps) {
-  return (
-    <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:gap-8">
-      <HeroStat
-        key={heroKey}
-        startingCapital={startingCapital}
-        endingBalance={endingBalance}
-        displayStartingCapital={displayStartingCapital}
-      />
-      <WorstCaseStat
-        startingCapital={displayStartingCapital}
-        endingBalance={rescaleFromStartingCapital(
-          worstCaseEndingBalance,
-          // The worst-case track's own starting capital -- NOT
-          // `startingCapital` above (the best-case/hero track's), which
-          // can genuinely differ once tracks chain independently (issue
-          // #84). See worstCaseStartingCapital's own doc comment.
-          worstCaseStartingCapital,
-          displayStartingCapital,
-        )}
-      />
-    </div>
-  );
-}
-
 /**
  * The fields WindowResultBody actually reads -- satisfied structurally by
  * both WindowResult (5Y/MAX) and CustomWindowResult (issue #11's custom
@@ -337,6 +248,14 @@ interface WindowResultBodyProps {
  * selectVariant) happens once, here, rather than being left to each
  * caller -- the same "one place decides" reasoning selectVariant's own
  * doc comment already argues for at the top of this file.
+ *
+ * The hero row + chart pairing is delegated to TradeReplay (issue #96),
+ * which renders the same HeroAndWorstCase + PortfolioChart this body
+ * rendered directly before that issue, plus an opt-in "Watch it happen"
+ * replay button -- see that component's own doc comment. The methodology
+ * paragraph and BenchmarkStat are passed as `children`, rendered between
+ * TradeReplay's own hero row and chart exactly where they sat before,
+ * unaffected by playback.
  */
 function WindowResultBody({
   data,
@@ -354,27 +273,28 @@ function WindowResultBody({
 
   return (
     <FadeInWrapper>
-      <div className="flex flex-col gap-2">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <HeroAndWorstCase
-            heroKey={heroKey}
-            startingCapital={data.startingCapital}
-            endingBalance={variant.endingBalance}
-            worstCaseEndingBalance={variant.worstCase.endingBalance}
-            // The window model (WorstCaseResult/LongShortResult) has no
-            // per-track startingCapital of its own -- it's never chained
-            // (only the intraday-daily model is, issue #84), so every
-            // track always shares this same flat data.startingCapital.
-            worstCaseStartingCapital={data.startingCapital}
-            displayStartingCapital={effectiveStartingCapital}
-          />
-          {onStartingCapitalChange && (
+      <TradeReplay
+        points={points}
+        tradeCount={variant.trades.length}
+        heroKey={heroKey}
+        startingCapital={data.startingCapital}
+        endingBalance={variant.endingBalance}
+        worstCaseEndingBalance={variant.worstCase.endingBalance}
+        // The window model (WorstCaseResult/LongShortResult) has no
+        // per-track startingCapital of its own -- it's never chained
+        // (only the intraday-daily model is, issue #84), so every track
+        // always shares this same flat data.startingCapital.
+        worstCaseStartingCapital={data.startingCapital}
+        displayStartingCapital={effectiveStartingCapital}
+        startingCapitalInput={
+          onStartingCapitalChange && (
             <StartingCapitalInput
               value={effectiveStartingCapital}
               onChange={onStartingCapitalChange}
             />
-          )}
-        </div>
+          )
+        }
+      >
         <p className="text-sm text-[var(--text-secondary)]">
           Best possible outcome {descriptionPhrase}, with at most {data.maxTrades} sequential all-in
           trades across the S&amp;P 500, using only closed (EOD) prices. As of {data.dataAsOf}.
@@ -384,15 +304,7 @@ function WindowResultBody({
           startingCapital={data.startingCapital}
           displayStartingCapital={effectiveStartingCapital}
         />
-      </div>
-
-      {/* Keyed on the same heroKey as HeroAndWorstCase's own <HeroStat>
-          above (issue #85) -- PortfolioChart is never remounted for free
-          just by a new `points` prop, so without this key its reveal
-          animation would only ever fire once per range/custom-anchor
-          fetch, not in sync with HeroStat's own count-up/glow replaying
-          on every day/mode switch. */}
-      <PortfolioChart key={heroKey} points={points} />
+      </TradeReplay>
 
       <div className="flex flex-col gap-3">
         <h2 className="text-lg font-semibold text-[var(--text-primary)]">Trades</h2>

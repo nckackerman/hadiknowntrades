@@ -7,6 +7,7 @@ import {
   MIN_STARTING_CAPITAL,
   parseStartingCapital,
 } from "@/lib/starting-capital";
+import { useResetWhenChanged } from "@/lib/use-reset-when-changed";
 
 interface StartingCapitalInputProps {
   /** The currently-committed starting capital (issue #15) -- a
@@ -35,19 +36,6 @@ interface StartingCapitalInputProps {
  */
 export function StartingCapitalInput({ value, onChange }: StartingCapitalInputProps) {
   const [draft, setDraft] = useState(String(value));
-  // Tracks the last `value` the draft was synced from, so a change to
-  // `value` for a reason *other* than this input's own onChange below
-  // (e.g. use-starting-capital.ts's post-mount localStorage-hydration
-  // correction, or some future programmatic reset) re-syncs the visible
-  // text -- computed during render, React's own "adjusting state when a
-  // prop changes" pattern (same shape as use-results.ts's
-  // `trackedRange`), not in a useEffect, which would trip the
-  // react-hooks/set-state-in-effect lint for exactly this "mirror a prop
-  // into state" shape. This was a real bug caught by live-verifying a
-  // page reload, not the unit tests: without it, the field kept showing
-  // its hydration-safe default text forever after the hook silently
-  // corrected the actual value out from under it.
-  const [trackedValue, setTrackedValue] = useState(value);
   // The parsed value from this input's own most recently fired onChange
   // call, if any -- lets the resync below tell "value changed because
   // the parent just round-tripped my own edit back to me" apart from "a
@@ -61,8 +49,20 @@ export function StartingCapitalInput({ value, onChange }: StartingCapitalInputPr
   // lint (refs aren't meant to be read during render at all, even though
   // the timing would happen to work here).
   const [lastEmitted, setLastEmitted] = useState<number | null>(null);
-  if (value !== trackedValue) {
-    setTrackedValue(value);
+  // Resyncs the visible draft whenever `value` changes for a reason
+  // *other* than this input's own onChange below (e.g.
+  // use-starting-capital.ts's post-mount localStorage-hydration
+  // correction, or some future programmatic reset) -- computed during
+  // render via the shared useResetWhenChanged helper (code review, issue
+  // #96 follow-up round four; this used to be a hand-rolled
+  // `trackedValue` companion state), React's own "adjusting state when a
+  // prop changes" pattern, not a useEffect, which would trip the
+  // react-hooks/set-state-in-effect lint for exactly this "mirror a prop
+  // into state" shape. This was a real bug caught by live-verifying a
+  // page reload, not the unit tests: without it, the field kept showing
+  // its hydration-safe default text forever after the hook silently
+  // corrected the actual value out from under it.
+  useResetWhenChanged([value], () => {
     // Only resync the visible draft when this value change didn't
     // originate from this input's own onChange -- otherwise a keystroke
     // that changes the *parsed* number (e.g. typing the "2" in "02",
@@ -75,7 +75,7 @@ export function StartingCapitalInput({ value, onChange }: StartingCapitalInputPr
     if (value !== lastEmitted) {
       setDraft(String(value));
     }
-  }
+  });
 
   function handleChange(event: React.ChangeEvent<HTMLInputElement>): void {
     const raw = event.target.value;
