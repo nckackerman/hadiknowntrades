@@ -16,6 +16,32 @@ export function buildTimeScale(domain: [number, number], range: [number, number]
 }
 
 /**
+ * x-positions for the window model (issue #93): a thin wrapper around
+ * buildTimeScale that derives its own domain from `timestamps` directly,
+ * so PortfolioChart's two x-position branches (this one, and
+ * buildChainedIntradayXPositions below) read as siblings with the same
+ * `(timestamps, range) => number[]` shape, rather than this one being an
+ * inline closure built ad hoc at the call site (found in code review:
+ * harder to read as "the unchanged old codepath" than a named function
+ * matching its sibling, and not independently unit-testable the way
+ * buildChainedIntradayXPositions is).
+ */
+export function buildWindowModelXPositions(
+  timestamps: readonly number[],
+  range: [number, number],
+): number[] {
+  const minTs = Math.min(...timestamps);
+  const maxTs = Math.max(...timestamps);
+  // A single-point series (e.g. a window with no trades and start ===
+  // end) still needs a non-zero domain to lay out -- pad by a day.
+  const dayMs = 24 * 60 * 60 * 1000;
+  const domain: [number, number] =
+    minTs === maxTs ? [minTs - dayMs, maxTs + dayMs] : [minTs, maxTs];
+  const timeScale = buildTimeScale(domain, range);
+  return timestamps.map((t) => timeScale(t));
+}
+
+/**
  * Positions for a chained multi-day intraday series (issue #93): every
  * distinct calendar day in `dayKeys` gets an equal-width slot across
  * `range` -- ordinal *by day*, not by point -- and within a day, its own
@@ -59,15 +85,15 @@ export function buildChainedIntradayXPositions(
   // colliding on the same lone index.
   if (dayKeys.length === 1) return [(r0 + r1) / 2];
 
-  const dayIndex = new Map<string, number>();
-  for (const key of dayKeys) {
-    if (!dayIndex.has(key)) dayIndex.set(key, dayIndex.size);
-  }
-  const totalDays = dayIndex.size;
-  const slotWidth = (r1 - r0) / totalDays;
-
   // Each day's own [min, max] timestamp, to normalize its points into a
-  // [0, 1] fraction of that day's slot.
+  // [0, 1] fraction of that day's slot -- and, below, to order days
+  // themselves chronologically rather than by first-appearance in
+  // `dayKeys` (found in code review: assigning slot order by
+  // first-appearance alone means a day that isn't sorted/contiguous in
+  // the input -- a future pipeline bug, not something today's one real
+  // caller, deriveWholeRangeIntradaySeries, produces -- could silently
+  // scramble slot order with no crash; sorting by each day's own min
+  // timestamp closes that regardless of input order).
   const dayMin = new Map<string, number>();
   const dayMax = new Map<string, number>();
   dayKeys.forEach((key, i) => {
@@ -75,6 +101,11 @@ export function buildChainedIntradayXPositions(
     dayMin.set(key, Math.min(dayMin.get(key) ?? ts, ts));
     dayMax.set(key, Math.max(dayMax.get(key) ?? ts, ts));
   });
+
+  const orderedDays = [...dayMin.keys()].sort((a, b) => dayMin.get(a)! - dayMin.get(b)!);
+  const dayIndex = new Map(orderedDays.map((key, i) => [key, i]));
+  const totalDays = orderedDays.length;
+  const slotWidth = (r1 - r0) / totalDays;
 
   const positions = dayKeys.map((key, i) => {
     const slotStart = r0 + dayIndex.get(key)! * slotWidth;

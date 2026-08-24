@@ -82,6 +82,47 @@ reveal-on-mount animation, the two-label (start/end) x-axis text, and
 index/point-order-based, not pixel-time-based, so the branch is entirely
 contained to the scale-construction `useMemo`.
 
+Two more findings from this issue's own `high` code review, both fixed
+before merge:
+
+- **`buildChainedIntradayXPositions` orders day slots by each day's own
+  minimum timestamp, not by first appearance in `dayKeys`.** The first
+  version assigned slot order purely by which day it saw first while
+  scanning the input array -- fine as long as `dayKeys` arrives
+  chronologically sorted and each day is contiguous (which
+  `deriveWholeRangeIntradaySeries`, the one real caller today, always
+  produces), but nothing enforced that invariant, so a future pipeline
+  bug (a bad merge/backfill producing out-of-order or non-contiguous
+  days) could silently scramble slot order with no crash. Sorting by
+  each day's own min timestamp before assigning indices closes this
+  regardless of input order -- see `chart-scales.test.ts`'s own
+  regression test for a concrete before/after example.
+- **`calendarDayOf` (`portfolio-series.ts`) delegates to
+  `format-date.ts`'s `isPortfolioDatetime`** for its datetime-vs-plain-date
+  check, rather than a second `date.includes("T")` -- that function's own
+  doc comment already calls itself "the single canonical place this
+  detection happens" specifically so two copies can't drift.
+
+A third, smaller finding (the window-model x-position branch was an
+inline IIFE nested in a ternary, harder to read than a named sibling
+function) was also addressed: it's now `buildWindowModelXPositions` in
+`chart-scales.ts`, matching `buildChainedIntradayXPositions`'s
+`(timestamps, range) => number[]` shape and independently unit-tested.
+
+One review finding was heard but **not** acted on, a deliberate call:
+`isChainedIntradaySeries` infers series kind from data shape
+(`includeDate && isPortfolioDatetime(...)`) rather than an explicit kind
+the caller (`ResultsPanel.tsx`) already knows and could pass down. This
+is the same shape-sniffing pattern `isPortfolioDatetime`/`toTimestamp`/
+`formatDateTime` already used throughout this file before this issue --
+consistent with existing convention, not a new anti-pattern introduced
+here. Threading an explicit `seriesKind` prop through `PortfolioChart`
+and both `ResultsPanel.tsx` call sites would be a real, larger
+refactor of how series metadata flows through the component tree,
+out of proportion for this issue's actual scope (the x-axis dead-space
+problem). Worth doing if a genuinely ambiguous series shape ever shows
+up in practice -- not preemptively.
+
 Live-verified via before/after screenshots (a throwaway debug route per
 this file's own "Screenshotting a component locally" technique, plus a
 `git stash` of just the fix to capture the "before" state): a 5-trading-day

@@ -21,7 +21,7 @@ import { formatDateTime, isPortfolioDatetime } from "@/lib/format-date";
 import {
   buildChainedIntradayXPositions,
   buildLogScale,
-  buildTimeScale,
+  buildWindowModelXPositions,
   niceLogTicks,
 } from "@/lib/chart-scales";
 import {
@@ -135,18 +135,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
           timestamps,
           [0, PLOT_WIDTH],
         )
-      : (() => {
-          const minTs = Math.min(...timestamps);
-          const maxTs = Math.max(...timestamps);
-          // A single-point series (e.g. a window with no trades and
-          // start === end) still needs a non-zero domain to lay out --
-          // pad by a day.
-          const dayMs = 24 * 60 * 60 * 1000;
-          const xDomain: [number, number] =
-            minTs === maxTs ? [minTs - dayMs, maxTs + dayMs] : [minTs, maxTs];
-          const timeScale = buildTimeScale(xDomain, [0, PLOT_WIDTH]);
-          return timestamps.map((t) => timeScale(t));
-        })();
+      : buildWindowModelXPositions(timestamps, [0, PLOT_WIDTH]);
 
     const plotted = points.map((p, i) => ({
       ...p,

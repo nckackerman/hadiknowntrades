@@ -4,6 +4,7 @@ import {
   buildChainedIntradayXPositions,
   buildLogScale,
   buildTimeScale,
+  buildWindowModelXPositions,
   niceLogTicks,
 } from "./chart-scales";
 
@@ -37,7 +38,7 @@ describe("buildChainedIntradayXPositions", () => {
 
   it("centers an interior single-point (no-trade) day in its own slot", () => {
     const dayKeys = ["a", "a", "b", "c", "c"];
-    const timestamps = [0, 10, 999, 20, 30];
+    const timestamps = [0, 10, 15, 20, 30]; // "b" chronologically between "a" and "c"
 
     const positions = buildChainedIntradayXPositions(dayKeys, timestamps, [0, 90]);
 
@@ -59,6 +60,40 @@ describe("buildChainedIntradayXPositions", () => {
 
   it("returns an empty array for no points", () => {
     expect(buildChainedIntradayXPositions([], [], [0, 90])).toEqual([]);
+  });
+
+  it("orders day slots chronologically by each day's own timestamps, not by first appearance in dayKeys (code review regression)", () => {
+    // "x" and "y" are boundary days (array-first/last, so their own
+    // positions are always pinned to the range edges regardless of day
+    // order -- see the pinning test above -- and shouldn't be read as
+    // asserting anything about day-sort order). The two interior days,
+    // "b" and "a", appear in that order in dayKeys, but "a"'s own
+    // timestamp (50) is chronologically *before* "b"'s (100) -- their
+    // slots must reflect timestamp order (a's slot left of b's), not
+    // input order, or the line would render non-monotonically.
+    const dayKeys = ["x", "b", "a", "y"];
+    const timestamps = [0, 100, 50, 200];
+
+    const positions = buildChainedIntradayXPositions(dayKeys, timestamps, [0, 90]);
+
+    expect(positions).toEqual([0, 56.25, 33.75, 90]);
+    // The decisive check: "a" (earlier) sits left of "b" (later) despite
+    // appearing after it in dayKeys -- under the pre-fix first-appearance
+    // ordering, this would be reversed.
+    expect(positions[2]).toBeLessThan(positions[1]!);
+  });
+});
+
+describe("buildWindowModelXPositions", () => {
+  it("maps timestamps linearly across the range, proportional to real elapsed time", () => {
+    const positions = buildWindowModelXPositions([0, 250, 1000], [0, 100]);
+    expect(positions).toEqual([0, 25, 100]);
+  });
+
+  it("pads a single-point series by a day instead of collapsing to a zero-span domain", () => {
+    const dayMs = 24 * 60 * 60 * 1000;
+    const positions = buildWindowModelXPositions([dayMs * 10], [0, 100]);
+    expect(positions[0]).toBeCloseTo(50, 5);
   });
 });
 

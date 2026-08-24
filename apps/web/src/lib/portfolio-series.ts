@@ -30,6 +30,7 @@
 
 import type { IntradayTrade, Trade, TradeDirection } from "@hadiknowntrades/core";
 
+import { isPortfolioDatetime } from "./format-date";
 import { compoundBalance } from "./trade-math";
 
 /**
@@ -163,9 +164,15 @@ export function derivePortfolioSeries(
  * before the "T". Exported so callers besides spansMultipleDays below
  * (PortfolioChart's chained-intraday x-axis positioning, issue #93) can
  * group points by day without a second copy of this same slicing logic.
+ * Delegates the datetime-vs-plain-date check to format-date.ts's
+ * isPortfolioDatetime (a "code review found this reimplemented inline"
+ * fix on issue #93's own PR) rather than a second `date.includes("T")`
+ * -- that function's own doc comment already calls itself out as "the
+ * single canonical place this detection happens," specifically so two
+ * independent copies can't drift if the datetime format ever changes.
  */
 export function calendarDayOf(date: string): string {
-  return date.includes("T") ? date.slice(0, date.indexOf("T")) : date;
+  return isPortfolioDatetime(date) ? date.slice(0, date.indexOf("T")) : date;
 }
 
 /**
