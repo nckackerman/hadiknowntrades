@@ -27,6 +27,14 @@ const POINTS: PortfolioPoint[] = [
   { date: "2024-01-06", value: 40, event: null },
 ];
 
+// The rewind intro beat (issue #97) is 700ms -- with performance.now()
+// pinned to 1000 (see each test's own vi.spyOn(performance, "now")
+// call), any raf.tick(now) with `now >= 1700` completes it in a single
+// tick, auto-advancing phase straight to "playing" -- see
+// use-trade-replay.test.ts's own identical constant for the full
+// reasoning.
+const REWIND_COMPLETE_NOW = 1700;
+
 const BASE_PROPS = {
   points: POINTS,
   tradeCount: 1,
@@ -96,6 +104,61 @@ describe("TradeReplay (issue #96)", () => {
     expect(screen.queryByRole("button", { name: "Watch it happen" })).not.toBeInTheDocument();
   });
 
+  it("clicking Watch it happen begins with a rewind-to-start-date readout before real trade playback (issue #97)", async () => {
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2024-06-15T00:00:00Z"));
+    const raf = createRafPump();
+    const user = userEvent.setup();
+    render(<TradeReplay {...BASE_PROPS} />);
+
+    await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+
+    // A brief backward-ticking date readout, not the real trade
+    // callout/hero figure yet -- "Skip to end" is already available
+    // here too (issue #97's own "works identically" acceptance
+    // criterion, exercised more fully in a sibling test below).
+    expect(screen.getByText("Rewinding to")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Skip to end" })).toBeInTheDocument();
+    // Never announced to assistive tech -- purely visual/decorative,
+    // same as the playing-phase figure (see TradeReplay.tsx's own
+    // `announced` doc comment).
+    expect(statusRegion()).toHaveTextContent("");
+
+    raf.tick(1000); // t=0: the readout starts at "now"
+    expect(screen.getByText("Jun 15, 2024")).toBeInTheDocument();
+
+    raf.tick(REWIND_COMPLETE_NOW); // lands exactly on the result's own start date
+
+    // Auto-advances into real playback on its own -- no second click
+    // needed, per the issue's own "no manual second step" acceptance
+    // criterion. Two "Starting from" matches now (the real, still-
+    // mounted HeroStat's own caption, plus the playing-phase overlay's
+    // identical one) -- see TradeReplay.tsx's own heroSlot doc comment.
+    expect(screen.queryByText("Rewinding to")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Starting from")).toHaveLength(2);
+  });
+
+  it("Skip to end during the rewind readout works identically to Skip to end during trade playback (issue #97)", async () => {
+    createRafPump();
+    const user = userEvent.setup();
+    render(<TradeReplay {...BASE_PROPS} />);
+
+    await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+    expect(screen.getByText("Rewinding to")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Skip to end" }));
+
+    // Lands on the exact same final state a Skip to end from mid-
+    // playback does (see the sibling "Skip to end works at any point
+    // during playback" test) -- the real hero/chart, a "Replay" button,
+    // and the finished announcement.
+    expect(screen.queryByText("Rewinding to")).not.toBeInTheDocument();
+    expect(screen.getByText("Worst case, same budget")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Replay" })).toBeInTheDocument();
+    expect(statusRegion()).toHaveTextContent("Replay finished. Ending balance $40.00.");
+  });
+
   it("renders as two top-level siblings (hero/controls block, then chart), not one wrapping div -- preserves FadeInWrapper's own gap-8 spacing", () => {
     const { container } = render(<TradeReplay {...BASE_PROPS} />);
 
@@ -128,6 +191,7 @@ describe("TradeReplay (issue #96)", () => {
     render(<TradeReplay {...BASE_PROPS} />);
 
     await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+    raf.tick(REWIND_COMPLETE_NOW); // completes the rewind intro beat (issue #97), landing on "playing"
     raf.tick(1000); // mid-tween toward the open event
     raf.tick(1300); // arrives at the open event, pauses
 
@@ -261,8 +325,9 @@ describe("TradeReplay (issue #96)", () => {
     expect(screen.getByText("Starting from")).not.toBe(heroCaptionBeforePlaying);
   });
 
-  it("shows the multiplier badge throughout idle -> playing -> done, never disappearing (code review, issue #96 follow-up round five)", async () => {
-    createRafPump();
+  it("shows the multiplier badge throughout idle -> rewinding -> playing -> done, never disappearing (code review, issue #96 follow-up round five)", async () => {
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+    const raf = createRafPump();
     const user = userEvent.setup();
     render(<TradeReplay {...BASE_PROPS} />);
 
@@ -272,13 +337,21 @@ describe("TradeReplay (issue #96)", () => {
 
     await user.click(screen.getByRole("button", { name: "Watch it happen" }));
 
+    // Mid-rewind (issue #97): only the real, always-mounted HeroStat's
+    // own badge is present -- the rewind's own overlay is just the date
+    // readout, with no multiplier badge of its own to attach one to.
+    expect(screen.getByText("(2x)")).toBeInTheDocument();
+
+    raf.tick(REWIND_COMPLETE_NOW); // completes the rewind, landing on "playing"
+
     // The playing-phase overlay must carry the exact same badge, not
-    // just the "$X -> $Y" figure -- this was the bug (the badge vanished
-    // for the whole playback run). Two matches while playing: the real
-    // (visually hidden, but still mounted) HeroStat's own badge, and the
-    // overlay's -- see HeroAndWorstCase.tsx's own heroSlot doc comment
-    // for why HeroStat stays mounted underneath the overlay.
-    expect(screen.getAllByText("(2x)").length).toBeGreaterThan(0);
+    // just the "$X -> $Y" figure -- this was the original round-five
+    // bug (the badge vanished for the whole playback run). Two matches
+    // while playing: the real (visually hidden, but still mounted)
+    // HeroStat's own badge, and the overlay's -- see
+    // HeroAndWorstCase.tsx's own heroSlot doc comment for why HeroStat
+    // stays mounted underneath the overlay.
+    expect(screen.getAllByText("(2x)")).toHaveLength(2);
 
     await user.click(screen.getByRole("button", { name: "Skip to end" }));
 
