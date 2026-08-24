@@ -50,13 +50,28 @@ export function isPortfolioDatetime(date: string): boolean {
 }
 
 /**
- * Formats a PortfolioPoint's `date` field (see isPortfolioDatetime) --
- * a datetime formats as time-only ("2:30 PM"): the chart already shows
- * which single day is selected elsewhere in the intraday view, so
- * repeating the date on every point would be redundant.
+ * Formats a PortfolioPoint's `date` field (see isPortfolioDatetime).
+ *
+ * `includeDate` disambiguates two genuinely different chart shapes that
+ * both use datetime-labeled points: a single day's own intraday chart
+ * (where the day is already shown elsewhere on the page, so repeating
+ * it on every point would be redundant -- pass `false`, formats as
+ * time-only, "2:30 PM") vs. the whole-range chart chaining many days
+ * together (issue #91, see portfolio-series.ts's
+ * deriveWholeRangeIntradaySeries), where a bare time is ambiguous about
+ * *which* day it falls on -- pass `true`, formats as "Aug 21, 2:30 PM".
+ * Ignored for a plain calendar-date point (the window model), which
+ * already always shows its own date regardless.
  */
-export function formatDateTime(date: string): string {
+export function formatDateTime(date: string, includeDate: boolean): string {
   if (!isPortfolioDatetime(date)) return formatDate(date);
   const separatorIndex = date.indexOf("T");
-  return formatTime(date.slice(separatorIndex + 1));
+  const time = formatTime(date.slice(separatorIndex + 1));
+  if (!includeDate) return time;
+  const day = new Date(`${date.slice(0, separatorIndex)}T00:00:00Z`).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+  return `${day}, ${time}`;
 }

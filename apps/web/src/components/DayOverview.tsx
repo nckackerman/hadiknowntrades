@@ -20,12 +20,12 @@ export interface DayOverviewRow {
   tradeCount: number;
   /**
    * This day's ending balance, already display-rescaled to the user's
-   * chosen starting capital -- or `null` when the user hasn't guessed
-   * *this specific* (range, date, mode) triple yet (issue #34's
-   * guess-then-reveal gate, see daily-guess-storage.ts). `null` renders
-   * a locked placeholder instead of the figure.
+   * chosen starting capital (issue #15). Shown unconditionally -- issue
+   * #91 removed per-day guessing entirely; the only remaining
+   * guess-then-reveal gate on this page is WholeRangeBalance's own,
+   * scoped to the whole range, not any individual day.
    */
-  endingBalance: number | null;
+  endingBalance: number;
 }
 
 interface DayOverviewProps {
@@ -59,19 +59,15 @@ interface DayOverviewProps {
  * row inert) to get the same "whole row is one focusable, clickable
  * target" behavior this gets for free.
  *
- * **Deliberately does not gate `tradeCount` behind the guess-then-reveal
- * condition (issue #34) the way `endingBalance` is gated** -- a real
- * product decision, not an oversight (see issue #80's own Scope section,
- * which calls this out explicitly as something to document). A trade
- * *count* (e.g. "3 trades") carries none of the dollar-outcome
- * information the guessing game is actually testing -- "what did $20
- * turn into" -- so showing it for every day, guessed or not, is what
- * makes the range's breadth ("62 independently-computed days") visible
- * at a glance without spoiling a single answer. `endingBalance` stays
- * `null` (a "Guess to reveal" placeholder) until the caller confirms a
- * stored guess exists for that exact (range, date, mode) triple, so the
- * one thing the guessing game actually protects -- the dollar figure --
- * is never leaked through this list ahead of a real guess.
+ * **Shows every row's `endingBalance` unconditionally (issue #91)** --
+ * before this issue, each row's dollar figure stayed masked behind a
+ * "Guess to reveal" placeholder until that exact day was individually
+ * guessed (issue #34). That per-day guessing is gone: the only
+ * guess-then-reveal gate left on this page is `WholeRangeBalance`'s own,
+ * scoped to the whole range's chained final figure -- a single day's own
+ * ending balance was never that answer to begin with, just one
+ * ingredient of it, so gating it here bought no real spoiler protection,
+ * only tedium.
  *
  * **Scrolls the selected row into view on mount and on every selection
  * change (found in `high` code review, fixed)** -- the list is height-
@@ -165,14 +161,8 @@ export function DayOverview({ rows, selected, onSelect, maxTradesPerDay }: DayOv
                 <span className="text-[var(--text-muted)]">
                   {row.tradeCount} trade{row.tradeCount === 1 ? "" : "s"}
                 </span>
-                <span
-                  className={`tabular-nums ${
-                    row.endingBalance !== null ? "font-semibold" : "text-[var(--text-muted)]"
-                  }`}
-                >
-                  {row.endingBalance !== null
-                    ? formatHeroCurrency(row.endingBalance)
-                    : "Guess to reveal"}
+                <span className="tabular-nums font-semibold">
+                  {formatHeroCurrency(row.endingBalance)}
                 </span>
               </button>
             </li>

@@ -201,3 +201,76 @@ export function deriveIntradayPortfolioSeries(
 
   return points;
 }
+
+/**
+ * Whether a chart series spans more than one calendar day (issue #91) --
+ * `true` for deriveWholeRangeIntradaySeries's own output (many days
+ * chained together), `false` for deriveIntradayPortfolioSeries's (one
+ * day). PortfolioChart uses this to decide whether formatDateTime should
+ * include the calendar date alongside the time -- see that function's
+ * own doc comment for why a bare time is ambiguous on a multi-day chart.
+ * Harmless (always `true`, and simply unused) if ever called against
+ * derivePortfolioSeries's plain-calendar-date output instead --
+ * formatDateTime already always shows the date for that series
+ * regardless of this flag.
+ */
+export function spansMultipleDays(points: readonly PortfolioPoint[]): boolean {
+  const dayOf = (date: string) => (date.includes("T") ? date.slice(0, date.indexOf("T")) : date);
+  const first = points[0];
+  if (!first) return false;
+  return points.some((p) => dayOf(p.date) !== dayOf(first.date));
+}
+
+/**
+ * Chains every day in an intraday-daily range's result into one
+ * continuous series (issue #91) -- the whole-range counterpart to
+ * deriveIntradayPortfolioSeries above, which only ever plots a single
+ * day in isolation. Each day keeps its own real intraday spacing (via
+ * the same appendTradeSteps helper), but instead of resetting to a flat
+ * `startingCapital` at the top of every day, the running value simply
+ * carries forward from wherever the previous day's own trades left it --
+ * the same chaining WholeRangeBalance's own final-balance rescale
+ * already relies on (issue #84), now expressed as a full point series
+ * instead of just a start/end pair. Overnight (last close of one day to
+ * first point of the next) is rendered flat, consistent with this
+ * module's own "flat until realized" philosophy for any stretch with no
+ * known interim price.
+ *
+ * Callers pass each day's already mode-selected trades (see
+ * ResultsPanel.tsx's selectVariant) -- this function has no opinion on
+ * long-only vs. long+short, the same division of responsibility
+ * derivePortfolioSeries/deriveIntradayPortfolioSeries already keep.
+ */
+export function deriveWholeRangeIntradaySeries(
+  startingCapital: number,
+  days: readonly { date: string; trades: readonly IntradayTrade[] }[],
+): PortfolioPoint[] {
+  const points: PortfolioPoint[] = [];
+  let value = startingCapital;
+
+  for (const day of days) {
+    if (day.trades.length === 0) {
+      points.push({ date: `${day.date}T12:00:00`, value, event: null });
+      continue;
+    }
+
+    points.push({ date: `${day.date}T${day.trades[0]!.openTime}`, value, event: null });
+
+    value = appendTradeSteps(
+      points,
+      value,
+      day.trades.map((trade) => ({
+        ticker: trade.ticker,
+        direction: trade.direction,
+        buyPrice: trade.openPrice,
+        sellPrice: trade.closePrice,
+      })),
+      (index) => ({
+        buyLabel: `${day.date}T${day.trades[index]!.openTime}`,
+        sellLabel: `${day.date}T${day.trades[index]!.closeTime}`,
+      }),
+    );
+  }
+
+  return points;
+}

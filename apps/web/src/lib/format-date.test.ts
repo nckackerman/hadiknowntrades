@@ -27,11 +27,16 @@ describe("formatTime", () => {
 });
 
 describe("formatDateTime", () => {
-  it("formats a plain calendar date exactly like formatDate", () => {
-    expect(formatDateTime("2025-08-21")).toBe(formatDate("2025-08-21"));
+  it("formats a plain calendar date exactly like formatDate, regardless of includeDate", () => {
+    expect(formatDateTime("2025-08-21", false)).toBe(formatDate("2025-08-21"));
+    expect(formatDateTime("2025-08-21", true)).toBe(formatDate("2025-08-21"));
   });
 
-  it("formats a full local datetime as time-only, not repeating the date", () => {
-    expect(formatDateTime("2026-08-21T14:30:00")).toBe("2:30 PM");
+  it("formats a full local datetime as time-only when includeDate is false, not repeating the date (a single day's own chart)", () => {
+    expect(formatDateTime("2026-08-21T14:30:00", false)).toBe("2:30 PM");
+  });
+
+  it("formats a full local datetime with its own date when includeDate is true (issue #91's whole-range chart, where a bare time is ambiguous about which day)", () => {
+    expect(formatDateTime("2026-08-21T14:30:00", true)).toBe("Aug 21, 2:30 PM");
   });
 });

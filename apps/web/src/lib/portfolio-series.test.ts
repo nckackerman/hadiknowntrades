@@ -1,7 +1,12 @@
 import type { IntradayTrade, Trade } from "@hadiknowntrades/core";
 import { describe, expect, it } from "vitest";
 
-import { deriveIntradayPortfolioSeries, derivePortfolioSeries } from "./portfolio-series";
+import {
+  deriveIntradayPortfolioSeries,
+  deriveWholeRangeIntradaySeries,
+  derivePortfolioSeries,
+  spansMultipleDays,
+} from "./portfolio-series";
 
 function trade(overrides: Partial<Trade>): Trade {
   return {
@@ -274,5 +279,106 @@ describe("deriveIntradayPortfolioSeries", () => {
     const closePoint = points.find((p) => p.event?.type === "close");
     expect(closePoint?.event).toMatchObject({ direction: "short" });
     expect(closePoint?.value).toBe(40); // 20 * (20/10)
+  });
+});
+
+describe("deriveWholeRangeIntradaySeries", () => {
+  it("returns an empty series for an empty range", () => {
+    expect(deriveWholeRangeIntradaySeries(20, [])).toEqual([]);
+  });
+
+  it("chains a day's ending value into the next day's starting value, instead of resetting to startingCapital each day", () => {
+    const points = deriveWholeRangeIntradaySeries(20, [
+      { date: "2025-01-02", trades: [intradayTrade({ openPrice: 10, closePrice: 20 })] }, // 20 -> 40
+      { date: "2025-01-03", trades: [intradayTrade({ openPrice: 10, closePrice: 20 })] }, // 40 -> 80
+    ]);
+
+    const closePoints = points.filter((p) => p.event?.type === "close");
+    expect(closePoints.map((p) => p.value)).toEqual([40, 80]);
+    // The second day's own opening point sits at the first day's real
+    // ending value (40), not a fresh reset back to startingCapital (20).
+    const secondDayOpen = points.find((p) => p.date === "2025-01-03T09:30:00" && p.event === null);
+    expect(secondDayOpen?.value).toBe(40);
+  });
+
+  it("renders a zero-trade day as a single flat point at the running value, then keeps chaining from it", () => {
+    const points = deriveWholeRangeIntradaySeries(20, [
+      { date: "2025-01-02", trades: [intradayTrade({ openPrice: 10, closePrice: 30 })] }, // 20 -> 60
+      { date: "2025-01-03", trades: [] },
+      { date: "2025-01-04", trades: [intradayTrade({ openPrice: 10, closePrice: 20 })] }, // 60 -> 120
+    ]);
+
+    expect(points).toContainEqual({ date: "2025-01-03T12:00:00", value: 60, event: null });
+    const closePoints = points.filter((p) => p.event?.type === "close");
+    expect(closePoints.map((p) => p.value)).toEqual([60, 120]);
+  });
+
+  it("spans the whole range with real intraday spacing preserved within each day", () => {
+    const points = deriveWholeRangeIntradaySeries(20, [
+      {
+        date: "2025-01-02",
+        trades: [
+          intradayTrade({ openTime: "09:30:00", closeTime: "10:30:00" }),
+          intradayTrade({ ticker: "BBB", openTime: "11:00:00", closeTime: "12:00:00" }),
+        ],
+      },
+    ]);
+
+    expect(points.map((p) => p.date)).toEqual([
+      "2025-01-02T09:30:00",
+      "2025-01-02T09:30:00",
+      "2025-01-02T10:30:00",
+      "2025-01-02T10:30:00",
+      "2025-01-02T11:00:00",
+      "2025-01-02T12:00:00",
+      "2025-01-02T12:00:00",
+    ]);
+  });
+
+  it("rescales every point proportionally when given a different startingCapital (issue #15)", () => {
+    const days = [
+      { date: "2025-01-02", trades: [intradayTrade({ openPrice: 10, closePrice: 20 })] },
+      { date: "2025-01-03", trades: [intradayTrade({ openPrice: 10, closePrice: 30 })] },
+    ];
+    const original = deriveWholeRangeIntradaySeries(20, days);
+    const rescaled = deriveWholeRangeIntradaySeries(5, days);
+
+    expect(rescaled.map((p) => p.date)).toEqual(original.map((p) => p.date));
+    expect(rescaled.map((p) => p.value)).toEqual(original.map((p) => p.value * 0.25));
+  });
+});
+
+describe("spansMultipleDays", () => {
+  it("is false for an empty series", () => {
+    expect(spansMultipleDays([])).toBe(false);
+  });
+
+  it("is false for a single day's own intraday series (deriveIntradayPortfolioSeries)", () => {
+    const points = deriveIntradayPortfolioSeries(20, "2025-01-02", [intradayTrade({})]);
+
+    expect(spansMultipleDays(points)).toBe(false);
+  });
+
+  it("is true for a whole-range series spanning more than one day (deriveWholeRangeIntradaySeries)", () => {
+    const points = deriveWholeRangeIntradaySeries(20, [
+      { date: "2025-01-02", trades: [intradayTrade({})] },
+      { date: "2025-01-03", trades: [intradayTrade({})] },
+    ]);
+
+    expect(spansMultipleDays(points)).toBe(true);
+  });
+
+  it("is false for a whole-range series with only one day", () => {
+    const points = deriveWholeRangeIntradaySeries(20, [
+      { date: "2025-01-02", trades: [intradayTrade({})] },
+    ]);
+
+    expect(spansMultipleDays(points)).toBe(false);
+  });
+
+  it("is true for the window model's plain calendar-date series (harmless -- formatDateTime already always shows the date for a non-datetime point regardless)", () => {
+    const points = derivePortfolioSeries(20, "2025-01-02", "2025-01-10", [trade({})]);
+
+    expect(spansMultipleDays(points)).toBe(true);
   });
 });

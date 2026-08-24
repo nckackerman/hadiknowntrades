@@ -6,8 +6,8 @@ import { stubMatchMedia } from "@/lib/stub-match-media.test-util";
 import { DayOverview, type DayOverviewRow } from "./DayOverview";
 
 const ROWS: DayOverviewRow[] = [
-  { date: "2026-08-19", tradeCount: 2, endingBalance: null },
-  { date: "2026-08-20", tradeCount: 3, endingBalance: null },
+  { date: "2026-08-19", tradeCount: 2, endingBalance: 25 },
+  { date: "2026-08-20", tradeCount: 3, endingBalance: 30 },
   { date: "2026-08-21", tradeCount: 1, endingBalance: 40 },
 ];
 
@@ -21,17 +21,21 @@ afterEach(() => {
 });
 
 describe("DayOverview", () => {
-  it("renders every row's date and trade count, and only the guessed row's dollar figure", () => {
+  it("renders every row's date, trade count, and dollar figure unconditionally (issue #91 -- no per-day guess gate)", () => {
     render(
       <DayOverview rows={ROWS} selected="2026-08-21" onSelect={vi.fn()} maxTradesPerDay={3} />,
     );
 
-    expect(screen.getByRole("button", { name: /Aug 19, 2026.*2 trades/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Aug 20, 2026.*3 trades/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Aug 19, 2026.*2 trades.*\$25\.00/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Aug 20, 2026.*3 trades.*\$30\.00/ }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Aug 21, 2026.*1 trade\b.*\$40\.00/ }),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("Guess to reveal")).toHaveLength(2);
+    expect(screen.queryByText("Guess to reveal")).not.toBeInTheDocument();
   });
 
   it("intro copy reflects chaining, not independent per-day resets (issue #84)", () => {

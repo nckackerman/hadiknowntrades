@@ -19,7 +19,11 @@ import { memo, useId, useMemo, useState } from "react";
 import { formatAxisCurrency, formatHeroCurrency } from "@/lib/format-currency";
 import { formatDateTime, isPortfolioDatetime } from "@/lib/format-date";
 import { buildLogScale, buildTimeScale, niceLogTicks } from "@/lib/chart-scales";
-import type { PortfolioEvent, PortfolioPoint } from "@/lib/portfolio-series";
+import {
+  spansMultipleDays,
+  type PortfolioEvent,
+  type PortfolioPoint,
+} from "@/lib/portfolio-series";
 import { tradeVerbs, tradeVerbsPast } from "@/lib/trade-math";
 import { useChartTapHint } from "@/lib/use-chart-tap-hint";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
@@ -78,6 +82,11 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
   // precondition (only safe from a client-only success-branch mount,
   // which is exactly where PortfolioChart is always rendered from).
   const animateReveal = !useReducedMotionAtMount();
+
+  // Whether formatDateTime should disambiguate points with their own
+  // calendar date (issue #91's whole-range chart) or stay time-only (a
+  // single day's own chart) -- see that function's own doc comment.
+  const includeDate = useMemo(() => spansMultipleDays(points), [points]);
 
   const { yScale, yTicks, plotted } = useMemo(() => {
     const timestamps = points.map((p) => toTimestamp(p.date));
@@ -262,7 +271,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
             fontSize={11}
             fill="var(--text-muted)"
           >
-            {formatDateTime(points[0]!.date)}
+            {formatDateTime(points[0]!.date, includeDate)}
           </text>
           <text
             x={PLOT_WIDTH}
@@ -271,7 +280,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
             fontSize={11}
             fill="var(--text-muted)"
           >
-            {formatDateTime(points[points.length - 1]!.date)}
+            {formatDateTime(points[points.length - 1]!.date, includeDate)}
           </text>
 
           {/* Area wash + line, gain/loss-colored (issue #85) and grouped so
@@ -385,7 +394,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
         {hovered ? (
           <p>
             <span className="font-semibold text-[var(--text-primary)]">
-              {formatDateTime(hovered.date)}
+              {formatDateTime(hovered.date, includeDate)}
             </span>
             {" - "}
             <span className="font-semibold text-[var(--text-primary)]">
@@ -421,6 +430,12 @@ const ChartDataTable = memo(function ChartDataTable({
 }: {
   points: readonly PortfolioPoint[];
 }) {
+  // Own copy of this flag (not threaded down as a prop) -- it's a pure
+  // function of `points`, which this component already takes, and
+  // adding it as a separate prop would just be one more thing for a
+  // caller to keep in sync with the same array.
+  const includeDate = spansMultipleDays(points);
+
   return (
     <details className="text-sm">
       <summary className="cursor-pointer text-[var(--text-secondary)]">
@@ -438,7 +453,7 @@ const ChartDataTable = memo(function ChartDataTable({
           <tbody>
             {points.map((p, i) => (
               <tr key={i} className="border-b border-[var(--gridline)] last:border-0">
-                <td className="py-1 pr-4">{formatDateTime(p.date)}</td>
+                <td className="py-1 pr-4">{formatDateTime(p.date, includeDate)}</td>
                 <td className="py-1 pr-4 tabular-nums">{formatHeroCurrency(p.value)}</td>
                 <td className="py-1">
                   {p.event

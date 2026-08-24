@@ -1,91 +1,153 @@
+"use client";
+
+import { useId, useState } from "react";
+import type { FormEvent } from "react";
+
 import { formatHeroCurrency } from "@/lib/format-currency";
+import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 
 interface WholeRangeBalanceProps {
-  /** How many of this range's days the user has already individually guessed/revealed (issue #34/#80) -- the same per-day guess data DayOverview's own rows read. */
-  revealedCount: number;
-  /** Total trading days in the currently-viewed range. */
-  totalDays: number;
+  /** Human-readable phrase for the range being guessed, e.g. "the past month" (RANGE_COPY[range]) -- used in the guess prompt's copy. */
+  rangeLabel: string;
   /** The user's chosen display starting capital (issue #15). */
   startingCapital: number;
   /** The range's true final chained ending balance (issue #84), already rescaled to `startingCapital` from the range's own root -- see ResultsPanel's own `wholeRangeFinalBalance` doc comment for the exact (non-per-day) rescale this must use. */
   finalBalance: number;
+  /** The user's stored guess for this (range, mode) pair, or `null` if they haven't guessed yet (see use-range-guess.ts). Non-null is what unlocks the reveal. */
+  guess: number | null;
+  /** The starting capital that was in effect when `guess` was submitted -- used to rescale the displayed "You guessed" figure if `startingCapital` has since changed (issue #15). */
+  guessStartingCapital: number | null;
+  /** Records a submitted guess, made while the prompt showed `startingCapital` above. */
+  onSubmitGuess: (guess: number, startingCapital: number) => void;
 }
 
 /**
- * The whole-range running-balance headline (issue #84) -- "if you'd
+ * The whole-range running-balance headline (issue #84), and -- since
+ * issue #91 -- this page's *only* guess-then-reveal control. "If you'd
  * time-traveled back to day one with $[X] and rode the *entire* window,
  * carrying each day's real result into the next, what would it actually
- * have become?" The actual product premise this issue's own Background
- * frames (see docs/plans/issue-84-plan.md section 4.2), parallel to the
- * window model's single HeroStat, but deliberately simpler: no count-up
- * animation, no celebration burst -- this is a summary/payoff figure
- * shown once per range, not a per-reveal moment the way HeroStat's own
- * mount-triggered choreography is.
+ * have become?"
  *
- * **Deliberately count-gated, not order-gated (a real, documented spoiler
- * concern -- see apps/web/CLAUDE.md's own note on this issue)**: masked
- * until `revealedCount === totalDays`, regardless of which order those
- * reveals happened in -- a user can still guess days in any order
- * (issue #80's free-browsing design is untouched). While masked, this
- * renders a neutral progress placeholder, not a fake number and not a
- * hidden element -- the whole point is communicating *that* this figure
- * exists and how to unlock it, without leaking any part of its actual
- * magnitude (which, once chained, would otherwise let a user back out
- * every prior day's own answer from a single later reveal).
+ * **Replaces per-day guessing entirely (issue #91).** Before this issue,
+ * every individual day had its own guess-then-reveal prompt (removed:
+ * see git history's DailyGuessForm.tsx), and this component was merely a
+ * *count*-gated summary that unlocked once every day had been guessed.
+ * That made browsing the range's own day-by-day breadth tedious --
+ * guessing N things to see one summary. Now there is exactly one guess,
+ * scoped to the whole range (backed by range-guess-storage.ts, keyed
+ * per (range, mode) with no date dimension), and every individual day in
+ * DayOverview/the day drill-down below is freely browsable without any
+ * guessing at all. Revealing this headline is also what unlocks
+ * `BenchmarkStat` and the whole-range chart in ResultsPanel.tsx -- the
+ * only other two things on the page that would otherwise spoil this
+ * same answer.
  *
- * **Announces its own masked -> unlocked transition to screen readers**
- * (issue #84 code review finding, fixed) -- an always-present `role="status"
-aria-live="polite"` `sr-only` region, the same established shape issue
- * #67's own per-day reveal announcement in `ResultsPanel.tsx` already
- * uses (see that section in apps/web/CLAUDE.md): a static sentence, not
- * wired to any per-frame/animating value, since this component has no
- * animation to guard against in the first place. Without this, revealing
- * the range's final day swaps the masked placeholder for the real figure
- * with no live-region announcement at all -- a screen reader user would
- * have no indication the headline just unlocked unless they manually
- * re-navigated up to it.
+ * **Announces its own masked -> unlocked transition to screen readers**:
+ * an always-present `role="status" aria-live="polite"` `sr-only` region,
+ * the same established shape issue #67's own per-day reveal announcement
+ * used. A static sentence, not wired to any per-frame/animating value --
+ * this component has no animation to guard against in the first place.
  */
 export function WholeRangeBalance({
-  revealedCount,
-  totalDays,
+  rangeLabel,
   startingCapital,
   finalBalance,
+  guess,
+  guessStartingCapital,
+  onSubmitGuess,
 }: WholeRangeBalanceProps) {
-  if (totalDays === 0) return null;
-  const allRevealed = revealedCount === totalDays;
+  const [draft, setDraft] = useState("");
+  const inputId = useId();
+
+  const parsed = Number(draft);
+  // Empty string coerces to 0 via Number(), which is a legitimate guess a
+  // user might actually want to submit ("all-in trade wiped it out") --
+  // the `draft.trim() !== ""` check is what actually distinguishes "field
+  // left blank" from "typed 0", not the parsed value itself (same
+  // reasoning the removed DailyGuessForm used).
+  const isValid = draft.trim() !== "" && Number.isFinite(parsed) && parsed >= 0;
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!isValid) return;
+    onSubmitGuess(parsed, startingCapital);
+  }
+
+  const revealed = guess !== null;
 
   return (
-    <div className="surface-card flex flex-col gap-1 rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-4">
+    <div className="surface-card flex flex-col gap-2 rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-4">
       <p className="text-sm font-medium text-[var(--text-muted)]">
         Whole-range running balance -- carried day to day, start to finish
       </p>
-      {/* aria-label disambiguates this region from ResultsPanel's own
-          sibling `role="status"` per-day reveal region (issue #67) --
-          see that region's own comment for why two live regions on one
-          page need distinguishing labels. */}
+      {/* aria-label disambiguates this region from any other status region on the page. */}
       <div
         role="status"
         aria-live="polite"
         aria-label="Whole-range reveal status"
         className="sr-only"
       >
-        {allRevealed
+        {revealed
           ? `Whole-range running balance revealed: ${formatHeroCurrency(startingCapital)} to ${formatHeroCurrency(finalBalance)}.`
           : ""}
       </div>
-      {allRevealed ? (
-        <p className="flex flex-wrap items-baseline gap-3 text-xl font-semibold leading-none tracking-tight text-[var(--text-primary)] sm:text-2xl">
-          <span>{formatHeroCurrency(startingCapital)}</span>
-          <span aria-hidden="true" className="text-[var(--text-muted)]">
-            →
-          </span>
-          <span className="text-[var(--series-1)]">{formatHeroCurrency(finalBalance)}</span>
-        </p>
+      {revealed ? (
+        <>
+          <p className="flex flex-wrap items-baseline gap-3 text-xl font-semibold leading-none tracking-tight text-[var(--text-primary)] sm:text-2xl">
+            <span>{formatHeroCurrency(startingCapital)}</span>
+            <span aria-hidden="true" className="text-[var(--text-muted)]">
+              →
+            </span>
+            <span className="text-[var(--series-1)]">{formatHeroCurrency(finalBalance)}</span>
+          </p>
+          <p className="text-sm text-[var(--text-muted)]">
+            {/* guessStartingCapital may go stale relative to `startingCapital`
+                if the user edits starting capital after revealing -- rescale
+                the same way every other dollar figure on this page does
+                (see ResultsPanel.tsx's identical per-day pattern this
+                replaces). */}
+            You guessed{" "}
+            {formatHeroCurrency(
+              rescaleFromStartingCapital(
+                guess,
+                guessStartingCapital ?? startingCapital,
+                startingCapital,
+              ),
+            )}
+            .
+          </p>
+        </>
       ) : (
-        <p className="text-sm text-[var(--text-secondary)]">
-          Reveal all {totalDays} day{totalDays === 1 ? "" : "s"} below to see the range&apos;s full
-          running balance -- {revealedCount} of {totalDays} revealed so far.
-        </p>
+        <form onSubmit={handleSubmit} className="flex flex-col gap-2">
+          <label htmlFor={inputId} className="text-sm text-[var(--text-secondary)]">
+            Before you look: starting from {formatHeroCurrency(startingCapital)}, riding{" "}
+            {rangeLabel} start to finish -- day after day, each day&apos;s real result carried into
+            the next -- what do you think it became?
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <span aria-hidden="true" className="text-xl font-semibold text-[var(--text-muted)]">
+              $
+            </span>
+            <input
+              id={inputId}
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="any"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder="Your guess"
+              className="w-44 rounded-md border border-[var(--gridline)] bg-[var(--surface-1)] px-3 py-2 text-lg font-semibold text-[var(--text-primary)]"
+            />
+            <button
+              type="submit"
+              disabled={!isValid}
+              className="rounded-md bg-[var(--series-1)] px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Reveal the answer
+            </button>
+          </div>
+        </form>
       )}
     </div>
   );
