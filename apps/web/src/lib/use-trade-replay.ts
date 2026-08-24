@@ -70,6 +70,16 @@ function initialFrame(points: readonly PortfolioPoint[]): ReplayFrame {
   };
 }
 
+/** The frame a completed (or aborted-to-completion) replay lands on -- every point revealed, the true final value, no active callout. Shared by `skipToEnd` and `tick`'s own defensive catch (see its doc comment) so both "jump to the end" paths agree on exactly the same shape. */
+function finalFrame(points: readonly PortfolioPoint[]): ReplayFrame {
+  const last = points[points.length - 1];
+  return {
+    revealedCount: points.length,
+    currentValue: last?.value ?? 0,
+    activeEvent: null,
+  };
+}
+
 /**
  * Scans backward from `closeIndex` for the nearest point carrying an
  * "open" event -- the trade this close event belongs to. Safe to assume
@@ -180,14 +190,42 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
 
   const skipToEnd = useCallback(() => {
     runIdRef.current += 1;
-    const last = points[points.length - 1];
-    setFrame({
-      revealedCount: points.length,
-      currentValue: last?.value ?? 0,
-      activeEvent: null,
-    });
+    setFrame(finalFrame(points));
     setPhase("done");
   }, [points]);
+
+  // If `points` changes identity while a replay is mid-flight (or just
+  // finished) -- a live starting-capital edit or a ModeToggle switch,
+  // both of which recompute ResultsPanel's own `points` memo without
+  // unmounting `TradeReplay` -- treat it as a fresh mount rather than
+  // silently rebuilding `segments` under the effect below while `frame`
+  // still holds stale mid-playback values from the *old* points. The
+  // effect's own `[phase, points]` dependency array already restarts
+  // `segmentIndex`/`phaseStart` from scratch in that case regardless
+  // (and its cleanup's `cancelAnimationFrame` already stops the old
+  // points' in-flight loop before the new effect body ever runs, so
+  // there's no need to also bump `runIdRef` here -- doing that would
+  // mean writing a ref during render, which `react-hooks/refs` rightly
+  // flags); without this reset, `frame` wouldn't catch up until the next
+  // tick fires, and even then would resume mid-walk through data that no
+  // longer matches what's on screen -- visibly snapping the chart/hero
+  // backward and re-narrating an already-shown trade with no indication
+  // anything reset. Resetting to "idle" here (not "done") means the
+  // user sees the plain, real hero row/chart again and a fresh "Watch
+  // it happen" button, exactly as if this were the first time -- the
+  // same "adjust state during render when a prop changes" idiom
+  // `use-results.ts`'s own `trackedUrl` check and `use-range-guess.ts`'s
+  // `tracked` check already use, so this stays lint-safe (a plain
+  // render-time setState, not one inside an effect body) and needs no
+  // extra render before it applies.
+  const [trackedPoints, setTrackedPoints] = useState(points);
+  if (points !== trackedPoints) {
+    setTrackedPoints(points);
+    if (phase !== "idle") {
+      setPhase("idle");
+      setFrame(initialFrame(points));
+    }
+  }
 
   useEffect(() => {
     if (phase !== "playing") return;
@@ -234,7 +272,36 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
           return;
         }
 
-        const replayEvent = replayEventFor(points, segment);
+        // computeTradeReturn (inside replayEventFor) throws
+        // InvalidTradePriceError for a non-finite/non-positive stored
+        // price -- correct and consistent with every other caller
+        // (TradeRow.tsx, narrate-trades.ts), but those are both
+        // render-time throws caught by app/error.tsx/global-error.tsx
+        // (issue #46). A throw from inside this RAF callback isn't a
+        // render, so nothing would catch it -- the loop would just die
+        // uncaught, leaving `cancelAnimationFrame`'s cleanup referencing
+        // a stale `frameId` and the UI silently frozen mid-playback with
+        // no error surfaced anywhere. Caught here and failed into the
+        // same final state `skipToEnd` produces instead: not silent
+        // (logged), but contained, matching this app's other
+        // "contained but not silent" defensive fixes (see
+        // trade-math.ts's own InvalidTradePriceError doc comment) --
+        // and if the underlying price really is corrupted, the page's
+        // real static render (TradeList/narrate-trades.ts, once this
+        // hands off to it) still throws its own render-time error there,
+        // caught by the existing boundaries as usual.
+        let replayEvent: ReplayEvent | null;
+        try {
+          replayEvent = replayEventFor(points, segment);
+        } catch (error) {
+          console.error(
+            "useTradeReplay: failed to compute a trade event mid-playback; skipping to the final state",
+            error,
+          );
+          setFrame(finalFrame(points));
+          setPhase("done");
+          return;
+        }
         setFrame({
           revealedCount: segment.toIndex + 1,
           currentValue: segment.toValue,

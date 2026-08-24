@@ -2959,3 +2959,162 @@ real hero row/chart and a truncated/interpolated view depending on phase.
     combines a hardcoded `"success"` state with `reducedMotion: "reduce"`
     context emulation -- expect this diff to show up and know it's not
     an actual regression.
+
+### Code-review follow-up, seven findings (all fixed before merge)
+
+A `high` review of the PR above caught seven real issues, none of them
+hypothetical -- worth internalizing before extending this feature again:
+
+- **A component returning more than one logical "block" for a parent's
+  flex-gap layout must return a Fragment of siblings, not one wrapping
+  div, or the parent's own gap collapses to whatever gap the new wrapper
+  happens to use instead.** `TradeReplay`'s first version put the hero
+  row _and_ the chart inside one shared `flex flex-col gap-2` div --
+  which silently shrank the pre-existing spacing between the methodology
+  paragraph/`BenchmarkStat` (rendered as `children`, just above the
+  chart) and the chart itself from `FadeInWrapper`'s own `gap-8` (2rem)
+  down to `gap-2` (0.5rem), on _every_ window-model page load, not just
+  during replay -- exactly the kind of regression a component test can
+  miss entirely if it only asserts on text content, never layout.
+  `TradeReplay` now returns `<>{heroBlock}{chart}</>`, splicing both as
+  direct siblings into `FadeInWrapper`'s own flex column alongside the
+  "Trades" block below, restoring the original three-sibling `gap-8`
+  spacing exactly. Verified live (not just reasoned about): a `document
+.querySelector(".results-fade-in").children` walk measured the real
+  gap between each pair of top-level siblings at exactly `32px` (2rem)
+  both before the chart and after it, matching pre-#96 spacing
+  bit-for-bit. A cheap regression test for the shape of this bug
+  (without needing a real browser layout engine): assert the rendered
+  `container.children.length` is `2` for a component meant to return
+  a same-level Fragment -- jsdom doesn't compute real CSS gaps, but it
+  does faithfully report DOM structure, which is the actual thing that
+  determines which flex container's `gap` value applies.
+- **A "swap the animated version in for the static one" component must
+  scope the swap to only the pieces the issue actually names, not to
+  everything living in the same JSX region.** The first version of
+  `TradeReplay` used the existing `HeroAndWorstCase` wrapper (bundling
+  `HeroStat` + `WorstCaseStat`) as its "live" state and a bespoke
+  replacement for its "playing" state -- which meant `WorstCaseStat`
+  vanished for the whole ~3-6s playback run alongside `HeroStat`, even
+  though the issue's own Scope names "the chart and hero figure"
+  specifically. Fixed by composing `HeroStat`/`WorstCaseStat` directly
+  in `TradeReplay` (not via the shared wrapper) so only `HeroStat`'s own
+  slot swaps between live and animated -- `WorstCaseStat` renders with
+  the exact same wrapper markup in every phase. Worth checking for any
+  future feature that reaches for an existing multi-component wrapper as
+  a shortcut for "the whole row this component sits in": a wrapper
+  bundling N things is the wrong unit to swap out if the feature only
+  actually means to touch a strict subset of those N things.
+- **A live prop that can change reference while a multi-step RAF state
+  machine is mid-flight, without the owning component unmounting, needs
+  its own explicit "is this still the walk I started?" check -- the
+  effect's own dependency array restarting internal loop variables
+  isn't enough on its own, because the _exposed_ state (what the caller
+  actually renders) doesn't get folded back in until the next tick.**
+  `use-trade-replay.ts`'s `points` argument can change identity mid-
+  playback from two real, always-available live controls that don't
+  unmount `TradeReplay` -- `StartingCapitalInput` and the app's
+  always-interactive `ModeToggle` (a mode switch to a zero-trade variant
+  is the sharpest case, see the next finding) -- and the RAF effect's
+  own `[phase, points]` dependency array already rebuilds `segments`
+  from scratch in that case, but `frame` (the state actually rendered)
+  kept whatever mid-playback value it last held from the _old_ points
+  until the next tick fired, and even then resumed walking through data
+  that no longer matched what was on screen -- visibly snapping the
+  chart/hero backward and re-narrating an already-shown trade with no
+  indication anything had reset. Fixed with the exact same "adjust
+  state during render when a prop changes" idiom `use-results.ts`'s own
+  `trackedUrl` check and `use-range-guess.ts`'s `tracked` check already
+  use elsewhere in this app: a `trackedPoints` companion state compared
+  against the live `points` prop during render, resetting `phase` to
+  `"idle"` and `frame` to a fresh initial frame the instant they diverge
+  -- treating a mid-flight `points` identity change as a fresh mount
+  rather than a silent rebuild. **The first draft of this fix also
+  bumped `runIdRef.current` inside that same render-time branch "for
+  extra safety" -- `react-hooks/refs` immediately flagged this
+  (`Cannot access ref value during render` / `Cannot update ref during
+render`), and it turned out to be genuinely unnecessary, not just
+  lint-noisy**: the effect's own cleanup (`cancelAnimationFrame`) already
+  runs before the new effect body does whenever `[phase, points]`
+  actually changes, which this render-time reset guarantees happens on
+  the very next commit -- there's no window where the stale RAF loop
+  could still fire after the reset without the ref bump. Worth the
+  general lesson: reaching for a ref "just to be extra sure" during a
+  render-phase state adjustment is exactly the shape this lint rule
+  exists to catch, and the fix is usually to trust the mechanism you
+  already have (here, the effect's own dependency-driven cleanup)
+  rather than adding a second one.
+- **A control that's the _only_ way to act during one phase of a state
+  machine must never be gated by a condition that can flip based on a
+  prop the _same_ live interaction can change out from under it.**
+  `TradeReplay`'s "Skip to end" button (the only control visible while
+  `phase === "playing"`, `TradeList`/`ChartDataTable`'s own always-
+  present static fallback aside) used to share the same `canReplay =
+tradeCount > 0 && !reducedMotionAtMount` gate the idle/done "Watch it
+  happen"/"Replay" button uses -- so a `ModeToggle` switch to a
+  zero-trade variant mid-playback flipped `canReplay` to `false`
+  _before_ the RAF loop's own phase-to-`"done"` transition could
+  happen, hiding the one clickable control with nothing left to
+  advance playback (the finding above's points-reference reset happens
+  to also resolve this specific scenario as a side effect, since a mode
+  switch always changes `points` too -- but that's an emergent property
+  of _two_ independent fixes interacting, not something to rely on
+  without its own direct fix, since a future edit to either one in
+  isolation could silently reopen this gap). Fixed by decoupling "Skip
+  to end"'s visibility from `canReplay` entirely: it renders whenever
+  `phase === "playing"`, full stop, and the idle/done button is the only
+  one `canReplay` actually gates.
+- **A `computeTradeReturn`/`compoundBalance`-style helper that
+  deliberately throws on corrupted input (see `trade-math.ts`'s own
+  `InvalidTradePriceError` doc comment) is only "contained, not silent"
+  at the call sites that already run inside a React render, where
+  `app/error.tsx`/`app/global-error.tsx` catch it. A RAF callback is not
+  a render** -- `use-trade-replay.ts`'s own call into this same helper
+  (via `replayEventFor`, for a close event's return) would throw
+  uncaught from inside `requestAnimationFrame`'s callback if it ever hit
+  a corrupted stored price, silently freezing the whole replay with
+  `cancelAnimationFrame`'s cleanup left referencing a now-permanently-
+  stale `frameId` and no error surfaced anywhere a user or an error-
+  tracking tool would ever see it. Fixed with a `try`/`catch` around
+  just that call, logging via `console.error` and failing into the same
+  `finalFrame`-shaped final state `skipToEnd` already produces --
+  contained (playback still resolves to something coherent on screen)
+  but not silent (logged), and if the underlying price really is
+  corrupted, the page's own real static render (`TradeList`/
+  `narrate-trades.ts`, once this hands off to the "done" state) still
+  throws its own render-time error there, caught by the existing
+  boundaries exactly as it always would have been. Worth remembering as
+  a general pattern for this app: any shared helper that's designed to
+  throw specifically because render-time boundaries exist to catch it
+  needs a second look at every non-render call site (an event handler,
+  a timer callback, a RAF loop) -- the throw's own safety story doesn't
+  automatically travel with the function.
+- **Two small, easy-to-miss efficiency/duplication findings, both purely
+  mechanical fixes**: the sr-only announced string and the visible
+  callout `<p>` were computing the identical `calloutText(...)` call
+  independently (a drift risk if one call site's wording ever changed
+  without the other, and wasted work every frame) -- now computed once
+  into an `activeCallout` local, used by both. `points.slice(0,
+frame.revealedCount)` was reallocating a new array on every render,
+  including the many mid-tween frames where `revealedCount` itself
+  hasn't advanced (only `currentValue` has) -- defeating `PortfolioChart`'s
+  own `useMemo`s, which are keyed on `points` by reference. Wrapped in
+  `useMemo(() => points.slice(0, frame.revealedCount), [points,
+frame.revealedCount])` so a fresh array only appears when `revealedCount`
+  actually changes.
+- **Live-verified again after all seven fixes**, same throwaway-debug-
+  route + no-root-Chromium technique as the original pass, this time
+  with two interactive controls (a mode toggle, a starting-capital
+  bump) added to the debug page specifically to exercise the
+  points-reference-change fix live, not just in a unit test: clicking
+  "Toggle mode" mid-playback (mid-pause on a real trade callout)
+  cleanly dropped back to the idle view with a fresh "Watch it happen"
+  button and no visible freeze/snap, and clicking it again started a
+  genuinely fresh playback through the new mode's own trade sequence
+  (a real short trade, "Shorted SNDK... Skip to end") -- confirming the
+  reset is a full functional recovery, not just a visual one. The same
+  check with a starting-capital bump mid-playback (the other live
+  control that changes `points`) showed the identical clean reset with
+  correctly rescaled figures ($20 -> $25, `WorstCaseStat`'s own $4.20 ->
+  $5.25). The `.results-fade-in` child-gap measurement mentioned in the
+  first finding above was taken in this same session.

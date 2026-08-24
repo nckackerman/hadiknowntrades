@@ -76,21 +76,49 @@ describe("TradeReplay (issue #96)", () => {
     expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
   });
 
-  it("clicking Watch it happen swaps to the truncated/interpolated view and offers Skip to end", async () => {
+  it("clicking Watch it happen swaps only the hero figure/chart to the animating view -- WorstCaseStat stays visible throughout", async () => {
     createRafPump(); // queue-only RAF: nothing auto-advances past the click itself
     const user = userEvent.setup();
     render(<TradeReplay {...BASE_PROPS} />);
 
     await user.click(screen.getByRole("button", { name: "Watch it happen" }));
 
-    // The real HeroStat/WorstCaseStat pairing and chart are gone --
-    // replaced by the animating (aria-hidden) view.
-    expect(screen.queryByText("Worst case, same budget")).not.toBeInTheDocument();
+    // The chart swaps to the animating (aria-hidden) view, but
+    // WorstCaseStat is *not* one of the things this feature animates
+    // (the issue's own Scope names only "the chart and hero figure") --
+    // it must stay rendered and visible for the whole ~3-6s playback,
+    // not vanish the moment playback starts.
+    expect(screen.getByText("Worst case, same budget")).toBeInTheDocument();
     expect(
       screen.queryByRole("img", { name: /portfolio value over time/i }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Skip to end" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Watch it happen" })).not.toBeInTheDocument();
+  });
+
+  it("renders as two top-level siblings (hero/controls block, then chart), not one wrapping div -- preserves FadeInWrapper's own gap-8 spacing", () => {
+    const { container } = render(<TradeReplay {...BASE_PROPS} />);
+
+    // A single wrapping div would put everything (hero row, chart
+    // included) under one gap-2 spacing; TradeReplay must instead
+    // return a Fragment of two siblings so the chart gets FadeInWrapper's
+    // own gap-8 spacing from the block above it, matching this app's
+    // pre-existing layout exactly (see TradeReplay's own doc comment).
+    expect(container.children).toHaveLength(2);
+  });
+
+  it("Skip to end stays available even if tradeCount drops to zero mid-playback (independent of canReplay)", async () => {
+    createRafPump();
+    const user = userEvent.setup();
+    const { rerender } = render(<TradeReplay {...BASE_PROPS} />);
+
+    await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+    // Same `points` reference, only `tradeCount` changes -- isolates
+    // this fix from use-trade-replay.ts's own separate points-reference
+    // reset (see that hook's own regression test).
+    rerender(<TradeReplay {...BASE_PROPS} tradeCount={0} />);
+
+    expect(screen.getByRole("button", { name: "Skip to end" })).toBeInTheDocument();
   });
 
   it("pauses on each trade event, announcing it once (not per-frame) and showing a matching visible callout", async () => {
