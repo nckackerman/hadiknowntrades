@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { easeOutCubic } from "./easing";
+import { tweenValue } from "./easing";
 import type { PortfolioEvent, PortfolioPoint } from "./portfolio-series";
 import { computeTradeReturn, type TradeReturn } from "./trade-math";
 
@@ -258,20 +258,14 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
     let phaseStart = performance.now();
 
     function tick(now: number) {
-      // Defensive -- play() already guards points.length < 2 (so
-      // segments.length >= 1) before ever setting phase to "playing",
-      // but this check lives inside the RAF callback rather than
-      // before scheduling it so a setPhase call here is always inside a
-      // callback from an external system (requestAnimationFrame), the
-      // shape react-hooks/set-state-in-effect wants -- see
-      // use-count-up.ts's own identical reasoning for its own
-      // reduced-motion branch.
-      if (segments.length === 0) {
-        setFrame(finalFrame(points));
-        setPhase("done");
-        return;
-      }
-
+      // segments.length is always >= 1 here -- play() already guards
+      // points.length < 2 (so buildSegments always produces at least one
+      // segment) before ever setting phase to "playing", the only way
+      // this effect ever runs. An earlier version of this function kept
+      // a defensive `if (segments.length === 0)` branch "just in case" --
+      // deleted (code review, issue #96 follow-up round 3): confirmed
+      // genuinely unreachable, not just defensively guarded, so it was
+      // dead code rather than a real safety net.
       const segment = segments[segmentIndex]!;
       const elapsed = now - phaseStart;
 
@@ -280,8 +274,7 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
         if (t < 1) {
           setFrame({
             revealedCount: segment.toIndex,
-            currentValue:
-              segment.fromValue + (segment.toValue - segment.fromValue) * easeOutCubic(t),
+            currentValue: tweenValue(segment.fromValue, segment.toValue, t),
             activeEvent: null,
           });
           frameId = requestAnimationFrame(tick);

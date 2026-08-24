@@ -310,6 +310,109 @@ describe("PortfolioChart", () => {
     });
   });
 
+  describe("revealedCount / interactive (issue #96 follow-up round 3)", () => {
+    // A big jump between the two points so the y-domain a partial reveal
+    // would compute on its own (min/max of just the revealed prefix)
+    // differs dramatically from the full series' own domain -- a
+    // deliberately extreme fixture so a domain-rescale regression would
+    // be obvious, not just off by a rounding hair.
+    const seriesPoints: PortfolioPoint[] = [
+      { date: "2024-01-01", value: 20, event: null },
+      {
+        date: "2024-01-02",
+        value: 20,
+        event: { type: "open", direction: "long", ticker: "AAPL", price: 10 },
+      },
+      { date: "2024-01-05", value: 20, event: null },
+      {
+        date: "2024-01-05",
+        value: 4000,
+        event: { type: "close", direction: "long", ticker: "AAPL", price: 2000 },
+      },
+    ];
+
+    function gridlineYs(container: HTMLElement) {
+      return Array.from(container.querySelectorAll('line[stroke="var(--gridline)"]')).map((l) =>
+        l.getAttribute("y1"),
+      );
+    }
+
+    it("keeps the y-axis gridlines fixed to the FULL series' domain regardless of revealedCount, not rescaled to whatever's currently revealed (real bug, fixed)", () => {
+      const { container: partial } = render(
+        <PortfolioChart points={seriesPoints} revealedCount={2} />,
+      );
+      const { container: full } = render(<PortfolioChart points={seriesPoints} />);
+
+      expect(gridlineYs(partial)).toEqual(gridlineYs(full));
+    });
+
+    it("keeps the x-axis end label pinned to the series' real final date regardless of revealedCount (a fixed frame, not a growing one)", () => {
+      const { container: partial } = render(
+        <PortfolioChart points={seriesPoints} revealedCount={2} />,
+      );
+
+      expect(within(partial).getByText("Jan 5, 2024")).toBeInTheDocument();
+    });
+
+    it("places a revealed marker at the same x position it would have in the full/final render -- the axis frame doesn't stretch to fit fewer revealed points", () => {
+      const { container: partial } = render(
+        <PortfolioChart points={seriesPoints} revealedCount={2} />,
+      );
+      const { container: full } = render(<PortfolioChart points={seriesPoints} />);
+
+      // Both renders draw the same open marker (index 1) as their only
+      // (partial) or first (full) circle -- its cx must match: fixed to
+      // the full-series domain either way, not stretched to fill the
+      // plot width because only 2 of 4 points are currently revealed.
+      const partialCx = partial.querySelector("circle")!.getAttribute("cx");
+      const fullCx = full.querySelector("circle")!.getAttribute("cx");
+      expect(partialCx).toBe(fullCx);
+    });
+
+    it("only draws the revealed prefix -- fewer markers/table rows than the full series", () => {
+      const { container } = render(<PortfolioChart points={seriesPoints} revealedCount={2} />);
+
+      // Only the open marker (index 1) is revealed -- the close marker
+      // (index 3, value jumping to 4000) isn't drawn yet.
+      expect(container.querySelectorAll("circle")).toHaveLength(1);
+      expect(screen.getAllByRole("row")).toHaveLength(3); // header + 2 revealed points
+    });
+
+    it("clears a stale hoverIndex when `interactive` flips off, so it can't pop back into view once revealedCount grows past it (real bug, fixed)", () => {
+      const { container, rerender } = render(<PortfolioChart points={seriesPoints} />);
+      const svg = getChartSvg();
+      stubChartRect(svg);
+
+      // Hover the last point while still live/interactive.
+      fireEvent.pointerMove(svg, { clientX: 860 });
+      expect(getReadout(container).queryByText(PLACEHOLDER_TEXT)).not.toBeInTheDocument();
+
+      // Stands in for TradeReplay.tsx starting playback with the pointer
+      // never having left the SVG bounds -- same `points` reference,
+      // `interactive` flips false, `revealedCount` starts low.
+      rerender(<PortfolioChart points={seriesPoints} revealedCount={1} interactive={false} />);
+      expect(getReadout(container).getByText(PLACEHOLDER_TEXT)).toBeInTheDocument();
+
+      // Growing revealedCount back past the stale hoverIndex must not
+      // pop the tooltip/crosshair back into view.
+      rerender(<PortfolioChart points={seriesPoints} revealedCount={3} interactive={false} />);
+      expect(getReadout(container).getByText(PLACEHOLDER_TEXT)).toBeInTheDocument();
+    });
+
+    it("applies inert/aria-hidden to its own root when interactive is false, and neither when true (default)", () => {
+      const { container, rerender } = render(<PortfolioChart points={seriesPoints} />);
+      const root = () => container.firstElementChild!;
+
+      expect(root().hasAttribute("inert")).toBe(false);
+      expect(root().hasAttribute("aria-hidden")).toBe(false);
+
+      rerender(<PortfolioChart points={seriesPoints} interactive={false} />);
+
+      expect(root().hasAttribute("inert")).toBe(true);
+      expect(root().getAttribute("aria-hidden")).toBe("true");
+    });
+  });
+
   describe("x-axis scale by series shape (issue #93)", () => {
     /** The <circle> markers for whichever points carry an event, in point order (open before close). */
     function getMarkerCircles() {

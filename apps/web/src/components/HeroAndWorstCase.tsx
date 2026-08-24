@@ -57,7 +57,7 @@ export interface HeroAndWorstCaseProps {
    */
   displayStartingCapital: number;
   /**
-   * Overrides HeroStat's own slot with custom content -- e.g.
+   * Overlays custom content on top of `HeroStat`'s own slot -- e.g.
    * TradeReplay.tsx's animated "$X -> $Y" figure during playback (issue
    * #96). `WorstCaseStat` always renders normally regardless, with the
    * exact same wrapper layout, so a feature that only ever means to
@@ -66,7 +66,17 @@ export interface HeroAndWorstCaseProps {
    * needs its own hand-copied version of this wrapper's markup just to
    * keep `WorstCaseStat` visible alongside it -- see this component's
    * own doc comment for the code-review history behind this prop.
-   * Omit (the default) for the real `HeroStat`.
+   * Omit (the default, `undefined`) to show the real `HeroStat` plainly.
+   *
+   * **An overlay, not a replacement (code review, issue #96 follow-up
+   * round 3) -- `HeroStat` itself stays mounted (visually hidden via
+   * CSS, not unmounted) the whole time `heroSlot` is present, rather
+   * than this prop swapping which element renders at all.** See this
+   * component's own doc comment for why: a caller (TradeReplay.tsx)
+   * needs full control over exactly *when* HeroStat gets a fresh
+   * mount -- and therefore a fresh count-up/celebration reveal -- and an
+   * actual unmount/remount every time `heroSlot` toggles on or off
+   * doesn't give it that control; a CSS-hidden overlay does.
    */
   heroSlot?: ReactNode;
 }
@@ -93,6 +103,31 @@ export interface HeroAndWorstCaseProps {
  * pairing while still going through one shared implementation for
  * everything else, including `WorstCaseStat`'s own unconditional
  * presence.
+ *
+ * **`heroSlot` overlays `HeroStat` rather than replacing it (code
+ * review, issue #96 follow-up round 3).** The first version of this
+ * prop rendered `heroSlot ?? <HeroStat .../>` -- a ternary, so
+ * `HeroStat` fully unmounted the instant `heroSlot` became non-`null`
+ * and remounted fresh the instant it went back to `undefined`. That's
+ * an unconditional fresh mount by React's own reconciliation rules
+ * (an element-type change at a JSX position, independent of `key`) --
+ * exactly right for TradeReplay.tsx's own "ending on the existing
+ * count-up/confetti payoff" requirement when playback genuinely
+ * *finishes*, but also fired for every abort back to a *live* state
+ * mid-playback (e.g. a starting-capital edit, which resets
+ * use-trade-replay.ts's own `phase` to "idle" without changing
+ * `heroKey`), re-triggering the reveal/celebration burst on a plain
+ * rescale and violating `HeroStat.tsx`'s own documented "rescale
+ * instantly, don't replay the reveal" contract. Now `HeroStat` always
+ * renders, visually hidden (`invisible`, not `hidden`/hand-removed --
+ * `visibility: hidden` keeps its layout box, which is what gives
+ * `heroSlot`'s own `absolute inset-0` overlay something to size itself
+ * against) whenever `heroSlot` is present, with `heroSlot` painted on
+ * top as a sibling rather than swapped in as a replacement -- so
+ * `HeroStat` genuinely never unmounts just because `heroSlot` toggles.
+ * The caller (TradeReplay.tsx) is left in full control of when
+ * `HeroStat` *should* get a fresh mount/reveal via `heroKey` alone --
+ * see that component's own doc comment for its `revealRun` mechanism.
  */
 export function HeroAndWorstCase({
   heroKey,
@@ -127,14 +162,29 @@ export function HeroAndWorstCase({
 
   return (
     <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:gap-8">
-      {heroSlot ?? (
-        <HeroStat
-          key={heroKey}
-          startingCapital={startingCapital}
-          endingBalance={endingBalance}
-          displayStartingCapital={displayStartingCapital}
-        />
-      )}
+      <div className="relative">
+        {/* Always mounted -- see this component's own `heroSlot` doc
+            comment for why hiding it via CSS (not a ternary swap) is
+            what lets a caller control exactly when it gets a fresh
+            mount/reveal. `visibility: hidden` (not `display: none`)
+            keeps its own layout box so `heroSlot`'s `absolute inset-0`
+            below has a real footprint to size itself against; it's also
+            already correctly removed from the accessibility tree and
+            tab order by that same CSS property, with `aria-hidden` here
+            purely as this app's usual defense-in-depth. */}
+        <div
+          className={heroSlot ? "invisible" : undefined}
+          aria-hidden={heroSlot ? "true" : undefined}
+        >
+          <HeroStat
+            key={heroKey}
+            startingCapital={startingCapital}
+            endingBalance={endingBalance}
+            displayStartingCapital={displayStartingCapital}
+          />
+        </div>
+        {heroSlot}
+      </div>
       <WorstCaseStat
         startingCapital={displayStartingCapital}
         endingBalance={worstCaseDisplayValue}

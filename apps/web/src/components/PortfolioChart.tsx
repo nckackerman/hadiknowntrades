@@ -55,6 +55,50 @@ function eventTooltipVerb(event: PortfolioEvent): string {
 
 interface PortfolioChartProps {
   points: readonly PortfolioPoint[];
+  /**
+   * How many leading points of `points` to actually draw -- the line, its
+   * area fill, event markers, and the accessible data table. Defaults to
+   * `points.length` (draw everything, this component's behavior before
+   * this prop existed).
+   *
+   * **The x/y axis domains (the scales, their gridlines/labels, and the
+   * two start/end axis-text labels) are always computed from the FULL
+   * `points` array, regardless of this value** -- a real bug, fixed in
+   * code review (issue #96 follow-up round 3): TradeReplay.tsx's "Watch
+   * it happen" playback used to pre-slice `points` itself and hand this
+   * component an already-truncated array every reveal step, which fed
+   * that same truncated array into this component's own scale-building
+   * `useMemo` too -- so the x/y domain (and therefore every gridline
+   * position, the axis's own start/end labels, and the plotted line's
+   * pixel span) rescaled to fit whatever was currently revealed, at
+   * every single reveal step. That defeated the whole point of a
+   * playback animation -- a fixed frame the real trajectory line grows
+   * into -- and instead rendered as the entire chart visibly reflowing
+   * every ~300-600ms. Passing the full series alongside `revealedCount`
+   * instead lets this component keep the domain fixed for the whole run
+   * while still only drawing the revealed prefix.
+   */
+  revealedCount?: number;
+  /**
+   * Whether this chart instance is focusable/interactive at all --
+   * defaults to `true`. Pass `false` for a purely visual, non-interactive
+   * render (e.g. TradeReplay.tsx's chart while playing, issue #96)
+   * instead of a caller re-deriving the `aria-hidden`+`inert` wrapper
+   * idiom itself.
+   *
+   * This exact concern -- this component's own focusable descendants,
+   * the root `<svg>`'s `tabIndex` and `ChartDataTable`'s `<summary>` --
+   * already needed rediscovering twice in issue #96's own PR history (see
+   * apps/web/CLAUDE.md's "Trade replay" section, round two's `inert`
+   * finding) before this prop existed: a caller wrapping this component
+   * in its own `aria-hidden` div is a real ARIA-spec violation on its
+   * own (`aria-hidden` must never wrap a focusable element), so `inert`
+   * is what a non-interactive render actually needs, applied here to
+   * this component's own root element -- which already wraps every
+   * focusable descendant -- so no caller has to remember any of this
+   * again (code review, issue #96 follow-up round 3).
+   */
+  interactive?: boolean;
 }
 
 const WIDTH = 880;
@@ -78,10 +122,36 @@ function toTimestamp(date: string): number {
   return new Date(isPortfolioDatetime(date) ? `${date}Z` : `${date}T00:00:00Z`).getTime();
 }
 
-export function PortfolioChart({ points }: PortfolioChartProps) {
+export function PortfolioChart({ points, revealedCount, interactive = true }: PortfolioChartProps) {
   const gradientId = useId();
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [showTapHint, dismissTapHint] = useChartTapHint();
+
+  // Clears a stale hoverIndex whenever `points` changes identity or
+  // `interactive` flips (code review, issue #96 follow-up round 3) --
+  // previously safe to leave hoverIndex alone across any prop change
+  // because a `points` change always came with a fresh `key` (a remount
+  // resets all state for free); that stopped being true once
+  // TradeReplay.tsx started keeping one PortfolioChart instance mounted
+  // across the live/truncated swap (round two's `key={heroKey}` fix). A
+  // user who hovers/taps a point and then clicks "Watch it happen"
+  // without the pointer leaving the SVG bounds never fires
+  // onPointerLeave/onPointerCancel/onBlur -- hoverIndex stayed set to
+  // the pre-playback index and popped the crosshair/tooltip back into
+  // view once `revealedCount` grew past that stale index mid-replay.
+  // `interactive` is tracked alongside `points` specifically because
+  // TradeReplay.tsx's own `points` prop no longer changes identity at
+  // all across that transition (see `revealedCount`'s own doc comment
+  // above) -- only `interactive` (and `revealedCount`) do.
+  const [trackedPoints, setTrackedPoints] = useState(points);
+  const [trackedInteractive, setTrackedInteractive] = useState(interactive);
+  if (points !== trackedPoints || interactive !== trackedInteractive) {
+    setTrackedPoints(points);
+    setTrackedInteractive(interactive);
+    if (hoverIndex !== null) {
+      setHoverIndex(null);
+    }
+  }
   // Same "on mount only, not a live subscription" hook HeroStat's own
   // reveal accent (issue #77) and ResultsPanel's FadeInWrapper already
   // share -- see that hook's own doc comment for the hydration-safety
@@ -146,12 +216,21 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
     return { yScale, yTicks, plotted };
   }, [points, isChainedIntradaySeries]);
 
-  const linePath = plotted
+  // The revealed prefix actually drawn (the line, its area fill, event
+  // markers, and the interaction/hover logic below) -- `plotted` above
+  // stays keyed purely on the FULL `points`/`isChainedIntradaySeries`, so
+  // a caller growing `revealedCount` frame by frame (TradeReplay.tsx's
+  // playback) never defeats that useMemo or moves the axis it defines
+  // (see this component's own `revealedCount` prop doc comment).
+  const revealed = revealedCount ?? points.length;
+  const drawn = useMemo(() => plotted.slice(0, revealed), [plotted, revealed]);
+
+  const linePath = drawn
     .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(2)},${p.y.toFixed(2)}`)
     .join(" ");
-  const areaPath = `${linePath} L ${plotted[plotted.length - 1]!.x.toFixed(2)},${PLOT_HEIGHT} L ${plotted[0]!.x.toFixed(2)},${PLOT_HEIGHT} Z`;
+  const areaPath = `${linePath} L ${drawn[drawn.length - 1]!.x.toFixed(2)},${PLOT_HEIGHT} L ${drawn[0]!.x.toFixed(2)},${PLOT_HEIGHT} Z`;
 
-  const eventMarkers = plotted.filter((p) => p.event !== null);
+  const eventMarkers = drawn.filter((p) => p.event !== null);
 
   // Gain/loss-aware color (issue #85), replacing the single flat
   // --series-1 accent this chart used to render regardless of outcome.
@@ -161,11 +240,14 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
   // === end) renders "good," consistent with how the rest of the app
   // already treats flat as good-or-neutral, not bad. --gridline/
   // --baseline/--text-muted (gridlines, baseline, axis text) stay
-  // neutral -- only the data itself carries the accent color.
-  const isGain = plotted[plotted.length - 1]!.value >= plotted[0]!.value;
+  // neutral -- only the data itself carries the accent color. Based on
+  // `drawn` (the revealed prefix), not the full series -- unaffected by
+  // this round's axis-domain fix, and consistent with this chart's own
+  // pre-#96 behavior of coloring by whatever it's currently showing.
+  const isGain = drawn[drawn.length - 1]!.value >= drawn[0]!.value;
   const seriesColor = isGain ? "var(--status-good)" : "var(--status-critical)";
 
-  const hovered = hoverIndex !== null ? plotted[hoverIndex] : null;
+  const hovered = hoverIndex !== null ? drawn[hoverIndex] : null;
 
   /**
    * Shared by pointermove (mouse hover / drag) and pointerdown (a
@@ -188,7 +270,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
 
     let nearestIndex = 0;
     let nearestDistance = Infinity;
-    plotted.forEach((p, i) => {
+    drawn.forEach((p, i) => {
       const distance = Math.abs(p.x - localX);
       if (distance < nearestDistance) {
         nearestDistance = distance;
@@ -201,13 +283,17 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
   function stepFocus(delta: number) {
     setHoverIndex((current) => {
       const from = current ?? 0;
-      const next = Math.min(plotted.length - 1, Math.max(0, from + delta));
+      const next = Math.min(drawn.length - 1, Math.max(0, from + delta));
       return next;
     });
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div
+      className="flex flex-col gap-3"
+      aria-hidden={interactive ? undefined : "true"}
+      inert={!interactive}
+    >
       <svg
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
         role="img"
@@ -290,7 +376,12 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
           {/* X-axis: start and end date only -- correct as-is for today's
               at-most-3-trade window (issue #85's own plan); individual
               trade dates are available via the hover/tap tooltip and the
-              data table below, not as on-chart labels any more. */}
+              data table below, not as on-chart labels any more.
+              Deliberately reads the FULL `points` (not `drawn`) so these
+              two labels stay fixed at the plot's edges for the whole
+              run of a `revealedCount`-driven reveal, matching the fixed
+              axis frame -- see this component's own `revealedCount` prop
+              doc comment. */}
           <text
             x={0}
             y={PLOT_HEIGHT + 20}
@@ -440,7 +531,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
         )}
       </div>
 
-      <ChartDataTable points={points} />
+      <ChartDataTable points={drawn} />
     </div>
   );
 }

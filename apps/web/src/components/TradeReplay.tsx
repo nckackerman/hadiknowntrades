@@ -6,7 +6,7 @@
 // PortfolioPoint[]) rather than computing or fetching anything new. See
 // use-trade-replay.ts for the RAF-driven state machine this orchestrates.
 
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import { formatHeroCurrency, formatPercent } from "@/lib/format-currency";
 import { formatDateTime } from "@/lib/format-date";
@@ -15,7 +15,7 @@ import { spansMultipleDays } from "@/lib/portfolio-series";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { tradeVerbsPastCapitalized } from "@/lib/trade-math";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
-import { useTradeReplay, type ReplayEvent } from "@/lib/use-trade-replay";
+import { useTradeReplay, type ReplayEvent, type ReplayPhase } from "@/lib/use-trade-replay";
 import { HeroAndWorstCase } from "@/components/HeroAndWorstCase";
 import { PortfolioChart } from "@/components/PortfolioChart";
 
@@ -78,33 +78,55 @@ const buttonClassName =
  * paragraph/BenchmarkStat -- and the chart, on *every* page load, not
  * just during replay).
  *
- * Idle and done both render the *real*, untouched `HeroAndWorstCase` --
- * `HeroStat` remounts (a fresh `key={heroKey}`) on a genuine new result
- * (a fetch, or a mode switch, both of which change `heroKey` upstream)
- * so its own reveal animation (useCountUp, CelebrationBurst) replays
- * fresh, "ending on the existing count-up/confetti payoff" per the
- * issue's own Scope wording -- but *never* remounts merely because
- * playback started or finished, since idle/done and playing are
- * different *element types* at the hero slot (see `heroSlot` below),
- * and reverting to the same type+key after an unrelated type swap is
- * already a guaranteed fresh mount on its own (code-review finding,
- * fixed: an earlier version also suffixed this key with a `replayRun`
- * counter bumped on every "Watch it happen" click, entirely redundant
- * once this was understood -- removed, see this file's own git history
- * if the reasoning here ever needs re-deriving). Only while `phase ===
- * "playing"` does this swap in a plain, non-animated "$X -> $Y" figure
- * via `HeroAndWorstCase`'s own `heroSlot` override prop (driven by the
- * replay hook's own tween, not useCountUp -- HeroStat's own count-up is
- * mount-only and can't be re-driven mid-mount) and a truncated
- * `points.slice(0, revealedCount)` fed to the same `PortfolioChart`
- * instance -- which, unlike the hero slot, is the *same* element type
- * in every phase, so it needs a genuinely stable `key` (always
- * `heroKey`, never toggled) to avoid an unwanted remount -- and the
- * reveal-on-mount CSS animation replaying with it -- right at the two
- * moments playback starts and stops (a second code-review finding,
- * fixed: an earlier version toggled this chart's own `key` between a
- * real string and `undefined` depending on phase, which is a real key
- * change either way).
+ * Idle and done both render the *real*, untouched `HeroAndWorstCase`
+ * pairing -- `HeroStat` inside it reveals fresh (a genuinely new
+ * `key`) only on a genuine new result (a fetch, or a mode switch) or
+ * when playback actually *finishes* (see `revealRun` below), never
+ * merely because playback started or was aborted early. Only while
+ * `phase === "playing"` does the hero slot additionally overlay a
+ * plain, non-animated "$X -> $Y" figure (driven by the replay hook's
+ * own tween, not useCountUp -- HeroStat's own count-up is mount-only
+ * and can't be re-driven mid-mount) via `HeroAndWorstCase`'s own
+ * `heroSlot` prop, and a truncated view of the same `PortfolioChart`
+ * instance (`revealedCount`/`interactive`, not a pre-sliced `points`
+ * array -- see that component's own prop doc comments, code review
+ * issue #96 follow-up round 3).
+ *
+ * **`heroKey` carries a `revealRun` suffix, bumped only when phase
+ * *lands on* "done" (code review, issue #96 follow-up round 3) --
+ * this is the mechanism that decides when HeroStat gets a fresh
+ * count-up/confetti reveal, now that `HeroAndWorstCase` keeps HeroStat
+ * continuously mounted across every phase (see that component's own
+ * `heroSlot` doc comment) instead of unmounting it whenever playback
+ * starts.** Before this fix, the hero slot swapped between two
+ * different *element types* (`<HeroStat>` vs. a plain `<div>`) depending
+ * on phase -- any element-type change at a JSX position is an
+ * unconditional fresh mount by React's own reconciliation rules,
+ * independent of `key`, so *every* transition out of "playing" (whether
+ * landing on "done" -- a genuine completion, meant to replay the reveal
+ * as a reward -- or aborted back to "idle" by a live points-reference
+ * change, e.g. a starting-capital edit mid-playback) forced the exact
+ * same remount. That's exactly right for a genuine completion (verified
+ * live: "Skip to end landing on the real final state with a fresh
+ * HeroStat count-up/glow replaying"), but wrong for an abort: a
+ * starting-capital edit mid-playback resetting `use-trade-replay.ts`'s
+ * own `phase` to "idle" (its render-time `trackedPoints` reset, see
+ * that hook's own doc comment) doesn't change `heroKey` -- capital isn't
+ * part of it -- so the *type-swap* alone was what forced the remount,
+ * re-triggering a full reveal/celebration burst on a plain rescale and
+ * directly contradicting `HeroStat.tsx`'s own documented contract
+ * ("rescale instantly ... without re-triggering the count-up animation
+ * or the celebration burst"). With HeroStat now always mounted, the
+ * *only* remaining trigger for a fresh reveal is a `key` change --
+ * either `heroKey` itself changing upstream (a mode switch, which
+ * folds `mode` into `heroKey` -- see this prop's own doc comment, so a
+ * genuinely different trade sequence still gets a fresh reveal exactly
+ * as before) or this file's own `revealRun` counter, bumped
+ * specifically (and only) when `phase` transitions *to* "done" --
+ * natural completion or "Skip to end," never a mid-flight abort back to
+ * "idle." A starting-capital edit mid-playback now aborts back to idle
+ * with HeroStat's already-settled figure simply re-rendering at the new
+ * scale in place, exactly like an edit made while never playing at all.
  *
  * `WorstCaseStat` (via `HeroAndWorstCase`) renders unconditionally, in
  * every phase -- it has no animation of its own to protect, and the
@@ -124,27 +146,18 @@ const buttonClassName =
  * either way: every trade is already reachable via the always-present
  * TradeList/ChartDataTable.
  *
- * **The truncated chart is `inert`, not just `aria-hidden`, while
- * playing (code-review finding, fixed).** Per the ARIA spec,
+ * **The chart never carries its own `aria-hidden`/`inert` wrapper any
+ * more -- `PortfolioChart`'s own `interactive` prop owns this instead
+ * (code review, issue #96 follow-up round 3).** Per the ARIA spec,
  * `aria-hidden` must never be applied to a focusable element or an
  * ancestor of one -- `PortfolioChart`'s root `<svg>` is focusable
  * (`tabIndex={0}`, with an arrow-key point-inspection handler), and its
  * own `ChartDataTable` child renders a native `<details>`/`<summary>`
- * disclosure, whose `<summary>` is *also* natively focusable (a second
- * instance of the same violation class, not called out in the original
- * finding but caught while fixing it). Browsers disagree on whether
- * focus/keydown still reach a focusable descendant of an `aria-hidden`
- * ancestor, so a keyboard user could otherwise interact with a chart
- * announced as not present in the accessibility tree at all. `inert`
- * (a real DOM/HTML property, not an ARIA attribute) is the correct fix
- * for *both* focusable descendants at once, with no `PortfolioChart`
- * API change needed: it removes an entire subtree from both the tab
- * order and the accessibility tree together, so there's no
- * "aria-hidden but still focusable" combination possible in the first
- * place. Kept alongside `aria-hidden="true"` anyway (harmless, and this
- * app's own established two-layer-guard style elsewhere) as
- * defense-in-depth for any assistive-tech/browser pairing that doesn't
- * fully honor `inert`'s own AT-hiding behavior yet.
+ * disclosure, whose `<summary>` is *also* natively focusable. This exact
+ * concern needed rediscovering twice in this PR's own history before it
+ * became a documented `PortfolioChart` prop instead of a wrapper idiom
+ * this file had to get right on its own -- see that component's own
+ * `interactive` prop doc comment for the full reasoning.
  */
 export function TradeReplay({
   points,
@@ -161,7 +174,25 @@ export function TradeReplay({
   const reducedMotionAtMount = useReducedMotionAtMount();
   const { phase, frame, play, skipToEnd } = useTradeReplay(points);
 
-  const includeDate = spansMultipleDays(points);
+  // Bumped only when `phase` actually *lands on* "done" -- see this
+  // component's own doc comment above for the full reasoning (code
+  // review, issue #96 follow-up round 3). Read during render (not an
+  // effect) via the same "adjust state when a prop/value changes" idiom
+  // use-trade-replay.ts's own `trackedPoints` reset and use-results.ts's
+  // `trackedUrl` check already use elsewhere in this app.
+  const [revealRun, setRevealRun] = useState(0);
+  const [trackedPhase, setTrackedPhase] = useState<ReplayPhase>(phase);
+  if (phase !== trackedPhase) {
+    setTrackedPhase(phase);
+    if (phase === "done") {
+      setRevealRun((run) => run + 1);
+    }
+  }
+
+  // Memoized (code-review finding, issue #96 follow-up): constant for
+  // the whole result, but this component re-renders on every one of the
+  // dozens of RAF-driven frames while playing.
+  const includeDate = useMemo(() => spansMultipleDays(points), [points]);
   // Gates the *idle*/*done* button ("Watch it happen" / "Replay") only
   // -- deliberately NOT also gating "Skip to end" (code-review finding,
   // fixed; see the button row below). `tradeCount` is threaded from
@@ -190,6 +221,17 @@ export function TradeReplay({
     [endingBalance, startingCapital, displayStartingCapital],
   );
 
+  // Also memoized (code-review finding, issue #96 follow-up round 3) for
+  // the same reason -- `displayStartingCapital` is constant for the
+  // whole run, but this component re-renders on every RAF-driven frame
+  // while playing, and the playing-phase hero slot below needs this
+  // formatted string every one of those frames even though its own
+  // value never changes across them.
+  const displayStartingCapitalFormatted = useMemo(
+    () => formatHeroCurrency(displayStartingCapital),
+    [displayStartingCapital],
+  );
+
   // Computed once per render, not twice (code-review finding, fixed) --
   // the sr-only status region and the visible callout paragraph below
   // both need this exact same sentence, and computing it independently
@@ -210,22 +252,12 @@ export function TradeReplay({
       ? `Replay finished. Ending balance ${formatHeroCurrency(endingBalanceDisplayValue)}.`
       : (activeCallout ?? "");
 
-  // Memoized so a re-render that doesn't actually change `revealedCount`
-  // (most mid-tween frames, where only `currentValue` moves) doesn't
-  // hand PortfolioChart a fresh array reference every frame either
-  // (code-review finding, fixed) -- that would defeat that component's
-  // own useMemos, which are keyed on `points` by reference.
-  const truncatedPoints = useMemo(
-    () => points.slice(0, frame.revealedCount),
-    [points, frame.revealedCount],
-  );
-
   return (
     <>
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <HeroAndWorstCase
-            heroKey={heroKey}
+            heroKey={`${heroKey}:${revealRun}`}
             startingCapital={startingCapital}
             endingBalance={endingBalance}
             worstCaseEndingBalance={worstCaseEndingBalance}
@@ -237,10 +269,17 @@ export function TradeReplay({
                 // the status region below announces the meaningful
                 // moments (each trade event, then the finished
                 // sentence) instead of this per-frame-changing figure.
-                <div aria-hidden="true" className="flex flex-col items-start gap-1">
+                // Absolutely positioned over HeroAndWorstCase's own
+                // (visually hidden, but still mounted) real HeroStat --
+                // see that component's own `heroSlot` doc comment for
+                // why this overlays rather than replaces it.
+                <div
+                  aria-hidden="true"
+                  className="absolute inset-0 flex flex-col items-start gap-1"
+                >
                   <p className="text-sm font-medium text-[var(--text-secondary)]">Starting from</p>
                   <p className="flex flex-wrap items-baseline gap-3 text-[clamp(2.5rem,6vw,4rem)] font-semibold leading-none tracking-tight text-[var(--text-primary)]">
-                    <span>{formatHeroCurrency(displayStartingCapital)}</span>
+                    <span>{displayStartingCapitalFormatted}</span>
                     <span className="text-[var(--text-muted)]">→</span>
                     <span>{formatHeroCurrency(frame.currentValue)}</span>
                   </p>
@@ -261,31 +300,37 @@ export function TradeReplay({
           </p>
         )}
 
-        {phase === "playing" ? (
-          // Always available while playing, regardless of `canReplay` --
-          // see that variable's own doc comment above for why this can't
-          // just reuse the same gate the idle/done button below does.
-          <div className="flex items-center gap-3">
+        {/* One wrapper, varying only the inner button (code-review
+            finding, issue #96 follow-up round 3) -- an earlier version
+            duplicated this identical `flex items-center gap-3` div in
+            both branches of the ternary below. */}
+        <div className="flex items-center gap-3">
+          {phase === "playing" ? (
+            // Always available while playing, regardless of `canReplay`
+            // -- see that variable's own doc comment above for why this
+            // can't just reuse the same gate the idle/done button below
+            // does.
             <button type="button" onClick={skipToEnd} className={buttonClassName}>
               Skip to end
             </button>
-          </div>
-        ) : (
-          canReplay && (
-            <div className="flex items-center gap-3">
+          ) : (
+            canReplay && (
               <button type="button" onClick={play} className={buttonClassName}>
                 {phase === "done" ? "Replay" : "Watch it happen"}
               </button>
-            </div>
-          )
-        )}
+            )
+          )}
+        </div>
 
         {children}
       </div>
 
-      <div aria-hidden={showLive ? undefined : "true"} inert={!showLive}>
-        <PortfolioChart key={heroKey} points={showLive ? points : truncatedPoints} />
-      </div>
+      <PortfolioChart
+        key={heroKey}
+        points={points}
+        revealedCount={showLive ? undefined : frame.revealedCount}
+        interactive={showLive}
+      />
     </>
   );
 }

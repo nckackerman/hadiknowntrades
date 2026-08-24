@@ -180,11 +180,12 @@ describe("TradeReplay (issue #96)", () => {
     createRafPump();
     const user = userEvent.setup();
     const { container } = render(<TradeReplay {...BASE_PROPS} />);
-    // The svg's *grandparent*, not its parent -- PortfolioChart itself
-    // wraps the svg in its own "flex flex-col gap-3" div; the
-    // inert/aria-hidden wrapper is the one TradeReplay renders one
-    // level further out, around PortfolioChart as a whole.
-    const chartWrapper = () => container.querySelector("svg")!.parentElement!.parentElement!;
+    // The svg's own parent -- PortfolioChart's own "flex flex-col
+    // gap-3" root div, which now owns the inert/aria-hidden attributes
+    // itself via its `interactive` prop (code review, issue #96
+    // follow-up round 3) rather than TradeReplay wrapping it in a
+    // second div one level further out.
+    const chartWrapper = () => container.querySelector("svg")!.parentElement!;
 
     expect(chartWrapper().hasAttribute("inert")).toBe(false);
     expect(chartWrapper().hasAttribute("aria-hidden")).toBe(false);
@@ -202,6 +203,62 @@ describe("TradeReplay (issue #96)", () => {
 
     expect(chartWrapper().hasAttribute("inert")).toBe(false);
     expect(chartWrapper().hasAttribute("aria-hidden")).toBe(false);
+  });
+
+  it("a starting-capital edit mid-playback does not remount HeroStat (real bug, fixed) -- the aborted-to-idle hero row is the exact same DOM node from before playback started", async () => {
+    createRafPump();
+    const user = userEvent.setup();
+    const { rerender } = render(<TradeReplay {...BASE_PROPS} />);
+
+    await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+    expect(screen.getByRole("button", { name: "Skip to end" })).toBeInTheDocument();
+
+    // HeroStat itself stays mounted (visually hidden) throughout playback
+    // now -- its own "Starting from" caption is reachable even while
+    // playing, alongside the animated overlay's identical caption text.
+    const heroCaptionDuringPlayback = screen.getAllByText("Starting from")[0]!;
+
+    // Stands in for a live starting-capital edit: derivePortfolioSeries
+    // is a pure linear scaling (see portfolio-series.ts), so ResultsPanel
+    // recomputes `points` to a brand-new, rescaled array reference
+    // without ever unmounting TradeReplay -- startingCapital/endingBalance
+    // (the underlying raw result) stay fixed; only points and
+    // displayStartingCapital change, exactly like a real
+    // StartingCapitalInput edit.
+    const RESCALED_POINTS: PortfolioPoint[] = POINTS.map((p) => ({
+      ...p,
+      value: p.value * 1.25,
+    }));
+    rerender(<TradeReplay {...BASE_PROPS} points={RESCALED_POINTS} displayStartingCapital={25} />);
+
+    // The edit aborts playback (use-trade-replay.ts's own trackedPoints
+    // reset) back to idle.
+    expect(screen.getByRole("button", { name: "Watch it happen" })).toBeInTheDocument();
+    // HeroStat's own DOM node is the exact same one from before the
+    // edit -- not a fresh mount, so no re-triggered count-up/confetti.
+    expect(screen.getAllByText("Starting from")[0]).toBe(heroCaptionDuringPlayback);
+  });
+
+  it("naturally completing playback DOES give HeroStat a fresh mount (the intended reward moment, contrasted with the abort case above)", async () => {
+    createRafPump();
+    const user = userEvent.setup();
+    render(<TradeReplay {...BASE_PROPS} />);
+
+    const heroCaptionBeforePlaying = screen.getByText("Starting from");
+
+    await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+    const heroCaptionWhilePlaying = screen.getAllByText("Starting from")[0]!;
+    // Still the same node while merely playing -- HeroStat doesn't
+    // remount just because playback started (see HeroAndWorstCase.tsx's
+    // own heroSlot doc comment).
+    expect(heroCaptionWhilePlaying).toBe(heroCaptionBeforePlaying);
+
+    await user.click(screen.getByRole("button", { name: "Skip to end" }));
+
+    // Landing on "done" bumps TradeReplay's own revealRun counter,
+    // giving HeroStat a fresh key and therefore a fresh mount -- a
+    // genuinely different DOM node than before playback started.
+    expect(screen.getByText("Starting from")).not.toBe(heroCaptionBeforePlaying);
   });
 
   it("PortfolioChart's own DOM node never remounts across idle -> playing -> done -> replay transitions (no reveal-animation flash at those boundaries)", async () => {
