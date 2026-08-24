@@ -155,3 +155,22 @@ export function tradeVerbsPast(direction: TradeDirection): TradeVerbs {
     ? { openVerb: "bought", closeVerb: "sold" }
     : { openVerb: "shorted", closeVerb: "covered" };
 }
+
+/**
+ * "Bought"/"Sold" for a long, "Shorted"/"Covered" for a short -- the
+ * capitalized, past-tense verb pair for the start of a standalone
+ * sentence ("Bought AAPL on Mar 12, 2025 at $142.00."), e.g.
+ * TradeReplay.tsx's own playback callouts (issue #96). Distinct from
+ * both `tradeVerbs` above (capitalized, present tense -- "Buy"/"Sell",
+ * a label prefix) and `tradeVerbsPast` above (lowercase, past tense --
+ * "bought"/"sold", mid-sentence prose): this is the one register
+ * neither of those two already covers. Extracted here rather than a
+ * one-off `capitalize()` helper in a component file, per this module's
+ * own header comment on why this exact class of verb-pair fragmentation
+ * gets centralized once instead of re-derived per caller.
+ */
+export function tradeVerbsPastCapitalized(direction: TradeDirection): TradeVerbs {
+  return direction === "long"
+    ? { openVerb: "Bought", closeVerb: "Sold" }
+    : { openVerb: "Shorted", closeVerb: "Covered" };
+}

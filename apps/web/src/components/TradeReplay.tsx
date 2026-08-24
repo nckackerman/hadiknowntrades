@@ -6,26 +6,25 @@
 // PortfolioPoint[]) rather than computing or fetching anything new. See
 // use-trade-replay.ts for the RAF-driven state machine this orchestrates.
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 
 import { formatHeroCurrency, formatPercent } from "@/lib/format-currency";
 import { formatDateTime } from "@/lib/format-date";
 import type { PortfolioPoint } from "@/lib/portfolio-series";
 import { spansMultipleDays } from "@/lib/portfolio-series";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
-import { tradeVerbsPast } from "@/lib/trade-math";
+import { tradeVerbsPastCapitalized } from "@/lib/trade-math";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
 import { useTradeReplay, type ReplayEvent } from "@/lib/use-trade-replay";
-import { HeroStat } from "@/components/HeroStat";
+import { HeroAndWorstCase } from "@/components/HeroAndWorstCase";
 import { PortfolioChart } from "@/components/PortfolioChart";
-import { WorstCaseStat } from "@/components/WorstCaseStat";
 
 interface TradeReplayProps {
   /** The already-rendered window-model result's own chart series (derivePortfolioSeries's output, already display-rescaled -- see ResultsPanel.tsx's own `points`). */
   points: readonly PortfolioPoint[];
   /** How many trades this result has -- the button only renders with at least one (per the issue's own acceptance criteria). */
   tradeCount: number;
-  /** Base key identifying "this result" -- see HeroAndWorstCaseProps' own heroKey doc comment. Suffixed per replay run so HeroStat genuinely remounts (and replays its own reveal animation) each time playback finishes. */
+  /** Identifies "this result" -- passed straight through as HeroAndWorstCase's own `heroKey` (see that component's prop doc comment) and as PortfolioChart's own `key`, so both remount and replay their reveal animations on a genuine new result (a fetch, or a mode switch) but never mid-playback for any other reason. */
   heroKey: string;
   startingCapital: number;
   endingBalance: number;
@@ -38,22 +37,23 @@ interface TradeReplayProps {
   children?: ReactNode;
 }
 
-/** Sentence-cases a lowercase past-tense verb ("bought" -> "Bought") for the start of a callout sentence. */
-function capitalize(word: string): string {
-  return word.charAt(0).toUpperCase() + word.slice(1);
-}
-
 /**
  * Past-tense narration for one playback callout, matching TradeList's
  * established voice ("bought AAPL on Mar 12, 2025 at $142.00") rather
  * than inventing new copy -- per the issue's own Background section.
  * Always retrospective, never present/future tense: this app's premise
- * is hindsight, not a live trading terminal.
+ * is hindsight, not a live trading terminal. Verb pair comes from
+ * trade-math.ts's `tradeVerbsPastCapitalized` (code-review follow-up --
+ * a one-off `capitalize()` helper used to live in this file instead,
+ * reinventing exactly the class of verb-pair fragmentation that
+ * module's own header comment already centralizes).
  */
 function calloutText(replayEvent: ReplayEvent, includeDate: boolean): string {
   const { point, event, tradeReturn } = replayEvent;
-  const verb = tradeVerbsPast(event.direction)[event.type === "open" ? "openVerb" : "closeVerb"];
-  const sentence = `${capitalize(verb)} ${event.ticker} on ${formatDateTime(point.date, includeDate)} at ${formatHeroCurrency(event.price)}`;
+  const verb = tradeVerbsPastCapitalized(event.direction)[
+    event.type === "open" ? "openVerb" : "closeVerb"
+  ];
+  const sentence = `${verb} ${event.ticker} on ${formatDateTime(point.date, includeDate)} at ${formatHeroCurrency(event.price)}`;
   if (event.type === "close" && tradeReturn) {
     return `${sentence} (${formatPercent(tradeReturn.returnFraction)}).`;
   }
@@ -68,47 +68,83 @@ const buttonClassName =
  * window-model result (5Y/MAX, and custom-window anchors -- any range
  * using derivePortfolioSeries) with an opt-in "Watch it happen" replay.
  *
- * **Returns a Fragment of two top-level pieces -- the hero/controls
- * block and the chart -- not one wrapping div (code-review finding,
- * fixed).** Before this fix, both lived inside one shared `flex
- * flex-col gap-2` wrapper, which silently shrank the pre-existing
- * spacing between the methodology paragraph/BenchmarkStat (passed as
- * `children`, rendered just above the chart) and the chart itself from
- * `gap-8` (2rem, `FadeInWrapper`'s own spacing in `ResultsPanel.tsx`,
- * unchanged since before this issue) down to `gap-2` (0.5rem) -- on
- * *every* window-model page load, not just during replay. Returning a
- * Fragment means both pieces splice directly into `WindowResultBody`'s
- * own `FadeInWrapper` as siblings of the "Trades" block below, restoring
- * the original three-sibling `gap-8` spacing exactly.
+ * Returns a Fragment of two top-level pieces -- the hero/controls block
+ * and the chart, not one wrapping div -- so both splice as direct
+ * siblings into `WindowResultBody`'s own `FadeInWrapper` alongside the
+ * "Trades" block below, preserving that flex column's own `gap-8`
+ * spacing between all three (code-review finding, fixed: an earlier
+ * version put both inside one shared `gap-2` div, which silently shrank
+ * the pre-existing spacing between `children` -- the methodology
+ * paragraph/BenchmarkStat -- and the chart, on *every* page load, not
+ * just during replay).
  *
- * Idle and done both render the *real*, untouched `HeroStat` --
- * remounted (a fresh `key`) each time so its own reveal animation
- * (useCountUp, CelebrationBurst) replays fresh, "ending on the existing
- * count-up/confetti payoff" per the issue's own Scope wording. Only
- * while `phase === "playing"` does this swap in a plain, non-animated
- * "$X -> $Y" figure (driven by the replay hook's own tween, not
- * useCountUp -- HeroStat's own count-up is mount-only and can't be
- * re-driven mid-mount) and a truncated `points.slice(0, revealedCount)`
- * fed to the same PortfolioChart component.
+ * Idle and done both render the *real*, untouched `HeroAndWorstCase` --
+ * `HeroStat` remounts (a fresh `key={heroKey}`) on a genuine new result
+ * (a fetch, or a mode switch, both of which change `heroKey` upstream)
+ * so its own reveal animation (useCountUp, CelebrationBurst) replays
+ * fresh, "ending on the existing count-up/confetti payoff" per the
+ * issue's own Scope wording -- but *never* remounts merely because
+ * playback started or finished, since idle/done and playing are
+ * different *element types* at the hero slot (see `heroSlot` below),
+ * and reverting to the same type+key after an unrelated type swap is
+ * already a guaranteed fresh mount on its own (code-review finding,
+ * fixed: an earlier version also suffixed this key with a `replayRun`
+ * counter bumped on every "Watch it happen" click, entirely redundant
+ * once this was understood -- removed, see this file's own git history
+ * if the reasoning here ever needs re-deriving). Only while `phase ===
+ * "playing"` does this swap in a plain, non-animated "$X -> $Y" figure
+ * via `HeroAndWorstCase`'s own `heroSlot` override prop (driven by the
+ * replay hook's own tween, not useCountUp -- HeroStat's own count-up is
+ * mount-only and can't be re-driven mid-mount) and a truncated
+ * `points.slice(0, revealedCount)` fed to the same `PortfolioChart`
+ * instance -- which, unlike the hero slot, is the *same* element type
+ * in every phase, so it needs a genuinely stable `key` (always
+ * `heroKey`, never toggled) to avoid an unwanted remount -- and the
+ * reveal-on-mount CSS animation replaying with it -- right at the two
+ * moments playback starts and stops (a second code-review finding,
+ * fixed: an earlier version toggled this chart's own `key` between a
+ * real string and `undefined` depending on phase, which is a real key
+ * change either way).
  *
- * **`WorstCaseStat` renders unconditionally, in every phase (code-review
- * finding, fixed)** -- it has no animation of its own to protect, and
- * the issue's own Scope names "the chart and hero figure" specifically,
- * not the worst-case contrast stat, so it must never actually disappear
- * for the ~3-6s playback runs. `HeroStat`/`WorstCaseStat` are composed
- * directly here (not via `HeroAndWorstCase`) specifically so this
- * component can swap only the `HeroStat` half while leaving
- * `WorstCaseStat` always mounted with the same layout that shared
- * wrapper already used.
+ * `WorstCaseStat` (via `HeroAndWorstCase`) renders unconditionally, in
+ * every phase -- it has no animation of its own to protect, and the
+ * issue's own Scope names "the chart and hero figure" specifically, not
+ * the worst-case contrast stat, so it must never actually disappear for
+ * the ~3-6s playback runs. See `HeroAndWorstCase`'s own `heroSlot` doc
+ * comment for why this composes through that shared wrapper again
+ * rather than hand-duplicating its layout markup a second time (a
+ * code-review finding on this exact point, fixed).
  *
  * Reduced motion fully bypasses this feature (not an instant step-through
- * equivalent): no button ever renders, so HeroStat/WorstCaseStat/
- * PortfolioChart render exactly as they did before this issue,
+ * equivalent): no button ever renders, so `HeroAndWorstCase`/
+ * `PortfolioChart` render exactly as they did before this issue,
  * unconditionally -- the same "skip the affordance entirely" choice
  * this app already makes for the celebration burst (should-celebrate.ts)
  * and the chart tap hint (use-chart-tap-hint.ts). Zero information loss
  * either way: every trade is already reachable via the always-present
  * TradeList/ChartDataTable.
+ *
+ * **The truncated chart is `inert`, not just `aria-hidden`, while
+ * playing (code-review finding, fixed).** Per the ARIA spec,
+ * `aria-hidden` must never be applied to a focusable element or an
+ * ancestor of one -- `PortfolioChart`'s root `<svg>` is focusable
+ * (`tabIndex={0}`, with an arrow-key point-inspection handler), and its
+ * own `ChartDataTable` child renders a native `<details>`/`<summary>`
+ * disclosure, whose `<summary>` is *also* natively focusable (a second
+ * instance of the same violation class, not called out in the original
+ * finding but caught while fixing it). Browsers disagree on whether
+ * focus/keydown still reach a focusable descendant of an `aria-hidden`
+ * ancestor, so a keyboard user could otherwise interact with a chart
+ * announced as not present in the accessibility tree at all. `inert`
+ * (a real DOM/HTML property, not an ARIA attribute) is the correct fix
+ * for *both* focusable descendants at once, with no `PortfolioChart`
+ * API change needed: it removes an entire subtree from both the tab
+ * order and the accessibility tree together, so there's no
+ * "aria-hidden but still focusable" combination possible in the first
+ * place. Kept alongside `aria-hidden="true"` anyway (harmless, and this
+ * app's own established two-layer-guard style elsewhere) as
+ * defense-in-depth for any assistive-tech/browser pairing that doesn't
+ * fully honor `inert`'s own AT-hiding behavior yet.
  */
 export function TradeReplay({
   points,
@@ -124,12 +160,6 @@ export function TradeReplay({
 }: TradeReplayProps) {
   const reducedMotionAtMount = useReducedMotionAtMount();
   const { phase, frame, play, skipToEnd } = useTradeReplay(points);
-  // Bumped on every genuine playback start so HeroStat gets a fresh
-  // `key` (a real remount, not just a prop update) once phase settles
-  // back to "done" -- the same "remount to replay the reveal" reasoning
-  // heroKey already documents everywhere else in this app (see
-  // HeroAndWorstCaseProps' own doc comment).
-  const [replayRun, setReplayRun] = useState(0);
 
   const includeDate = spansMultipleDays(points);
   // Gates the *idle*/*done* button ("Watch it happen" / "Replay") only
@@ -147,22 +177,17 @@ export function TradeReplay({
   // `canReplay`) rather than lingering in "playing" with the wrong gate.
   const canReplay = tradeCount > 0 && !reducedMotionAtMount;
   const showLive = phase !== "playing";
-  const liveKey = `${heroKey}-replay-${replayRun}`;
 
-  function handleWatch() {
-    setReplayRun((n) => n + 1);
-    play();
-  }
-
-  const endingBalanceDisplayValue = rescaleFromStartingCapital(
-    endingBalance,
-    startingCapital,
-    displayStartingCapital,
-  );
-  const worstCaseDisplayValue = rescaleFromStartingCapital(
-    worstCaseEndingBalance,
-    worstCaseStartingCapital,
-    displayStartingCapital,
+  // Memoized (code-review finding, issue #96 follow-up): constant for
+  // the whole playback run, but this component re-renders on every one
+  // of the dozens of RAF-driven frames while playing -- see
+  // HeroAndWorstCase.tsx's own identical fix for the worst-case figure's
+  // own rescale, which used to live here too before this file started
+  // composing through that shared wrapper again (see this component's
+  // own doc comment).
+  const endingBalanceDisplayValue = useMemo(
+    () => rescaleFromStartingCapital(endingBalance, startingCapital, displayStartingCapital),
+    [endingBalance, startingCapital, displayStartingCapital],
   );
 
   // Computed once per render, not twice (code-review finding, fixed) --
@@ -199,33 +224,30 @@ export function TradeReplay({
     <>
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap items-end justify-between gap-4">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:gap-8">
-            {showLive ? (
-              <HeroStat
-                key={liveKey}
-                startingCapital={startingCapital}
-                endingBalance={endingBalance}
-                displayStartingCapital={displayStartingCapital}
-              />
-            ) : (
-              // Purely visual during playback -- aria-hidden, since the
-              // status region below announces the meaningful moments
-              // (each trade event, then the finished sentence) instead
-              // of this per-frame-changing figure.
-              <div aria-hidden="true" className="flex flex-col items-start gap-1">
-                <p className="text-sm font-medium text-[var(--text-secondary)]">Starting from</p>
-                <p className="flex flex-wrap items-baseline gap-3 text-[clamp(2.5rem,6vw,4rem)] font-semibold leading-none tracking-tight text-[var(--text-primary)]">
-                  <span>{formatHeroCurrency(displayStartingCapital)}</span>
-                  <span className="text-[var(--text-muted)]">→</span>
-                  <span>{formatHeroCurrency(frame.currentValue)}</span>
-                </p>
-              </div>
-            )}
-            <WorstCaseStat
-              startingCapital={displayStartingCapital}
-              endingBalance={worstCaseDisplayValue}
-            />
-          </div>
+          <HeroAndWorstCase
+            heroKey={heroKey}
+            startingCapital={startingCapital}
+            endingBalance={endingBalance}
+            worstCaseEndingBalance={worstCaseEndingBalance}
+            worstCaseStartingCapital={worstCaseStartingCapital}
+            displayStartingCapital={displayStartingCapital}
+            heroSlot={
+              showLive ? undefined : (
+                // Purely visual during playback -- aria-hidden, since
+                // the status region below announces the meaningful
+                // moments (each trade event, then the finished
+                // sentence) instead of this per-frame-changing figure.
+                <div aria-hidden="true" className="flex flex-col items-start gap-1">
+                  <p className="text-sm font-medium text-[var(--text-secondary)]">Starting from</p>
+                  <p className="flex flex-wrap items-baseline gap-3 text-[clamp(2.5rem,6vw,4rem)] font-semibold leading-none tracking-tight text-[var(--text-primary)]">
+                    <span>{formatHeroCurrency(displayStartingCapital)}</span>
+                    <span className="text-[var(--text-muted)]">→</span>
+                    <span>{formatHeroCurrency(frame.currentValue)}</span>
+                  </p>
+                </div>
+              )
+            }
+          />
           {startingCapitalInput}
         </div>
 
@@ -251,7 +273,7 @@ export function TradeReplay({
         ) : (
           canReplay && (
             <div className="flex items-center gap-3">
-              <button type="button" onClick={handleWatch} className={buttonClassName}>
+              <button type="button" onClick={play} className={buttonClassName}>
                 {phase === "done" ? "Replay" : "Watch it happen"}
               </button>
             </div>
@@ -261,11 +283,8 @@ export function TradeReplay({
         {children}
       </div>
 
-      <div aria-hidden={showLive ? undefined : "true"}>
-        <PortfolioChart
-          key={showLive ? liveKey : undefined}
-          points={showLive ? points : truncatedPoints}
-        />
+      <div aria-hidden={showLive ? undefined : "true"} inert={!showLive}>
+        <PortfolioChart key={heroKey} points={showLive ? points : truncatedPoints} />
       </div>
     </>
   );

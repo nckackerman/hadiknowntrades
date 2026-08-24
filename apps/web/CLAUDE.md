@@ -3118,3 +3118,256 @@ frame.revealedCount])` so a fresh array only appears when `revealedCount`
   correctly rescaled figures ($20 -> $25, `WorstCaseStat`'s own $4.20 ->
   $5.25). The `.results-fade-in` child-gap measurement mentioned in the
   first finding above was taken in this same session.
+
+### Code-review follow-up, round two -- nine more findings (all fixed before merge)
+
+A second `high` review of the PR above, after the seven-finding round
+already documented, caught nine more real issues -- several of them
+only reachable because the first round's own fixes changed the shape of
+what there was left to review. Also worth noting up front: this round's
+reviewer flagged a tenth "finding" (the PR supposedly bundling unrelated
+changes from a different issue) that turned out to be a stale-`main`
+artifact on the reviewer's own end, the same class of false positive the
+first round's own process already anticipated -- confirmed via `gh pr
+diff --name-only` that the PR's file scope never changed, and ignored.
+
+- **`aria-hidden` must never wrap a focusable element -- and `inert`,
+  not a `PortfolioChart` API change, turned out to be the right fix,
+  closing a second focusable-descendant instance the original finding
+  didn't even name.** The truncated chart's wrapping div carried
+  `aria-hidden="true"` while playing, but `PortfolioChart`'s own root
+  `<svg>` is focusable (`tabIndex={0}`, with an arrow-key point-
+  inspection handler) -- a real ARIA-spec violation, since browsers
+  disagree on whether focus/keydown still reach a focusable descendant
+  of an `aria-hidden` ancestor. Fixed by adding a real `inert` attribute
+  to that same wrapping div (`inert={!showLive}`, kept alongside
+  `aria-hidden` as defense-in-depth) instead of threading a new
+  `interactive` prop through `PortfolioChart` to conditionally strip its
+  own `tabIndex`/handlers -- `inert` is a DOM/HTML property, not an ARIA
+  attribute, and removes an entire subtree from both the tab order and
+  the accessibility tree together, so there's no "hidden from AT but
+  still focusable" combination possible at all. **This also caught a
+  second instance of the identical violation class the original finding
+  never named**: `PortfolioChart`'s own `ChartDataTable` child renders a
+  native `<details>`/`<summary>` disclosure, whose `<summary>` is _also_
+  natively focusable -- a prop-based `PortfolioChart` fix would have had
+  to remember to guard that too; `inert` on the wrapper catches both for
+  free, with zero `PortfolioChart` changes. React 19's DOM renderer
+  treats `inert` as a genuine boolean HTML attribute (confirmed by
+  reading `react-dom-client.development.js`'s own property-config table,
+  not assumed) -- `true` sets it, `false`/`null`/`undefined` remove it,
+  same handling as `disabled`/`hidden`. **Live-verified as real browser
+  behavior, not just an attribute-presence check**: a real
+  `svg.focus()` call from Playwright's own `page.evaluate` succeeds
+  while idle (`document.activeElement === svg`) and genuinely fails once
+  playing (`document.activeElement` stays whatever was focused before
+  the call, confirmed alongside `svgHasInertAncestor: true` read from
+  the live DOM) -- and a real `Tab` keypress from the focused "Skip to
+  end" button skips straight past the inert chart to the next real
+  focusable element in the document, never landing on the `<svg>`
+  itself. jsdom doesn't implement `inert`'s own behavioral enforcement
+  (focus prevention) at all, only attribute presence/absence -- the unit
+  test (`TradeReplay.test.tsx`) only asserts `hasAttribute("inert")`
+  for this reason; the _actual_ browser-enforced guarantee this fix
+  depends on was only ever confirmed live.
+- **Natural playback completion must land on exactly the same `frame`
+  shape `skipToEnd` and the corrupted-price catch already produce, and
+  didn't.** The "advance past the last segment" branch in
+  `use-trade-replay.ts`'s `tick()` used to only call `setPhase("done")`,
+  leaving `frame.activeEvent` still set to whatever the _last_ segment
+  paused on -- correct as long as `derivePortfolioSeries` appends a
+  trailing flat point after the final trade's close (the common case),
+  but that function appends no such point whenever a trade's own
+  `closeDate` already equals the window's `endDate` (see its own
+  `if (!last || last.date !== endDate)` guard) -- a realistic shape, not
+  a hypothetical one (the best trade in a 5Y/MAX window closing on the
+  most recent trading day is exactly this). In that case the close event
+  _is_ the array's last point, and natural completion landed "done" with
+  a stale `activeEvent` still populated, contradicting this hook's own
+  documented contract that every "reached the end" path agrees on the
+  same shape. Fixed by calling `setFrame(finalFrame(points))` on that
+  branch too (and, for the same consistency reasoning, on the
+  `segments.length === 0` defensive branch, even though `play()`
+  already guards against ever reaching "playing" with zero segments in
+  practice). Regression-tested in `use-trade-replay.test.ts` with a
+  fixture built with no trailing point at all -- deliberately walking
+  the exact same sequence the pre-existing "walks every point" test
+  uses, just truncated at the close event, so the only variable is
+  whether that missing trailing point actually matters.
+- **`PortfolioChart`'s own `key` used to toggle between a real string
+  and `undefined` at exactly the two moments playback starts and
+  stops, forcing an unwanted remount (and reveal-CSS-animation replay)
+  right then.** `HeroStat`'s slot genuinely needs _no_ explicit key
+  suffix to remount correctly at those same two moments (see the next
+  finding) because it's swapped between two different _element types_
+  at that JSX position (`<HeroStat>` vs. a plain `<div>`) -- any type
+  change at a position is _already_ an unconditional fresh mount by
+  React's own reconciliation rules, with or without a matching key.
+  `PortfolioChart`, by contrast, is the _same_ element type in every
+  phase (only its `points`/`key` props differed) -- so toggling its own
+  `key` between `liveKey` and `undefined` was the _only_ thing causing
+  it to remount at those transitions, discarding the gradual per-point
+  reveal the user just watched with an unwanted flash/re-fade right as
+  playback starts, and again right as it finishes. Fixed by giving it a
+  single, always-stable `key={heroKey}` (never toggled, matching this
+  chart's own pre-#96 keying exactly) -- it now only remounts on a
+  genuine new result (a fetch, or a `heroKey`-changing mode switch),
+  never merely because playback started or stopped. **Live-verified as
+  a real absence of motion, not just DOM node identity**: sampled
+  `getComputedStyle(...).opacity` on the chart's own
+  `.portfolio-chart-reveal` group at five points ~30ms apart
+  immediately after both the "Watch it happen" click and the "Skip to
+  end" click -- `1` at every single sample, both times, confirming no
+  fresh 550ms fade-from-zero ever started. The jsdom-level regression
+  test (`container.querySelector("svg")` reference equality across a
+  full idle -> playing -> done -> replay cycle) can only confirm the DOM
+  node itself didn't change identity, not that no animation replayed on
+  it -- worth remembering that distinction for any future "did this
+  remount" fix: a stable node reference is necessary but not sufficient
+  proof that a CSS mount-triggered animation didn't also replay (it
+  happens to be sufficient _here_ specifically because this app's own
+  reveal animations are keyed to a genuine DOM mount, not to a class
+  toggle on an already-mounted node -- a future animation gated some
+  other way could remount-free but still visibly replay).
+- **`play()` wasn't actually safe to call while `phase` was already
+  `"playing"` -- not reachable via the shipped UI (the button that
+  calls `play()` is hidden while playing, replaced by "Skip to end"),
+  but a real latent bug in this hook's own public API.** Bumping `phase`
+  from `"playing"` to `"playing"` again is a no-op by React's own
+  `Object.is` bail-out, so the effect's dependency array never noticed
+  anything changed and never restarted -- meaning `frame` reset to its
+  initial value (via `play()`'s own direct `setFrame` call) but no RAF
+  loop was left running to ever advance it again. Fixed by replacing the
+  previous `runIdRef` (a plain ref, mutated but never read by React's
+  own reconciliation) with real `runId` state, included in the effect's
+  own dependency array (`[phase, points, runId]`) and bumped by every
+  `play()`/`skipToEnd()` call -- a state bump _always_ differs from its
+  previous value, so it forces the effect to tear down (via
+  `cancelAnimationFrame` in cleanup) and restart every single time,
+  independent of whether `phase`'s own value happened to change too.
+  **This also let the old "is this tick stale?" check inside `tick()`
+  itself (`if (runIdRef.current !== runId) return;`) be deleted
+  outright, not just left in place defensively** -- it existed
+  specifically to catch a same-value `phase` update that _couldn't_
+  force a restart on its own; once every restart trigger genuinely
+  forces one via the dependency array, a stale tick can no longer fire
+  in the first place (the effect's own cleanup always cancels it first),
+  so the check became tautological dead code once the actual mechanism
+  it was working around no longer existed. Regression-tested by playing,
+  advancing partway, calling `play()` again mid-flight, and asserting
+  both the immediate reset _and_ that a fresh RAF loop genuinely
+  resumes advancing afterward (not just that `frame` reset once and then
+  froze).
+- **Two per-render rescale computations recomputed on every one of the
+  dozens of RAF-driven frames during playback, for constant-for-the-
+  whole-run inputs -- both purely mechanical `useMemo` fixes.**
+  `TradeReplay.tsx`'s own `endingBalanceDisplayValue` (feeding the
+  "Replay finished..." announcement) is now memoized on
+  `[endingBalance, startingCapital, displayStartingCapital]`. The
+  worst-case figure's own rescale moved location entirely as a side
+  effect of the `HeroAndWorstCase` restructuring below, and is now
+  memoized _there_ instead, on its own three real inputs.
+- **A one-off `capitalize()` helper in `TradeReplay.tsx` reinvented
+  exactly the class of verb-pair fragmentation `trade-math.ts`'s own
+  header comment already documents happening three times independently
+  before centralization.** Added a third verb-pair function there,
+  `tradeVerbsPastCapitalized` ("Bought"/"Sold" for a long,
+  "Shorted"/"Covered" for a short -- the one register neither the
+  existing `tradeVerbs` (capitalized present) nor `tradeVerbsPast`
+  (lowercase past) already covers), and `TradeReplay.tsx`'s own
+  `calloutText` now calls it instead of hand-capitalizing
+  `tradeVerbsPast`'s own output. Not independently unit-tested in
+  `trade-math.test.ts` -- consistent with how its two siblings are
+  tested today (only indirectly, via `TradeRow.test.tsx`/
+  `PortfolioChart.test.tsx`/`TradeReplay.test.tsx`'s own callout
+  assertions), not a gap specific to this addition.
+- **The very fix for the first round's "WorstCaseStat disappears during
+  playback" finding reintroduced the exact duplication
+  `HeroAndWorstCase` was extracted (that same round) to avoid.** That
+  fix stopped using `HeroAndWorstCase` entirely and hand-composed
+  `HeroStat`/`WorstCaseStat` directly in `TradeReplay.tsx` instead --
+  which solved the disappearing-`WorstCaseStat` bug, but meant
+  `TradeReplay.tsx` now carried its own hand-copied version of
+  `HeroAndWorstCase`'s own wrapper `className` and worst-case rescale
+  call, exactly the two-copies-to-keep-in-sync risk that component's own
+  doc comment already argues against. Fixed with a `heroSlot?: ReactNode`
+  prop on `HeroAndWorstCase` itself: when provided, it overrides only
+  the `HeroStat` half of the pairing; `WorstCaseStat` always renders
+  through the same unconditional code path regardless, with the same
+  wrapper markup, in every phase. `TradeReplay.tsx` now composes through
+  `HeroAndWorstCase` again, passing its own animated figure as
+  `heroSlot` only while playing (`undefined`, the default, otherwise) --
+  one wrapper implementation again, not two hand-kept-in-sync copies.
+  Worth the general lesson for this codebase specifically: a fix for one
+  finding can reintroduce a _different_, earlier-fixed finding as a side
+  effect if it isn't checked against the reasoning behind nearby existing
+  code, not just against its own acceptance criteria.
+- **Once the `heroSlot` restructuring above was in place, the
+  `replayRun` state and the `liveKey` string it fed turned out to be
+  dead code -- confirmed by reasoning through _why_, not just by
+  deleting them and seeing tests still pass.** `HeroStat`'s own slot
+  swaps between two different element types (`<HeroStat>` vs. a plain
+  `<div>`) depending on phase -- and _any_ element-type change at a JSX
+  position is already an unconditional fresh mount by React's own
+  reconciliation rules, independent of whether a `key` prop is present
+  or matches a prior value. That means every idle/done <-> playing
+  transition already forces `HeroStat` to fully unmount and remount for
+  free, with no explicit key needed at all -- including "Replay"
+  re-triggering a _second_ "done" landing after an intervening
+  "playing" (a `<div>`) render already tore down the first `HeroStat`
+  instance completely, so React has no "previous same-type instance"
+  left to reconcile against regardless of key value. The one case worth
+  double-checking before deleting the key entirely: a `points`-
+  reference-change reset (the first round's own fix, above) can take
+  `phase` directly from `"done"` to `"idle"` _without_ passing through
+  `"playing"` -- both of which render the _same_ element type
+  (`HeroAndWorstCase`'s own real `HeroStat`), so no type-swap remount
+  happens there. Whether that's actually a bug turns out to depend on
+  _why_ `points` changed: a starting-capital edit deliberately should
+  _not_ remount `HeroStat` (this app's own established "rescale
+  instantly, don't replay the reveal" convention, see the "Configurable
+  starting capital" section above) -- and doesn't need to, since
+  `displayStartingCapital`'s live rescale math already updates the
+  already-settled figure correctly in place; a mode switch genuinely
+  should remount it (a different trade sequence deserves a fresh
+  reveal) -- and does, because `heroKey` itself includes `mode` and
+  therefore already changes value on exactly that transition, forcing a
+  real key-mismatch remount with no `replayRun` counter needed. Both
+  cases land correctly with a bare, unsuffixed `key={heroKey}` -- so
+  `replayRun`/`liveKey` were never actually load-bearing for any
+  reachable case once this was traced through properly. Removed, along
+  with the doc-comment paragraph that described the mechanism as real.
+- **`findMatchingOpenPrice` did a fresh `O(n)` backward scan through
+  `points` from inside the RAF callback every time playback landed on a
+  close segment, instead of being resolved once during `buildSegments`'s
+  own existing single forward pass.** Folded into that forward pass: a
+  `lastOpenPrice` running variable, updated whenever an "open" event is
+  seen and stashed onto each close segment's own new `openPrice` field,
+  removing the separate backward-scan function entirely.
+  `replayEventFor` now takes only a `Segment` (no `points` parameter at
+  all), reading `segment.openPrice`/`segment.point` directly instead of
+  re-deriving either from the raw array -- a narrower, more clearly
+  test-shaped function than an unrelated `points` array pointer, even
+  though `points` itself remains genuinely necessary elsewhere in the
+  hook (`initialFrame`/`finalFrame` both still need it directly). Given
+  `points.length` here never exceeds roughly a dozen (3 trades, worst
+  case), this was never a _real_ performance problem -- worth doing
+  anyway for the interface-narrowing reason above, not because the old
+  O(n) rescan was actually slow in practice.
+- **A false positive, confirmed and dismissed rather than investigated
+  from scratch**: this round's own reviewer flagged the PR as bundling
+  unrelated changes (issue #14's closure, a `daysBeforeUtc` dedup) that
+  actually belong to a _different_, already-merged PR (#95, see the root
+  `CLAUDE.md`'s own commit history) -- a stale-`main` artifact on the
+  reviewer's own end (its local checkout predated #95's merge, so a diff
+  against that stale base spuriously included #95's already-landed
+  changes as if this PR introduced them). Confirmed via `gh pr diff 98
+--name-only` that this PR's own file scope was, and remained, exactly
+  its own ten files throughout both review rounds -- no root `CLAUDE.md`,
+  no `pipeline.ts`, no `packages/core/CLAUDE.md` ever touched here.
+  Worth the general process lesson: a review finding that claims a PR's
+  diff includes files nowhere in its own file list is itself the thing
+  to verify first (a quick `gh pr diff --name-only` check), not the
+  code -- cheap to rule out, and the actual root cause (a stale local
+  base, not a real scope problem) has nothing to do with the PR's own
+  changes at all.

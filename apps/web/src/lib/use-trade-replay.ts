@@ -10,7 +10,7 @@
 // open/close) this issue's own Background section calls out as "already
 // the exact data shape this feature needs to walk through."
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { easeOutCubic } from "./easing";
 import type { PortfolioEvent, PortfolioPoint } from "./portfolio-series";
@@ -24,10 +24,10 @@ export interface ReplayEvent {
   event: PortfolioEvent;
   /**
    * This trade's own return, computed from the matching prior "open"
-   * event's price (see findMatchingOpenPrice below) -- present only for
-   * a "close" event; `null` for an "open" event (nothing to compare
-   * against yet) and defensively if no matching open point is somehow
-   * found.
+   * event's price (precomputed once per close segment by buildSegments
+   * below) -- present only for a "close" event; `null` for an "open"
+   * event (nothing to compare against yet) and defensively if no
+   * matching open point is somehow found.
    */
   tradeReturn: TradeReturn | null;
 }
@@ -70,7 +70,7 @@ function initialFrame(points: readonly PortfolioPoint[]): ReplayFrame {
   };
 }
 
-/** The frame a completed (or aborted-to-completion) replay lands on -- every point revealed, the true final value, no active callout. Shared by `skipToEnd` and `tick`'s own defensive catch (see its doc comment) so both "jump to the end" paths agree on exactly the same shape. */
+/** The frame a completed (or aborted-to-completion) replay lands on -- every point revealed, the true final value, no active callout. Shared by `skipToEnd`, natural completion, and `tick`'s own defensive catch (see each call site) so every "reached the end" path agrees on exactly the same shape. */
 function finalFrame(points: readonly PortfolioPoint[]): ReplayFrame {
   const last = points[points.length - 1];
   return {
@@ -80,56 +80,60 @@ function finalFrame(points: readonly PortfolioPoint[]): ReplayFrame {
   };
 }
 
-/**
- * Scans backward from `closeIndex` for the nearest point carrying an
- * "open" event -- the trade this close event belongs to. Safe to assume
- * it's the *same* trade (not some earlier one) because
- * derivePortfolioSeries's own appendTradeSteps never interleaves trades:
- * each trade contributes its own open/flat/close points strictly in
- * sequence before the next trade's own points begin (see that module's
- * header comment).
- */
-function findMatchingOpenPrice(
-  points: readonly PortfolioPoint[],
-  closeIndex: number,
-): number | null {
-  for (let i = closeIndex - 1; i >= 0; i--) {
-    const event = points[i]!.event;
-    if (event?.type === "open") return event.price;
-  }
-  return null;
-}
-
 interface Segment {
   fromValue: number;
   toValue: number;
   toIndex: number;
+  point: PortfolioPoint;
   event: PortfolioEvent | null;
+  /**
+   * For a "close" event segment only: the matching prior "open" event's
+   * own price. Precomputed once here, in `buildSegments`'s existing
+   * single forward pass over `points` (tracking "the most recently seen
+   * open price" as it walks), rather than re-scanned backward through
+   * `points` from inside the RAF callback every time playback lands on
+   * a close segment (this hook's own earlier design -- a separate
+   * `findMatchingOpenPrice` backward scan called from `replayEventFor`).
+   * Safe to assume a close's own matching open is the *most recent* one
+   * seen, not some earlier trade's, because derivePortfolioSeries's own
+   * appendTradeSteps never interleaves trades: each trade contributes
+   * its own open/flat/close points strictly in sequence before the next
+   * trade's own points begin (see that module's header comment). `null`
+   * for a non-close segment, or defensively if no open event precedes
+   * this close at all.
+   */
+  openPrice: number | null;
 }
 
 function buildSegments(points: readonly PortfolioPoint[]): Segment[] {
   const segments: Segment[] = [];
+  let lastOpenPrice: number | null = null;
   for (let i = 1; i < points.length; i++) {
+    const point = points[i]!;
+    const event = point.event;
+    if (event?.type === "open") {
+      lastOpenPrice = event.price;
+    }
     segments.push({
       fromValue: points[i - 1]!.value,
-      toValue: points[i]!.value,
+      toValue: point.value,
       toIndex: i,
-      event: points[i]!.event,
+      point,
+      event,
+      openPrice: event?.type === "close" ? lastOpenPrice : null,
     });
   }
   return segments;
 }
 
-function replayEventFor(points: readonly PortfolioPoint[], segment: Segment): ReplayEvent | null {
+/** Builds this segment's own ReplayEvent (or `null` for a plain point with no event) purely from the segment's own precomputed fields -- no separate `points` lookup needed, unlike this hook's earlier design (see Segment's own `openPrice` doc comment). */
+function replayEventFor(segment: Segment): ReplayEvent | null {
   if (!segment.event) return null;
-  let tradeReturn: TradeReturn | null = null;
-  if (segment.event.type === "close") {
-    const openPrice = findMatchingOpenPrice(points, segment.toIndex);
-    if (openPrice !== null) {
-      tradeReturn = computeTradeReturn(openPrice, segment.event.price, segment.event.direction);
-    }
-  }
-  return { point: points[segment.toIndex]!, event: segment.event, tradeReturn };
+  const tradeReturn =
+    segment.event.type === "close" && segment.openPrice !== null
+      ? computeTradeReturn(segment.openPrice, segment.event.price, segment.event.direction)
+      : null;
+  return { point: segment.point, event: segment.event, tradeReturn };
 }
 
 export interface UseTradeReplayResult {
@@ -170,26 +174,42 @@ export interface UseTradeReplayResult {
  * can show a narrated callout -- a plain point with no event (the
  * mid-trade "flat" vertex, or the window's own start/end) is passed
  * straight through with no pause.
+ *
+ * `runId` is real React state (not a ref) specifically so `play()` is
+ * safe to call even while `phase` is already `"playing"` (not reachable
+ * via the shipped UI today -- the button that calls `play()` is hidden
+ * while playing -- but a real bug in this hook's own public API,
+ * code-review found and fixed): bumping `phase` from `"playing"` to
+ * `"playing"` again is a no-op by React's own `Object.is` bail-out, so
+ * without a second, always-genuinely-different value in the effect's
+ * dependency array, the effect below would never restart and no RAF
+ * loop would be left to advance the freshly-reset `frame`. Every
+ * `play()`/`skipToEnd()` call bumps `runId`, which *always* differs
+ * from its previous value, guaranteeing the effect's cleanup
+ * (`cancelAnimationFrame`) tears down any prior loop and a fresh one
+ * starts -- the same "force a restart via a real dependency, not a
+ * value that might legitimately repeat" fix use-trade-replay.ts's own
+ * points-reference reset (below) already relies on for a different
+ * trigger. No separate "is this tick stale?" check is needed inside
+ * `tick` any more either, now that every genuine restart is guaranteed
+ * to actually cancel the previous loop via the effect's own cleanup --
+ * the earlier `runIdRef`-based version needed that check only because a
+ * same-value `phase` update couldn't force a restart at all.
  */
 export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeReplayResult {
   const [phase, setPhase] = useState<ReplayPhase>("idle");
   const [frame, setFrame] = useState<ReplayFrame>(() => initialFrame(points));
-  // Bumped on every play()/skipToEnd() so a stale in-flight RAF loop from
-  // a *previous* play() (e.g. a fast Replay double-click) recognizes
-  // it's no longer current and stops scheduling further frames -- the
-  // same "ignore a stale response" shape use-results.ts's own fetch
-  // cancellation uses.
-  const runIdRef = useRef(0);
+  const [runId, setRunId] = useState(0);
 
   const play = useCallback(() => {
     if (points.length < 2) return;
-    runIdRef.current += 1;
+    setRunId((id) => id + 1);
     setFrame(initialFrame(points));
     setPhase("playing");
   }, [points]);
 
   const skipToEnd = useCallback(() => {
-    runIdRef.current += 1;
+    setRunId((id) => id + 1);
     setFrame(finalFrame(points));
     setPhase("done");
   }, [points]);
@@ -200,13 +220,11 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
   // unmounting `TradeReplay` -- treat it as a fresh mount rather than
   // silently rebuilding `segments` under the effect below while `frame`
   // still holds stale mid-playback values from the *old* points. The
-  // effect's own `[phase, points]` dependency array already restarts
-  // `segmentIndex`/`phaseStart` from scratch in that case regardless
-  // (and its cleanup's `cancelAnimationFrame` already stops the old
-  // points' in-flight loop before the new effect body ever runs, so
-  // there's no need to also bump `runIdRef` here -- doing that would
-  // mean writing a ref during render, which `react-hooks/refs` rightly
-  // flags); without this reset, `frame` wouldn't catch up until the next
+  // effect's own `[phase, points, runId]` dependency array already
+  // restarts `segmentIndex`/`phaseStart` from scratch in that case
+  // regardless (and its cleanup's `cancelAnimationFrame` already stops
+  // the old points' in-flight loop before the new effect body ever
+  // runs); without this reset, `frame` wouldn't catch up until the next
   // tick fires, and even then would resume mid-walk through data that no
   // longer matches what's on screen -- visibly snapping the chart/hero
   // backward and re-narrating an already-shown trade with no indication
@@ -232,7 +250,6 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
 
     const segments = buildSegments(points);
 
-    const runId = runIdRef.current;
     let frameId: number;
     let segmentIndex = 0;
     // "tween" (animating currentValue toward the segment's target) or
@@ -241,8 +258,6 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
     let phaseStart = performance.now();
 
     function tick(now: number) {
-      if (runIdRef.current !== runId) return; // superseded by a later play()/skipToEnd()
-
       // Defensive -- play() already guards points.length < 2 (so
       // segments.length >= 1) before ever setting phase to "playing",
       // but this check lives inside the RAF callback rather than
@@ -252,6 +267,7 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
       // use-count-up.ts's own identical reasoning for its own
       // reduced-motion branch.
       if (segments.length === 0) {
+        setFrame(finalFrame(points));
         setPhase("done");
         return;
       }
@@ -292,7 +308,7 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
         // caught by the existing boundaries as usual.
         let replayEvent: ReplayEvent | null;
         try {
-          replayEvent = replayEventFor(points, segment);
+          replayEvent = replayEventFor(segment);
         } catch (error) {
           console.error(
             "useTradeReplay: failed to compute a trade event mid-playback; skipping to the final state",
@@ -323,6 +339,18 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
 
       segmentIndex += 1;
       if (segmentIndex >= segments.length) {
+        // Natural completion must land on exactly the same frame shape
+        // skipToEnd/the corrupted-price catch above already produce
+        // (every point revealed, the true final value, no lingering
+        // activeEvent from whatever the last segment paused on) -- code
+        // review found this branch used to only setPhase("done"),
+        // leaving `frame.activeEvent` still set to the last trade's own
+        // close event whenever that close's date happened to equal the
+        // window's own end date (derivePortfolioSeries appends no
+        // trailing flat point in that case -- a realistic, not
+        // hypothetical, shape: the best trade in a 5Y/MAX window closing
+        // on the most recent trading day).
+        setFrame(finalFrame(points));
         setPhase("done");
         return;
       }
@@ -333,7 +361,7 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
 
     frameId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frameId);
-  }, [phase, points]);
+  }, [phase, points, runId]);
 
   return { phase, frame, play, skipToEnd };
 }

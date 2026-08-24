@@ -265,4 +265,82 @@ describe("useTradeReplay", () => {
     expect(consoleError).toHaveBeenCalledOnce();
     expect(raf.hasQueuedFrame()).toBe(false);
   });
+
+  it("natural completion resets activeEvent to null even when the last trade's close is the window's own final point (code review, issue #96 follow-up)", () => {
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+    const raf = createRafPump();
+
+    // Mirrors what derivePortfolioSeries produces when a trade's own
+    // closeDate equals the window's endDate -- it appends no trailing
+    // flat point in that case (see its own `if (!last || last.date !==
+    // endDate)` guard), so the close event is literally the array's
+    // last entry, with nothing after it to "fall through" to.
+    const NO_TRAILING_POINT: PortfolioPoint[] = [
+      { date: "2024-01-01", value: 20, event: null },
+      {
+        date: "2024-01-02",
+        value: 20,
+        event: { type: "open", direction: "long", ticker: "AAPL", price: 100 },
+      },
+      { date: "2024-01-05", value: 20, event: null },
+      {
+        date: "2024-01-05",
+        value: 40,
+        event: { type: "close", direction: "long", ticker: "AAPL", price: 200 },
+      },
+    ];
+
+    const { result } = renderHook(() => useTradeReplay(NO_TRAILING_POINT));
+
+    act(() => {
+      result.current.play();
+    });
+    raf.tick(1000);
+    raf.tick(1300); // pauses on the open event
+    raf.tick(1900); // pause elapses, flat vertex reached (no pause)
+    raf.tick(2200); // tween toward the close event
+    raf.tick(2500); // pauses on the close event -- activeEvent set here
+    raf.tick(3100); // pause elapses -- no more segments, natural completion
+
+    expect(result.current.phase).toBe("done");
+    expect(result.current.frame.revealedCount).toBe(NO_TRAILING_POINT.length);
+    expect(result.current.frame.currentValue).toBe(40);
+    // The real regression this test guards: without resetting the
+    // frame on natural completion, this would still be the close
+    // event's own ReplayEvent, left over from the tick(2500) pause.
+    expect(result.current.frame.activeEvent).toBeNull();
+  });
+
+  it("play() while already playing restarts the walk from the beginning -- not reachable via the shipped UI (the button that calls play() is hidden while playing), but a real hook-level API contract (code review, issue #96 follow-up)", () => {
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+    const raf = createRafPump();
+
+    const { result } = renderHook(() => useTradeReplay(ONE_TRADE_POINTS));
+
+    act(() => {
+      result.current.play();
+    });
+    raf.tick(1000);
+    raf.tick(1300); // paused on the open event, well into the walk
+    expect(result.current.frame.revealedCount).toBe(2);
+
+    // Calling play() again while already "playing" -- phase's own value
+    // doesn't change, so bailing out here only works if the hook forces
+    // the RAF effect to restart some other way (see use-trade-replay.ts's
+    // own `runId` doc comment).
+    act(() => {
+      result.current.play();
+    });
+
+    expect(result.current.phase).toBe("playing");
+    expect(result.current.frame.revealedCount).toBe(1);
+    expect(result.current.frame.currentValue).toBe(20);
+    expect(result.current.frame.activeEvent).toBeNull();
+
+    // A fresh RAF loop must actually be running afterward -- not just
+    // the frame state reset with nothing left to advance it.
+    raf.tick(1000);
+    raf.tick(1300);
+    expect(result.current.frame.activeEvent?.event.type).toBe("open");
+  });
 });

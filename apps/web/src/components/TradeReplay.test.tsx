@@ -175,4 +175,51 @@ describe("TradeReplay (issue #96)", () => {
     expect(screen.getByRole("button", { name: "Skip to end" })).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("the truncated chart is inert while playing, not just aria-hidden -- a focusable descendant (the SVG's own tabIndex, ChartDataTable's <summary>) must not be reachable at all -- and fully interactive again once live (code review, issue #96 follow-up)", async () => {
+    createRafPump();
+    const user = userEvent.setup();
+    const { container } = render(<TradeReplay {...BASE_PROPS} />);
+    // The svg's *grandparent*, not its parent -- PortfolioChart itself
+    // wraps the svg in its own "flex flex-col gap-3" div; the
+    // inert/aria-hidden wrapper is the one TradeReplay renders one
+    // level further out, around PortfolioChart as a whole.
+    const chartWrapper = () => container.querySelector("svg")!.parentElement!.parentElement!;
+
+    expect(chartWrapper().hasAttribute("inert")).toBe(false);
+    expect(chartWrapper().hasAttribute("aria-hidden")).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+
+    // Per the ARIA spec, aria-hidden must never wrap a focusable
+    // element -- inert is what actually removes the SVG's own
+    // tabIndex-driven focusability (and ChartDataTable's <summary>)
+    // from the tab order, not just from the accessibility tree.
+    expect(chartWrapper().hasAttribute("inert")).toBe(true);
+    expect(chartWrapper().getAttribute("aria-hidden")).toBe("true");
+
+    await user.click(screen.getByRole("button", { name: "Skip to end" }));
+
+    expect(chartWrapper().hasAttribute("inert")).toBe(false);
+    expect(chartWrapper().hasAttribute("aria-hidden")).toBe(false);
+  });
+
+  it("PortfolioChart's own DOM node never remounts across idle -> playing -> done -> replay transitions (no reveal-animation flash at those boundaries)", async () => {
+    createRafPump();
+    const user = userEvent.setup();
+    const { container } = render(<TradeReplay {...BASE_PROPS} />);
+    const currentSvg = () => container.querySelector("svg");
+
+    const svgAtIdle = currentSvg();
+    expect(svgAtIdle).not.toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+    expect(currentSvg()).toBe(svgAtIdle);
+
+    await user.click(screen.getByRole("button", { name: "Skip to end" }));
+    expect(currentSvg()).toBe(svgAtIdle);
+
+    await user.click(screen.getByRole("button", { name: "Replay" }));
+    expect(currentSvg()).toBe(svgAtIdle);
+  });
 });
