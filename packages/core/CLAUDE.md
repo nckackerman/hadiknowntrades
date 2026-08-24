@@ -1024,11 +1024,12 @@ section for the pipeline side of this).
   exact same day-count logic instead of a second copy -- `apps/pipeline`
   cannot be imported from `packages/core` (wrong dependency direction),
   so the promotion had to go this way, not the reverse. `pipeline.ts`'s
-  own private `daysBeforeUtc` is unchanged (still module-private,
-  duplicate logic, byte-for-byte identical) -- deduplicating it to import
-  the shared one instead is a free-standing, low-priority cleanup this
-  issue flagged but didn't do, not something this issue's own
-  correctness depends on.
+  own private `daysBeforeUtc` was left as a module-private duplicate when
+  this issue shipped (deduplicating it was flagged as a free-standing,
+  low-priority cleanup, not something this issue's own correctness
+  depended on) -- since fixed, in a later cleanup pass: `pipeline.ts` now
+  imports the shared `daysBeforeUtc` from `@hadiknowntrades/core` instead
+  of defining its own copy.
 - **Genuinely additive to the schema**: no shape change to
   `IntradayResult` or any nested type, `validateBase`'s range check is
   already a generic membership check against the live `PRESET_RANGES`
