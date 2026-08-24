@@ -112,13 +112,21 @@ export function DayOverview({ rows, selected, onSelect, maxTradesPerDay }: DayOv
   return (
     <div className="flex flex-col gap-1.5">
       <p className="text-sm text-[var(--text-secondary)]">
-        {rows.length} independently-computed trading day{rows.length === 1 ? "" : "s"} in this
-        range, each with up to {maxTradesPerDay} of its own same-day trades. Pick one below to see
-        its result.
+        {rows.length} trading day{rows.length === 1 ? "" : "s"} in this range, each with up to{" "}
+        {maxTradesPerDay} of its own same-day trades, starting from the previous day&apos;s real
+        result. Pick one below to see its result.
       </p>
       <ul className="flex max-h-72 flex-col gap-1 overflow-y-auto rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] p-1">
-        {rows.map((row) => {
+        {rows.map((row, i) => {
           const isSelected = row.date === selected;
+          // "Carried over from {date}" (issue #84) -- a purely structural,
+          // non-numeric note communicating that chaining happened, without
+          // leaking any dollar amount: the previous row's own *date* is
+          // already fully visible, ungated information (every row shows
+          // its date regardless of guess status), so naming it here
+          // reveals nothing new. Every row but the range's own first one
+          // gets this note.
+          const previousRow = i > 0 ? rows[i - 1] : null;
           return (
             <li key={row.date}>
               <button
@@ -132,7 +140,28 @@ export function DayOverview({ rows, selected, onSelect, maxTradesPerDay }: DayOv
                     : "text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)]"
                 }`}
               >
-                <span className="font-medium">{formatDate(row.date)}</span>
+                <span className="flex flex-col">
+                  <span className="font-medium">{formatDate(row.date)}</span>
+                  {previousRow && (
+                    // aria-hidden: purely a visual affordance -- each
+                    // row's own date is already independently accessible
+                    // (read in DOM order), so a screen reader user
+                    // tabbing through rows already hears the sequence of
+                    // consecutive dates without this note; including it
+                    // in this button's own accessible name would instead
+                    // fold a *different* row's date into it, breaking
+                    // exact-match accessible-name queries (this file's
+                    // own DayOverview.test.tsx and ResultsPanel.test.tsx
+                    // both rely on `getByRole("button", { name: ... })`
+                    // uniquely identifying one row by its own date).
+                    <span
+                      aria-hidden="true"
+                      className="text-xs font-normal text-[var(--text-muted)]"
+                    >
+                      carried over from {formatDate(previousRow.date)}
+                    </span>
+                  )}
+                </span>
                 <span className="text-[var(--text-muted)]">
                   {row.tradeCount} trade{row.tradeCount === 1 ? "" : "s"}
                 </span>

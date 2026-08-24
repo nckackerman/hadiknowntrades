@@ -1040,3 +1040,49 @@ section for the pipeline side of this).
   decision, the "why this is safe" correctness argument, and the file
   list TypeScript actually forces vs. what the issue's own text
   claimed) lives in `docs/plans/issue-60-plan.md`.
+
+## Chained per-day starting capital (issue #84) -- schema side
+
+`intraday-optimizer.ts`'s `IntradayWorstCaseResult`/`IntradayLongShortResult`
+each gain their own `startingCapital: number` field (**`RESULTS_SCHEMA_VERSION`
+bumps 6 -> 7**) -- see `docs/plans/issue-84-plan.md` sections 3/6.2 for the
+full "why" (a real, additive shape change: pre-chaining, every track shared
+one identical flat `startingCapital`, so only `IntradayDayResult`'s own
+top-level field was needed; once `apps/pipeline` chains each track
+independently -- see that package's own CLAUDE.md -- the worst/long-short/
+long-short-worst tracks' own capitals genuinely diverge and each needs its
+own field). `optimizeIntradayDays` itself is otherwise **unchanged** --
+every day it returns still carries the same flat `startingCapital` across
+all four tracks, exactly as before this issue; chaining is entirely a
+downstream `apps/pipeline` post-processing pass, not a change to this
+function's own contract (see its `OptimizeIntradayOptions.startingCapital`
+doc comment, updated to say so explicitly).
+
+- **`results-schema.ts` gains the first _cross-day_ write-time check this
+  codebase has ever needed** (`validateChainedStartingCapital`, called from
+  `validatePrecomputedResult`'s intraday branch) -- every prior check in
+  this file is purely per-day/per-field. For `i > 0`, checks
+  `days[i].startingCapital === days[i-1].endingBalance` for all four
+  tracks (long-only, worst, long-short, long-short-worst); for `i === 0`,
+  checks all four tracks' own `startingCapital` equal the range's own
+  root `startingCapital`. **Exact equality, not a tolerance-based check**
+  -- safe because `apps/pipeline`'s chaining pass literally copies the
+  previous day's already-computed `endingBalance` forward, no new
+  arithmetic runs in between to introduce float drift.
+- **The shared `validateWorstCaseResultWith`/`validateLongShortResultWith`
+  helpers (used by both the window model's `WorstCaseResult`/
+  `LongShortResult` and the intraday model's `IntradayWorstCaseResult`/
+  `IntradayLongShortResult`) deliberately do NOT check the new
+  `startingCapital` field** -- that field only exists on the intraday
+  shapes, not the window ones (window model is untouched by this issue,
+  never chained), so checking it in a function shared by both would be
+  wrong for the window-model call sites. `validateIntradayDay` checks it
+  separately, as small, mechanical additions right alongside the existing
+  per-day checks.
+- **Live-verified against real Yahoo data** (20 real tickers, no S3
+  write, all four per-day ranges): 0 chain-invariant violations and 0
+  cross-check (`worst <= optimal`, `longShort >= optimal`,
+  `longShort.worst <= worst`) violations across 5+21+62+250 = 338 real
+  chained trading days. See `apps/pipeline/CLAUDE.md`'s own "Chained
+  per-day starting capital" section for the pipeline-side implementation
+  and the same verification's full numbers.

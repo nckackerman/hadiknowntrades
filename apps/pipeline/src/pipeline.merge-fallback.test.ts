@@ -76,11 +76,20 @@ const BASE_DAY: IntradayDayResult = {
   endingBalance: 200,
   barIntervalMinutes: 60,
   trades: [trade("GOOD", 10, 100)],
-  worstCase: { endingBalance: 50, trades: [trade("GOOD", 100, 25)] },
+  worstCase: {
+    startingCapital: STARTING_CAPITAL,
+    endingBalance: 50,
+    trades: [trade("GOOD", 100, 25)],
+  },
   longShort: {
+    startingCapital: STARTING_CAPITAL,
     endingBalance: 220,
     trades: [trade("GOOD", 10, 110)],
-    worstCase: { endingBalance: 40, trades: [trade("GOOD", 100, 20)] },
+    worstCase: {
+      startingCapital: STARTING_CAPITAL,
+      endingBalance: 40,
+      trades: [trade("GOOD", 100, 20)],
+    },
   },
 };
 
@@ -102,11 +111,20 @@ const OVERRIDE_DAY: IntradayDayResult = {
   endingBalance: 100,
   barIntervalMinutes: 5,
   trades: [trade("OTHER", 10, 50)],
-  worstCase: { endingBalance: 65, trades: [trade("OTHER", 100, 92.85714285714286)] },
+  worstCase: {
+    startingCapital: STARTING_CAPITAL,
+    endingBalance: 65,
+    trades: [trade("OTHER", 100, 92.85714285714286)],
+  },
   longShort: {
+    startingCapital: STARTING_CAPITAL,
     endingBalance: 300,
     trades: [trade("OTHER", 100, 5)],
-    worstCase: { endingBalance: 60, trades: [trade("OTHER", 100, 84.61538461538461)] },
+    worstCase: {
+      startingCapital: STARTING_CAPITAL,
+      endingBalance: 60,
+      trades: [trade("OTHER", 100, 84.61538461538461)],
+    },
   },
 };
 

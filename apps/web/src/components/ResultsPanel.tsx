@@ -32,6 +32,7 @@ import { IntradayTradeList } from "@/components/IntradayTradeList";
 import { PortfolioChart } from "@/components/PortfolioChart";
 import { StartingCapitalInput } from "@/components/StartingCapitalInput";
 import { TradeList } from "@/components/TradeList";
+import { WholeRangeBalance } from "@/components/WholeRangeBalance";
 import { WorstCaseStat } from "@/components/WorstCaseStat";
 
 const RANGE_COPY: Record<PresetRange, string> = {
@@ -194,9 +195,29 @@ interface HeroAndWorstCaseProps {
    * model.
    */
   heroKey: string;
+  /** This *track's* own starting capital (the same track endingBalance below was computed from) -- HeroStat rescales endingBalance from this value, never from a different track's. */
   startingCapital: number;
   endingBalance: number;
   worstCaseEndingBalance: number;
+  /**
+   * The worst-case track's *own* starting capital (issue #84) -- separate
+   * from `startingCapital` above on purpose. Pre-chaining, every track
+   * shared one identical flat `startingCapital`, so a single prop could
+   * safely serve both `HeroStat` and `WorstCaseStat`'s rescale; once
+   * apps/pipeline chains each of the four tracks independently (see
+   * apps/pipeline/CLAUDE.md), the worst-case track's own chained capital
+   * can genuinely differ from the (best-case) `startingCapital` above,
+   * and rescaling `worstCaseEndingBalance` from the wrong track's capital
+   * would silently produce a wrong number -- see
+   * apps/web/CLAUDE.md's "Configurable starting capital" section (the
+   * `effectiveStartingCapital`-miss history) for the exact class of bug
+   * this field exists to prevent from recurring a fourth time. For the
+   * window model (WorstCaseResult/LongShortResult), which has no
+   * per-track startingCapital of its own (never chained -- see
+   * results-schema.ts), this is always identical to `startingCapital`
+   * itself; callers there just pass the same value twice.
+   */
+  worstCaseStartingCapital: number;
   /**
    * The user's chosen starting capital (issue #15) to display-rescale
    * both stats to -- defaults to `startingCapital` (a no-op ratio of 1)
@@ -225,6 +246,7 @@ function HeroAndWorstCase({
   startingCapital,
   endingBalance,
   worstCaseEndingBalance,
+  worstCaseStartingCapital,
   displayStartingCapital,
 }: HeroAndWorstCaseProps) {
   return (
@@ -239,7 +261,11 @@ function HeroAndWorstCase({
         startingCapital={displayStartingCapital}
         endingBalance={rescaleFromStartingCapital(
           worstCaseEndingBalance,
-          startingCapital,
+          // The worst-case track's own starting capital -- NOT
+          // `startingCapital` above (the best-case/hero track's), which
+          // can genuinely differ once tracks chain independently (issue
+          // #84). See worstCaseStartingCapital's own doc comment.
+          worstCaseStartingCapital,
           displayStartingCapital,
         )}
       />
@@ -338,6 +364,11 @@ function WindowResultBody({
             startingCapital={data.startingCapital}
             endingBalance={variant.endingBalance}
             worstCaseEndingBalance={variant.worstCase.endingBalance}
+            // The window model (WorstCaseResult/LongShortResult) has no
+            // per-track startingCapital of its own -- it's never chained
+            // (only the intraday-daily model is, issue #84), so every
+            // track always shares this same flat data.startingCapital.
+            worstCaseStartingCapital={data.startingCapital}
             displayStartingCapital={effectiveStartingCapital}
           />
           {onStartingCapitalChange && (
@@ -419,11 +450,28 @@ interface ResultsPanelProps {
    * The user's chosen starting dollar amount (issue #15) to rescale
    * every displayed dollar figure to -- omit (along with
    * onStartingCapitalChange) to fall back to whatever the precomputed
-   * result's own startingCapital already is, which keeps default
-   * rendering (and every existing caller/test that doesn't pass this)
-   * pixel-identical to before this prop existed. The input control
-   * itself only renders when onStartingCapitalChange is provided, the
-   * same optional-pair convention selectedDay/onSelectDay already uses.
+   * result's own startingCapital already is. The input control itself
+   * only renders when onStartingCapitalChange is provided, the same
+   * optional-pair convention selectedDay/onSelectDay already uses.
+   *
+   * **In the real deployed app this prop is never actually omitted** --
+   * ResultsPage.tsx always passes a real number from
+   * `useStartingCapital()` (defaults to $20, persisted) -- so the
+   * fallback below only matters for a caller/test that constructs
+   * `<ResultsPanel>` directly without it.
+   *
+   * **The fallback's own meaning changed once issue #84 shipped per-day
+   * chaining, worth being precise about**: pre-#84, every day's own
+   * `startingCapital` was the identical flat root constant, so omitting
+   * this prop always meant "show the raw $20 baseline, no rescale,"
+   * range-wide. Post-#84, `activeDay.startingCapital` (the intraday-daily
+   * branch's own fallback target) is itself a chained, day-varying real
+   * dollar amount -- omitting this prop still produces a mathematically
+   * correct no-op rescale (every figure renders exactly as the
+   * precomputed result already has it, the same literal promise this
+   * prop has always kept), but "as the precomputed result already has
+   * it" now means "as if this specific day started fresh at its own
+   * chained capital," not a flat $20 across every day.
    */
   startingCapital?: number;
   onStartingCapitalChange?: (value: number) => void;
@@ -451,6 +499,26 @@ export function ResultsPanel({
     if (days.length === 0) return null;
     return days.find((d) => d.date === selectedDay) ?? days[days.length - 1]!;
   }, [state, selectedDay]);
+
+  // The trading day immediately before activeDay in this range, if any
+  // (null for the range's own first day) -- used by DailyGuessForm's
+  // "carried over" framing (issue #84). A top-level useMemo, not a plain
+  // computation inside the intraday-daily render branch below (code
+  // review finding, fixed): an unmemoized `data.days.findIndex(...)`
+  // would redundantly re-scan the same array `activeDay`'s own useMemo
+  // above already scanned via `.find(...)`, on every ResultsPanel render
+  // -- including every StartingCapitalInput keystroke, the same
+  // "recomputes on every render, not just an actual day/mode/capital
+  // change" cost dayOverviewRows' own doc comment above already
+  // documents fixing once for an analogous per-day scan.
+  const previousDay = useMemo(() => {
+    if (state.status !== "success" || state.data.model !== "intraday-daily" || !activeDay) {
+      return null;
+    }
+    const { days } = state.data;
+    const activeDayIndex = days.findIndex((d) => d.date === activeDay.date);
+    return activeDayIndex > 0 ? days[activeDayIndex - 1]! : null;
+  }, [state, activeDay]);
 
   // Memoized so PortfolioChart's own useMemo (keyed on this array's
   // reference) doesn't get defeated by a fresh `points` array on every
@@ -550,13 +618,21 @@ export function ResultsPanel({
     return days.map((day) => {
       const variant = selectVariant<IntradayTrade>(day, day.longShort, mode);
       const alreadyGuessed = range !== null && getDailyGuess(range, day.date, mode) !== null;
+      // This day's own mode-selected track's own startingCapital --
+      // NOT day.startingCapital unconditionally, which is only correct
+      // under mode "long". Under "long-short", day.longShort now carries
+      // its own chained startingCapital (issue #84) that can genuinely
+      // differ from day.startingCapital's -- see
+      // apps/web/CLAUDE.md's "Configurable starting capital" section.
+      const variantStartingCapital =
+        mode === "long" ? day.startingCapital : day.longShort.startingCapital;
       return {
         date: day.date,
         tradeCount: variant.trades.length,
         endingBalance: alreadyGuessed
           ? rescaleFromStartingCapital(
               variant.endingBalance,
-              day.startingCapital,
+              variantStartingCapital,
               effectiveStartingCapital,
             )
           : null,
@@ -610,13 +686,69 @@ export function ResultsPanel({
     const dayVariant = selectVariant<IntradayTrade>(activeDay, activeDay.longShort, mode);
     const isEmptyDay = dayVariant.trades.length === 0;
     const effectiveStartingCapital = startingCapital ?? activeDay.startingCapital;
+    // This day's own mode-selected track's own startingCapital, and that
+    // same track's own nested worst-case startingCapital (issue #84) --
+    // NOT activeDay.startingCapital unconditionally, which is only the
+    // correct "from" value under mode "long". Under "long-short",
+    // activeDay.longShort (and its own nested worstCase) now carry their
+    // own independently-chained startingCapital, which can genuinely
+    // differ from activeDay.startingCapital's -- see
+    // HeroAndWorstCaseProps' own worstCaseStartingCapital doc comment.
+    const dayStartingCapital =
+      mode === "long" ? activeDay.startingCapital : activeDay.longShort.startingCapital;
+    const dayWorstCaseStartingCapital =
+      mode === "long"
+        ? activeDay.worstCase.startingCapital
+        : activeDay.longShort.worstCase.startingCapital;
+
+    // previousDay itself is computed once, unconditionally, above (a
+    // top-level useMemo alongside activeDay -- see its own comment
+    // there) -- used both by DailyGuessForm's "carried over" framing
+    // below and (indirectly, via DayOverview's own rows) by that
+    // component's per-row note (issue #84's acceptance criteria:
+    // visibly communicate that a day's starting point came from the
+    // previous day's real result, not a fresh reset).
 
     // dayOverviewRows itself is computed once, unconditionally, above
     // (a top-level useMemo alongside activeDay/points -- see its own
     // comment there for why it's hoisted out of this branch and memoized).
 
+    // The whole-range running-balance headline (issue #84's spoiler-fix
+    // design, see docs/plans/issue-84-plan.md section 4.2) -- locked
+    // until every day in the currently-viewed range has been
+    // individually guessed/revealed, checked by a simple count against
+    // dayOverviewRows (the same per-day guess data DayOverview's own
+    // rows already read). Deliberately count-gated, not order-gated: a
+    // user can still guess days in any order (issue #80's free-browsing
+    // design is untouched).
+    const revealedCount = dayOverviewRows.filter((row) => row.endingBalance !== null).length;
+    const finalDay = data.days.at(-1);
+    // The range's true final chained balance for whichever track `mode`
+    // currently selects, rescaled from the range's own root startingCapital
+    // -- deliberately NOT the per-day rescale pattern (variant.endingBalance
+    // paired with that *same day's own* startingCapital), which would
+    // algebraically cancel the chaining back out and silently show the
+    // "as if this day started fresh" figure instead of the real
+    // carried-over one. See apps/web/CLAUDE.md's "rescaleFromStartingCapital's
+    // per-day pattern silently cancels out..." section for the exact trap
+    // this call deliberately avoids -- do not "simplify" this to reuse
+    // that per-day pattern.
+    const wholeRangeFinalBalance = finalDay
+      ? rescaleFromStartingCapital(
+          selectVariant<IntradayTrade>(finalDay, finalDay.longShort, mode).endingBalance,
+          data.startingCapital,
+          effectiveStartingCapital,
+        )
+      : 0;
+
     return (
       <FadeInWrapper>
+        <WholeRangeBalance
+          revealedCount={revealedCount}
+          totalDays={data.days.length}
+          startingCapital={effectiveStartingCapital}
+          finalBalance={wholeRangeFinalBalance}
+        />
         <DayOverview
           rows={dayOverviewRows}
           selected={activeDay.date}
@@ -651,8 +783,14 @@ export function ResultsPanel({
             comment below), even though `guess` stays non-null across
             the switch and the date itself doesn't change -- without
             mode in the announcement text, that swap produced no DOM
-            mutation for assistive tech to notice at all. */}
-        <div role="status" aria-live="polite" className="sr-only">
+            mutation for assistive tech to notice at all.
+
+            aria-label disambiguates this region from WholeRangeBalance's
+            own sibling `role="status"` region below (issue #84) -- two
+            live regions on one page need distinguishing labels so both
+            assistive tech and `getByRole("status", {name: ...})` queries
+            can tell them apart. */}
+        <div role="status" aria-live="polite" aria-label="Day reveal status" className="sr-only">
           {guess !== null
             ? `Results revealed for ${formatDate(activeDay.date)} (${MODE_LABELS[mode].toLowerCase()}).`
             : ""}
@@ -674,6 +812,7 @@ export function ResultsPanel({
               <DailyGuessForm
                 date={activeDay.date}
                 startingCapital={effectiveStartingCapital}
+                previousDate={previousDay?.date ?? null}
                 onSubmit={(value) => submitGuess(value, effectiveStartingCapital)}
               />
             ) : (
@@ -695,9 +834,10 @@ export function ResultsPanel({
               // replay the reveal/celebration.
               <HeroAndWorstCase
                 heroKey={`${activeDay.date}-${mode}`}
-                startingCapital={activeDay.startingCapital}
+                startingCapital={dayStartingCapital}
                 endingBalance={dayVariant.endingBalance}
                 worstCaseEndingBalance={dayVariant.worstCase.endingBalance}
+                worstCaseStartingCapital={dayWorstCaseStartingCapital}
                 displayStartingCapital={effectiveStartingCapital}
               />
             )}

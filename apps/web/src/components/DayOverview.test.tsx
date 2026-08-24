@@ -34,6 +34,33 @@ describe("DayOverview", () => {
     expect(screen.getAllByText("Guess to reveal")).toHaveLength(2);
   });
 
+  it("intro copy reflects chaining, not independent per-day resets (issue #84)", () => {
+    render(
+      <DayOverview rows={ROWS} selected="2026-08-21" onSelect={vi.fn()} maxTradesPerDay={3} />,
+    );
+
+    expect(screen.getByText(/starting from the previous day's real result/i)).toBeInTheDocument();
+    expect(screen.queryByText(/independently-computed/i)).not.toBeInTheDocument();
+  });
+
+  it("marks every row but the range's own first day with a non-numeric 'carried over from {date}' note (issue #84) -- communicates chaining without leaking any dollar amount", () => {
+    render(
+      <DayOverview rows={ROWS} selected="2026-08-21" onSelect={vi.fn()} maxTradesPerDay={3} />,
+    );
+
+    // The range's own first day (2026-08-19) has no previous day to name,
+    // so only 2 of the 3 rows get a note.
+    const notes = screen.getAllByText(/carried over from/i);
+    expect(notes).toHaveLength(2); // one for Aug 20 (carried from Aug 19), one for Aug 21 (from Aug 20)
+    expect(notes[0]).toHaveTextContent("carried over from Aug 19, 2026");
+    expect(notes[1]).toHaveTextContent("carried over from Aug 20, 2026");
+    // No dollar amount anywhere in either note -- the whole point of this
+    // note is communicating *that* chaining happened, never *how much*.
+    for (const note of notes) {
+      expect(note).not.toHaveTextContent(/\$/);
+    }
+  });
+
   it("calls onSelect with the clicked row's date", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();

@@ -136,6 +136,7 @@ function validIntradayResult(): IntradayResult {
           },
         ],
         worstCase: {
+          startingCapital: 20,
           endingBalance: 15,
           trades: [
             {
@@ -150,6 +151,7 @@ function validIntradayResult(): IntradayResult {
           ],
         },
         longShort: {
+          startingCapital: 20,
           endingBalance: 45,
           trades: [
             {
@@ -163,6 +165,7 @@ function validIntradayResult(): IntradayResult {
             },
           ],
           worstCase: {
+            startingCapital: 20,
             endingBalance: 10,
             trades: [
               {

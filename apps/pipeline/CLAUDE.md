@@ -1205,52 +1205,64 @@ best, worst }` -- both `buildWindowResults` and `buildCustomWindowResults`
   JSON, confirming `validateCustomWindowResult`'s own longShort
   cross-checks pass at write time, not just an in-memory shape.
 
-## Per-day starting capital chaining (issue #84, plan-only as of this writing)
+## Per-day starting capital chaining (issue #84) -- shipped, current design
 
-`docs/plans/issue-84-plan.md` designs chaining `IntradayDayResult.startingCapital`/
-`endingBalance` across a range's own `days[]` (day N starts from day
-N-1's ending balance, retiring the #28-era "resets every day" design --
-see `intraday-optimizer.ts`'s own `OptimizeIntradayOptions.startingCapital`
-doc comment for that original call). Not yet implemented; the two facts
-below are worth knowing before touching `buildIntradayResults` for this
-or any future per-day-balance feature, since they're expensive to
-re-derive from the code alone:
+`chainStartingCapital` (`pipeline.ts`) chains `IntradayDayResult.startingCapital`/
+`endingBalance` across a range's own `days[]` (day N starts from day N-1's
+own ending balance, retiring the #28-era "resets every day" design -- see
+`intraday-optimizer.ts`'s own `OptimizeIntradayOptions.startingCapital` doc
+comment, updated to say chaining now happens as a downstream post-process,
+not inside that function). Applied independently per track (long-only best,
+worst, long-short best, long-short worst -- four separate running balances,
+not three, since `IntradayLongShortResult` itself carries both a best and a
+worst) and independently per range. The two design facts
+`docs/plans/issue-84-plan.md` worked out before implementation both held up
+unmodified once real code was written:
 
-- **Chaining cannot live inside `optimizeIntradayDays`, or before
-  `buildIntradayResults`'s per-range slice, or before the granularity-
-  override merge -- it has to be a new post-processing pass applied to
-  each range's _already-sliced, already-merged_ `days` array,
-  independently per range.** Two separate reasons, both load-bearing:
-  (1) `optimizeIntradayDays` runs **once** over the full fetched
-  history and its output is _sliced_ per range afterward (1W/1M/3M/1Y
-  are nested subsets of the same underlying day array, a deliberate
-  cost optimization -- see "Intraday path" above) -- each range needs
-  its _own_ chain starting fresh at the configured capital on _its own_
-  first day, which only exists once the range-specific slice has
-  already happened. (2) `mergeDayVariants`' own endingBalance
-  comparison (see "mergeDaysByGranularity and long+short" above) is
-  only valid because both sides of the comparison are solved with the
-  _same_ flat `startingCapital` -- if either granularity had already
-  chained independently before the merge, the comparison would silently
-  become apples-to-oranges (two different day subsets' own independently-
-  drifted capitals), breaking that function's "keeps whichever day's
-  outcome is actually higher" invariant. Net effect: `mergeDaysByGranularity`/
-  `mergeDayVariants` need **zero code changes** for chaining -- a real
-  scope-reduction finding, not an oversight.
-- **Every existing per-day write-time cross-check
-  (`worstCase.endingBalance <= endingBalance`,
-  `longShort.endingBalance >= endingBalance`,
-  `longShort.worstCase.endingBalance <= worstCase.endingBalance`)
-  survives independent per-track chaining, by induction, given all
-  tracks start from the same root capital on day 0 and the existing
-  same-day/same-capital ratio orderings already hold unconditionally --
-  a different, much simpler argument than `mergeDayVariants`' own
-  reciprocal-flip proof** (that proof was needed only because a
-  cross-_source_ merge combines two _different_ days' ratios; chaining
-  never does that, since each track's chain is built entirely from its
-  own day-by-day ratios in order). See the plan's own section 6.3 for
-  the full derivation -- not yet live-verified against real data or a
-  randomized brute-force check the way `mergeDayVariants`' own proof
-  eventually needed (that proof was wrong once before being corrected),
-  so treat this as a design-time argument to verify at implementation
-  time, not a settled fact.
+- **Chaining lives strictly after `buildIntradayResults`'s per-range slice
+  and the granularity-override merge, called on each range's own
+  already-sliced `days` array inside the `INTRADAY_RANGES.map` loop** --
+  see `chainStartingCapital`'s own doc comment for the full "why" (in
+  short: `optimizeIntradayDays` runs once over the full fetched history
+  and its output is shared/sliced across 1W/1M/3M/1Y, so it has no idea
+  which range(s) will later slice it and can't chain from "the right"
+  first day; and `mergeDayVariants`' own endingBalance comparison is only
+  valid when both sides were solved with the _same_ flat
+  `startingCapital`, which chaining before the merge would break). Net
+  effect confirmed in the real diff: `mergeDaysByGranularity`/
+  `mergeDayVariants` needed **zero code changes** for this issue.
+- **Every existing per-day write-time cross-check survives independent
+  per-track chaining** -- proven by induction in the plan (section 6.3),
+  and **now live-verified against real data, not just the design-time
+  argument**: a real local pipeline run (20 real tickers, real Yahoo
+  data, no S3 write) across all four per-day ranges (1W/1M/3M/1Y, 338
+  real chained trading days total) found **0 cross-check violations**
+  (`worst <= optimal`, `longShort >= optimal`, `longShort.worst <=
+worst`) and **0 chain-invariant violations** (every day N's own
+  `startingCapital`, per track, exactly equals day N-1's own
+  `endingBalance` for that same track; every range's own day 0 starts
+  all four tracks at the range's own root `startingCapital`). Real
+  numbers, one range (1M, 21 real trading days): long-only compounded
+  $20 -> $152.83 over the range while long-short compounded the _same_
+  window to $245.41 -- concrete confirmation the four tracks genuinely
+  drift apart from real market data, not just from hand-picked test
+  fixtures.
+- **`IntradayWorstCaseResult`/`IntradayLongShortResult` gained their own
+  `startingCapital` field** (`packages/core/src/intraday-optimizer.ts`,
+  `RESULTS_SCHEMA_VERSION` 6 -> 7) -- required for `chainStartingCapital`
+  to have anywhere to write each of the worst/long-short/long-short-worst
+  tracks' own chained capital; see `packages/core/CLAUDE.md`'s own
+  "Chained per-day starting capital" section for the schema/validation
+  side of this.
+- **`apps/web`'s `ResultsPanel.tsx` needed real call-site fixes, not just
+  a schema addition** -- two real call sites (`HeroAndWorstCase`'s
+  `WorstCaseStat` rescale under both modes; `HeroStat`/`dayOverviewRows`
+  under long+short mode specifically) were rescaling one track's
+  `endingBalance` from a _different_ track's `startingCapital`
+  (`activeDay.startingCapital`, the long-only track's, reused
+  unconditionally) -- harmless before chaining (every track shared one
+  flat value) but a real, silently-wrong-number bug once tracks diverge.
+  See `apps/web/CLAUDE.md`'s "Configurable starting capital" section for
+  the fix and why this is the _third_ time this exact class of mistake
+  (a component reading the wrong-track/un-threaded field instead of the
+  correct one) has bitten this codebase.

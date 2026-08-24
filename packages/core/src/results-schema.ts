@@ -23,7 +23,7 @@ import { isValidPrice } from "./is-valid-price";
 import { anchorDateToDate, type AnchorDate } from "./custom-range-anchors";
 
 /** Bumped whenever the shape of PrecomputedResult changes in a way a reader needs to know about. */
-export const RESULTS_SCHEMA_VERSION = 6;
+export const RESULTS_SCHEMA_VERSION = 7;
 
 /**
  * The S3 key a precomputed result is stored/read under for a given range.
@@ -435,10 +435,18 @@ type TradeValidator = (trade: unknown, path: string, problems: string[]) => void
  * Validates one worst-case result object -- `WorstCaseResult` embedded in
  * a `WindowResult.worstCase` field, or `IntradayWorstCaseResult` embedded
  * in an `IntradayDayResult.worstCase` field (see results-schema.ts's own
- * doc comment on those types). Both shapes are identical
- * (`endingBalance` + `trades`) and differ only in which per-trade shape
- * their `trades` array holds, so `validateTrade` for the window case is
+ * doc comment on those types). Both shapes share `endingBalance` +
+ * `trades`, checked here, and differ only in which per-trade shape their
+ * `trades` array holds, so `validateTrade` for the window case is
  * dependency-injected as `validateIntradayTrade` for the intraday case.
+ *
+ * **Since issue #84, `IntradayWorstCaseResult`/`IntradayLongShortResult`
+ * also carry their own `startingCapital` field that `WorstCaseResult`/
+ * `LongShortResult` (the window-model siblings) don't have** -- that
+ * field is intentionally NOT checked here, since this function is shared
+ * across both shapes; `validateIntradayDay` checks it separately, right
+ * alongside its own cross-day chaining check (see that function and
+ * `validateChainedStartingCapital` below).
  */
 function validateWorstCaseResultWith(
   value: unknown,
@@ -652,6 +660,16 @@ function validateIntradayDay(day: unknown, path: string, problems: string[]): vo
   if (worstCaseTrades !== undefined) {
     validateAllTradesAreLong(worstCaseTrades, `${path}.worstCase.trades`, problems);
   }
+  // This track's own chained starting capital (issue #84) -- see
+  // IntradayWorstCaseResult's own doc comment for why this field exists
+  // separately from the sibling IntradayDayResult.startingCapital above.
+  if (
+    !isPositiveFiniteNumber((d.worstCase as Record<string, unknown> | undefined)?.startingCapital)
+  ) {
+    problems.push(
+      `${path}.worstCase.startingCapital must be a positive finite number, got ${describe((d.worstCase as Record<string, unknown> | undefined)?.startingCapital)}`,
+    );
+  }
 
   // Long+short counterpart to this day's own long-only fields (issue #13).
   validateLongShortResultWith(d.longShort, `${path}.longShort`, problems, validateIntradayTrade);
@@ -668,6 +686,110 @@ function validateIntradayDay(day: unknown, path: string, problems: string[]): vo
     `${path}.longShort.worstCase.endingBalance`,
     problems,
   );
+  // This track's own chained starting capital (issue #84), and its
+  // nested worst-case counterpart's -- same reasoning as d.worstCase.startingCapital above.
+  if (!isPositiveFiniteNumber(longShort?.startingCapital)) {
+    problems.push(
+      `${path}.longShort.startingCapital must be a positive finite number, got ${describe(longShort?.startingCapital)}`,
+    );
+  }
+  if (
+    !isPositiveFiniteNumber(
+      (longShort?.worstCase as Record<string, unknown> | undefined)?.startingCapital,
+    )
+  ) {
+    problems.push(
+      `${path}.longShort.worstCase.startingCapital must be a positive finite number, got ${describe((longShort?.worstCase as Record<string, unknown> | undefined)?.startingCapital)}`,
+    );
+  }
+}
+
+/**
+ * The four per-track "chained starting capital" checks (issue #84) --
+ * the first cross-*day* validation this codebase has ever needed (every
+ * check above this function is purely per-day/per-field). Once
+ * apps/pipeline chains balances across a range's `days[]` (see that
+ * package's own CLAUDE.md), each day's own `startingCapital` (and its
+ * worst/longShort/longShort.worstCase siblings) is no longer an
+ * independent value to range-check in isolation -- it must equal exactly
+ * the *previous* day's own `endingBalance` for that same track, and day
+ * 0 of the range must start from the range's own root `startingCapital`.
+ *
+ * **Exact equality is safe and intentional here, not a tolerance-based
+ * check**: apps/pipeline's chaining pass literally copies the previous
+ * day's already-computed `endingBalance` forward as the next day's
+ * `startingCapital` -- no new arithmetic runs in between that could
+ * introduce float drift (see docs/plans/issue-84-plan.md section 6.4).
+ *
+ * Only compares two values once both are already known-valid positive
+ * finite numbers (same "don't pile a second, redundant problem onto an
+ * already-reported malformed value" posture `validateOrdering` above
+ * uses) -- a day that failed its own per-day `startingCapital`/
+ * `endingBalance` check already has a problem recorded for it; this
+ * function doesn't also report a confusing chaining mismatch built on
+ * top of a value already known to be garbage.
+ */
+function validateChainedStartingCapital(days: unknown[], problems: string[]): void {
+  const dayAt = (i: number): Record<string, unknown> | undefined => {
+    const day = days[i];
+    return day !== null && typeof day === "object" ? (day as Record<string, unknown>) : undefined;
+  };
+  const worstCaseOf = (
+    day: Record<string, unknown> | undefined,
+  ): Record<string, unknown> | undefined => {
+    const w = day?.worstCase;
+    return w !== null && typeof w === "object" ? (w as Record<string, unknown>) : undefined;
+  };
+  const longShortOf = (
+    day: Record<string, unknown> | undefined,
+  ): Record<string, unknown> | undefined => {
+    const ls = day?.longShort;
+    return ls !== null && typeof ls === "object" ? (ls as Record<string, unknown>) : undefined;
+  };
+
+  const checkChain = (actualStart: unknown, expectedStart: unknown, path: string): void => {
+    if (
+      isPositiveFiniteNumber(actualStart) &&
+      isPositiveFiniteNumber(expectedStart) &&
+      actualStart !== expectedStart
+    ) {
+      problems.push(
+        `${path} (${actualStart}) must equal the previous day's own ending balance (${expectedStart}) once chained (issue #84)`,
+      );
+    }
+  };
+
+  for (let i = 0; i < days.length; i++) {
+    const day = dayAt(i);
+    const worst = worstCaseOf(day);
+    const longShort = longShortOf(day);
+    const longShortWorst = worstCaseOf(longShort);
+    const path = `days[${i}]`;
+
+    if (i === 0) continue; // day 0's root-capital check is done by the caller, against result.startingCapital.
+
+    const prevDay = dayAt(i - 1);
+    const prevWorst = worstCaseOf(prevDay);
+    const prevLongShort = longShortOf(prevDay);
+    const prevLongShortWorst = worstCaseOf(prevLongShort);
+
+    checkChain(day?.startingCapital, prevDay?.endingBalance, `${path}.startingCapital`);
+    checkChain(
+      worst?.startingCapital,
+      prevWorst?.endingBalance,
+      `${path}.worstCase.startingCapital`,
+    );
+    checkChain(
+      longShort?.startingCapital,
+      prevLongShort?.endingBalance,
+      `${path}.longShort.startingCapital`,
+    );
+    checkChain(
+      longShortWorst?.startingCapital,
+      prevLongShortWorst?.endingBalance,
+      `${path}.longShort.worstCase.startingCapital`,
+    );
+  }
 }
 
 /** A short, safe-to-embed-in-an-error-message description of an arbitrary value, for validation failure messages. */
@@ -896,6 +1018,36 @@ export function validatePrecomputedResult(result: PrecomputedResult): void {
       problems.push(`days must be an array, got ${describe(r.days)}`);
     } else {
       r.days.forEach((day, i) => validateIntradayDay(day, `days[${i}]`, problems));
+      // Cross-day chaining (issue #84) -- see validateChainedStartingCapital's
+      // own doc comment for why this is a new category of check.
+      validateChainedStartingCapital(r.days, problems);
+      // Day 0 of the range starts every track from the range's own root
+      // startingCapital (all four tracks identically, by this chaining
+      // design's own construction -- see docs/plans/issue-84-plan.md
+      // section 6.2).
+      const day0 = r.days[0];
+      if (day0 !== null && typeof day0 === "object") {
+        const d0 = day0 as Record<string, unknown>;
+        const d0Worst = d0.worstCase as Record<string, unknown> | undefined;
+        const d0LongShort = d0.longShort as Record<string, unknown> | undefined;
+        const d0LongShortWorst = d0LongShort?.worstCase as Record<string, unknown> | undefined;
+        const rootCapital = r.startingCapital;
+        const checkRoot = (actual: unknown, path: string): void => {
+          if (
+            isPositiveFiniteNumber(actual) &&
+            isPositiveFiniteNumber(rootCapital) &&
+            actual !== rootCapital
+          ) {
+            problems.push(
+              `${path} (${actual}) must equal the range's own root startingCapital (${rootCapital}) on day 0 once chained (issue #84)`,
+            );
+          }
+        };
+        checkRoot(d0.startingCapital, "days[0].startingCapital");
+        checkRoot(d0Worst?.startingCapital, "days[0].worstCase.startingCapital");
+        checkRoot(d0LongShort?.startingCapital, "days[0].longShort.startingCapital");
+        checkRoot(d0LongShortWorst?.startingCapital, "days[0].longShort.worstCase.startingCapital");
+      }
     }
   } else {
     problems.push(`model must be "window" or "intraday-daily", got ${describe(r.model)}`);
