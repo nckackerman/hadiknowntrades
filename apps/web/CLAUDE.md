@@ -2660,6 +2660,23 @@ ranges (5Y/MAX) are untouched -- they never had guessing at all.
   `endingBalance` figures unconditionally too (`DayOverviewRow.endingBalance`
   is now a plain `number`, not `number | null` -- no more "Guess to
   reveal" placeholder).
+
+  **A known, accepted trade-off, not an oversight** (raised in this
+  issue's own `high` code review, and explicitly decided by the user
+  rather than fixed unilaterally): every row's real dollar figure lets a
+  sufficiently motivated user multiply each day's own implied ratio
+  together and back out `WholeRangeBalance`'s exact "protected" final
+  answer without ever submitting a guess -- precisely the reconstruction
+  risk this file's own "Chained per-day starting capital" section
+  documents as the reason the pre-#91 design was count-gated in the
+  first place. Decided to ship anyway: the point of this issue was
+  removing per-day guessing _interaction_ tedium, not information-hiding
+  rigor, and multiplying out 5-20+ per-day ratios by hand is real
+  friction essentially no one will bother with. If this ever needs
+  revisiting, the fix would be obscuring `DayOverview`'s own dollar
+  figures (e.g. a gain/loss direction indicator instead of the exact
+  amount) rather than re-gating the rows behind a guess again.
+
 - **`WholeRangeBalance.tsx` is the page's one remaining guess-then-reveal control**, independent of any per-day state. It shows a guess form ("Before you look: starting from $X, riding {range} start to finish... what do you think it became?") until the user submits a guess, then shows the real dollar figures plus their own guessed amount.
 
   The storage backing it is two new modules, both keyed by the pair (range, mode): `range-guess-storage.ts` for the plain read/write functions, `use-range-guess.ts` for the React hook wrapping them. That's a simpler key than the deleted per-day `daily-guess-storage.ts` needed -- no date at all, since there's exactly one guess per range now, not one per (range, date, mode) triple.
