@@ -530,12 +530,17 @@ describe("useTradeReplay", () => {
       expect(result.current.rewindDate).toBe("Jun 15, 2024");
       expect(result.current.phase).toBe("rewinding");
 
-      // t=1 (700ms elapsed, REWIND_COMPLETE_NOW): lands exactly on the
-      // result's own start date (ONE_TRADE_POINTS[0].date) and
-      // auto-advances to "playing" on its own, with no further action
-      // needed from a caller.
+      // t=1 (700ms elapsed, REWIND_COMPLETE_NOW): auto-advances to
+      // "playing" on its own, with no further action needed from a
+      // caller. rewindDate is cleared to null on this exact same tick
+      // (code-review follow-up, real bug: this used to still render the
+      // fully-tweened target date, "Jan 1, 2024", for one tick -- and
+      // every tick thereafter throughout the whole subsequent
+      // trade-playback stretch -- contradicting rewindDate's own doc
+      // comment, which promises "null in every other phase" and
+      // "playing" is exactly such a phase).
       raf.tick(REWIND_COMPLETE_NOW);
-      expect(result.current.rewindDate).toBe("Jan 1, 2024");
+      expect(result.current.rewindDate).toBeNull();
       expect(result.current.phase).toBe("playing");
     });
 
