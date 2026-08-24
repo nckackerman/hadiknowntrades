@@ -111,6 +111,17 @@ const COUNT_UP_DURATION_MS = 1200;
 export const heroLabelClassName = "text-sm font-medium text-[var(--text-secondary)]";
 export const heroValueRowClassName =
   "flex flex-wrap items-baseline gap-3 text-[clamp(2.5rem,6vw,4rem)] font-semibold leading-none tracking-tight text-[var(--text-primary)]";
+// Same reasoning as the two exports above (code review, issue #96
+// follow-up round five) -- TradeReplay.tsx's playing-phase overlay needs
+// the exact same "(Nx)" multiplier badge this component always renders,
+// with the same gain/loss color threshold (`>= 1`, not the stricter `> `
+// that gates the celebration burst -- see this component's own doc
+// comment for why those two thresholds deliberately differ). Exported
+// rather than re-derived so the two badges can never drift apart.
+export const heroMultiplierClassName = "text-xl font-semibold sm:text-2xl";
+export function heroMultiplierColor(multiplier: number): string {
+  return multiplier >= 1 ? "var(--status-good)" : "var(--status-critical)";
+}
 
 export function HeroStat({
   startingCapital,
@@ -176,8 +187,8 @@ export function HeroStat({
           </span>
           <span className="sr-only">{formatHeroCurrency(displayedEndingBalance)}</span>
           <span
-            className="text-xl font-semibold sm:text-2xl"
-            style={{ color: isMultiplierGain ? "var(--status-good)" : "var(--status-critical)" }}
+            className={heroMultiplierClassName}
+            style={{ color: heroMultiplierColor(multiplier) }}
           >
             ({formatMultiplier(multiplier)})
           </span>

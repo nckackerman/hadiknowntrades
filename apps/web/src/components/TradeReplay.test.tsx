@@ -261,6 +261,30 @@ describe("TradeReplay (issue #96)", () => {
     expect(screen.getByText("Starting from")).not.toBe(heroCaptionBeforePlaying);
   });
 
+  it("shows the multiplier badge throughout idle -> playing -> done, never disappearing (code review, issue #96 follow-up round five)", async () => {
+    createRafPump();
+    const user = userEvent.setup();
+    render(<TradeReplay {...BASE_PROPS} />);
+
+    // BASE_PROPS is a $20 -> $40 result, a 2x multiplier -- present in
+    // HeroStat's own badge before playback starts.
+    expect(screen.getByText("(2x)")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+
+    // The playing-phase overlay must carry the exact same badge, not
+    // just the "$X -> $Y" figure -- this was the bug (the badge vanished
+    // for the whole playback run). Two matches while playing: the real
+    // (visually hidden, but still mounted) HeroStat's own badge, and the
+    // overlay's -- see HeroAndWorstCase.tsx's own heroSlot doc comment
+    // for why HeroStat stays mounted underneath the overlay.
+    expect(screen.getAllByText("(2x)").length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: "Skip to end" }));
+
+    expect(screen.getByText("(2x)")).toBeInTheDocument();
+  });
+
   it("PortfolioChart's own DOM node never remounts across idle -> playing -> done -> replay transitions (no reveal-animation flash at those boundaries)", async () => {
     createRafPump();
     const user = userEvent.setup();

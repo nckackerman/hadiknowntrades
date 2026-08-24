@@ -3749,3 +3749,60 @@ tsc --noEmit`, `pnpm build`, `pnpm test`, `pnpm format:check`) after
   real code change (worth remembering for the next debug-route cleanup:
   delete `.next` too, not just the route file itself, before trusting a
   typecheck run).
+
+### Code-review follow-up, round five -- one real bug, the rest left alone
+
+A fifth `high` review of the PR above, after the seven-, nine-, ten-, and
+eight-finding rounds already documented, found exactly one thing worth
+fixing -- everything else it raised was explicitly assessed by the
+reviewer itself as minor cleanup, not a correctness bug, and was
+deliberately left alone (four rounds is already more scrutiny than this
+feature needs).
+
+- **`TradeReplay.tsx`'s playing-phase hero overlay omitted the "(Nx)"
+  multiplier badge `HeroStat.tsx` always renders in the same row.** The
+  overlay only ever showed the tweening "$X -> $Y" dollar figures, so a
+  user viewing e.g. a big-multiplier result who clicked "Watch it happen"
+  saw the badge disappear for the whole ~3-6s playback, then pop back in
+  once phase returned to idle/done -- visually jarring for exactly the
+  results where the badge matters most. Fixed by computing the multiplier
+  the same way `HeroStat.tsx` does (`endingBalance / startingCapital`,
+  the real final figures -- deliberately _not_ tied to
+  `frame.currentValue`'s tween, matching `HeroStat`'s own badge, which
+  isn't tied to its count-up tween either) and rendering it with that
+  component's own formatting/threshold logic, following the same
+  extraction pattern round four already used for
+  `heroLabelClassName`/`heroValueRowClassName`: `HeroStat.tsx` now also
+  exports `heroMultiplierClassName` (the static text classes) and
+  `heroMultiplierColor(multiplier)` (the `>= 1` gain/loss threshold,
+  colored the same as `TradeRow.tsx`'s own per-trade return badge) --
+  `HeroStat` itself now calls these rather than hand-inlining the same
+  logic, so there's exactly one implementation instead of two kept in
+  sync by hand. `formatMultiplier` (`lib/format-currency.ts`) was already
+  exported and reused as-is; only the className/color piece needed a new
+  export. The multiplier is memoized (`useMemo` on
+  `[endingBalance, startingCapital]`) for the same reason the other
+  constant-per-run values in this file already are -- it re-renders on
+  every RAF-driven frame while playing, but the value itself never
+  changes across those frames.
+- **Regression-tested** in `TradeReplay.test.tsx`: a `$20 -> $40` (2x)
+  fixture asserts `(2x)` is present at idle, still present (two matches --
+  the real, visually-hidden `HeroStat`'s own badge plus the overlay's,
+  see `HeroAndWorstCase.tsx`'s own `heroSlot` doc comment for why
+  `HeroStat` stays mounted underneath the overlay) once playing, and
+  still present after landing on done.
+- **Live-verified** via the same throwaway-debug-route (a hardcoded
+  $20 -> $250, 12.5x/"13x"-displayed `WindowResult`-shaped fixture) plus
+  the documented no-root headless-Chromium workaround as every prior
+  round: a Playwright script sampled the badge's own text continuously
+  across the entire playback run (idle, ~15 samples ~300ms apart spanning
+  the full ~2.4s playback, and done) and confirmed `(13x)` present at
+  every single sample, never missing -- plus zero console/`pageerror`
+  events across the whole run. The debug route and the temporary
+  `playwright` devDependency were both reverted before committing, same
+  as every prior round; confirmed via `git status`/`git diff --stat`
+  showing no trace of either afterward. Re-ran all five routine checks
+  (lint, `next typegen && tsc --noEmit`, `pnpm build`, `pnpm test`,
+  `pnpm format:check`) green on the clean tree after cleanup, including
+  the `.next` cache clear round four's own note already flags as
+  necessary post-debug-route-deletion.

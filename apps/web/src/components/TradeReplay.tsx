@@ -8,7 +8,7 @@
 
 import { useMemo, type ReactNode } from "react";
 
-import { formatHeroCurrency, formatPercent } from "@/lib/format-currency";
+import { formatHeroCurrency, formatMultiplier, formatPercent } from "@/lib/format-currency";
 import { formatDateTime } from "@/lib/format-date";
 import type { PortfolioPoint } from "@/lib/portfolio-series";
 import { spansMultipleDays } from "@/lib/portfolio-series";
@@ -17,7 +17,12 @@ import { tradeVerbsPastCapitalized } from "@/lib/trade-math";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
 import { useTradeReplay, type ReplayEvent } from "@/lib/use-trade-replay";
 import { HeroAndWorstCase } from "@/components/HeroAndWorstCase";
-import { heroLabelClassName, heroValueRowClassName } from "@/components/HeroStat";
+import {
+  heroLabelClassName,
+  heroMultiplierClassName,
+  heroMultiplierColor,
+  heroValueRowClassName,
+} from "@/components/HeroStat";
 import { PortfolioChart } from "@/components/PortfolioChart";
 
 interface TradeReplayProps {
@@ -229,6 +234,25 @@ export function TradeReplay({
     [displayStartingCapital],
   );
 
+  // The "(Nx)" multiplier badge HeroStat.tsx always renders alongside the
+  // dollar figures (code-review finding, issue #96 follow-up round five)
+  // -- omitted from the very first version of this playing-phase overlay,
+  // so it visibly disappeared for the whole ~3-6s playback and popped
+  // back in once phase returned to idle/done. Computed the exact same way
+  // HeroStat.tsx computes its own (`endingBalance / startingCapital`, the
+  // real final figures -- deliberately *not* tied to `frame.currentValue`,
+  // matching HeroStat's own badge, which is never tied to its count-up
+  // tween either), and rendered with that component's own exported
+  // `heroMultiplierClassName`/`heroMultiplierColor` rather than
+  // re-deriving the formatting/threshold logic a second time. Memoized
+  // for the same reason as the other constant-per-run values above --
+  // this component re-renders on every RAF-driven frame while playing,
+  // but the multiplier itself never changes across those frames.
+  const multiplier = useMemo(
+    () => endingBalance / startingCapital,
+    [endingBalance, startingCapital],
+  );
+
   // Computed once per render, not twice (code-review finding, fixed) --
   // the sr-only status region and the visible callout paragraph below
   // both need this exact same sentence, and computing it independently
@@ -286,6 +310,12 @@ export function TradeReplay({
                     <span>{displayStartingCapitalFormatted}</span>
                     <span className="text-[var(--text-muted)]">→</span>
                     <span>{formatHeroCurrency(frame.currentValue)}</span>
+                    <span
+                      className={heroMultiplierClassName}
+                      style={{ color: heroMultiplierColor(multiplier) }}
+                    >
+                      ({formatMultiplier(multiplier)})
+                    </span>
                   </p>
                 </div>
               )
