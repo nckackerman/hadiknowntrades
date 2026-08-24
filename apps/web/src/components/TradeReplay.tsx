@@ -367,7 +367,7 @@ export function TradeReplay({
             duplicated this identical `flex items-center gap-3` div in
             both branches of the ternary below. */}
         <div className="flex items-center gap-3">
-          {phase === "rewinding" || phase === "playing" ? (
+          {!showLive ? (
             // Always available during the rewind intro beat or real
             // playback, regardless of `canReplay` -- see that variable's
             // own doc comment above for why this can't just reuse the
@@ -375,7 +375,16 @@ export function TradeReplay({
             // acceptance criterion: "Skip-to-end control works
             // identically whether triggered during this phase or during
             // trade playback" -- one shared button/handler for both,
-            // not a second control.
+            // not a second control. Reuses `showLive` (code-review
+            // follow-up, real gap: this used to independently re-derive
+            // `phase === "rewinding" || phase === "playing"`, the exact
+            // logical complement of `showLive` -- two independently-
+            // written expressions that must always stay opposites for
+            // the chart/hero to go non-live exactly when this button
+            // becomes available, with nothing enforcing that they do) --
+            // `!showLive` instead, so there's one definition of "is this
+            // an animated, non-live phase" instead of two kept in sync
+            // by hand.
             <button type="button" onClick={skipToEnd} className={buttonClassName}>
               Skip to end
             </button>

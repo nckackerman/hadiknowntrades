@@ -339,11 +339,25 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
     function tick(now: number) {
       const elapsed = now - startTime;
       const t = Math.min(elapsed / REWIND_MS, 1);
-      setRewindDate(formatEpochAsDate(tweenValue(startEpoch, targetEpoch, t)));
       if (t >= 1) {
+        // Clear rewindDate in this same tick, not just on some later
+        // setPhase("done")/points-change -- rewindDate's own doc comment
+        // promises "null in every other phase," and "playing" is exactly
+        // such a phase (code review follow-up, real bug: this branch used
+        // to call setRewindDate(...) with the fully-tweened target date
+        // and *then* setPhase("playing") on the same tick, leaving that
+        // stale string sitting in rewindDate for the entire subsequent
+        // trade-playback stretch -- TradeReplay.tsx only reads it while
+        // phase === "rewinding" so this was never visibly wrong in the
+        // shipped UI, but it's a real hook-level API contract gap, the
+        // same class this hook's own doc comment already treats as worth
+        // fixing regardless of shipped-UI reachability -- see the
+        // runId/idempotent-play() fix noted there).
+        setRewindDate(null);
         setPhase("playing");
         return;
       }
+      setRewindDate(formatEpochAsDate(tweenValue(startEpoch, targetEpoch, t)));
       frameId = requestAnimationFrame(tick);
     }
 

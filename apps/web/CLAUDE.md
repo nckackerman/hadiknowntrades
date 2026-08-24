@@ -3975,3 +3975,57 @@ one-line addition to the existing corrupted-price test asserting the
 same for that third call site. All five routine checks (lint, `next
 typegen && tsc --noEmit`, `pnpm build`, `pnpm test`, `pnpm format:check`)
 re-ran green after the fix.
+
+### Post-#97 follow-up -- two small findings from an independent `high` review of the merged PR
+
+A `high` review run _after_ the PR above had already merged (not part of
+its own pre-merge review rounds) found two more small, real things --
+both fixed on their own short follow-up PR, no new issue number (a
+small enough scope that filing one felt like overhead for this project's
+own stated process rigor).
+
+- **`rewindDate` wasn't actually cleared at the _natural_ transition
+  from `"rewinding"` to `"playing"` either -- only at the three
+  `setPhase("done")` sites the previous follow-up above already fixed.**
+  The rewind effect's own `tick(now)` used to call `setRewindDate(...)`
+  with the fully-tweened target date and _then_ `setPhase("playing")` on
+  the very same `t >= 1` tick -- so `rewindDate` held that stale
+  target-date string through the entire subsequent trade-playback
+  stretch (a real ~2-6s), not just for one frame, contradicting its own
+  doc comment's "`null` in every other phase" promise the same way the
+  previous follow-up's three `"done"` sites did. Currently latent --
+  `TradeReplay.tsx` only ever reads `rewindDate` while `phase ===
+"rewinding"` -- but the same "a real hook-level API contract gap is
+  worth fixing even when today's shipped UI can't observe it" reasoning
+  this hook's own doc comment already applies to the `runId`/idempotent-
+  `play()` fix (see the round-two entry under "Trade replay: `Watch it
+happen`" above) applies here too. Fixed by reordering the `t >= 1`
+  branch to `setRewindDate(null)` before `setPhase("playing")`, and
+  dropping the branch's own now-redundant intermediate
+  `setRewindDate(formatEpochAsDate(...))` call entirely (there's no
+  reason to render the fully-tweened value even for one frame once the
+  tick already knows it's leaving `"rewinding"` for good). The existing
+  "play() enters 'rewinding' before 'playing'..." test in
+  `use-trade-replay.test.ts` used to assert `rewindDate` equals the
+  fully-tweened date string (`"Jan 1, 2024"`) immediately after the tick
+  that lands on `"playing"` -- that assertion was itself pinned to the
+  bug, not the contract, so it's updated to assert `null` instead.
+- **`TradeReplay.tsx`'s "Skip to end" button visibility re-derived the
+  exact logical complement of `showLive` instead of using `!showLive`
+  directly.** `phase === "rewinding" || phase === "playing"` and
+  `showLive`'s own `phase === "idle" || phase === "done"` are two
+  independently-written expressions that happen to partition
+  `ReplayPhase`'s four values into the same two groups -- nothing
+  enforces they stay opposites. Genuinely low-severity today (that
+  four-value union is exhaustively covered by construction, and neither
+  expression has drifted since #96/#97 shipped), but a future edit to
+  `showLive` itself, or a new `ReplayPhase` value added to the state
+  machine, could silently desync the button's visibility from the
+  chart/hero's own live/non-live state with no compiler or test signal
+  pointing at the second copy. Fixed by using `!showLive` directly.
+- Both fixes verified via the existing test suite (updated as above for
+  the first) plus all five routine checks (lint, `next typegen && tsc
+--noEmit`, `pnpm build`, `pnpm test`, `pnpm format:check`) -- no new
+  live-browser verification pass, since neither change is observable in
+  the shipped UI today (the first is a latent hook-contract gap; the
+  second is a pure refactor to an already-exhaustive condition).
