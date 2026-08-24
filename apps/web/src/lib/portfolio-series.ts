@@ -30,6 +30,7 @@
 
 import type { IntradayTrade, Trade, TradeDirection } from "@hadiknowntrades/core";
 
+import { isPortfolioDatetime } from "./format-date";
 import { compoundBalance } from "./trade-math";
 
 /**
@@ -158,6 +159,23 @@ export function derivePortfolioSeries(
 }
 
 /**
+ * The calendar-day portion of a PortfolioPoint's `date` -- for a plain
+ * calendar date this is the date itself; for a datetime it's everything
+ * before the "T". Exported so callers besides spansMultipleDays below
+ * (PortfolioChart's chained-intraday x-axis positioning, issue #93) can
+ * group points by day without a second copy of this same slicing logic.
+ * Delegates the datetime-vs-plain-date check to format-date.ts's
+ * isPortfolioDatetime (a "code review found this reimplemented inline"
+ * fix on issue #93's own PR) rather than a second `date.includes("T")`
+ * -- that function's own doc comment already calls itself out as "the
+ * single canonical place this detection happens," specifically so two
+ * independent copies can't drift if the datetime format ever changes.
+ */
+export function calendarDayOf(date: string): string {
+  return isPortfolioDatetime(date) ? date.slice(0, date.indexOf("T")) : date;
+}
+
+/**
  * Whether a chart series spans more than one calendar day (issue #91) --
  * `true` for deriveWholeRangeIntradaySeries's own output (many days
  * chained together), `false` for a series covering a single day only.
@@ -170,10 +188,9 @@ export function derivePortfolioSeries(
  * regardless of this flag.
  */
 export function spansMultipleDays(points: readonly PortfolioPoint[]): boolean {
-  const dayOf = (date: string) => (date.includes("T") ? date.slice(0, date.indexOf("T")) : date);
   const first = points[0];
   if (!first) return false;
-  return points.some((p) => dayOf(p.date) !== dayOf(first.date));
+  return points.some((p) => calendarDayOf(p.date) !== calendarDayOf(first.date));
 }
 
 /**

@@ -16,6 +16,121 @@ export function buildTimeScale(domain: [number, number], range: [number, number]
 }
 
 /**
+ * x-positions for the window model (issue #93): a thin wrapper around
+ * buildTimeScale that derives its own domain from `timestamps` directly,
+ * so PortfolioChart's two x-position branches (this one, and
+ * buildChainedIntradayXPositions below) read as siblings with the same
+ * `(timestamps, range) => number[]` shape, rather than this one being an
+ * inline closure built ad hoc at the call site (found in code review:
+ * harder to read as "the unchanged old codepath" than a named function
+ * matching its sibling, and not independently unit-testable the way
+ * buildChainedIntradayXPositions is).
+ */
+export function buildWindowModelXPositions(
+  timestamps: readonly number[],
+  range: [number, number],
+): number[] {
+  const minTs = Math.min(...timestamps);
+  const maxTs = Math.max(...timestamps);
+  // A single-point series (e.g. a window with no trades and start ===
+  // end) still needs a non-zero domain to lay out -- pad by a day.
+  const dayMs = 24 * 60 * 60 * 1000;
+  const domain: [number, number] =
+    minTs === maxTs ? [minTs - dayMs, maxTs + dayMs] : [minTs, maxTs];
+  const timeScale = buildTimeScale(domain, range);
+  return timestamps.map((t) => timeScale(t));
+}
+
+/**
+ * Positions for a chained multi-day intraday series (issue #93): every
+ * distinct calendar day in `dayKeys` gets an equal-width slot across
+ * `range` -- ordinal *by day*, not by point -- and within a day, its own
+ * points are placed linearly by their real timestamp, proportional to
+ * that day's own first-to-last point span.
+ *
+ * Ordinal-by-day rather than plain ordinal-by-point (an earlier version
+ * of this fix, found wrong in code review): a day chained by
+ * deriveWholeRangeIntradaySeries produces a different number of points
+ * depending on how many trades happened -- 1 point for a no-trade day,
+ * up to 10 for a day at DEFAULT_MAX_TRADES_PER_DAY = 3 (appendTradeSteps
+ * pushes 3 points per trade, plus the day's own leading point). Spacing
+ * evenly *by point* would give a single busy day disproportionate pixel
+ * width purely because it has more plotted points -- on a 5-day range,
+ * one maxed-out day among four quiet ones could claim roughly 70% of the
+ * chart's width despite being 1 of 5 trading days, trading the original
+ * calendar-dead-time distortion this fix targets for a new
+ * trade-activity-count distortion instead of actually fixing anything.
+ * Giving every day an equal slot regardless of its own point count
+ * avoids that, while linear placement *within* a day's slot still
+ * reflects real intraday timing -- a single trading session has no
+ * market-closed gaps to compress, so real time is still the honest
+ * choice there.
+ *
+ * `dayKeys` and `timestamps` are parallel arrays, one entry per point (a
+ * point's calendar-day key and its real epoch-millisecond timestamp,
+ * respectively) -- both derived from the same points array by the
+ * caller, kept as plain arrays here so this stays unit-testable without
+ * PortfolioPoint's other fields.
+ */
+export function buildChainedIntradayXPositions(
+  dayKeys: readonly string[],
+  timestamps: readonly number[],
+  range: [number, number],
+): number[] {
+  const [r0, r1] = range;
+  if (dayKeys.length === 0) return [];
+  // A single point overall has no real span to lay out -- same "midpoint
+  // on a zero-span domain" fallback the other scales in this file use,
+  // and avoids the first/last-point pinning below (see it below)
+  // colliding on the same lone index.
+  if (dayKeys.length === 1) return [(r0 + r1) / 2];
+
+  // Each day's own [min, max] timestamp, to normalize its points into a
+  // [0, 1] fraction of that day's slot -- and, below, to order days
+  // themselves chronologically rather than by first-appearance in
+  // `dayKeys` (found in code review: assigning slot order by
+  // first-appearance alone means a day that isn't sorted/contiguous in
+  // the input -- a future pipeline bug, not something today's one real
+  // caller, deriveWholeRangeIntradaySeries, produces -- could silently
+  // scramble slot order with no crash; sorting by each day's own min
+  // timestamp closes that regardless of input order).
+  const dayMin = new Map<string, number>();
+  const dayMax = new Map<string, number>();
+  dayKeys.forEach((key, i) => {
+    const ts = timestamps[i]!;
+    dayMin.set(key, Math.min(dayMin.get(key) ?? ts, ts));
+    dayMax.set(key, Math.max(dayMax.get(key) ?? ts, ts));
+  });
+
+  const orderedDays = [...dayMin.keys()].sort((a, b) => dayMin.get(a)! - dayMin.get(b)!);
+  const dayIndex = new Map(orderedDays.map((key, i) => [key, i]));
+  const totalDays = orderedDays.length;
+  const slotWidth = (r1 - r0) / totalDays;
+
+  const positions = dayKeys.map((key, i) => {
+    const slotStart = r0 + dayIndex.get(key)! * slotWidth;
+    const min = dayMin.get(key)!;
+    const max = dayMax.get(key)!;
+    // A day with only one point (no trades that day) has no real span to
+    // interpolate across -- center it in its slot, the same "midpoint on
+    // a zero-span domain" fallback buildTimeScale/buildLogScale use.
+    const fraction = min === max ? 0.5 : (timestamps[i]! - min) / (max - min);
+    return slotStart + fraction * slotWidth;
+  });
+
+  // The series' very first and last points are pinned exactly to r0/r1,
+  // overriding the centered placement above when the first or last day
+  // happens to be a single-point (no-trade) day -- otherwise the line
+  // (and PortfolioChart's own start/end axis labels, which are always
+  // pinned to the plot's edges regardless of where a point actually
+  // lands) would visibly stop short of the chart's edge.
+  positions[0] = r0;
+  positions[positions.length - 1] = r1;
+
+  return positions;
+}
+
+/**
  * A log10 scale for the value axis. Portfolio values here can span from
  * a $20 starting balance to an astronomically large "Max" range ending
  * balance (see packages/core/CLAUDE.md's note on ~$716M+ demo runs) --

@@ -1,6 +1,101 @@
 import { describe, expect, it } from "vitest";
 
-import { buildLogScale, buildTimeScale, niceLogTicks } from "./chart-scales";
+import {
+  buildChainedIntradayXPositions,
+  buildLogScale,
+  buildTimeScale,
+  buildWindowModelXPositions,
+  niceLogTicks,
+} from "./chart-scales";
+
+describe("buildChainedIntradayXPositions", () => {
+  it("gives every day an equal-width slot regardless of how many points that day has", () => {
+    // Day "a": 2 points. Day "b": 5 points (e.g. a day at
+    // DEFAULT_MAX_TRADES_PER_DAY). Day "c": 1 point. An earlier,
+    // per-point ordinal version of this fix would give "b" roughly 5/8 of
+    // the width; day-bucketing gives it the same 1/3 share as "a" and "c".
+    const dayKeys = ["a", "a", "b", "b", "b", "b", "b", "c"];
+    const timestamps = [100, 200, 300, 310, 320, 330, 340, 500];
+
+    const positions = buildChainedIntradayXPositions(dayKeys, timestamps, [0, 90]);
+
+    // Day "a" (slot [0, 30]): its own min/max points land exactly on the
+    // slot's edges.
+    expect(positions[0]).toBe(0);
+    expect(positions[1]).toBe(30);
+    // Day "b" (slot [30, 60]): 5 points, evenly interpolated by real
+    // timestamp within that same 30-wide slot -- not a wider one.
+    expect(positions[2]).toBe(30);
+    expect(positions[3]).toBeCloseTo(37.5, 5);
+    expect(positions[4]).toBeCloseTo(45, 5);
+    expect(positions[5]).toBeCloseTo(52.5, 5);
+    expect(positions[6]).toBe(60);
+    // Day "c" (slot [60, 90]): a single point, but it's also the series'
+    // very last point -- pinned to the range end (see below), not
+    // centered in its slot.
+    expect(positions[7]).toBe(90);
+  });
+
+  it("centers an interior single-point (no-trade) day in its own slot", () => {
+    const dayKeys = ["a", "a", "b", "c", "c"];
+    const timestamps = [0, 10, 15, 20, 30]; // "b" chronologically between "a" and "c"
+
+    const positions = buildChainedIntradayXPositions(dayKeys, timestamps, [0, 90]);
+
+    expect(positions).toEqual([0, 30, 45, 60, 90]);
+  });
+
+  it("pins the first and last point to the range edges even when the first or last day has only one point", () => {
+    const dayKeys = ["a", "b"];
+    const timestamps = [0, 1];
+
+    const positions = buildChainedIntradayXPositions(dayKeys, timestamps, [0, 90]);
+
+    expect(positions).toEqual([0, 90]);
+  });
+
+  it("returns the range midpoint for a single point overall", () => {
+    expect(buildChainedIntradayXPositions(["a"], [0], [0, 90])).toEqual([45]);
+  });
+
+  it("returns an empty array for no points", () => {
+    expect(buildChainedIntradayXPositions([], [], [0, 90])).toEqual([]);
+  });
+
+  it("orders day slots chronologically by each day's own timestamps, not by first appearance in dayKeys (code review regression)", () => {
+    // "x" and "y" are boundary days (array-first/last, so their own
+    // positions are always pinned to the range edges regardless of day
+    // order -- see the pinning test above -- and shouldn't be read as
+    // asserting anything about day-sort order). The two interior days,
+    // "b" and "a", appear in that order in dayKeys, but "a"'s own
+    // timestamp (50) is chronologically *before* "b"'s (100) -- their
+    // slots must reflect timestamp order (a's slot left of b's), not
+    // input order, or the line would render non-monotonically.
+    const dayKeys = ["x", "b", "a", "y"];
+    const timestamps = [0, 100, 50, 200];
+
+    const positions = buildChainedIntradayXPositions(dayKeys, timestamps, [0, 90]);
+
+    expect(positions).toEqual([0, 56.25, 33.75, 90]);
+    // The decisive check: "a" (earlier) sits left of "b" (later) despite
+    // appearing after it in dayKeys -- under the pre-fix first-appearance
+    // ordering, this would be reversed.
+    expect(positions[2]).toBeLessThan(positions[1]!);
+  });
+});
+
+describe("buildWindowModelXPositions", () => {
+  it("maps timestamps linearly across the range, proportional to real elapsed time", () => {
+    const positions = buildWindowModelXPositions([0, 250, 1000], [0, 100]);
+    expect(positions).toEqual([0, 25, 100]);
+  });
+
+  it("pads a single-point series by a day instead of collapsing to a zero-span domain", () => {
+    const dayMs = 24 * 60 * 60 * 1000;
+    const positions = buildWindowModelXPositions([dayMs * 10], [0, 100]);
+    expect(positions[0]).toBeCloseTo(50, 5);
+  });
+});
 
 describe("buildTimeScale", () => {
   it("maps the domain endpoints to the range endpoints", () => {

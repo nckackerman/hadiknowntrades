@@ -26,6 +26,118 @@ case. If you ever touch this function, keep (or add to) the test that
 asserts every returned tick is within `[min, max]` -- the original test
 suite didn't check that and let the bug ship.
 
+### X-axis: day-bucketed for chained intraday, linear time for the window model (issue #93)
+
+`PortfolioChart.tsx`'s x-axis used to be a single linear scale
+(`buildTimeScale`) over real epoch-millisecond timestamps for every
+series. That's a real problem for issue #91's whole-range intraday chart
+(`deriveWholeRangeIntradaySeries`, chaining many real per-day
+trading-hour timestamps): overnight (~73% of a day) and weekend (~65hr)
+market-closed stretches carry no data, but a linear time scale still
+gives them proportional pixel width -- most of the chart rendered as flat
+dead space, with actual trading activity crushed into thin slivers.
+
+Fixed by branching the x-scale on `isChainedIntradaySeries` (`includeDate
+&& isPortfolioDatetime(points[0].date)` -- `includeDate` alone isn't
+enough, since it's true for almost any real window-model result too, just
+because its points fall on different calendar dates):
+
+- **Chained multi-day intraday series** (datetime-labeled, multi-day):
+  `buildChainedIntradayXPositions` -- every distinct calendar day gets an
+  **equal-width slot** (ordinal _by day_), with points placed linearly
+  by real timestamp _within_ their own day's slot. Ordinal by day, not by
+  point (a real bug caught in code review on this issue's own PR, fixed
+  before merge): a day chained by `deriveWholeRangeIntradaySeries`
+  produces a different point count depending on how many trades happened
+  that day -- 1 point for a no-trade day, up to 10 at
+  `DEFAULT_MAX_TRADES_PER_DAY = 3` (`appendTradeSteps` pushes 3 points
+  per trade, plus the day's own leading point). An earlier version of
+  this fix spaced points evenly _by index_ across the whole series,
+  which gave a single busy day disproportionate width purely because it
+  has more plotted points -- on a 5-day range, one maxed-out day among
+  four quiet ones could claim roughly 70% of the chart's width despite
+  being 1 of 5 trading days, trading the original calendar-dead-time
+  distortion for a new trade-activity-count distortion instead of fixing
+  anything. Bucketing by day first (then placing a day's own points
+  linearly within its slot) avoids both problems: dead time between days
+  is gone, and a day's own trade count no longer skews how much width it
+  gets. The series' very first and last points are explicitly pinned to
+  the plot's edges (`buildChainedIntradayXPositions`' own doc comment
+  has the exact reasoning) -- otherwise a no-trade first or last day
+  (a single point, which would otherwise center in its slot) would leave
+  the line, and the start/end axis labels pinned to those same edges,
+  visibly not reaching the edge.
+- **Window model** (plain-date points, 5Y/Max): unchanged, still
+  `buildTimeScale`. This is a deliberate, considered choice, not an
+  oversight -- **don't extend day-bucketing here if this comes up
+  again.** The window model's points are sparse trade _events_ (window
+  start, each trade's open/close, window end), and the real elapsed time
+  between them is meaningful holding duration (a 3-day hold vs. a
+  3-year hold), not dead time. Evenly spacing them the way day-bucketing
+  does for intraday would misrepresent that duration, not fix anything.
+
+`revealNearestPoint`, keyboard `stepFocus`, the crosshair, the
+reveal-on-mount animation, the two-label (start/end) x-axis text, and
+`ChartDataTable` all needed zero changes -- they were already
+index/point-order-based, not pixel-time-based, so the branch is entirely
+contained to the scale-construction `useMemo`.
+
+Two more findings from this issue's own `high` code review, both fixed
+before merge:
+
+- **`buildChainedIntradayXPositions` orders day slots by each day's own
+  minimum timestamp, not by first appearance in `dayKeys`.** The first
+  version assigned slot order purely by which day it saw first while
+  scanning the input array -- fine as long as `dayKeys` arrives
+  chronologically sorted and each day is contiguous (which
+  `deriveWholeRangeIntradaySeries`, the one real caller today, always
+  produces), but nothing enforced that invariant, so a future pipeline
+  bug (a bad merge/backfill producing out-of-order or non-contiguous
+  days) could silently scramble slot order with no crash. Sorting by
+  each day's own min timestamp before assigning indices closes this
+  regardless of input order -- see `chart-scales.test.ts`'s own
+  regression test for a concrete before/after example.
+- **`calendarDayOf` (`portfolio-series.ts`) delegates to
+  `format-date.ts`'s `isPortfolioDatetime`** for its datetime-vs-plain-date
+  check, rather than a second `date.includes("T")` -- that function's own
+  doc comment already calls itself "the single canonical place this
+  detection happens" specifically so two copies can't drift.
+
+A third, smaller finding (the window-model x-position branch was an
+inline IIFE nested in a ternary, harder to read than a named sibling
+function) was also addressed: it's now `buildWindowModelXPositions` in
+`chart-scales.ts`, matching `buildChainedIntradayXPositions`'s
+`(timestamps, range) => number[]` shape and independently unit-tested.
+
+One review finding was heard but **not** acted on, a deliberate call:
+`isChainedIntradaySeries` infers series kind from data shape
+(`includeDate && isPortfolioDatetime(...)`) rather than an explicit kind
+the caller (`ResultsPanel.tsx`) already knows and could pass down. This
+is the same shape-sniffing pattern `isPortfolioDatetime`/`toTimestamp`/
+`formatDateTime` already used throughout this file before this issue --
+consistent with existing convention, not a new anti-pattern introduced
+here. Threading an explicit `seriesKind` prop through `PortfolioChart`
+and both `ResultsPanel.tsx` call sites would be a real, larger
+refactor of how series metadata flows through the component tree,
+out of proportion for this issue's actual scope (the x-axis dead-space
+problem). Worth doing if a genuinely ambiguous series shape ever shows
+up in practice -- not preemptively.
+
+Live-verified via before/after screenshots (a throwaway debug route per
+this file's own "Screenshotting a component locally" technique, plus a
+`git stash` of just the fix to capture the "before" state): a 5-trading-day
+chained series went from 4 of 5 days crushed into the left half of the
+chart with the 5th isolated far to the right, to all 5 days evenly spaced
+and individually readable. The window-model screenshot was pixel-identical
+in shape before/after (still a real-time-proportional ramp), confirming
+no regression there. (That live-verification screenshot predates the
+by-point -> by-day fix above, but the visual result -- 5 evenly-spaced
+days -- looks identical either way for a series where every day happens
+to have exactly one trade; the two approaches only diverge once a day's
+trade count differs from its neighbors', which is exactly what the
+`chart-scales.test.ts`/`PortfolioChart.test.tsx` regression tests for
+this fix now cover.)
+
 ## Headless-browser screenshot verification: possible without sudo (issue #36)
 
 Earlier note here said Playwright's Chromium fails to launch on missing
