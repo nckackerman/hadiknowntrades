@@ -7,12 +7,8 @@
 
 import { useEffect, useState } from "react";
 
+import { easeOutCubic } from "./easing";
 import { prefersReducedMotion } from "./prefers-reduced-motion";
-
-/** ease-out cubic: fast start, settles gently into the final value -- reads as a count "arriving," not a linear ticker. */
-function easeOutCubic(t: number): number {
-  return 1 - Math.pow(1 - t, 3);
-}
 
 /**
  * Animates a number counting up from `from` to `to` over `durationMs`

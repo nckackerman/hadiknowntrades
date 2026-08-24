@@ -2839,3 +2839,123 @@ ranges (5Y/MAX) are untouched -- they never had guessing at all.
   reading "Aug 14, 9:30 AM" -> "Aug 21, 1:30 PM" (confirming the
   `formatDateTime` fix above); and the mobile (390px) layout reflows
   cleanly with no horizontal overflow.
+
+## Trade replay: "Watch it happen" (issue #96)
+
+Opt-in, on-click playback of a window-model result's trades (5Y/MAX, and
+custom-window anchors -- any result rendered via `WindowResultBody`,
+`derivePortfolioSeries`'s points). Deliberately scoped to the window
+model only -- the intraday-daily whole-range chart (up to ~250 chained
+days) is a materially different scale/pacing problem, left to its own
+future issue per #96's own Out of scope. `lib/use-trade-replay.ts` is a
+small `idle -> playing -> done` state machine (mirroring `use-results.ts`'s
+own `ResultsState` shape) driven by one RAF loop, walking
+`portfolio-series.ts`'s already-existing `PortfolioPoint[]` --
+`TradeReplay.tsx` is the orchestrating component that swaps between the
+real hero row/chart and a truncated/interpolated view depending on phase.
+
+- **`HeroAndWorstCase` (previously private to `ResultsPanel.tsx`) is now
+  its own file, `components/HeroAndWorstCase.tsx`** -- `TradeReplay.tsx`
+  needed to render the exact same HeroStat + WorstCaseStat pairing for
+  its own "live" (idle/done) state, and duplicating that ~30-line wrapper
+  a second time would've been exactly the class of drift this codebase's
+  own `selectVariant`/`trade-math.ts` doc comments already warn against.
+  `ResultsPanel.tsx` now imports it instead of defining it locally; no
+  behavior change at either of its two existing call sites.
+- **The chart never interpolates a position between two points during
+  playback -- only the balance figure tweens, and that distinction is
+  deliberate, not an oversight.** `revealedCount` (how much of `points`
+  `PortfolioChart` is fed) always jumps in whole steps, straight from one
+  real precomputed point to the next; `currentValue` (the plain "$X ->
+  $Y" figure shown in place of `HeroStat` during playback) tweens between
+  a segment's two real endpoint values via the same ease-out-cubic curve
+  `useCountUp` uses (now `lib/easing.ts`, extracted from `use-count-up.ts`
+  once this became the second caller -- see that file's own note). Fixing
+  the chart at real points and only tweening the _display_ number is what
+  keeps this honest against `portfolio-series.ts`'s own "flat until
+  realized" model (no fabricated interim mark-to-market price) while
+  still giving the balance figure continuous motion -- the same "tween is
+  a display stylization of a real instantaneous value change, not a claim
+  about how the money literally moved" reasoning `useCountUp` already
+  relies on for `HeroStat`'s own reveal.
+- **A close event's own return is derived by scanning backward through
+  `points` for the nearest prior "open" event** (`findMatchingOpenPrice`),
+  not by threading the raw `Trade[]` array into the hook at all --
+  `derivePortfolioSeries`'s own `appendTradeSteps` never interleaves
+  trades (each trade's open/flat/close points always land strictly in
+  sequence before the next trade's own points begin), so this is safe
+  and keeps the hook working purely off the `PortfolioPoint[]` shape the
+  issue's own Background section calls out as "already the exact data
+  this feature needs," with no second data source to keep in sync.
+- **Reduced motion: the button doesn't render at all, not an instant
+  step-through equivalent** -- the same "skip the affordance entirely"
+  choice `should-celebrate.ts` (the celebration burst) and
+  `use-chart-tap-hint.ts` (the touch pulse hint) already make elsewhere
+  in this app, chosen over the acceptance criteria's other allowed option
+  for simplicity and consistency. Zero information loss either way: every
+  trade is already reachable via the always-present `TradeList`/
+  `ChartDataTable`, unaffected by this feature.
+- **A single `role="status" aria-live="polite"` region announces each
+  trade event once (mirroring its exact wording) and a final "Replay
+  finished. Ending balance $X." sentence** -- never a per-frame value,
+  the same trap this app's own "Client-side animation" section already
+  documents and avoids for `HeroStat`'s count-up. This falls out
+  naturally rather than needing special-casing: `frame.activeEvent` only
+  changes value at the discrete moments a real event is reached (it
+  holds steady for the whole `EVENT_PAUSE_MS` pause), so wiring the
+  region's text straight to it doesn't spam per-tick updates the way a
+  naive `aria-live` binding to `currentValue` would.
+- **Testing the multi-segment RAF loop needed a different mock shape than
+  `useCountUp`'s own single-tween tests use** -- `use-count-up.test.ts`'s
+  `mockImplementation((cb) => { cb(now); return 1; })` fires the callback
+  _immediately_ with one fixed `now`, which works for a lone tween (only
+  ever needs one resolved frame) but hangs a multi-segment machine: each
+  arrival resets its own internal `phaseStart` to whatever `now` the mock
+  just supplied, so an always-fires-immediately mock handing back the
+  same fixed `now` computes `elapsed = now - phaseStart = 0` for every
+  segment after the first, looping in the "not there yet" branch forever
+  (an infinite synchronous `requestAnimationFrame` recursion, not just a
+  slow test -- caught by actually running it, not reasoned about in
+  advance). Fixed with a small shared `lib/raf-pump.test-util.ts`
+  (`createRafPump()`, used by both `use-trade-replay.test.ts` and
+  `TradeReplay.test.tsx`): it only _queues_ the latest scheduled
+  callback, leaving it unfired until the test calls `tick(now)` with its
+  own chosen elapsed-time value -- same "pin `performance.now()`, control
+  `now` directly" approach as `use-count-up.test.ts`'s own tests,
+  generalized to more than one frame.
+- **Live-verified via the "Screenshotting a component locally" throwaway
+  debug-route technique** (a hardcoded 3-trade `WindowResult` fixture, no
+  `RESULTS_BUCKET`/AWS creds needed) plus the documented no-root headless-
+  Chromium workaround: confirmed the idle state (hero row + chart +
+  "Watch it happen" button, unchanged from before this issue), a
+  mid-playback pause on an open event (truncated chart, the interpolated
+  "$20.00 -> $20.00" figure, the "Bought SNDK on Aug 21, 2025 at
+  $45.50." callout, a "Skip to end" button), Skip to end landing on the
+  real final state with a fresh `HeroStat` count-up/glow replaying and a
+  "Replay" button, a full un-skipped playback reaching the same end
+  state on its own, and `prefers-reduced-motion` rendering zero buttons
+  with the real chart/hero shown instantly (no animation at all). No
+  console hydration warning appeared for any of these under normal
+  (non-reduced-motion) emulation.
+  - **One hydration warning did appear, but it's a debug-harness
+    artifact, not a real bug** -- found by combining Playwright's
+    `reducedMotion: "reduce"` context option with this debug route's
+    hardcoded `state={{status:"success", ...}}` prop (bypassing
+    `useResults`'s fetch state machine entirely, which in the _real_ app
+    always starts `"loading"` on both server and initial client render --
+    see this file's own "localStorage pattern" section for the general
+    shape of this precondition). That combination server-renders
+    `WindowResultBody`/`TradeReplay` at all -- a state real production
+    SSR never reaches, since the genuine app never has a `"success"`
+    state before the client-only fetch resolves -- with the server
+    computing `useReducedMotionAtMount()` as `false` (no `matchMedia`
+    during SSR) while the client's very first render already sees the
+    emulated `true`, mismatching `TradeReplay`'s own conditionally-
+    rendered button row. Confirmed this isn't new to issue #96: the
+    _same_ hardcoded-success-state harness already mismatches one level
+    up, on the pre-existing `FadeInWrapper`'s `results-fade-in` class
+    (visible earlier in the same error's diff), for the identical
+    reason. Worth remembering for the next debug-route verification that
+    combines a hardcoded `"success"` state with `reducedMotion: "reduce"`
+    context emulation -- expect this diff to show up and know it's not
+    an actual regression.
