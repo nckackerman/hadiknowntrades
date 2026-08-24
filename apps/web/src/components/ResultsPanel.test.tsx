@@ -147,6 +147,7 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
           },
         ],
         worstCase: {
+          startingCapital: 20,
           endingBalance: 12,
           trades: [
             {
@@ -163,6 +164,7 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
         // The long+short counterpart (issue #13) -- deliberately distinct
         // figures/tickers, so a test can tell which variant rendered.
         longShort: {
+          startingCapital: 20,
           endingBalance: 90,
           trades: [
             {
@@ -176,6 +178,7 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
             },
           ],
           worstCase: {
+            startingCapital: 20,
             endingBalance: 8,
             trades: [
               {
@@ -208,6 +211,7 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
           },
         ],
         worstCase: {
+          startingCapital: 20,
           endingBalance: 4,
           trades: [
             {
@@ -224,6 +228,7 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
         // The long+short counterpart (issue #13) -- deliberately distinct
         // figures/tickers, so a test can tell which variant rendered.
         longShort: {
+          startingCapital: 20,
           endingBalance: 400,
           trades: [
             {
@@ -237,6 +242,7 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
             },
           ],
           worstCase: {
+            startingCapital: 20,
             endingBalance: 2,
             trades: [
               {
@@ -682,11 +688,12 @@ describe("ResultsPanel", () => {
               endingBalance: 20,
               barIntervalMinutes: 60,
               trades: [],
-              worstCase: { endingBalance: 20, trades: [] },
+              worstCase: { startingCapital: 20, endingBalance: 20, trades: [] },
               longShort: {
+                startingCapital: 20,
                 endingBalance: 20,
                 trades: [],
-                worstCase: { endingBalance: 20, trades: [] },
+                worstCase: { startingCapital: 20, endingBalance: 20, trades: [] },
               },
             },
           ],
@@ -896,11 +903,11 @@ describe("ResultsPanel", () => {
         // The live region exists in the DOM before the reveal -- so
         // assistive tech has already registered it and will catch the
         // upcoming content change -- but carries no announcement yet.
-        expect(screen.getByRole("status")).toHaveTextContent("");
+        expect(screen.getByRole("status", { name: "Day reveal status" })).toHaveTextContent("");
 
         await submitAnyGuess(user);
 
-        expect(screen.getByRole("status")).toHaveTextContent(
+        expect(screen.getByRole("status", { name: "Day reveal status" })).toHaveTextContent(
           "Results revealed for Aug 21, 2026 (long only).",
         );
       });
@@ -912,13 +919,13 @@ describe("ResultsPanel", () => {
           <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />,
         );
         await submitAnyGuess(user);
-        expect(screen.getByRole("status")).toHaveTextContent(
+        expect(screen.getByRole("status", { name: "Day reveal status" })).toHaveTextContent(
           "Results revealed for Aug 21, 2026 (long only).",
         );
 
         rerender(<ResultsPanel range="1M" state={state} selectedDay="2026-08-20" />);
 
-        expect(screen.getByRole("status")).toHaveTextContent("");
+        expect(screen.getByRole("status", { name: "Day reveal status" })).toHaveTextContent("");
       });
 
       it("does not wire the announcement to HeroStat's per-frame animating figure -- it stays a static sentence even mid-tween (issue #67)", async () => {
@@ -936,7 +943,7 @@ describe("ResultsPanel", () => {
 
         await submitAnyGuess(user);
 
-        expect(screen.getByRole("status")).toHaveTextContent(
+        expect(screen.getByRole("status", { name: "Day reveal status" })).toHaveTextContent(
           "Results revealed for Aug 21, 2026 (long only).",
         );
       });
@@ -1023,15 +1030,268 @@ describe("ResultsPanel", () => {
       await submitAnyGuess(user);
       rerender(<ResultsPanel range="1M" state={state} mode="long-short" />);
       await submitAnyGuess(user);
-      expect(screen.getByRole("status")).toHaveTextContent(
+      expect(screen.getByRole("status", { name: "Day reveal status" })).toHaveTextContent(
         "Results revealed for Aug 21, 2026 (long + short).",
       );
 
       rerender(<ResultsPanel range="1M" state={state} mode="long" />);
 
-      expect(screen.getByRole("status")).toHaveTextContent(
+      expect(screen.getByRole("status", { name: "Day reveal status" })).toHaveTextContent(
         "Results revealed for Aug 21, 2026 (long only).",
       );
+    });
+  });
+
+  describe("issue #84: chained per-track starting capital", () => {
+    afterEach(() => {
+      window.localStorage.clear();
+    });
+
+    /**
+     * A genuinely-chained two-day fixture where all four tracks
+     * (long-only, worst, long-short, long-short-worst) have diverging
+     * per-day startingCapital -- day 1 starts every track at the root
+     * (20); day 2's own startingCapital for each track equals day 1's
+     * own endingBalance for that *same* track, exactly the shape a real
+     * chained pipeline result has. Deliberately picked so the long-only
+     * track's day-2 startingCapital (40) differs from every other
+     * track's (10 / 60 / 5) -- this is what makes the pre-fix bug (every
+     * rescale using activeDay.startingCapital regardless of which track
+     * it was rescaling) produce a genuinely different, wrong number from
+     * the fix.
+     */
+    function fixtureChainedResult(): IntradayResult {
+      return fixtureIntradayResult({
+        startingCapital: 20,
+        days: [
+          {
+            date: "2026-08-20",
+            startingCapital: 20,
+            endingBalance: 40,
+            barIntervalMinutes: 60,
+            trades: [
+              {
+                ticker: "AAPL",
+                direction: "long",
+                date: "2026-08-20",
+                openTime: "09:30:00",
+                openPrice: 10,
+                closeTime: "10:30:00",
+                closePrice: 20,
+              },
+            ],
+            worstCase: { startingCapital: 20, endingBalance: 10, trades: [] },
+            longShort: {
+              startingCapital: 20,
+              endingBalance: 60,
+              trades: [],
+              worstCase: { startingCapital: 20, endingBalance: 5, trades: [] },
+            },
+          },
+          {
+            date: "2026-08-21",
+            // Chained from 2026-08-20's own endingBalance, per track.
+            startingCapital: 40,
+            endingBalance: 100,
+            barIntervalMinutes: 60,
+            trades: [
+              {
+                ticker: "MSFT",
+                direction: "long",
+                date: "2026-08-21",
+                openTime: "09:30:00",
+                openPrice: 10,
+                closeTime: "10:30:00",
+                closePrice: 25,
+              },
+            ],
+            worstCase: { startingCapital: 10, endingBalance: 20, trades: [] },
+            longShort: {
+              startingCapital: 60,
+              endingBalance: 300,
+              trades: [],
+              worstCase: { startingCapital: 5, endingBalance: 15, trades: [] },
+            },
+          },
+        ],
+      });
+    }
+
+    describe("HeroAndWorstCase rescales from each track's own chained startingCapital, not the long-only track's", () => {
+      // No explicit `startingCapital` prop passed below -- effectiveStartingCapital
+      // then defaults to activeDay.startingCapital (40, the long-only
+      // track's own value for 2026-08-21, the most recent/default-selected
+      // day). That default is what makes the pre-fix bug's own "from"
+      // value (also always activeDay.startingCapital) coincide with the
+      // display "to" value under mode "long" -- i.e. a no-op rescale --
+      // so a pre-fix WorstCaseStat would show the *raw, unrescaled*
+      // worstCase.endingBalance (20) instead of the correctly-rescaled
+      // 80; the same shape of divergence applies to every assertion
+      // below.
+
+      it("WorstCaseStat rescales from worstCase.startingCapital under mode='long' (real bug: the old code used the long-only track's startingCapital here even under long-only mode, since IntradayWorstCaseResult had no startingCapital of its own pre-#84)", async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureChainedResult() };
+        render(<ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />);
+        await submitAnyGuess(user);
+
+        // Correct: rescaleFromStartingCapital(20, from=10, to=40) = 80.
+        expect(screen.getByText("$80.00")).toBeInTheDocument();
+        // The pre-fix bug's own number (from=activeDay.startingCapital=40=to, a no-op): 20.
+        expect(screen.queryByText("$20.00")).not.toBeInTheDocument();
+      });
+
+      it("HeroStat rescales from the long-short track's own startingCapital under mode='long-short' (real bug: the old code always used activeDay.startingCapital, the long-only track's)", async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureChainedResult() };
+        render(
+          <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" mode="long-short" />,
+        );
+        await submitAnyGuess(user);
+
+        // Correct: rescaleFromStartingCapital(300, from=60, to=40) = 200.
+        expect(screen.getAllByText("$200.00").length).toBeGreaterThan(0);
+        // The pre-fix bug's own number (from=activeDay.startingCapital=40=to, a no-op): 300.
+        expect(screen.queryByText("$300.00")).not.toBeInTheDocument();
+      });
+
+      it("WorstCaseStat rescales from the long-short-worst track's own startingCapital under mode='long-short'", async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureChainedResult() };
+        render(
+          <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" mode="long-short" />,
+        );
+        await submitAnyGuess(user);
+
+        // Correct: rescaleFromStartingCapital(15, from=5, to=40) = 120.
+        expect(screen.getByText("$120.00")).toBeInTheDocument();
+        // The pre-fix bug's own number (from=activeDay.startingCapital=40=to, a no-op): 15.
+        expect(screen.queryByText("$15.00")).not.toBeInTheDocument();
+      });
+
+      it("dayOverviewRows' per-row figure rescales from the long-short track's own startingCapital under mode='long-short', matching HeroStat's own figure for the same day", async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureChainedResult() };
+        render(
+          <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" mode="long-short" />,
+        );
+        await submitAnyGuess(user);
+
+        const revealedRow = screen.getByRole("button", { name: /Aug 21, 2026/ });
+        // Same correct figure as HeroStat's own: rescaleFromStartingCapital(300, from=60, to=40) = 200.
+        expect(within(revealedRow).getByText("$200.00")).toBeInTheDocument();
+        expect(within(revealedRow).queryByText("$300.00")).not.toBeInTheDocument();
+      });
+    });
+
+    describe("the whole-range running-balance headline (count-gated, section 4.2)", () => {
+      it("stays masked with a progress placeholder before every day in the range has been individually revealed", () => {
+        const state: ResultsState = { status: "success", data: fixtureChainedResult() };
+        render(<ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />);
+
+        expect(
+          screen.getByText(/reveal all 2 days below to see the range's full running balance/i),
+        ).toBeInTheDocument();
+        expect(screen.getByText(/0 of 2 revealed so far/i)).toBeInTheDocument();
+      });
+
+      it("stays masked even after revealing one of two days (count-gated, not unlocked by a single reveal)", async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureChainedResult() };
+        render(<ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />);
+        await submitAnyGuess(user);
+
+        expect(screen.getByText(/1 of 2 revealed so far/i)).toBeInTheDocument();
+      });
+
+      it("announces its own unlock to screen readers via a dedicated aria-live region, distinct from the per-day reveal announcement (code review finding, fixed)", async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureChainedResult() };
+        const { rerender } = render(
+          <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />,
+        );
+
+        // Empty before every day is revealed.
+        expect(screen.getByRole("status", { name: "Whole-range reveal status" })).toHaveTextContent(
+          "",
+        );
+
+        await submitAnyGuess(user);
+        rerender(<ResultsPanel range="1M" state={state} selectedDay="2026-08-20" />);
+        await submitAnyGuess(user);
+
+        // Announces the unlock once every day is revealed -- a distinct
+        // region from the per-day "Results revealed for..." announcement
+        // (issue #67), which this same page also renders.
+        expect(screen.getByRole("status", { name: "Whole-range reveal status" })).toHaveTextContent(
+          /Whole-range running balance revealed/i,
+        );
+        expect(screen.getByRole("status", { name: "Day reveal status" })).toHaveTextContent(
+          /Results revealed for/i,
+        );
+      });
+
+      it("unlocks the real whole-range figure once every day in the range has been individually revealed, in any order", async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureChainedResult() };
+        const { rerender } = render(
+          <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />,
+        );
+        await submitAnyGuess(user);
+
+        rerender(<ResultsPanel range="1M" state={state} selectedDay="2026-08-20" />);
+        await submitAnyGuess(user);
+
+        // Both of the range's two days are now revealed -- the masked
+        // placeholder is gone, and the real figure appears.
+        expect(
+          screen.queryByText(/reveal all 2 days below to see the range's full running balance/i),
+        ).not.toBeInTheDocument();
+
+        // The range's own root startingCapital is 20; the final chained
+        // day's (2026-08-21) long-only endingBalance is 100; the display
+        // capital defaults to activeDay.startingCapital, which is now
+        // 2026-08-20's own (20, the range's first day) since that's the
+        // currently-selected day after the rerender above.
+        // rescaleFromStartingCapital(100, from=20 [root], to=20) = 100 --
+        // i.e. unrescaled, since root === the current display capital here.
+        // Scoped to the headline's own container (not screen.getByText
+        // directly) since "$20.00" and "$100.00" can each also appear
+        // elsewhere on the page (e.g. HeroStat, DayOverview rows).
+        const headline = screen.getByText(
+          "Whole-range running balance -- carried day to day, start to finish",
+        ).parentElement!;
+        expect(within(headline).getByText("$20.00")).toBeInTheDocument();
+        expect(within(headline).getByText("$100.00")).toBeInTheDocument();
+      });
+
+      it("computes the whole-range figure from the range's own root, not a per-day rescale that would cancel the chaining back out", async () => {
+        // This is the one call site apps/web/CLAUDE.md's own "rescaleFromStartingCapital's
+        // per-day pattern silently cancels out..." section specifically
+        // warns against reusing the per-day pattern for -- this test
+        // pins the correct (root-based) number down explicitly.
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureChainedResult() };
+        const { rerender } = render(
+          <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" startingCapital={40} />,
+        );
+        await submitAnyGuess(user);
+        rerender(
+          <ResultsPanel range="1M" state={state} selectedDay="2026-08-20" startingCapital={40} />,
+        );
+        await submitAnyGuess(user);
+
+        // rescaleFromStartingCapital(100, from=20 [the range's own root],
+        // to=40 [the user's chosen display capital]) = 200. A (wrong)
+        // per-day rescale would instead use the final day's own
+        // (chained) startingCapital, 40, as "from" -- rescaleFromStartingCapital(100,
+        // from=40, to=40) = 100 unrescaled -- a different, incorrect number.
+        const headline = screen.getByText(
+          "Whole-range running balance -- carried day to day, start to finish",
+        ).parentElement!;
+        expect(within(headline).getByText("$200.00")).toBeInTheDocument();
+        expect(within(headline).queryByText("$100.00")).not.toBeInTheDocument();
+      });
     });
   });
 

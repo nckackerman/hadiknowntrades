@@ -1547,6 +1547,133 @@ interface BuildIntradayResultsOutcome {
   failures: string[];
 }
 
+/**
+ * Chains `startingCapital`/`endingBalance` across a single range's
+ * already-finalized `days[]` array (issue #84), independently per track
+ * (long-only best, worst, long+short best, long+short worst -- see
+ * IntradayDayResult/IntradayWorstCaseResult/IntradayLongShortResult):
+ * day 0 starts every track at `rootStartingCapital` (the range's own
+ * configured constant); day N (N > 0) starts each track at that same
+ * track's own day-N-1 `endingBalance`, never another track's.
+ *
+ * **Must run strictly after the per-range slice and the granularity-
+ * override merge, never before or inside `optimizeIntradayDays`
+ * itself** -- see docs/plans/issue-84-plan.md section 6.2 for the full
+ * argument, restated briefly here: `optimizeIntradayDays` is called
+ * once over the full fetched history and its output is shared/sliced
+ * across 1W/1M/3M/1Y, so it has no idea which range(s) will later slice
+ * it and can't chain from "the right" first day; and
+ * `mergeDaysByGranularity`/`mergeDayVariants` compare two sources'
+ * `endingBalance`s under the assumption both were solved with the
+ * *same* flat `startingCapital` (see that function's own doc comment)
+ * -- chaining before that merge would make the two sources' capitals
+ * diverge and silently turn that comparison into an apples-to-oranges
+ * one. This function is called only after both have already happened,
+ * as a pure post-processing pass over one range's own already-decided
+ * `days` array.
+ *
+ * Each day's own per-track *ratio* (`endingBalance / startingCapital`,
+ * ANY track) is preserved from the input `days` (unchained, flat-
+ * `startingCapital`) before being reapplied against the running chained
+ * capital -- this is what keeps a day's own optimal trade sequence
+ * (`trades`) valid: `trades` themselves hold literal ticker prices, not
+ * dollar allocations, so they need no rescaling at all (see
+ * `Trade`/`IntradayTrade`'s own fields).
+ *
+ * Every existing per-day cross-check invariant
+ * (`worstCase.endingBalance <= endingBalance`,
+ * `longShort.endingBalance >= endingBalance`,
+ * `longShort.worstCase.endingBalance <= worstCase.endingBalance`)
+ * survives this transform by induction -- see the plan's section 6.3 for
+ * the full proof (all four tracks start from the identical root capital
+ * on day 0, and each day's own ratio ordering is capital-invariant, so
+ * multiplying same-signed ordered quantities preserves the ordering at
+ * every day).
+ *
+ * **Float precision (issue #84 code review finding)**: the general case
+ * below computes `runningCapital * (day.endingBalance /
+ * day.startingCapital)` -- a divide-then-multiply round trip that isn't
+ * guaranteed to reproduce `day.endingBalance` bit-for-bit even when
+ * `runningCapital === day.startingCapital` (floating-point division
+ * isn't always exactly invertible by the following multiplication).
+ * `chainedEndingBalance` below special-cases exactly that "no real
+ * rescale needed" case -- most notably day 0, where every one of the
+ * four tracks' `runningCapital` starts out *exactly* equal to the
+ * unchained day's own `startingCapital` by construction -- and returns
+ * `day.endingBalance` untouched instead of round-tripping it through
+ * division. This removes the single highest-risk case for the proof
+ * above (day 0, where two tracks tying exactly is most likely) at
+ * essentially zero cost; a later day's rounding, if it ever meaningfully
+ * matters, is still caught defensively by `results-schema.ts`'s own
+ * write-time cross-checks (`validatePrecomputedResult` throws and fails
+ * the run rather than shipping a violated invariant silently) -- the
+ * same "provably safe on paper, still worth containing" posture this
+ * file's own `mergeDayVariants` already established. Live-verified (see
+ * apps/pipeline/CLAUDE.md's own "Chained per-day starting capital"
+ * section): 0 cross-check violations across 338 real chained trading
+ * days.
+ */
+function chainedEndingBalance(
+  runningCapital: number,
+  originalStartingCapital: number,
+  originalEndingBalance: number,
+): number {
+  if (runningCapital === originalStartingCapital) return originalEndingBalance;
+  return runningCapital * (originalEndingBalance / originalStartingCapital);
+}
+
+function chainStartingCapital(
+  days: IntradayDayResult[],
+  rootStartingCapital: number,
+): IntradayDayResult[] {
+  let longOnlyCapital = rootStartingCapital;
+  let worstCapital = rootStartingCapital;
+  let longShortCapital = rootStartingCapital;
+  let longShortWorstCapital = rootStartingCapital;
+
+  return days.map((day) => {
+    const chained: IntradayDayResult = {
+      ...day,
+      startingCapital: longOnlyCapital,
+      endingBalance: chainedEndingBalance(longOnlyCapital, day.startingCapital, day.endingBalance),
+      worstCase: {
+        ...day.worstCase,
+        startingCapital: worstCapital,
+        endingBalance: chainedEndingBalance(
+          worstCapital,
+          day.worstCase.startingCapital,
+          day.worstCase.endingBalance,
+        ),
+      },
+      longShort: {
+        ...day.longShort,
+        startingCapital: longShortCapital,
+        endingBalance: chainedEndingBalance(
+          longShortCapital,
+          day.longShort.startingCapital,
+          day.longShort.endingBalance,
+        ),
+        worstCase: {
+          ...day.longShort.worstCase,
+          startingCapital: longShortWorstCapital,
+          endingBalance: chainedEndingBalance(
+            longShortWorstCapital,
+            day.longShort.worstCase.startingCapital,
+            day.longShort.worstCase.endingBalance,
+          ),
+        },
+      },
+    };
+
+    longOnlyCapital = chained.endingBalance;
+    worstCapital = chained.worstCase.endingBalance;
+    longShortCapital = chained.longShort.endingBalance;
+    longShortWorstCapital = chained.longShort.worstCase.endingBalance;
+
+    return chained;
+  });
+}
+
 function buildIntradayResults({
   history,
   dataAsOf,
@@ -1648,9 +1775,17 @@ function buildIntradayResults({
 
     const override = granularityOverrides.get(range);
     const sourceDays = override?.days ?? sixtyMinuteDays;
-    const days = sourceDays.filter(
+    const slicedDays = sourceDays.filter(
       (day) => day.date >= startDateString && day.date <= endDateString,
     );
+    // Chain each of this range's own already-sliced, already-merged days'
+    // starting/ending balances (issue #84) -- see chainStartingCapital's
+    // own doc comment for why this must run exactly here (after slicing,
+    // after the granularity-override merge), independently per range
+    // (each range's own chain starts fresh at rootStartingCapital on its
+    // own first day, not wherever the shared underlying day array's
+    // global first day happens to be).
+    const days = chainStartingCapital(slicedDays, startingCapital);
 
     // universeSize for this specific range: tickers with at least one
     // bar inside this range's window -- recomputed per range (cheap, no

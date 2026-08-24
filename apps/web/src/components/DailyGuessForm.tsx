@@ -10,6 +10,18 @@ interface DailyGuessFormProps {
   /** The intraday day being guessed on (issue #34) -- a plain YYYY-MM-DD calendar date. */
   date: string;
   startingCapital: number;
+  /**
+   * The previous trading day in this range, if any -- `null` for a
+   * range's own first day (a genuine fresh start, nothing carried over
+   * to disclose). When present, adds one honest clause acknowledging
+   * that this day's *real* starting balance actually chained from that
+   * previous day's own result (issue #84), without changing what's
+   * being guessed or leaking any dollar amount -- the previous day's
+   * *date* is already fully visible, ungated information (DayOverview
+   * shows every row's date regardless of guess status), so naming it
+   * here reveals nothing new.
+   */
+  previousDate: string | null;
   onSubmit: (guess: number) => void;
 }
 
@@ -25,7 +37,12 @@ interface DailyGuessFormProps {
  * *when* HeroStat gets mounted, by handing the parsed guess up to the
  * caller.
  */
-export function DailyGuessForm({ date, startingCapital, onSubmit }: DailyGuessFormProps) {
+export function DailyGuessForm({
+  date,
+  startingCapital,
+  previousDate,
+  onSubmit,
+}: DailyGuessFormProps) {
   const [draft, setDraft] = useState("");
   const inputId = useId();
 
@@ -45,6 +62,13 @@ export function DailyGuessForm({ date, startingCapital, onSubmit }: DailyGuessFo
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-2">
       <label htmlFor={inputId} className="text-sm font-medium text-[var(--text-secondary)]">
+        {previousDate !== null && (
+          <span className="mb-1 block text-xs font-normal text-[var(--text-muted)]">
+            This day&apos;s real starting balance actually carried over from{" "}
+            {formatDate(previousDate)}&apos;s result -- but for this guess, picture it starting
+            fresh:
+          </span>
+        )}
         Before you look: on {formatDate(date)}, what do you think{" "}
         {formatHeroCurrency(startingCapital)} turned into?
       </label>

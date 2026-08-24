@@ -100,15 +100,21 @@ export interface IntradayDayResult {
 
 /**
  * Per-day worst-case counterpart to IntradayDayResult's own
- * endingBalance/trades (issue #31) -- deliberately not a nested
- * OptimizationResult, which would also carry its own startingCapital;
- * that value is always identical to the sibling IntradayDayResult.
- * startingCapital (both searches start from the same capital), so
- * storing it twice would just be a value that could drift out of sync
- * with nothing enforcing it matches. Same flattening convention
- * IntradayDayResult itself already uses for endingBalance/trades.
+ * endingBalance/trades (issue #31).
+ *
+ * `startingCapital` (issue #84) was originally omitted here on the
+ * reasoning that it was always identical to the sibling
+ * IntradayDayResult.startingCapital (both searches started from the same
+ * flat, reset-every-day capital, so storing it twice would just be a
+ * value that could drift with nothing enforcing it matched). That
+ * reasoning no longer holds once apps/pipeline's per-track capital
+ * chaining (see that package's own CLAUDE.md) lets this track's own
+ * running balance diverge from the long-only track's day by day -- this
+ * field is this track's own chained starting capital, independently
+ * readable without cross-referencing IntradayDayResult.startingCapital.
  */
 export interface IntradayWorstCaseResult {
+  startingCapital: number;
   endingBalance: number;
   trades: IntradayTrade[];
 }
@@ -118,18 +124,37 @@ export interface IntradayWorstCaseResult {
  * endingBalance/trades/worstCase (issue #13) -- mirrors
  * IntradayWorstCaseResult's own flattening convention, plus a nested
  * worstCase since the long+short variant has both a best and worst case
- * of its own, same as the top-level long-only fields do. No
- * startingCapital here either, for the same reason IntradayWorstCaseResult
- * has none: identical to the sibling IntradayDayResult.startingCapital.
+ * of its own, same as the top-level long-only fields do.
+ *
+ * `startingCapital` (issue #84) is this track's own (long-short-best)
+ * chained starting capital -- see IntradayWorstCaseResult's own doc
+ * comment above for why this is no longer safely inferable from the
+ * sibling IntradayDayResult.startingCapital once per-track chaining
+ * exists. The nested `worstCase.startingCapital` is the long-short-worst
+ * track's own value, reusing IntradayWorstCaseResult's field for free.
  */
 export interface IntradayLongShortResult {
+  startingCapital: number;
   endingBalance: number;
   trades: IntradayTrade[];
   worstCase: IntradayWorstCaseResult;
 }
 
 export interface OptimizeIntradayOptions {
-  /** Applied fresh every day -- results do not compound across days, by design (each day is its own independent "what was the best possible outcome starting from this much cash" scenario). */
+  /**
+   * Applied fresh every day -- this function itself never compounds
+   * results across days (each day is solved as its own independent "what
+   * was the best possible outcome starting from this much cash"
+   * scenario); every day's ratio (endingBalance / startingCapital) is
+   * capital-invariant, a function of that day's own prices only. As of
+   * issue #84, apps/pipeline's buildIntradayResults *does* chain balances
+   * across days, but strictly as a post-processing pass applied to this
+   * function's already-returned `days` array (after the per-range slice
+   * and granularity-override merge) -- this function's own contract is
+   * unchanged, and every day it returns still carries the same flat
+   * startingCapital across all four tracks, exactly as before. See
+   * apps/pipeline/CLAUDE.md's "Chained per-day starting capital" section.
+   */
   startingCapital: number;
   /** Maximum number of same-day trades allowed per day (the optimizer may use fewer if that's better, though with real intraday data it essentially always uses the full budget -- same caveat as OptimizeOptions.maxTrades in optimizer.ts). */
   maxTradesPerDay: number;
@@ -307,13 +332,16 @@ export function optimizeIntradayDays(
         barIntervalMinutes,
         trades: longOnly.best.trades.map(toIntradayTrade),
         worstCase: {
+          startingCapital,
           endingBalance: longOnly.worst.endingBalance,
           trades: longOnly.worst.trades.map(toIntradayTrade),
         },
         longShort: {
+          startingCapital,
           endingBalance: longShort.best.endingBalance,
           trades: longShort.best.trades.map(toIntradayTrade),
           worstCase: {
+            startingCapital,
             endingBalance: longShort.worst.endingBalance,
             trades: longShort.worst.trades.map(toIntradayTrade),
           },

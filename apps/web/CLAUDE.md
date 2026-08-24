@@ -1173,32 +1173,54 @@ effectiveStartingCapital)` -- the same general-purpose helper this
   write -- a cache, a network-backed store), confirmed to fail without
   the `userSetRef` guard and pass with it.
 
-### `rescaleFromStartingCapital`'s per-day pattern silently cancels out any future per-day capital chaining (found while planning issue #84, plan-only as of this writing)
+### `rescaleFromStartingCapital`'s per-day pattern silently cancels out per-day capital chaining (issue #84 -- shipped; found while planning, confirmed against real chained data at implementation time)
 
 Worth knowing before reusing the established
 `rescaleFromStartingCapital(dayEndingBalance, day.startingCapital,
 effectiveStartingCapital)` pattern (`HeroStat`, `WorstCaseStat`,
-`DayOverview`'s per-row figure all call it this way) for any future
-feature that makes a day's own `startingCapital` vary from day to day
-(e.g. issue #84's proposed chaining, where day N's `startingCapital`
-becomes day N-1's `endingBalance` instead of a flat constant): this
-call shape is `value * (to / from)` where `value` is always `from *
+`DayOverview`'s per-row figure all call it this way) anywhere a day's own
+`startingCapital` varies from day to day (true since issue #84 shipped
+per-track chaining, `apps/pipeline`'s `chainStartingCapital` -- day N's
+`startingCapital` is day N-1's own `endingBalance`, not a flat constant):
+this call shape is `value * (to / from)` where `value` is always `from *
 someRatio` for that same day -- algebraically, `from` cancels out of
 the result completely, leaving `to * someRatio`, **regardless of what
-`from` actually equals**. That's exactly why every existing call site
-keeps working unmodified even if a day's own `startingCapital` starts
-varying: they all still show "as if this one day started fresh at
+`from` actually equals**. That's exactly why every existing per-day call
+site keeps working correctly even though a day's own `startingCapital`
+now varies: they all still show "as if this one day started fresh at
 `$[to]`," never the day's _actual_ absolute dollar amount. Fine (even
 desirable) for a per-day, ratio-based display that's meant to be
-capital-invariant either way -- but a real, easy-to-miss trap for any
-future feature that wants to show a day's _true_ chained absolute
-figure: reusing this exact per-day call shape for that would silently
-produce the wrong (ratio-only) number, not the real carried-over
-amount. The correct rescale for a true chained figure is a _single_
-rescale from the range's own root capital (`data.days[0].startingCapital`,
-not the specific day's own), applied once to whatever chained balance
-you're displaying -- see `docs/plans/issue-84-plan.md` section 5 for
-the full derivation and the exact call shape that avoids this trap.
+capital-invariant either way -- but a real trap for the one display this
+issue _does_ need to show a day range's _true_ chained absolute figure:
+`WholeRangeBalance.tsx`'s headline deliberately does NOT reuse this
+per-day call shape (see its own doc comment, and `ResultsPanel.tsx`'s own
+`wholeRangeFinalBalance` computation) -- it rescales once from the
+range's own root capital (`data.startingCapital`, identical to
+`data.days[0].startingCapital` by the chaining design's own construction)
+to the final chained day's own ending balance for whichever `mode`
+currently selects, never from a specific day's own (chained,
+day-varying) `startingCapital`.
+
+**Two real call sites _did_ need a fix once chaining shipped, caught in
+the plan's own independent review before code was written, then verified
+against real fixtures at implementation time**: `HeroAndWorstCase`'s
+`WorstCaseStat` rescale (both modes) and `HeroStat`/`dayOverviewRows`
+under long+short mode were all rescaling one track's `endingBalance` from
+a _different_ track's `startingCapital` (`activeDay.startingCapital`, the
+long-only track's, reused unconditionally for every track) -- harmless
+pre-chaining (every track shared one flat value) but silently wrong once
+tracks diverge. Fixed by threading each track's own `startingCapital`
+(now a real field on `IntradayWorstCaseResult`/`IntradayLongShortResult`,
+see `packages/core/CLAUDE.md`) through instead of reusing
+`activeDay.startingCapital` everywhere -- see `HeroAndWorstCaseProps`' own
+`worstCaseStartingCapital` field and `ResultsPanel.tsx`'s
+`dayStartingCapital`/`dayWorstCaseStartingCapital` locals for the exact
+fix. **This is the third time this exact class of mistake -- a component
+reading the wrong-track/un-threaded field instead of the correct one --
+has bitten this codebase**, after the two `effectiveStartingCapital`
+misses documented above (issue #15's `TradeList`/`DailyGuessForm`, and
+the "You guessed $X" line); worth treating any future per-track/per-day
+field addition with the same suspicion.
 
 ## Buy-and-hold (SPY) comparison stat (issue #12)
 
@@ -2533,3 +2555,75 @@ secondaryText }` per entry; the new one only needs `p`/`event`.
   actual chart scale (not just in a unit test's DOM assertions) and that
   the hover tooltip/crosshair still render correctly against the new
   gain/loss-colored line.
+
+## Chained per-day starting capital (issue #84)
+
+Implements `docs/plans/issue-84-plan.md` on top of the per-track
+`startingCapital` schema fields `apps/pipeline`'s chaining pass now
+writes (see `packages/core/CLAUDE.md`/`apps/pipeline/CLAUDE.md`'s own
+"Chained per-day starting capital" sections). The two real `ResultsPanel.tsx`
+call-site fixes are covered above (this file's "rescaleFromStartingCapital's
+per-day pattern..." section) -- this section covers the new UI surfaces
+and one real accessibility gotcha found along the way.
+
+- **`WholeRangeBalance.tsx`** is the new whole-range running-balance
+  headline (issue #84's own spoiler-fix design, section 4.2) -- rendered
+  above `DayOverview` in the intraday-daily branch, count-gated (not
+  order-gated) on `revealedCount === data.days.length`: masked with a
+  neutral progress placeholder ("Reveal all N days below... -- X of N
+  revealed so far") until every day in the currently-viewed range has
+  been individually guessed/revealed via `DailyGuessForm`, in any order.
+  A user can still guess days in any order (issue #80's free-browsing
+  design is untouched) -- the headline simply doesn't unlock until the
+  _count_ reaches the total. Computes its own `finalBalance` via a
+  _single_ rescale from the range's own root `data.startingCapital` to
+  the final chained day's own selected-track `endingBalance` -- see the
+  section above for why this must NOT reuse the per-day rescale pattern
+  every other dollar figure on this page uses.
+- **`DailyGuessForm` gained an honest, non-numeric `previousDate` clause**
+  ("This day's real starting balance actually carried over from {date}'s
+  result -- but for this guess, picture it starting fresh:") for every
+  day but a range's own first (`previousDate: null` there) -- communicates
+  that chaining happened without changing what's actually being guessed
+  (still the existing per-day, ratio-based question) or leaking any
+  dollar amount (the previous day's own _date_ is already fully visible,
+  ungated information via `DayOverview`'s own rows regardless of guess
+  status).
+- **`DayOverview`'s own intro copy and per-row "carried over from {date}"
+  note communicate the same thing structurally** -- a purely non-numeric
+  affordance, since every row's own date is already ungated/visible
+  regardless of guess status.
+- **Real accessible-name collision, found live (not by a unit test that
+  happened to already exist) -- worth knowing before adding any visible
+  text inside an interactive row/button element in this app**: the first
+  version of `DayOverview`'s per-row "carried over from {date}" note put
+  that text directly inside the row's own `<button>`, which folds it into
+  the button's own computed accessible name (the browser/testing-library's
+  accessible-name algorithm concatenates all non-`aria-hidden` descendant
+  text). Since the note names the _previous_ row's date, this made a
+  later row's own accessible name contain an _earlier_ row's date too
+  (e.g. "Aug 21, 2026 carried over from Aug 20, 2026, 1 trade..."),
+  breaking every existing `getByRole("button", { name: /Aug 20,
+2026.*1 trade/ })`-style exact-ish query in `DayOverview.test.tsx`/
+  `ResultsPanel.test.tsx` -- the regex meant to uniquely match the
+  "Aug 20" row instead matched _both_ rows, since "Aug 20, 2026" now
+  legitimately appeared inside "Aug 21"'s own accessible name too. Fixed
+  with `aria-hidden="true"` on the note span: it stays a purely visual
+  affordance (sighted users see it; a screen reader user tabbing through
+  rows already hears the full sequence of consecutive dates in DOM order
+  regardless, so nothing is actually lost). Not a hypothetical concern
+  either way -- this genuinely broke 5 existing tests before the fix, not
+  just a theoretical risk flagged in review.
+- **Live-verified against real Yahoo data** (20 real tickers, no S3
+  write, real `LOCAL_RESULTS_DIR`/`next dev`/headless-Chromium screenshot
+  pass, same throwaway technique this file's own "Per-day breadth made
+  visible" section documents): the whole-range headline's masked
+  placeholder ("Reveal all 21 days below... -- 0 of 21 revealed so far")
+  and every `DayOverview` row's own "carried over from {date}" note
+  rendered correctly on a real 1M result; fully revealing a real 1W
+  range's 5 days unlocked the headline showing "$20.00 -> $32.80" --
+  hand-verified against that same real result's own 5 per-day ratios
+  (1.0675 x 1.0815 x 1.163 x 1.0945 x 1.116 ~= 1.640, `$20 * 1.640 ~=
+$32.81`, matching modulo rounding) -- confirming the headline's
+  root-based rescale produces the real compounded figure, not a
+  per-day-cancelled one.

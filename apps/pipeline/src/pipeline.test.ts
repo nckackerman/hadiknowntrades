@@ -128,9 +128,19 @@ describe("runPipeline", () => {
       });
       expect(Array.isArray(parsed.days)).toBe(true);
       expect(parsed.days.length).toBeGreaterThan(0);
+      // Day 0 of every range starts from the range's own configured
+      // startingCapital (20); later days chain from the previous day's
+      // own endingBalance (issue #84) -- see the dedicated "chains
+      // starting capital across days" describe block below, and
+      // pipeline.chained-capital.test.ts, for the exact chaining
+      // assertions. This loop only checks the shape is well-formed.
+      parsed.days.forEach((day: { startingCapital: number }, i: number) => {
+        if (i === 0) expect(day.startingCapital).toBe(20);
+      });
       for (const day of parsed.days) {
         expect(typeof day.date).toBe("string");
-        expect(day.startingCapital).toBe(20);
+        expect(typeof day.startingCapital).toBe("number");
+        expect(day.startingCapital).toBeGreaterThan(0);
         expect(Array.isArray(day.trades)).toBe(true);
         // Long+short (issue #13), per day.
         expect(day.longShort).toBeDefined();
@@ -359,22 +369,24 @@ describe("runPipeline", () => {
       expect(threeMonth.days).toHaveLength(2);
       expect(oneYear.days).toHaveLength(3);
 
-      // Each day is solved independently, so every day's trade shows the
-      // full multiplier available that day, not a compounded one.
-      for (const day of oneYear.days) {
-        expect(day.startingCapital).toBe(20);
-      }
+      // Each day is *solved* independently (its own trades reflect the
+      // full multiplier available that day, not a compounded one -- see
+      // packages/core/CLAUDE.md's "Per-day intraday optimizer" section),
+      // but since issue #84, the *balances* threading across a range's
+      // days[] chain: only day 0 starts at the range's own configured
+      // startingCapital.
+      expect(oneYear.days[0].startingCapital).toBe(20);
     });
 
-    it("does not compound endingBalance across days -- every day starts fresh from startingCapital", async () => {
+    it("chains startingCapital across days -- day N starts from day N-1's own endingBalance, not a fresh reset (issue #84)", async () => {
       const intradayFixture = new Map<string, IntradayBar[]>([
         [
           "AAPL",
           [
             bar(daysBack(5), "09:30:00", 10),
-            bar(daysBack(5), "10:30:00", 100), // a huge day-1 gain
+            bar(daysBack(5), "10:30:00", 100), // a huge day-1 gain (10x)
             bar(daysBack(2), "09:30:00", 10),
-            bar(daysBack(2), "10:30:00", 20),
+            bar(daysBack(2), "10:30:00", 20), // a 2x day-2 gain
           ],
         ],
       ]);
@@ -396,8 +408,13 @@ describe("runPipeline", () => {
       const oneMonth = JSON.parse(store.objects.get("results/1M.json")!);
       const [firstDay, secondDay] = oneMonth.days;
 
+      // Day 1: fresh $20 -> 10x -> $200.
       expect(firstDay.startingCapital).toBe(20);
-      expect(secondDay.startingCapital).toBe(20); // not firstDay.endingBalance
+      expect(firstDay.endingBalance).toBeCloseTo(200, 6);
+      // Day 2: chained from day 1's own $200 (not a fresh $20) -> 2x -> $400.
+      expect(secondDay.startingCapital).toBeCloseTo(firstDay.endingBalance, 6);
+      expect(secondDay.startingCapital).toBeCloseTo(200, 6);
+      expect(secondDay.endingBalance).toBeCloseTo(400, 6);
     });
 
     it("writes the window path's results even when the intraday path independently has no data, but still fails the run (for alerting)", async () => {
