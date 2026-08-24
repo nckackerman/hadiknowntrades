@@ -17,7 +17,7 @@
 // startingCapital" figure (the count-up's animated/final ending
 // balance) to rescale for display. The portfolio chart doesn't need a
 // separate call to this function at all: derivePortfolioSeries and
-// deriveIntradayPortfolioSeries (portfolio-series.ts) are already pure
+// deriveWholeRangeIntradaySeries (portfolio-series.ts) are already pure
 // linear scalings of whatever startingCapital they're handed, so
 // ResultsPanel gets the same rescaling for free by simply passing the
 // user's chosen starting capital into those functions directly instead

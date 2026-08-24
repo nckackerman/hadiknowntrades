@@ -612,6 +612,25 @@ describe("ResultsPanel", () => {
       expect(screen.getAllByText(/MSFT/).length).toBeGreaterThan(0);
     });
 
+    it('announces which day/mode is showing via a role="status" live region, and updates it on every day/mode switch (issue #67, restored by issue #91 code review)', () => {
+      const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+      const { rerender } = render(
+        <ResultsPanel range="1M" state={state} selectedDay="2026-08-20" />,
+      );
+
+      expect(screen.getByRole("status", { name: "Selected day status" })).toHaveTextContent(
+        "Showing results for Aug 20, 2026 (long only).",
+      );
+
+      rerender(
+        <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" mode="long-short" />,
+      );
+
+      expect(screen.getByRole("status", { name: "Selected day status" })).toHaveTextContent(
+        "Showing results for Aug 21, 2026 (long + short).",
+      );
+    });
+
     it("calls onSelectDay when a different day's row is clicked in DayOverview", async () => {
       const user = userEvent.setup();
       const onSelectDay = vi.fn();

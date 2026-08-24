@@ -18,7 +18,7 @@ import {
   type PortfolioPoint,
 } from "@/lib/portfolio-series";
 import { formatDate } from "@/lib/format-date";
-import { DEFAULT_MODE, type Mode } from "@/lib/mode";
+import { DEFAULT_MODE, MODE_LABELS, type Mode } from "@/lib/mode";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { useRangeGuess } from "@/lib/use-range-guess";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
@@ -536,17 +536,42 @@ export function ResultsPanel({
     return [];
   }, [state, startingCapital, mode]);
 
+  // The page's one remaining guess-then-reveal control (issue #91),
+  // scoped to the whole range instead of any individual day -- see
+  // use-range-guess.ts for why reading storage directly here (rather
+  // than deferring to an effect) is safe. `mode` is threaded through as
+  // part of the guess key (issue #13) -- the same range can carry a
+  // genuinely different chained result depending on mode, exactly the
+  // argument range-guess-storage.ts's own doc comment makes. Called
+  // ahead of wholeRangePoints below (not just for readability) so that
+  // memo can gate its own work on `rangeGuess`.
+  const {
+    guess: rangeGuess,
+    guessStartingCapital: rangeGuessStartingCapital,
+    submitGuess: submitRangeGuess,
+  } = useRangeGuess(range, mode);
+
   // The intraday-daily model's own chart series (issue #91): every day in
   // the currently-viewed range chained into one continuous series, real
   // intraday spacing preserved within each day -- the whole-range
   // counterpart to `points` above, which only ever covers the window
   // model. Each day's trades are its own mode-selected variant (issue
   // #13), the same selectVariant call dayOverviewRows below makes per
-  // day. Gated in the JSX below behind the same reveal as
-  // WholeRangeBalance/BenchmarkStat -- this chart visualizes the exact
-  // figure that reveal protects, so it can't be shown ahead of it.
+  // day.
+  //
+  // **Gated on `rangeGuess !== null` (found in `high` code review,
+  // fixed)**: `PortfolioChart` only ever renders this once the
+  // whole-range guess is revealed (see the JSX below) -- computing the
+  // full chained series (every trade across every day in the range, up
+  // to ~252 days for 1Y) on *every* render regardless, including every
+  // StartingCapitalInput keystroke before the user has even guessed,
+  // was real wasted work for a chart that isn't mounted yet. The same
+  // "recomputes on every render, not just an actual change" cost
+  // dayOverviewRows' own doc comment above already documents fixing
+  // once for an analogous case.
   const wholeRangePoints = useMemo(() => {
     if (state.status !== "success" || state.data.model !== "intraday-daily") return [];
+    if (rangeGuess === null) return [];
     const { days } = state.data;
     return deriveWholeRangeIntradaySeries(
       startingCapital ?? state.data.startingCapital,
@@ -555,20 +580,7 @@ export function ResultsPanel({
         trades: selectVariant<IntradayTrade>(day, day.longShort, mode).trades,
       })),
     );
-  }, [state, startingCapital, mode]);
-
-  // The page's one remaining guess-then-reveal control (issue #91),
-  // scoped to the whole range instead of any individual day -- see
-  // use-range-guess.ts for why reading storage directly here (rather
-  // than deferring to an effect) is safe. `mode` is threaded through as
-  // part of the guess key (issue #13) -- the same range can carry a
-  // genuinely different chained result depending on mode, exactly the
-  // argument range-guess-storage.ts's own doc comment makes.
-  const {
-    guess: rangeGuess,
-    guessStartingCapital: rangeGuessStartingCapital,
-    submitGuess: submitRangeGuess,
-  } = useRangeGuess(range, mode);
+  }, [state, startingCapital, mode, rangeGuess]);
 
   // One row per trading day in the window (issue #80) -- feeds
   // DayOverview below, which is what makes the per-day breadth of this
@@ -750,6 +762,22 @@ export function ResultsPanel({
           onSelect={onSelectDay ?? (() => {})}
           maxTradesPerDay={data.maxTradesPerDay}
         />
+
+        {/* Announces which day/mode's content is now showing (issue #67,
+            restored by issue #91 -- found in `high` code review). Before
+            issue #91, this region only had something to announce at the
+            one-time per-day guess-then-reveal moment; deleted along with
+            that gate, but issue #91 also made switching days (via
+            DayOverview) or modes (via ModeToggle) something that
+            genuinely swaps HeroAndWorstCase's/the trade list's own
+            content *unconditionally*, on every browse -- not just a
+            one-time reveal -- so this needs to keep announcing that swap.
+            Unlike the old per-day version, this one is unconditional (no
+            `guess !== null` check) since there's no gate left to wait
+            on -- always reflects whichever day/mode is currently showing. */}
+        <div role="status" aria-live="polite" aria-label="Selected day status" className="sr-only">
+          {`Showing results for ${formatDate(activeDay.date)} (${MODE_LABELS[mode].toLowerCase()}).`}
+        </div>
 
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-end justify-between gap-4">

@@ -2,7 +2,6 @@ import type { IntradayTrade, Trade } from "@hadiknowntrades/core";
 import { describe, expect, it } from "vitest";
 
 import {
-  deriveIntradayPortfolioSeries,
   deriveWholeRangeIntradaySeries,
   derivePortfolioSeries,
   spansMultipleDays,
@@ -211,77 +210,6 @@ describe("derivePortfolioSeries", () => {
   });
 });
 
-describe("deriveIntradayPortfolioSeries", () => {
-  it("is a single flat point at startingCapital when there are no trades that day", () => {
-    const points = deriveIntradayPortfolioSeries(20, "2025-01-02", []);
-
-    expect(points).toEqual([{ date: "2025-01-02T12:00:00", value: 20, event: null }]);
-  });
-
-  it("derives a single trade as flat, open annotation, flat through the hold, then a jump at close -- using full local datetimes, not calendar dates", () => {
-    const trades = [intradayTrade({})];
-    const points = deriveIntradayPortfolioSeries(20, "2025-01-02", trades);
-
-    expect(points).toEqual([
-      { date: "2025-01-02T09:30:00", value: 20, event: null },
-      {
-        date: "2025-01-02T09:30:00",
-        value: 20,
-        event: { type: "open", direction: "long", ticker: "AAA", price: 10 },
-      },
-      { date: "2025-01-02T10:30:00", value: 20, event: null },
-      {
-        date: "2025-01-02T10:30:00",
-        value: 40,
-        event: { type: "close", direction: "long", ticker: "AAA", price: 20 },
-      },
-    ]);
-  });
-
-  it("compounds value across multiple sequential same-day trades", () => {
-    const trades = [
-      intradayTrade({ openTime: "09:30:00", openPrice: 10, closeTime: "10:30:00", closePrice: 20 }),
-      intradayTrade({
-        ticker: "BBB",
-        openTime: "11:30:00",
-        openPrice: 5,
-        closeTime: "13:30:00",
-        closePrice: 15,
-      }),
-    ];
-    const points = deriveIntradayPortfolioSeries(20, "2025-01-02", trades);
-
-    const closePoints = points.filter((p) => p.event?.type === "close");
-    expect(closePoints.map((p) => p.value)).toEqual([40, 120]);
-  });
-
-  it("handles a losing trade (value decreases at the close)", () => {
-    const trades = [intradayTrade({ openPrice: 20, closePrice: 10 })];
-    const points = deriveIntradayPortfolioSeries(20, "2025-01-02", trades);
-
-    const closePoint = points.find((p) => p.event?.type === "close");
-    expect(closePoint?.value).toBe(10);
-  });
-
-  it("rescales every point proportionally when given a different startingCapital (issue #15), same as derivePortfolioSeries above", () => {
-    const trades = [intradayTrade({ openPrice: 10, closePrice: 20 })];
-    const original = deriveIntradayPortfolioSeries(20, "2025-01-02", trades);
-    const rescaled = deriveIntradayPortfolioSeries(5, "2025-01-02", trades);
-
-    expect(rescaled.map((p) => p.date)).toEqual(original.map((p) => p.date));
-    expect(rescaled.map((p) => p.value)).toEqual(original.map((p) => p.value * 0.25));
-  });
-
-  it("handles a short trade via the reciprocal-price payoff (issue #13)", () => {
-    const trades = [intradayTrade({ direction: "short", openPrice: 20, closePrice: 10 })];
-    const points = deriveIntradayPortfolioSeries(20, "2025-01-02", trades);
-
-    const closePoint = points.find((p) => p.event?.type === "close");
-    expect(closePoint?.event).toMatchObject({ direction: "short" });
-    expect(closePoint?.value).toBe(40); // 20 * (20/10)
-  });
-});
-
 describe("deriveWholeRangeIntradaySeries", () => {
   it("returns an empty series for an empty range", () => {
     expect(deriveWholeRangeIntradaySeries(20, [])).toEqual([]);
@@ -351,12 +279,6 @@ describe("deriveWholeRangeIntradaySeries", () => {
 describe("spansMultipleDays", () => {
   it("is false for an empty series", () => {
     expect(spansMultipleDays([])).toBe(false);
-  });
-
-  it("is false for a single day's own intraday series (deriveIntradayPortfolioSeries)", () => {
-    const points = deriveIntradayPortfolioSeries(20, "2025-01-02", [intradayTrade({})]);
-
-    expect(spansMultipleDays(points)).toBe(false);
   });
 
   it("is true for a whole-range series spanning more than one day (deriveWholeRangeIntradaySeries)", () => {
