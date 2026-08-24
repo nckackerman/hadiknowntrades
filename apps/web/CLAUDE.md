@@ -3806,3 +3806,172 @@ feature needs).
   `pnpm format:check`) green on the clean tree after cleanup, including
   the `.next` cache clear round four's own note already flags as
   necessary post-debug-route-deletion.
+
+## Rewind-to-start-date intro beat (issue #97)
+
+A brief (~0.6-1s) "had I known" intro beat, added as a new `rewinding`
+phase to `use-trade-replay.ts`'s own state machine, immediately before
+`play()` starts real trade playback: `idle -> rewinding -> playing ->
+done`, not a second, parallel animation system alongside #96's own. A
+backward-ticking date readout (e.g. "May 2, 2026" ticking down to "Aug
+21, 2025") sells the fantasy the app's whole premise is built on; it's
+purely decorative -- no new data dependency, no new schema field, and
+`TradeReplay.tsx`'s hero slot is the only thing that renders it (via a
+new `rewindDate: string | null` field on `UseTradeReplayResult`, `null`
+outside the `"rewinding"` phase).
+
+- **The rewind target is `points[0].date`, already on hand -- no new
+  prop needed.** `derivePortfolioSeries`'s own leading boundary point
+  (the same one `initialFrame`/`finalFrame` already read) is exactly the
+  result's real start date, so the hook needed no new parameter at all;
+  `TradeReplay.tsx` doesn't pass anything new either.
+- **Reuses `use-count-up.ts`'s RAF/easing shape, not a second mechanism**
+  -- a single `requestAnimationFrame` tween (via the shared
+  `lib/easing.ts` `tweenValue`, same as `use-trade-replay.ts`'s own
+  multi-segment playing effect), just tweening a raw epoch timestamp
+  between "now" (`Date.now()`, captured once when the effect starts) and
+  the target date's own epoch, formatted every tick. **A small
+  date-formatting layer was genuinely sufficient, per the issue's own
+  Background section**: `format-date.ts` gained one new export,
+  `formatEpochAsDate(epochMs)` (the exact `Intl.DateTimeFormat` options
+  `formatDate` already used, extracted so a raw epoch -- not a
+  `"YYYY-MM-DD"` string -- can reuse them); `formatDate` itself is now a
+  thin wrapper (`formatEpochAsDate(Date.parse(...))`), not a second
+  independent implementation of the same formatting.
+- **A single-tween effect, not the multi-segment scaffold the playing
+  effect uses** -- there's only one thing to animate here (a date, not a
+  multi-point walk), so this is a second, independent `useEffect` in
+  `use-trade-replay.ts` (keyed `[phase, points]`, gated on `phase ===
+"rewinding"`) that mirrors `use-count-up.ts`'s own lone-tween shape
+  instead of reusing the playing effect's `segmentIndex`/`subPhase`
+  scaffold, which exists specifically to walk more than one waypoint.
+- **Reduced motion is enforced at the hook level, in `play()` itself, not
+  only via `TradeReplay.tsx`'s existing button-gating.** `play()` now
+  checks `prefersReducedMotion()` directly and sets `phase` straight to
+  `"playing"` (skipping `"rewinding"` entirely) when it's true --
+  matching the issue's own "skip straight past this phase with zero
+  delay" acceptance criterion literally, at the hook's own public API
+  boundary. In the real UI this branch is never actually reached today
+  (`TradeReplay.tsx`'s pre-existing `canReplay` gate already hides the
+  "Watch it happen" button whenever `reducedMotionAtMount` is true, so
+  `play()` is never called under reduced motion in the first place) --
+  but `play()` is this hook's own public contract, and a future caller
+  (or a test) shouldn't have to trust an upstream button gate for the
+  hook to behave correctly standalone. This is the same "belt and
+  suspenders" posture #96's own `aria-hidden`+`inert` pairing already
+  established for this codebase.
+- **Skip to end works identically during `"rewinding"` as during
+  `"playing"`, with no extra code in `skipToEnd()` itself** -- that
+  function already computed `finalFrame(points)` unconditionally,
+  regardless of the current phase, so the only change needed was
+  clearing the new `rewindDate` state alongside it (defensive hygiene,
+  not load-bearing: `TradeReplay.tsx` only ever renders `rewindDate`
+  while `phase === "rewinding"`, which `skipToEnd()` always leaves).
+  `TradeReplay.tsx`'s own "Skip to end" button visibility condition
+  widened from `phase === "playing"` to `phase === "rewinding" || phase
+=== "playing"` -- one shared button/handler for both, not a second
+  control, per the issue's own acceptance criterion wording.
+- **The mid-flight `points`-reference-change reset (round one of #96's
+  own code review, see above) needed zero changes to cover a mid-rewind
+  case, and this was verified, not assumed.** `use-trade-replay.ts`'s
+  `useResetWhenChanged([points], ...)` call already resets whenever
+  `phase !== "idle"`, unconditional on which non-idle phase that
+  happens to be -- so a `"rewinding"`-phase points change already fell
+  under the same guard the pre-#97 code already had, before any #97
+  code was written. `use-trade-replay.test.ts` adds a dedicated
+  regression test for this exact case anyway (a mid-rewind rerender with
+  a new `points` reference), both to document the claim and to guard
+  against a future refactor of that reset accidentally narrowing its own
+  condition back to `phase === "playing"` specifically.
+- **`showLive` (`TradeReplay.tsx`) widened from `phase !== "playing"` to
+  `phase === "idle" || phase === "done"`** -- the rewind is part of the
+  same non-live, animated stretch `"playing"` already was, so the chart
+  and hero slot both need to stay in their truncated/interactive-false
+  shape through the rewind too, not just once real trade playback
+  begins. `PortfolioChart`'s own `revealedCount`/`interactive` props
+  (already driven by `showLive`) needed no further change: during the
+  rewind, `frame` is still exactly `initialFrame(points)` (untouched by
+  the rewind effect, which only ever writes `rewindDate`), so the chart
+  correctly shows just the window's own opening point the whole time,
+  with no trade line drawn yet.
+- **Existing #96 tests needed real updates, not just new assertions,**
+  since `play()` now lands on `"rewinding"` first rather than
+  `"playing"` directly -- every existing test in both
+  `use-trade-replay.test.ts` and `TradeReplay.test.tsx` that called
+  `play()` and then immediately drove RAF ticks assuming trade-playback
+  progress had begun needed one extra tick inserted first (`raf.tick(now
+
+> = 1700)`, completing the 700ms rewind in a single pumped frame since
+  `performance.now()`is pinned to a fixed value throughout these test
+  files -- the same "pin`performance.now()`, control `now` directly"
+> approach this suite already established) before the pre-existing
+> tick sequence continues unmodified. Two tests genuinely needed more
+> than a one-line insertion, both caught by tracing through what they
+> were actually meant to verify rather than just patching the
+> assertions that failed:
+
+- `TradeReplay.test.tsx`'s "shows the multiplier badge throughout
+  idle -> playing -> done" test used to assert
+  `getAllByText("(2x)").length` is merely `>0` right after clicking
+  "Watch it happen" -- which, with the rewind phase now inserted,
+  would trivially keep passing forever even if the _playing_-phase
+  overlay's own badge regressed again, since the real (always-
+  mounted) `HeroStat`'s own badge alone already satisfies `>0`
+  throughout the rewind. Fixed by asserting the exact count (`1`
+  during the rewind -- only the real `HeroStat`'s badge, since the
+  rewind overlay has no multiplier badge of its own to show; `2` once
+  actually `"playing"` -- both `HeroStat`'s and the overlay's),
+  restoring the original round-five regression's real coverage at the
+  exact moment it's meant to guard.
+- `use-trade-replay.test.ts`'s "play() while already playing is a
+  no-op" test gained a sibling, "play() while already rewinding is a
+  no-op" -- the guard in `play()` itself now checks both
+  `phase === "rewinding" || phase === "playing"`, and the pre-existing
+  test only ever exercised the latter half.
+- **Live-verified** via the established throwaway-debug-route (a
+  hardcoded two-trade `points` series, dated in the past relative to the
+  sandbox's own real clock, so the readout has real distance to tick
+  through) plus the documented no-root headless-Chromium workaround:
+  screenshotted the readout early and mid-rewind (confirmed the date
+  text genuinely changes, ticking backward -- not a static label),
+  confirmed it auto-advances into real trade playback on its own with no
+  second click once the 700ms elapses, confirmed "Skip to end" clicked
+  mid-rewind lands on the exact same settled final state ($48.00, the
+  real `endingBalance`) that a natural completion or a mid-playback skip
+  already does -- including HeroStat's own fresh count-up/confetti
+  reveal replaying, the same established reward behavior #96's own
+  round-three live verification already confirmed for a mid-playback
+  skip -- and confirmed `reducedMotion: "reduce"` context emulation
+  renders zero "Watch it happen" button and zero "Rewinding to" text
+  anywhere, matching #96's own pre-existing full-bypass behavior with no
+  regression. Zero console errors/warnings and zero `pageerror` events
+  across the whole run. The debug route and the temporary `playwright`
+  devDependency were both reverted before committing, per this file's
+  own established convention; confirmed via `git status`/`git diff
+--stat` showing no trace of either afterward, and all five routine
+  checks (lint, `next typegen && tsc --noEmit`, `pnpm build`, `pnpm
+test`, `pnpm format:check`) re-ran green on the resulting clean tree.
+
+### Code-review follow-up -- one real bug, `rewindDate` outliving its own phase
+
+A `high` review of the PR above found one real gap: `rewindDate` was
+only ever cleared by `skipToEnd()` and the mid-flight `points`-reference
+reset -- not by the other two `setPhase("done")` call sites this hook
+has (natural completion, and the corrupted-stored-price defensive
+catch), despite `rewindDate`'s own doc comment promising "`null` in
+every other phase." Concretely: play a result through to a genuine
+natural finish (not "Skip to end"), then click "Replay" -- the _previous_
+run's own target date was still sitting in `rewindDate` all through
+`"done"`, and remained visible for one frame as the wrong date the
+instant `"rewinding"` was re-entered, only correcting once the first new
+RAF tick fired. Fixed by adding `setRewindDate(null)` alongside
+`setFrame(finalFrame(points))` at both of the two previously-missed call
+sites, matching what `skipToEnd()` already did. Regression-tested in
+`use-trade-replay.test.ts`: a dedicated test walks a full natural
+completion (mid-rewind -> playing -> every trade event -> done) and
+asserts `rewindDate` is `null` both immediately after landing on "done"
+and immediately after the next `play()` re-enters "rewinding" -- plus a
+one-line addition to the existing corrupted-price test asserting the
+same for that third call site. All five routine checks (lint, `next
+typegen && tsc --noEmit`, `pnpm build`, `pnpm test`, `pnpm format:check`)
+re-ran green after the fix.

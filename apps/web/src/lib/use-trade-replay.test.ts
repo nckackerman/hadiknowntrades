@@ -3,7 +3,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { PortfolioPoint } from "./portfolio-series";
 import { createRafPump } from "./raf-pump.test-util";
+import { stubPrefersReducedMotion } from "./stub-prefers-reduced-motion.test-util";
 import { useTradeReplay } from "./use-trade-replay";
+
+// The rewind intro beat (issue #97) is 700ms -- with performance.now()
+// pinned to 1000 throughout this file's tests (see each test's own
+// vi.spyOn(performance, "now") call), any raf.tick(now) with `now >=
+// 1700` completes it in a single tick, auto-advancing phase straight to
+// "playing" with `frame` still exactly the untouched initial frame (the
+// rewind never touches `frame`, only `rewindDate`) -- see
+// use-trade-replay.ts's own doc comment on why one tick is enough here,
+// unlike the multi-segment playing effect below it.
+const REWIND_COMPLETE_NOW = 1700;
 
 /**
  * A single-trade window fixture: start flat at $20, an "open" event
@@ -32,6 +43,11 @@ const ONE_TRADE_POINTS: PortfolioPoint[] = [
 describe("useTradeReplay", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    // stubPrefersReducedMotion (the "rewinding phase" describe block
+    // below) uses vi.stubGlobal, which vi.restoreAllMocks() alone
+    // doesn't undo -- matching every other file in this app that uses
+    // this stub (e.g. TradeReplay.test.tsx's own afterEach).
+    vi.unstubAllGlobals();
   });
 
   it("starts idle, showing only the window's own opening point", () => {
@@ -58,6 +74,11 @@ describe("useTradeReplay", () => {
     act(() => {
       result.current.play();
     });
+    // play() now enters "rewinding" first (issue #97), not "playing"
+    // directly -- see REWIND_COMPLETE_NOW's own doc comment above for
+    // why one tick is enough to complete it deterministically here.
+    expect(result.current.phase).toBe("rewinding");
+    raf.tick(REWIND_COMPLETE_NOW);
     expect(result.current.phase).toBe("playing");
 
     // Mid-tween toward the "open" event (t=0): still showing only the
@@ -111,7 +132,7 @@ describe("useTradeReplay", () => {
     expect(raf.hasQueuedFrame()).toBe(false);
   });
 
-  it("skipToEnd lands on the exact same final state as a non-animated page load, at any point during playback", () => {
+  it("skipToEnd lands on the exact same final state as a non-animated page load, at any point during rewinding or playback (issue #97)", () => {
     vi.spyOn(performance, "now").mockReturnValue(1000);
     const raf = createRafPump();
 
@@ -120,7 +141,16 @@ describe("useTradeReplay", () => {
     act(() => {
       result.current.play();
     });
-    raf.tick(1000); // mid-tween, well before the end
+    // Mid-rewind, well before the end -- issue #97's own acceptance
+    // criterion is that Skip to end works identically whether triggered
+    // during this phase or during trade playback, so this test
+    // deliberately leaves phase at "rewinding" (not completing it via
+    // REWIND_COMPLETE_NOW first) to exercise exactly that case; the
+    // sibling "walks every point..." test above already exercises
+    // skipToEnd from mid-"playing" indirectly via its own use of
+    // skipToEnd in other tests below.
+    expect(result.current.phase).toBe("rewinding");
+    raf.tick(1000);
 
     act(() => {
       result.current.skipToEnd();
@@ -130,6 +160,7 @@ describe("useTradeReplay", () => {
     expect(result.current.frame.revealedCount).toBe(ONE_TRADE_POINTS.length);
     expect(result.current.frame.currentValue).toBe(40);
     expect(result.current.frame.activeEvent).toBeNull();
+    expect(result.current.rewindDate).toBeNull();
 
     // The stale in-flight frame from before skipToEnd must not clobber
     // this final state once it (would have) fired.
@@ -156,10 +187,18 @@ describe("useTradeReplay", () => {
       result.current.play();
     });
 
-    expect(result.current.phase).toBe("playing");
+    // Re-enters "rewinding" first (issue #97), same as the very first
+    // play() call -- "Replay" restarts the whole beat, not just the
+    // trade walk. `frame` itself is already reset to the initial frame
+    // regardless of phase (play() sets it before choosing which phase
+    // to enter), so those assertions hold immediately.
+    expect(result.current.phase).toBe("rewinding");
     expect(result.current.frame.revealedCount).toBe(1);
     expect(result.current.frame.currentValue).toBe(20);
     expect(result.current.frame.activeEvent).toBeNull();
+
+    raf.tick(REWIND_COMPLETE_NOW);
+    expect(result.current.phase).toBe("playing");
 
     raf.tick(1300);
     expect(result.current.frame.activeEvent?.event.type).toBe("open");
@@ -189,6 +228,7 @@ describe("useTradeReplay", () => {
     act(() => {
       result.current.play();
     });
+    raf.tick(REWIND_COMPLETE_NOW); // completes the rewind intro beat (issue #97), landing on "playing"
     raf.tick(1000);
     raf.tick(1300); // paused on the open event -- well into a real mid-flight walk
 
@@ -222,6 +262,46 @@ describe("useTradeReplay", () => {
     expect(raf.hasQueuedFrame()).toBe(false);
   });
 
+  it("treats a mid-*rewind* `points` reference change the same defensive way a mid-playback change is handled (issue #97)", () => {
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+    const raf = createRafPump();
+
+    const { result, rerender } = renderHook(
+      (points: readonly PortfolioPoint[]) => useTradeReplay(points),
+      { initialProps: ONE_TRADE_POINTS as readonly PortfolioPoint[] },
+    );
+
+    act(() => {
+      result.current.play();
+    });
+    raf.tick(1000); // mid-rewind, well before it completes
+    expect(result.current.phase).toBe("rewinding");
+    expect(result.current.rewindDate).not.toBeNull();
+
+    const RESCALED_POINTS: PortfolioPoint[] = ONE_TRADE_POINTS.map((p) => ({
+      ...p,
+      value: p.value * 2,
+    }));
+
+    act(() => {
+      rerender(RESCALED_POINTS);
+    });
+
+    // Same reset use-trade-replay.ts's own [points]-keyed
+    // useResetWhenChanged call already gives a mid-*playing* change --
+    // it fires for any phase !== "idle", "rewinding" included, so this
+    // needed no separate code path, only this test to confirm it.
+    expect(result.current.phase).toBe("idle");
+    expect(result.current.rewindDate).toBeNull();
+    expect(result.current.frame.revealedCount).toBe(1);
+    expect(result.current.frame.currentValue).toBe(RESCALED_POINTS[0]!.value);
+    expect(result.current.frame.activeEvent).toBeNull();
+
+    // The old points' in-flight rewind loop doesn't resume and clobber
+    // this reset once it (would have) fired.
+    expect(raf.hasQueuedFrame()).toBe(false);
+  });
+
   it("contains (rather than silently freezing on) a corrupted stored price mid-playback -- logs and skips to the final state", () => {
     vi.spyOn(performance, "now").mockReturnValue(1000);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -252,6 +332,7 @@ describe("useTradeReplay", () => {
     act(() => {
       result.current.play();
     });
+    raf.tick(REWIND_COMPLETE_NOW); // completes the rewind intro beat (issue #97), landing on "playing"
     raf.tick(1000); // tween toward the open event
     raf.tick(1300); // arrives at the open event, pauses
     raf.tick(1900); // pause elapses, advances through the flat vertex (no event)
@@ -262,6 +343,11 @@ describe("useTradeReplay", () => {
     expect(result.current.frame.revealedCount).toBe(CORRUPT_POINTS.length);
     expect(result.current.frame.currentValue).toBe(40);
     expect(result.current.frame.activeEvent).toBeNull();
+    // rewindDate must also be cleared here, not just by skipToEnd/natural
+    // completion (code review follow-up, issue #97 -- this defensive
+    // catch is one of this hook's three setPhase("done") call sites, and
+    // rewindDate's own doc comment promises "null in every other phase").
+    expect(result.current.rewindDate).toBeNull();
     expect(consoleError).toHaveBeenCalledOnce();
     expect(raf.hasQueuedFrame()).toBe(false);
   });
@@ -295,6 +381,7 @@ describe("useTradeReplay", () => {
     act(() => {
       result.current.play();
     });
+    raf.tick(REWIND_COMPLETE_NOW); // completes the rewind intro beat (issue #97), landing on "playing"
     raf.tick(1000);
     raf.tick(1300); // pauses on the open event
     raf.tick(1900); // pause elapses, flat vertex reached (no pause)
@@ -311,6 +398,33 @@ describe("useTradeReplay", () => {
     expect(result.current.frame.activeEvent).toBeNull();
   });
 
+  it("play() while already rewinding is a no-op -- same hook-level API contract as the already-playing case below (issue #97)", () => {
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+    const raf = createRafPump();
+
+    const { result } = renderHook(() => useTradeReplay(ONE_TRADE_POINTS));
+
+    act(() => {
+      result.current.play();
+    });
+    raf.tick(1000); // mid-rewind, well before it completes
+    expect(result.current.phase).toBe("rewinding");
+    const rewindDateBeforeSecondPlay = result.current.rewindDate;
+
+    act(() => {
+      result.current.play();
+    });
+
+    // Still rewinding, undisturbed -- not reset back to the very start
+    // of a fresh rewind.
+    expect(result.current.phase).toBe("rewinding");
+    expect(result.current.rewindDate).toBe(rewindDateBeforeSecondPlay);
+
+    // The original rewind keeps advancing normally afterward.
+    raf.tick(REWIND_COMPLETE_NOW);
+    expect(result.current.phase).toBe("playing");
+  });
+
   it("play() while already playing is a no-op -- not reachable via the shipped UI (the button that calls play() is hidden while playing), but a real hook-level API contract (code review, issue #96 follow-up round four)", () => {
     vi.spyOn(performance, "now").mockReturnValue(1000);
     const raf = createRafPump();
@@ -320,6 +434,7 @@ describe("useTradeReplay", () => {
     act(() => {
       result.current.play();
     });
+    raf.tick(REWIND_COMPLETE_NOW); // completes the rewind intro beat (issue #97), landing on "playing"
     raf.tick(1000);
     raf.tick(1300); // paused on the open event, well into the walk
     expect(result.current.frame.revealedCount).toBe(2);
@@ -373,6 +488,7 @@ describe("useTradeReplay", () => {
     act(() => {
       result.current.play();
     });
+    raf.tick(REWIND_COMPLETE_NOW); // completes the rewind intro beat (issue #97), landing on "playing"
     raf.tick(1000);
     raf.tick(1300); // pauses on the open event
     raf.tick(1900); // pause elapses, flat vertex reached
@@ -382,5 +498,106 @@ describe("useTradeReplay", () => {
     raf.tick(3400); // tween settles -- natural completion
     expect(result.current.phase).toBe("done");
     expect(result.current.completedRuns).toBe(2);
+  });
+
+  describe("rewinding phase (issue #97)", () => {
+    it("play() enters 'rewinding' before 'playing', ticking a backward date readout that lands on the result's real start date", () => {
+      // performance.now() drives elapsed-time math (pinned to 1000, as
+      // every other test in this file pins it); Date.now() is the
+      // separate, real-wall-clock value the rewind's own readout tweens
+      // *from* -- pinned independently here so the readout's start
+      // value is deterministic too.
+      vi.spyOn(performance, "now").mockReturnValue(1000);
+      vi.spyOn(Date, "now").mockReturnValue(Date.parse("2024-06-15T00:00:00Z"));
+      const raf = createRafPump();
+
+      const { result } = renderHook(() => useTradeReplay(ONE_TRADE_POINTS));
+
+      act(() => {
+        result.current.play();
+      });
+      expect(result.current.phase).toBe("rewinding");
+      // frame is untouched by the rewind -- still exactly the initial
+      // frame play() itself set before choosing which phase to enter.
+      expect(result.current.frame.revealedCount).toBe(1);
+      expect(result.current.frame.currentValue).toBe(20);
+      // No tick has fired yet -- the readout hasn't rendered its first
+      // value.
+      expect(result.current.rewindDate).toBeNull();
+
+      // t=0: the readout starts at "now" (the mocked Date.now() above).
+      raf.tick(1000);
+      expect(result.current.rewindDate).toBe("Jun 15, 2024");
+      expect(result.current.phase).toBe("rewinding");
+
+      // t=1 (700ms elapsed, REWIND_COMPLETE_NOW): lands exactly on the
+      // result's own start date (ONE_TRADE_POINTS[0].date) and
+      // auto-advances to "playing" on its own, with no further action
+      // needed from a caller.
+      raf.tick(REWIND_COMPLETE_NOW);
+      expect(result.current.rewindDate).toBe("Jan 1, 2024");
+      expect(result.current.phase).toBe("playing");
+    });
+
+    it("rewindDate is cleared on natural completion, not just skipToEnd -- a stale target date must not survive into a fresh Replay (code review follow-up, real bug)", () => {
+      vi.spyOn(performance, "now").mockReturnValue(1000);
+      vi.spyOn(Date, "now").mockReturnValue(Date.parse("2024-06-15T00:00:00Z"));
+      const raf = createRafPump();
+
+      const { result } = renderHook(() => useTradeReplay(ONE_TRADE_POINTS));
+
+      act(() => {
+        result.current.play();
+      });
+      raf.tick(1000); // mid-rewind -- rewindDate is genuinely non-null here
+      expect(result.current.rewindDate).not.toBeNull();
+      raf.tick(REWIND_COMPLETE_NOW); // completes the rewind, landing on "playing"
+
+      // Walk all the way to a *natural* completion (not skipToEnd, which
+      // already clears rewindDate correctly) -- the real gap this test
+      // guards: the "advance past the last segment" branch used to only
+      // call setPhase("done"), leaving rewindDate holding the previous
+      // run's own target date all through "done".
+      raf.tick(1300); // pauses on the open event
+      raf.tick(1900); // pause elapses, flat vertex reached
+      raf.tick(2200); // tween toward the close event
+      raf.tick(2500); // pauses on the close event
+      raf.tick(3100); // pause elapses, trailing flat point reached
+      raf.tick(3400); // tween settles -- natural completion
+      expect(result.current.phase).toBe("done");
+      expect(result.current.rewindDate).toBeNull();
+
+      // Replay must not flash the previous run's own stale target date
+      // for even one frame before the first new tick corrects it --
+      // rewindDate should already be null the instant "rewinding" is
+      // (re-)entered, not just once the next tick fires.
+      act(() => {
+        result.current.play();
+      });
+      expect(result.current.phase).toBe("rewinding");
+      expect(result.current.rewindDate).toBeNull();
+    });
+
+    it("prefers-reduced-motion skips the rewind entirely -- play() lands straight on 'playing', matching pre-#97 behavior", () => {
+      stubPrefersReducedMotion(true);
+      // The very first available frame settles any real tween (mirrors
+      // use-count-up.test.ts's own reduced-motion test) -- here, no
+      // frame should even be scheduled for a "rewinding" phase that's
+      // never entered.
+      const raf = createRafPump();
+
+      const { result } = renderHook(() => useTradeReplay(ONE_TRADE_POINTS));
+
+      act(() => {
+        result.current.play();
+      });
+
+      expect(result.current.phase).toBe("playing");
+      expect(result.current.rewindDate).toBeNull();
+      // The rewinding effect's own body never ran (phase skipped
+      // straight past "rewinding"), but the playing effect's did --
+      // still one real queued frame, from the playing effect.
+      expect(raf.hasQueuedFrame()).toBe(true);
+    });
   });
 });

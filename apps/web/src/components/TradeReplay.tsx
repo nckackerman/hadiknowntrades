@@ -3,7 +3,9 @@
 // "Watch it happen" trade playback (issue #96) -- an opt-in, on-click
 // replay of a window-model result's HeroStat + PortfolioChart pairing,
 // re-sequencing data already on the page (derivePortfolioSeries's own
-// PortfolioPoint[]) rather than computing or fetching anything new. See
+// PortfolioPoint[]) rather than computing or fetching anything new.
+// Issue #97 added a brief "rewinding" intro beat (a backward-ticking
+// date readout) immediately before real trade playback begins. See
 // use-trade-replay.ts for the RAF-driven state machine this orchestrates.
 
 import { useMemo, type ReactNode } from "react";
@@ -88,15 +90,19 @@ const buttonClassName =
  * pairing -- `HeroStat` inside it reveals fresh (a genuinely new
  * `key`) only on a genuine new result (a fetch, or a mode switch) or
  * when playback actually *finishes* (see `completedRuns` below), never
- * merely because playback started or was aborted early. Only while
- * `phase === "playing"` does the hero slot additionally overlay a
- * plain, non-animated "$X -> $Y" figure (driven by the replay hook's
- * own tween, not useCountUp -- HeroStat's own count-up is mount-only
- * and can't be re-driven mid-mount) via `HeroAndWorstCase`'s own
- * `heroSlot` prop, and a truncated view of the same `PortfolioChart`
- * instance (`revealedCount`/`interactive`, not a pre-sliced `points`
- * array -- see that component's own prop doc comments, code review
- * issue #96 follow-up round 3).
+ * merely because playback started or was aborted early. While `phase`
+ * is `"rewinding"` or `"playing"` (issue #97 added the former, a brief
+ * intro beat before the latter begins -- see use-trade-replay.ts's own
+ * doc comment) the hero slot additionally overlays either the rewind's
+ * own backward-ticking date readout or, once `"playing"`, a plain
+ * non-animated "$X -> $Y" figure (driven by the replay hook's own
+ * tween, not useCountUp -- HeroStat's own count-up is mount-only and
+ * can't be re-driven mid-mount) via `HeroAndWorstCase`'s own `heroSlot`
+ * prop, and a truncated view of the same `PortfolioChart` instance
+ * (`revealedCount`/`interactive`, not a pre-sliced `points` array --
+ * see that component's own prop doc comments, code review issue #96
+ * follow-up round 3) -- pinned at just the window's own opening point
+ * throughout the rewind, since no trade has actually played yet.
  *
  * **`heroKey` carries `useTradeReplay`'s own `completedRuns` counter as a
  * suffix, bumped only when phase *lands on* "done" (code review, issue
@@ -189,7 +195,7 @@ export function TradeReplay({
   children,
 }: TradeReplayProps) {
   const reducedMotionAtMount = useReducedMotionAtMount();
-  const { phase, frame, play, skipToEnd, completedRuns } = useTradeReplay(points);
+  const { phase, frame, rewindDate, play, skipToEnd, completedRuns } = useTradeReplay(points);
 
   // Memoized (code-review finding, issue #96 follow-up): constant for
   // the whole result, but this component re-renders on every one of the
@@ -209,7 +215,11 @@ export function TradeReplay({
   // re-renders in its idle shape (present or absent per the *new*
   // `canReplay`) rather than lingering in "playing" with the wrong gate.
   const canReplay = tradeCount > 0 && !reducedMotionAtMount;
-  const showLive = phase !== "playing";
+  // Issue #97's rewinding intro beat is part of the same animated
+  // stretch "playing" already was -- the hero slot/chart both need to
+  // stay in their non-live, animated shape through the rewind too, not
+  // just once real trade playback begins.
+  const showLive = phase === "idle" || phase === "done";
 
   // Memoized (code-review finding, issue #96 follow-up): constant for
   // the whole playback run, but this component re-renders on every one
@@ -273,6 +283,59 @@ export function TradeReplay({
       ? `Replay finished. Ending balance ${formatHeroCurrency(endingBalanceDisplayValue)}.`
       : (activeCallout ?? "");
 
+  // Computed once here rather than as a nested ternary inline in the
+  // JSX below, matching this file's own established "compute once,
+  // reuse" pattern for `activeCallout`/`announced` above. `undefined`
+  // for `showLive` (idle/done) leaves `HeroAndWorstCase`'s own default
+  // (the real HeroStat, no overlay) in place.
+  let heroSlot: ReactNode = undefined;
+  if (phase === "rewinding") {
+    // Issue #97's rewind-to-start-date intro beat -- purely visual,
+    // aria-hidden for the exact same reason the playing-phase figure
+    // below is (the status region announces meaningful moments, not
+    // this per-frame-changing readout). Reuses HeroStat.tsx's own
+    // exported label/value-row classes so this reads as "the same hero
+    // figure, mid-transition" the same way the playing-phase overlay
+    // already does.
+    heroSlot = (
+      <div aria-hidden="true" className="absolute inset-0 flex flex-col items-start gap-1">
+        <p className={heroLabelClassName}>Rewinding to</p>
+        <p className={heroValueRowClassName}>
+          <span>{rewindDate}</span>
+        </p>
+      </div>
+    );
+  } else if (phase === "playing") {
+    // Purely visual during playback -- aria-hidden, since the status
+    // region below announces the meaningful moments (each trade event,
+    // then the finished sentence) instead of this per-frame-changing
+    // figure. Absolutely positioned over HeroAndWorstCase's own
+    // (visually hidden, but still mounted) real HeroStat -- see that
+    // component's own `heroSlot` doc comment for why this overlays
+    // rather than replaces it. Reuses HeroStat.tsx's own exported
+    // `heroLabelClassName`/`heroValueRowClassName` (code review, issue
+    // #96 follow-up round four) rather than hand-copying those two
+    // classes as literal strings, so this figure reads as "the same
+    // hero figure, mid-transition" without risking drift if HeroStat's
+    // own typography ever changes.
+    heroSlot = (
+      <div aria-hidden="true" className="absolute inset-0 flex flex-col items-start gap-1">
+        <p className={heroLabelClassName}>Starting from</p>
+        <p className={heroValueRowClassName}>
+          <span>{displayStartingCapitalFormatted}</span>
+          <span className="text-[var(--text-muted)]">→</span>
+          <span>{formatHeroCurrency(frame.currentValue)}</span>
+          <span
+            className={heroMultiplierClassName}
+            style={{ color: heroMultiplierColor(multiplier) }}
+          >
+            ({formatMultiplier(multiplier)})
+          </span>
+        </p>
+      </div>
+    );
+  }
+
   return (
     <>
       <div className="flex flex-col gap-2">
@@ -284,42 +347,7 @@ export function TradeReplay({
             worstCaseEndingBalance={worstCaseEndingBalance}
             worstCaseStartingCapital={worstCaseStartingCapital}
             displayStartingCapital={displayStartingCapital}
-            heroSlot={
-              showLive ? undefined : (
-                // Purely visual during playback -- aria-hidden, since
-                // the status region below announces the meaningful
-                // moments (each trade event, then the finished
-                // sentence) instead of this per-frame-changing figure.
-                // Absolutely positioned over HeroAndWorstCase's own
-                // (visually hidden, but still mounted) real HeroStat --
-                // see that component's own `heroSlot` doc comment for
-                // why this overlays rather than replaces it. Reuses
-                // HeroStat.tsx's own exported `heroLabelClassName`/
-                // `heroValueRowClassName` (code review, issue #96
-                // follow-up round four) rather than hand-copying those
-                // two classes as literal strings, so this figure reads
-                // as "the same hero figure, mid-transition" without
-                // risking drift if HeroStat's own typography ever
-                // changes.
-                <div
-                  aria-hidden="true"
-                  className="absolute inset-0 flex flex-col items-start gap-1"
-                >
-                  <p className={heroLabelClassName}>Starting from</p>
-                  <p className={heroValueRowClassName}>
-                    <span>{displayStartingCapitalFormatted}</span>
-                    <span className="text-[var(--text-muted)]">→</span>
-                    <span>{formatHeroCurrency(frame.currentValue)}</span>
-                    <span
-                      className={heroMultiplierClassName}
-                      style={{ color: heroMultiplierColor(multiplier) }}
-                    >
-                      ({formatMultiplier(multiplier)})
-                    </span>
-                  </p>
-                </div>
-              )
-            }
+            heroSlot={heroSlot}
           />
           {startingCapitalInput}
         </div>
@@ -339,11 +367,15 @@ export function TradeReplay({
             duplicated this identical `flex items-center gap-3` div in
             both branches of the ternary below. */}
         <div className="flex items-center gap-3">
-          {phase === "playing" ? (
-            // Always available while playing, regardless of `canReplay`
-            // -- see that variable's own doc comment above for why this
-            // can't just reuse the same gate the idle/done button below
-            // does.
+          {phase === "rewinding" || phase === "playing" ? (
+            // Always available during the rewind intro beat or real
+            // playback, regardless of `canReplay` -- see that variable's
+            // own doc comment above for why this can't just reuse the
+            // same gate the idle/done button below does. Issue #97's own
+            // acceptance criterion: "Skip-to-end control works
+            // identically whether triggered during this phase or during
+            // trade playback" -- one shared button/handler for both,
+            // not a second control.
             <button type="button" onClick={skipToEnd} className={buttonClassName}>
               Skip to end
             </button>
