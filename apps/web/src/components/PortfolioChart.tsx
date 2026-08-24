@@ -19,10 +19,10 @@ import { memo, useId, useMemo, useState } from "react";
 import { formatAxisCurrency, formatHeroCurrency } from "@/lib/format-currency";
 import { formatDateTime, isPortfolioDatetime } from "@/lib/format-date";
 import { buildLogScale, buildTimeScale, niceLogTicks } from "@/lib/chart-scales";
-import { resolveLabelOffsets } from "@/lib/chart-label-layout";
 import type { PortfolioEvent, PortfolioPoint } from "@/lib/portfolio-series";
 import { tradeVerbs, tradeVerbsPast } from "@/lib/trade-math";
 import { useChartTapHint } from "@/lib/use-chart-tap-hint";
+import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
 
 /**
  * Capitalized verb for a marker's own label / the data-table's event
@@ -68,17 +68,16 @@ function toTimestamp(date: string): number {
   return new Date(isPortfolioDatetime(date) ? `${date}Z` : `${date}T00:00:00Z`).getTime();
 }
 
-/** Anchors a label so it never runs past the plot's left/right edge. */
-function anchorFor(x: number): "start" | "middle" | "end" {
-  if (x < PLOT_WIDTH * 0.15) return "start";
-  if (x > PLOT_WIDTH * 0.85) return "end";
-  return "middle";
-}
-
 export function PortfolioChart({ points }: PortfolioChartProps) {
   const gradientId = useId();
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [showTapHint, dismissTapHint] = useChartTapHint();
+  // Same "on mount only, not a live subscription" hook HeroStat's own
+  // reveal accent (issue #77) and ResultsPanel's FadeInWrapper already
+  // share -- see that hook's own doc comment for the hydration-safety
+  // precondition (only safe from a client-only success-branch mount,
+  // which is exactly where PortfolioChart is always rendered from).
+  const animateReveal = !useReducedMotionAtMount();
 
   const { yScale, yTicks, plotted } = useMemo(() => {
     const timestamps = points.map((p) => toTimestamp(p.date));
@@ -118,46 +117,17 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
 
   const eventMarkers = plotted.filter((p) => p.event !== null);
 
-  // Each marker's anchor/label text, computed exactly once and shared
-  // between the collision-avoidance pass below and the actual render
-  // map further down (code review finding, fixed -- these used to be
-  // computed independently in both places, a real duplication risk if
-  // the two ever drifted on label text/anchor).
-  const markerLabels = eventMarkers.map((p) => {
-    const event = p.event!;
-    return {
-      p,
-      event,
-      isAbove: event.type === "open",
-      anchor: anchorFor(p.x),
-      primaryText: `${eventLabelVerb(event)} ${event.ticker}`,
-      secondaryText: `${formatDateTime(p.date)} · ${formatHeroCurrency(event.price)}`,
-    };
-  });
-
-  // Collision-avoided label y-positions (issue #68), one per
-  // markerLabels entry in the same order. `bounds` caps how far a
-  // still-colliding label can be pushed to the plot's own vertical
-  // extent (in the <g>'s local, MARGIN.top-translated coordinate space)
-  // so the greedy stacking below can never push a label past the outer
-  // <svg>'s own viewBox and get silently clipped -- see
-  // chart-label-layout.ts's own LabelLayoutBounds doc comment (code
-  // review finding, fixed). Not useMemo'd: markerLabels is a fresh
-  // array every render (built from the already-memoized `plotted`),
-  // same as linePath/areaPath above, and the input is at most 6
-  // markers -- too small to be worth memoizing against a dependency
-  // that itself changes identity every render.
-  const labelYs = resolveLabelOffsets(
-    markerLabels.map(({ p, isAbove, anchor, primaryText, secondaryText }) => ({
-      x: p.x,
-      y: p.y,
-      isAbove,
-      anchor,
-      primaryText,
-      secondaryText,
-    })),
-    { minY: -MARGIN.top, maxY: HEIGHT - MARGIN.top },
-  );
+  // Gain/loss-aware color (issue #85), replacing the single flat
+  // --series-1 accent this chart used to render regardless of outcome.
+  // Same ">= is good" convention TradeRow's own `returnFraction >= 0`
+  // and HeroStat's multiplier badge/reveal-accent (`endingBalance /
+  // startingCapital >= 1`) already use -- a flat/no-trade window (start
+  // === end) renders "good," consistent with how the rest of the app
+  // already treats flat as good-or-neutral, not bad. --gridline/
+  // --baseline/--text-muted (gridlines, baseline, axis text) stay
+  // neutral -- only the data itself carries the accent color.
+  const isGain = plotted[plotted.length - 1]!.value >= plotted[0]!.value;
+  const seriesColor = isGain ? "var(--status-good)" : "var(--status-critical)";
 
   const hovered = hoverIndex !== null ? plotted[hoverIndex] : null;
 
@@ -207,7 +177,11 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
         role="img"
         aria-label="Portfolio value over time, with trade open and close markers"
         tabIndex={0}
-        className="w-full outline-none focus-visible:ring-2 focus-visible:ring-[var(--series-1)]"
+        className={`w-full outline-none focus-visible:ring-2 ${
+          isGain
+            ? "focus-visible:ring-[var(--status-good)]"
+            : "focus-visible:ring-[var(--status-critical)]"
+        }`}
         onPointerDown={revealNearestPoint}
         onPointerMove={revealNearestPoint}
         onPointerLeave={() => setHoverIndex(null)}
@@ -233,9 +207,9 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
               curved (not linear) taper, reading as a proper wash rather
               than a flat tint that just stops abruptly. */}
           <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--series-1)" stopOpacity="0.32" />
-            <stop offset="55%" stopColor="var(--series-1)" stopOpacity="0.08" />
-            <stop offset="100%" stopColor="var(--series-1)" stopOpacity="0" />
+            <stop offset="0%" stopColor={seriesColor} stopOpacity="0.32" />
+            <stop offset="55%" stopColor={seriesColor} stopOpacity="0.08" />
+            <stop offset="100%" stopColor={seriesColor} stopOpacity="0" />
           </linearGradient>
         </defs>
 
@@ -277,8 +251,10 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
             strokeWidth={1}
           />
 
-          {/* X-axis: start and end date only -- trade dates are already
-              carried by the markers' own direct labels. */}
+          {/* X-axis: start and end date only -- correct as-is for today's
+              at-most-3-trade window (issue #85's own plan); individual
+              trade dates are available via the hover/tap tooltip and the
+              data table below, not as on-chart labels any more. */}
           <text
             x={0}
             y={PLOT_HEIGHT + 20}
@@ -298,16 +274,27 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
             {formatDateTime(points[points.length - 1]!.date)}
           </text>
 
-          {/* Area wash + line */}
-          <path d={areaPath} fill={`url(#${gradientId})`} stroke="none" />
-          <path
-            d={linePath}
-            fill="none"
-            stroke="var(--series-1)"
-            strokeWidth={2}
-            strokeLinejoin="round"
-            strokeLinecap="round"
-          />
+          {/* Area wash + line, gain/loss-colored (issue #85) and grouped so
+              the reveal-on-mount animation applies to the data itself, not
+              the gridlines/axis above (which stay immediately present so
+              the chart never looks broken mid-animation). Two-layer
+              reduced-motion guard: `animateReveal` (derived once at mount
+              via useReducedMotionAtMount, same shared hook/precondition
+              HeroStat's own reveal accent uses) is the primary gate
+              deciding whether to add the class at all; globals.css's own
+              `@media (prefers-reduced-motion: reduce)` rule on
+              `.portfolio-chart-reveal` is defense-in-depth. */}
+          <g className={animateReveal ? "portfolio-chart-reveal" : undefined}>
+            <path d={areaPath} fill={`url(#${gradientId})`} stroke="none" />
+            <path
+              d={linePath}
+              fill="none"
+              stroke={seriesColor}
+              strokeWidth={2}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+          </g>
 
           {/* Crosshair */}
           {hovered && (
@@ -322,43 +309,39 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
             />
           )}
 
-          {/* Open/close markers with direct labels (ticker, date, price) --
-              "Buy"/"Sell" for a long, "Short"/"Cover" for a short (issue
-              #13, see eventLabelVerb). */}
-          {markerLabels.map(({ p, event, anchor, primaryText, secondaryText }, i) => {
-            const labelY = labelYs[i]!;
-            return (
-              <g key={`${p.date}-${event.type}-${event.ticker}-${i}`}>
+          {/* Open/close markers -- no on-chart text labels (issue #85; the
+              exact ticker/date/price they duplicated is already shown,
+              unconditionally, by TradeList/IntradayTradeList immediately
+              below the chart, and by this readout/the data table below).
+              Shape alone still distinguishes an "open" event (no value
+              change, a hollow ring) from a "close" event (the point where
+              value actually jumps, a filled dot) -- the same open/close
+              distinction the removed label text conveyed via its verb
+              ("Buy" vs. "Sell"), now wordless. A sibling `<g>` of the
+              area/line group above (sharing the same reveal class/timing)
+              rather than nested inside it -- markers must paint *after*
+              the crosshair below to stay on top of it, matching this
+              chart's pre-#85 stacking (code review finding, fixed: an
+              earlier draft nested markers inside the area/line group,
+              which paints before the crosshair and let it visually cut
+              through a marker whenever a hovered point landed near one). */}
+          <g className={animateReveal ? "portfolio-chart-reveal" : undefined}>
+            {eventMarkers.map((p, i) => {
+              const event = p.event!;
+              const isOpen = event.type === "open";
+              return (
                 <circle
+                  key={`${p.date}-${event.type}-${event.ticker}-${i}`}
                   cx={p.x}
                   cy={p.y}
                   r={4}
-                  fill="var(--series-1)"
-                  stroke="var(--surface-1)"
+                  fill={isOpen ? "none" : seriesColor}
+                  stroke={isOpen ? seriesColor : "var(--surface-1)"}
                   strokeWidth={2}
                 />
-                <text
-                  x={p.x}
-                  y={labelY}
-                  textAnchor={anchor}
-                  fontSize={10.5}
-                  fontWeight={600}
-                  fill="var(--text-primary)"
-                >
-                  {primaryText}
-                </text>
-                <text
-                  x={p.x}
-                  y={labelY + 13}
-                  textAnchor={anchor}
-                  fontSize={10}
-                  fill="var(--text-secondary)"
-                >
-                  {secondaryText}
-                </text>
-              </g>
-            );
-          })}
+              );
+            })}
+          </g>
 
           {/* One-time touch "you can tap this" pulse hint (issue #66) --
               only rendered for a touch-primary device that hasn't
@@ -373,7 +356,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
               cy={eventMarkers[eventMarkers.length - 1]!.y}
               r={4}
               fill="none"
-              stroke="var(--series-1)"
+              stroke={seriesColor}
               strokeWidth={2}
               className="chart-tap-hint-pulse"
               pointerEvents="none"
@@ -388,7 +371,7 @@ export function PortfolioChart({ points }: PortfolioChartProps) {
               cx={hovered.x}
               cy={hovered.y}
               r={4}
-              fill="var(--series-1)"
+              fill={seriesColor}
               stroke="var(--surface-1)"
               strokeWidth={2}
             />

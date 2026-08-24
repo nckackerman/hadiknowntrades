@@ -2,18 +2,7 @@ import { renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { useCountUp } from "./use-count-up";
-
-/** Stubs `window.matchMedia` the way real browsers implement it (jsdom in this repo's setup doesn't implement it at all -- see use-count-up.ts's own doc comment). */
-function stubPrefersReducedMotion(matches: boolean) {
-  vi.stubGlobal(
-    "matchMedia",
-    vi.fn().mockReturnValue({
-      matches,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    }),
-  );
-}
+import { stubPrefersReducedMotion } from "./stub-prefers-reduced-motion.test-util";
 
 describe("useCountUp", () => {
   afterEach(() => {

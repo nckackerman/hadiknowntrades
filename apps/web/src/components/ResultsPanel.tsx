@@ -358,7 +358,13 @@ function WindowResultBody({
         />
       </div>
 
-      <PortfolioChart points={points} />
+      {/* Keyed on the same heroKey as HeroAndWorstCase's own <HeroStat>
+          above (issue #85) -- PortfolioChart is never remounted for free
+          just by a new `points` prop, so without this key its reveal
+          animation would only ever fire once per range/custom-anchor
+          fetch, not in sync with HeroStat's own count-up/glow replaying
+          on every day/mode switch. */}
+      <PortfolioChart key={heroKey} points={points} />
 
       <div className="flex flex-col gap-3">
         <h2 className="text-lg font-semibold text-[var(--text-primary)]">Trades</h2>
@@ -752,7 +758,13 @@ export function ResultsPanel({
 
         {guess !== null && (
           <>
-            <PortfolioChart points={points} />
+            {/* Keyed the same as HeroAndWorstCase's own heroKey above
+                (issue #85), for the same reason the window model's own
+                PortfolioChart call site documents: without this key, the
+                reveal animation would only replay on a genuine range
+                fetch, not on every day/mode switch the way HeroStat's
+                count-up/glow already do. */}
+            <PortfolioChart key={`${activeDay.date}-${mode}`} points={points} />
 
             <div className="flex flex-col gap-3">
               <h2 className="text-lg font-semibold text-[var(--text-primary)]">Trades</h2>

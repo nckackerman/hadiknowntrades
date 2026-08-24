@@ -1,10 +1,10 @@
 import { vi } from "vitest";
 
 /**
- * Stubs `window.matchMedia` per-query (unlike `use-count-up.test.ts`'s/
- * `HeroStat.test.tsx`'s own `stubPrefersReducedMotion` -- a single fixed
- * `matches` regardless of query, fine for those two files since they
- * only ever check one media feature). `use-chart-tap-hint.ts` checks two
+ * Stubs `window.matchMedia` per-query (unlike
+ * `stub-prefers-reduced-motion.test-util.ts`'s own `stubPrefersReducedMotion`
+ * -- a single fixed `matches` regardless of query, fine for a caller that
+ * only ever checks one media feature). `use-chart-tap-hint.ts` checks two
  * independent queries (`(pointer: coarse)`, plus
  * `prefersReducedMotion()`'s own `(prefers-reduced-motion: reduce)`), so
  * its own tests -- here and in `PortfolioChart.test.tsx`, which renders

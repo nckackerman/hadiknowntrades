@@ -2,18 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { HeroStat } from "./HeroStat";
-
-/** See use-count-up.test.ts's identical helper -- jsdom doesn't implement matchMedia at all, so tests stub it the way real browsers implement it. */
-function stubPrefersReducedMotion(matches: boolean) {
-  vi.stubGlobal(
-    "matchMedia",
-    vi.fn().mockReturnValue({
-      matches,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    }),
-  );
-}
+import { stubPrefersReducedMotion } from "@/lib/stub-prefers-reduced-motion.test-util";
 
 describe("HeroStat", () => {
   afterEach(() => {
