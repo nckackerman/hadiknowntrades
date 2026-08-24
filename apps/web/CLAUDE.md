@@ -3951,3 +3951,27 @@ outside the `"rewinding"` phase).
 --stat` showing no trace of either afterward, and all five routine
   checks (lint, `next typegen && tsc --noEmit`, `pnpm build`, `pnpm
 test`, `pnpm format:check`) re-ran green on the resulting clean tree.
+
+### Code-review follow-up -- one real bug, `rewindDate` outliving its own phase
+
+A `high` review of the PR above found one real gap: `rewindDate` was
+only ever cleared by `skipToEnd()` and the mid-flight `points`-reference
+reset -- not by the other two `setPhase("done")` call sites this hook
+has (natural completion, and the corrupted-stored-price defensive
+catch), despite `rewindDate`'s own doc comment promising "`null` in
+every other phase." Concretely: play a result through to a genuine
+natural finish (not "Skip to end"), then click "Replay" -- the _previous_
+run's own target date was still sitting in `rewindDate` all through
+`"done"`, and remained visible for one frame as the wrong date the
+instant `"rewinding"` was re-entered, only correcting once the first new
+RAF tick fired. Fixed by adding `setRewindDate(null)` alongside
+`setFrame(finalFrame(points))` at both of the two previously-missed call
+sites, matching what `skipToEnd()` already did. Regression-tested in
+`use-trade-replay.test.ts`: a dedicated test walks a full natural
+completion (mid-rewind -> playing -> every trade event -> done) and
+asserts `rewindDate` is `null` both immediately after landing on "done"
+and immediately after the next `play()` re-enters "rewinding" -- plus a
+one-line addition to the existing corrupted-price test asserting the
+same for that third call site. All five routine checks (lint, `next
+typegen && tsc --noEmit`, `pnpm build`, `pnpm test`, `pnpm format:check`)
+re-ran green after the fix.

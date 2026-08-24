@@ -343,6 +343,11 @@ describe("useTradeReplay", () => {
     expect(result.current.frame.revealedCount).toBe(CORRUPT_POINTS.length);
     expect(result.current.frame.currentValue).toBe(40);
     expect(result.current.frame.activeEvent).toBeNull();
+    // rewindDate must also be cleared here, not just by skipToEnd/natural
+    // completion (code review follow-up, issue #97 -- this defensive
+    // catch is one of this hook's three setPhase("done") call sites, and
+    // rewindDate's own doc comment promises "null in every other phase").
+    expect(result.current.rewindDate).toBeNull();
     expect(consoleError).toHaveBeenCalledOnce();
     expect(raf.hasQueuedFrame()).toBe(false);
   });
@@ -532,6 +537,45 @@ describe("useTradeReplay", () => {
       raf.tick(REWIND_COMPLETE_NOW);
       expect(result.current.rewindDate).toBe("Jan 1, 2024");
       expect(result.current.phase).toBe("playing");
+    });
+
+    it("rewindDate is cleared on natural completion, not just skipToEnd -- a stale target date must not survive into a fresh Replay (code review follow-up, real bug)", () => {
+      vi.spyOn(performance, "now").mockReturnValue(1000);
+      vi.spyOn(Date, "now").mockReturnValue(Date.parse("2024-06-15T00:00:00Z"));
+      const raf = createRafPump();
+
+      const { result } = renderHook(() => useTradeReplay(ONE_TRADE_POINTS));
+
+      act(() => {
+        result.current.play();
+      });
+      raf.tick(1000); // mid-rewind -- rewindDate is genuinely non-null here
+      expect(result.current.rewindDate).not.toBeNull();
+      raf.tick(REWIND_COMPLETE_NOW); // completes the rewind, landing on "playing"
+
+      // Walk all the way to a *natural* completion (not skipToEnd, which
+      // already clears rewindDate correctly) -- the real gap this test
+      // guards: the "advance past the last segment" branch used to only
+      // call setPhase("done"), leaving rewindDate holding the previous
+      // run's own target date all through "done".
+      raf.tick(1300); // pauses on the open event
+      raf.tick(1900); // pause elapses, flat vertex reached
+      raf.tick(2200); // tween toward the close event
+      raf.tick(2500); // pauses on the close event
+      raf.tick(3100); // pause elapses, trailing flat point reached
+      raf.tick(3400); // tween settles -- natural completion
+      expect(result.current.phase).toBe("done");
+      expect(result.current.rewindDate).toBeNull();
+
+      // Replay must not flash the previous run's own stale target date
+      // for even one frame before the first new tick corrects it --
+      // rewindDate should already be null the instant "rewinding" is
+      // (re-)entered, not just once the next tick fires.
+      act(() => {
+        result.current.play();
+      });
+      expect(result.current.phase).toBe("rewinding");
+      expect(result.current.rewindDate).toBeNull();
     });
 
     it("prefers-reduced-motion skips the rewind entirely -- play() lands straight on 'playing', matching pre-#97 behavior", () => {

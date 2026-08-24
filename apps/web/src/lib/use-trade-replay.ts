@@ -432,6 +432,7 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
             error,
           );
           setFrame(finalFrame(points));
+          setRewindDate(null);
           setPhase("done");
           setCompletedRuns((run) => run + 1);
           return;
@@ -468,7 +469,20 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
         // trailing flat point in that case -- a realistic, not
         // hypothetical, shape: the best trade in a 5Y/MAX window closing
         // on the most recent trading day).
+        //
+        // Also clears rewindDate here (issue #97 follow-up, code review
+        // found and fixed) -- this is one of the three setPhase("done")
+        // call sites this hook has (alongside skipToEnd and the
+        // corrupted-price catch above), and rewindDate's own doc comment
+        // promises "null in every other phase." Without this, a natural
+        // (non-skipped) completion left the *previous* run's target date
+        // sitting in rewindDate all through "done", genuinely visible
+        // for one frame as a wrong date at the very start of the *next*
+        // rewind if the user then clicks "Replay" -- skipToEnd already
+        // got this right; natural completion and the defensive catch
+        // above didn't.
         setFrame(finalFrame(points));
+        setRewindDate(null);
         setPhase("done");
         setCompletedRuns((run) => run + 1);
         return;
