@@ -13,19 +13,16 @@ import type {
 
 import type { ClientErrorCode, ResultsState } from "@/lib/use-results";
 import {
-  deriveIntradayPortfolioSeries,
+  deriveWholeRangeIntradaySeries,
   derivePortfolioSeries,
   type PortfolioPoint,
 } from "@/lib/portfolio-series";
-import { getDailyGuess } from "@/lib/daily-guess-storage";
 import { formatDate } from "@/lib/format-date";
-import { formatHeroCurrency } from "@/lib/format-currency";
 import { DEFAULT_MODE, MODE_LABELS, type Mode } from "@/lib/mode";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
-import { useDailyGuess } from "@/lib/use-daily-guess";
+import { useRangeGuess } from "@/lib/use-range-guess";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
 import { BenchmarkStat } from "@/components/BenchmarkStat";
-import { DailyGuessForm } from "@/components/DailyGuessForm";
 import { DayOverview } from "@/components/DayOverview";
 import { HeroStat } from "@/components/HeroStat";
 import { IntradayTradeList } from "@/components/IntradayTradeList";
@@ -500,38 +497,23 @@ export function ResultsPanel({
     return days.find((d) => d.date === selectedDay) ?? days[days.length - 1]!;
   }, [state, selectedDay]);
 
-  // The trading day immediately before activeDay in this range, if any
-  // (null for the range's own first day) -- used by DailyGuessForm's
-  // "carried over" framing (issue #84). A top-level useMemo, not a plain
-  // computation inside the intraday-daily render branch below (code
-  // review finding, fixed): an unmemoized `data.days.findIndex(...)`
-  // would redundantly re-scan the same array `activeDay`'s own useMemo
-  // above already scanned via `.find(...)`, on every ResultsPanel render
-  // -- including every StartingCapitalInput keystroke, the same
-  // "recomputes on every render, not just an actual day/mode/capital
-  // change" cost dayOverviewRows' own doc comment above already
-  // documents fixing once for an analogous per-day scan.
-  const previousDay = useMemo(() => {
-    if (state.status !== "success" || state.data.model !== "intraday-daily" || !activeDay) {
-      return null;
-    }
-    const { days } = state.data;
-    const activeDayIndex = days.findIndex((d) => d.date === activeDay.date);
-    return activeDayIndex > 0 ? days[activeDayIndex - 1]! : null;
-  }, [state, activeDay]);
-
   // Memoized so PortfolioChart's own useMemo (keyed on this array's
   // reference) doesn't get defeated by a fresh `points` array on every
   // ResultsPanel render that isn't actually a new fetch result or day
   // selection.
   //
   // Rescaling to the user's chosen starting capital (issue #15) needs no
-  // separate math here: derivePortfolioSeries/deriveIntradayPortfolioSeries
-  // are already pure linear scalings of whatever startingCapital they're
-  // handed (every point is that value times a chain of price ratios), so
-  // simply passing `startingCapital ?? <the precomputed one>` in produces
-  // an already-correctly-rescaled series for free -- see
+  // separate math here: derivePortfolioSeries is already a pure linear
+  // scaling of whatever startingCapital it's handed (every point is that
+  // value times a chain of price ratios), so simply passing
+  // `startingCapital ?? <the precomputed one>` in produces an
+  // already-correctly-rescaled series for free -- see
   // rescale-starting-capital.ts's own doc comment for why that's safe.
+  //
+  // Only ever populated for the "window"/"custom-window" models -- the
+  // intraday-daily model's own chart uses wholeRangePoints below instead
+  // (issue #91 removed the intraday-daily model's per-day chart
+  // entirely, so there's nothing for this memo to compute there).
   const points = useMemo(() => {
     if (state.status !== "success") return [];
     const { data } = state;
@@ -551,65 +533,71 @@ export function ResultsPanel({
         variant.trades,
       );
     }
-    if (!activeDay) return [];
-    const variant = selectVariant<IntradayTrade>(activeDay, activeDay.longShort, mode);
-    return deriveIntradayPortfolioSeries(
-      startingCapital ?? activeDay.startingCapital,
-      activeDay.date,
-      variant.trades,
-    );
-  }, [state, activeDay, startingCapital, mode]);
+    return [];
+  }, [state, startingCapital, mode]);
 
-  // Called unconditionally (Rules of Hooks) even when there's no active
-  // intraday day yet -- an empty-string date is never actually read from
-  // storage in that case, since the guess UI below only ever renders once
-  // `activeDay` exists. See use-daily-guess.ts for why reading storage
-  // directly here (rather than deferring to an effect) is safe. `mode` is
-  // threaded through as part of the guess key (issue #13) -- the same
-  // (range, date) pair can carry a genuinely different result depending on
-  // mode, exactly the argument daily-guess-storage.ts's own doc comment
-  // already makes for why `range` alone wasn't enough either.
-  const { guess, guessStartingCapital, submitGuess } = useDailyGuess(
-    range,
-    activeDay?.date ?? "",
-    mode,
-  );
+  // The page's one remaining guess-then-reveal control (issue #91),
+  // scoped to the whole range instead of any individual day -- see
+  // use-range-guess.ts for why reading storage directly here (rather
+  // than deferring to an effect) is safe. `mode` is threaded through as
+  // part of the guess key (issue #13) -- the same range can carry a
+  // genuinely different chained result depending on mode, exactly the
+  // argument range-guess-storage.ts's own doc comment makes. Called
+  // ahead of wholeRangePoints below (not just for readability) so that
+  // memo can gate its own work on `rangeGuess`.
+  const {
+    guess: rangeGuess,
+    guessStartingCapital: rangeGuessStartingCapital,
+    submitGuess: submitRangeGuess,
+  } = useRangeGuess(range, mode);
+
+  // The intraday-daily model's own chart series (issue #91): every day in
+  // the currently-viewed range chained into one continuous series, real
+  // intraday spacing preserved within each day -- the whole-range
+  // counterpart to `points` above, which only ever covers the window
+  // model. Each day's trades are its own mode-selected variant (issue
+  // #13), the same selectVariant call dayOverviewRows below makes per
+  // day.
+  //
+  // **Gated on `rangeGuess !== null` (found in `high` code review,
+  // fixed)**: `PortfolioChart` only ever renders this once the
+  // whole-range guess is revealed (see the JSX below) -- computing the
+  // full chained series (every trade across every day in the range, up
+  // to ~252 days for 1Y) on *every* render regardless, including every
+  // StartingCapitalInput keystroke before the user has even guessed,
+  // was real wasted work for a chart that isn't mounted yet. The same
+  // "recomputes on every render, not just an actual change" cost
+  // dayOverviewRows' own doc comment above already documents fixing
+  // once for an analogous case.
+  const wholeRangePoints = useMemo(() => {
+    if (state.status !== "success" || state.data.model !== "intraday-daily") return [];
+    if (rangeGuess === null) return [];
+    const { days } = state.data;
+    return deriveWholeRangeIntradaySeries(
+      startingCapital ?? state.data.startingCapital,
+      days.map((day) => ({
+        date: day.date,
+        trades: selectVariant<IntradayTrade>(day, day.longShort, mode).trades,
+      })),
+    );
+  }, [state, startingCapital, mode, rangeGuess]);
 
   // One row per trading day in the window (issue #80) -- feeds
   // DayOverview below, which is what makes the per-day breadth of this
   // range's result ("N independently-computed days, not just this one")
   // visible at a glance, not just whichever single day `activeDay`
-  // happens to be. Trade count is read straight off each day's own
-  // selected variant (unconditionally -- see DayOverview's own doc
-  // comment for why that's never a guess-gate spoiler); endingBalance
-  // stays `null` (a locked placeholder) unless a stored guess already
-  // exists for that exact (range, date, mode) triple, the same
-  // guess-then-reveal protection the single-day drill-down below already
-  // gives its own `dayVariant.endingBalance`.
+  // happens to be. Both `tradeCount` and `endingBalance` are shown
+  // unconditionally (issue #91 removed per-day guessing entirely -- the
+  // only remaining guess-then-reveal gate on this page is
+  // WholeRangeBalance's own, scoped to the whole range).
   //
-  // **Memoized (found in `high` code review, fixed)**: this used to be a
-  // plain computation inside the intraday-daily render branch below,
-  // recomputed on *every* ResultsPanel render -- including every
-  // keystroke in StartingCapitalInput, since each successfully-parsed
-  // keystroke changes the `startingCapital` prop and re-renders this
-  // whole panel. Each recompute does one `getDailyGuess` (a synchronous
-  // `localStorage.getItem` + `JSON.parse`) per day, up to ~252 for 1Y --
-  // real, needless work on every keystroke, not just on an actual
-  // day/mode/guess change. Hoisted to a top-level `useMemo` (unconditional,
-  // per the Rules of Hooks -- the same reason `activeDay`/`points` above
-  // are hooks too, not plain computations inside the branch below) so it
-  // only recomputes when one of its real inputs actually changes.
-  //
-  // **`guess` is a deliberate dependency even though it's never read
-  // directly in the body below** -- each row re-derives its own guessed
-  // status independently via `getDailyGuess`, so `guess` (the *active*
-  // day's own guess, from `useDailyGuess` above) isn't itself part of the
-  // computation. It's still required in the dependency array: submitting
-  // a guess changes `guess` from `null` to a value without changing
-  // `state`/`activeDay`/`startingCapital`/`mode`/`range`, and without
-  // `guess` here, this memo would keep returning the stale pre-guess rows
-  // array (the just-revealed day's row would keep showing "Guess to
-  // reveal") until some unrelated dependency happened to change too.
+  // **Memoized (found in `high` code review, fixed)**: a plain
+  // computation inside the intraday-daily render branch below would
+  // recompute on *every* ResultsPanel render, including every keystroke
+  // in StartingCapitalInput. Hoisted to a top-level `useMemo`
+  // (unconditional, per the Rules of Hooks -- the same reason
+  // `activeDay`/`points` above are hooks too) so it only recomputes when
+  // one of its real inputs actually changes.
   const dayOverviewRows = useMemo(() => {
     if (state.status !== "success" || state.data.model !== "intraday-daily") return [];
     if (!activeDay) return [];
@@ -617,7 +605,6 @@ export function ResultsPanel({
     const effectiveStartingCapital = startingCapital ?? activeDay.startingCapital;
     return days.map((day) => {
       const variant = selectVariant<IntradayTrade>(day, day.longShort, mode);
-      const alreadyGuessed = range !== null && getDailyGuess(range, day.date, mode) !== null;
       // This day's own mode-selected track's own startingCapital --
       // NOT day.startingCapital unconditionally, which is only correct
       // under mode "long". Under "long-short", day.longShort now carries
@@ -629,17 +616,14 @@ export function ResultsPanel({
       return {
         date: day.date,
         tradeCount: variant.trades.length,
-        endingBalance: alreadyGuessed
-          ? rescaleFromStartingCapital(
-              variant.endingBalance,
-              variantStartingCapital,
-              effectiveStartingCapital,
-            )
-          : null,
+        endingBalance: rescaleFromStartingCapital(
+          variant.endingBalance,
+          variantStartingCapital,
+          effectiveStartingCapital,
+        ),
       };
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `guess` is intentionally listed despite not being read in the body above; see this hook's own doc comment for why it still has to be a dependency.
-  }, [state, activeDay, startingCapital, mode, range, guess]);
+  }, [state, activeDay, startingCapital, mode]);
 
   if (state.status === "loading") {
     return <LoadingSkeleton />;
@@ -701,27 +685,10 @@ export function ResultsPanel({
         ? activeDay.worstCase.startingCapital
         : activeDay.longShort.worstCase.startingCapital;
 
-    // previousDay itself is computed once, unconditionally, above (a
-    // top-level useMemo alongside activeDay -- see its own comment
-    // there) -- used both by DailyGuessForm's "carried over" framing
-    // below and (indirectly, via DayOverview's own rows) by that
-    // component's per-row note (issue #84's acceptance criteria:
-    // visibly communicate that a day's starting point came from the
-    // previous day's real result, not a fresh reset).
-
     // dayOverviewRows itself is computed once, unconditionally, above
     // (a top-level useMemo alongside activeDay/points -- see its own
     // comment there for why it's hoisted out of this branch and memoized).
 
-    // The whole-range running-balance headline (issue #84's spoiler-fix
-    // design, see docs/plans/issue-84-plan.md section 4.2) -- locked
-    // until every day in the currently-viewed range has been
-    // individually guessed/revealed, checked by a simple count against
-    // dayOverviewRows (the same per-day guess data DayOverview's own
-    // rows already read). Deliberately count-gated, not order-gated: a
-    // user can still guess days in any order (issue #80's free-browsing
-    // design is untouched).
-    const revealedCount = dayOverviewRows.filter((row) => row.endingBalance !== null).length;
     const finalDay = data.days.at(-1);
     // The range's true final chained balance for whichever track `mode`
     // currently selects, rescaled from the range's own root startingCapital
@@ -743,16 +710,48 @@ export function ResultsPanel({
 
     return (
       <FadeInWrapper>
+        {/* This page's one guess-then-reveal control (issue #91), scoped
+            to the whole range -- see WholeRangeBalance's own doc comment
+            for why per-day guessing was removed entirely. Revealing it
+            is also what unlocks BenchmarkStat and the whole-range chart
+            below -- both would otherwise spoil the same answer. */}
         <WholeRangeBalance
-          revealedCount={revealedCount}
-          totalDays={data.days.length}
+          rangeLabel={RANGE_COPY[range]}
           startingCapital={effectiveStartingCapital}
           finalBalance={wholeRangeFinalBalance}
+          guess={rangeGuess}
+          guessStartingCapital={rangeGuessStartingCapital}
+          onSubmitGuess={submitRangeGuess}
         />
+
+        {rangeGuess !== null && (
+          <>
+            <p className="text-sm text-[var(--text-secondary)]">
+              Every trading day&apos;s own best possible outcome, chained day to day across{" "}
+              {RANGE_COPY[range]} -- up to {data.maxTradesPerDay} same-day all-in trades per day
+              across the S&amp;P 500, using real 60-minute intraday prices. As of {data.dataAsOf}.
+            </p>
+            <BenchmarkStat
+              benchmark={data.benchmark}
+              startingCapital={data.startingCapital}
+              displayStartingCapital={effectiveStartingCapital}
+              rangeLabel={RANGE_COPY[range]}
+            />
+            {/* The whole-range chart (issue #91) -- spans every day in
+                the currently-viewed range, chained continuously, rather
+                than the single active day's own intraday movement this
+                replaced. Keyed on range/dataAsOf/mode (not activeDay),
+                since it no longer depends on which day is selected
+                below -- switching days must not remount/replay this
+                chart's own reveal animation. */}
+            <PortfolioChart key={`${range}-${data.dataAsOf}-${mode}`} points={wholeRangePoints} />
+          </>
+        )}
+
         <DayOverview
           rows={dayOverviewRows}
           selected={activeDay.date}
-          // Unlike DaySelector (removed by this issue), DayOverview always
+          // Unlike DaySelector (removed by issue #80), DayOverview always
           // renders even when onSelectDay is omitted -- the whole point of
           // this component is making the range's per-day breadth visible
           // regardless of whether a caller wired up day-switching (in
@@ -764,83 +763,46 @@ export function ResultsPanel({
           maxTradesPerDay={data.maxTradesPerDay}
         />
 
-        {/* Announces the guess -> reveal swap below to screen reader users
-            (issue #67) -- always present in the DOM (not conditionally
-            mounted alongside the revealed content) so assistive tech has
-            already registered this region before the swap happens, the
-            same always-present-container pattern PortfolioChart's own
-            aria-live tooltip readout uses. Deliberately a static "the
-            reveal happened" sentence, not wired to HeroStat's per-frame
-            count-up value -- see apps/web/CLAUDE.md's "Client-side
-            animation" section on why that would spam assistive tech with
-            every intermediate number.
-
-            Includes mode (issue #13), not just the date (found in code
-            review): the day's own content genuinely changes when
-            switching between an already-guessed day's long-only and
-            long+short variants (a different trade sequence, same as
-            HeroStat's own heroKey treats a mode switch -- see that
-            comment below), even though `guess` stays non-null across
-            the switch and the date itself doesn't change -- without
-            mode in the announcement text, that swap produced no DOM
-            mutation for assistive tech to notice at all.
-
-            aria-label disambiguates this region from WholeRangeBalance's
-            own sibling `role="status"` region below (issue #84) -- two
-            live regions on one page need distinguishing labels so both
-            assistive tech and `getByRole("status", {name: ...})` queries
-            can tell them apart. */}
-        <div role="status" aria-live="polite" aria-label="Day reveal status" className="sr-only">
-          {guess !== null
-            ? `Results revealed for ${formatDate(activeDay.date)} (${MODE_LABELS[mode].toLowerCase()}).`
-            : ""}
+        {/* Announces which day/mode's content is now showing (issue #67,
+            restored by issue #91 -- found in `high` code review). Before
+            issue #91, this region only had something to announce at the
+            one-time per-day guess-then-reveal moment; deleted along with
+            that gate, but issue #91 also made switching days (via
+            DayOverview) or modes (via ModeToggle) something that
+            genuinely swaps HeroAndWorstCase's/the trade list's own
+            content *unconditionally*, on every browse -- not just a
+            one-time reveal -- so this needs to keep announcing that swap.
+            Unlike the old per-day version, this one is unconditional (no
+            `guess !== null` check) since there's no gate left to wait
+            on -- always reflects whichever day/mode is currently showing. */}
+        <div role="status" aria-live="polite" aria-label="Selected day status" className="sr-only">
+          {`Showing results for ${formatDate(activeDay.date)} (${MODE_LABELS[mode].toLowerCase()}).`}
         </div>
+
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-end justify-between gap-4">
-            {guess === null ? (
-              // Guess-then-reveal (issue #34): the actual result stays
-              // hidden behind this prompt until the user guesses (or a
-              // stored guess for this exact date is already found -- see
-              // use-daily-guess.ts) -- at which point the branch below
-              // mounts the real HeroStat for the first time, so its
-              // existing count-up/celebration choreography fires right
-              // at the moment of reveal instead of on page load. Prompted
-              // against the user's chosen starting capital (issue #15),
-              // not the raw per-day precomputed one, so the guess prompt
-              // stays consistent with every other dollar figure on the
-              // page (see effectiveStartingCapital above).
-              <DailyGuessForm
-                date={activeDay.date}
-                startingCapital={effectiveStartingCapital}
-                previousDate={previousDay?.date ?? null}
-                onSubmit={(value) => submitGuess(value, effectiveStartingCapital)}
-              />
-            ) : (
-              // Gated behind the same guess-then-reveal condition as the
-              // rest of this day's content (issue #34) -- showing
-              // WorstCaseStat's worst-case figure before the guess is
-              // submitted would partially spoil "the real answer" the
-              // guessing game is built around. `heroKey` is the active
-              // day's date plus mode (issue #13) so switching days (via
-              // DayOverview, issue #80) or modes (via ModeToggle) remounts HeroStat
-              // instead of just updating its props in place -- useCountUp's
-              // reveal animation only fires on mount (see HeroStat's own
-              // doc comment), so without this key the visible figure would
-              // stay frozen at the previous day's/mode's animated value
-              // while the sr-only figure (driven directly by the prop)
-              // correctly updated, silently disagreeing with each other.
-              // Deliberately not keyed on startingCapital too (issue #15)
-              // -- a capital edit should rescale the figures instantly, not
-              // replay the reveal/celebration.
-              <HeroAndWorstCase
-                heroKey={`${activeDay.date}-${mode}`}
-                startingCapital={dayStartingCapital}
-                endingBalance={dayVariant.endingBalance}
-                worstCaseEndingBalance={dayVariant.worstCase.endingBalance}
-                worstCaseStartingCapital={dayWorstCaseStartingCapital}
-                displayStartingCapital={effectiveStartingCapital}
-              />
-            )}
+            {/* Individual days are freely browsable, no guessing required
+                (issue #91) -- HeroAndWorstCase always renders for
+                whichever day is selected. `heroKey` is the active day's
+                date plus mode (issue #13) so switching days (via
+                DayOverview, issue #80) or modes (via ModeToggle) remounts
+                HeroStat instead of just updating its props in place --
+                useCountUp's reveal animation only fires on mount (see
+                HeroStat's own doc comment), so without this key the
+                visible figure would stay frozen at the previous
+                day's/mode's animated value while the sr-only figure
+                (driven directly by the prop) correctly updated, silently
+                disagreeing with each other. Deliberately not keyed on
+                startingCapital too (issue #15) -- a capital edit should
+                rescale the figures instantly, not replay the reveal. */}
+            <HeroAndWorstCase
+              heroKey={`${activeDay.date}-${mode}`}
+              startingCapital={dayStartingCapital}
+              endingBalance={dayVariant.endingBalance}
+              worstCaseEndingBalance={dayVariant.worstCase.endingBalance}
+              worstCaseStartingCapital={dayWorstCaseStartingCapital}
+              displayStartingCapital={effectiveStartingCapital}
+            />
             <div className="flex flex-wrap items-end gap-4">
               {onStartingCapitalChange && (
                 <StartingCapitalInput
@@ -850,74 +812,23 @@ export function ResultsPanel({
               )}
             </div>
           </div>
-          {guess !== null && (
-            <>
-              <p className="text-sm text-[var(--text-secondary)]">
-                Best possible outcome on {formatDate(activeDay.date)}, with at most{" "}
-                {data.maxTradesPerDay} same-day all-in trades across the S&amp;P 500, using real
-                60-minute intraday prices. As of {data.dataAsOf}.
-              </p>
-              {/* The benchmark is a whole-{range} figure (issue #12), not
-                  scoped to the currently-selected day the way HeroStat/the
-                  chart/trade list below are -- a real, deliberate
-                  juxtaposition, spelled out in BenchmarkStat's own copy
-                  ("over the full {range}") rather than left ambiguous. */}
-              <BenchmarkStat
-                benchmark={data.benchmark}
-                startingCapital={data.startingCapital}
-                displayStartingCapital={effectiveStartingCapital}
-                rangeLabel={RANGE_COPY[range]}
-              />
-              <p className="text-sm text-[var(--text-muted)]">
-                {/* guess/guessStartingCapital are the raw dollar amount the
-                    user typed and whatever effectiveStartingCapital the
-                    prompt was showing at that moment (see the
-                    DailyGuessForm submission above and
-                    use-daily-guess.ts's own doc comment) -- if the user
-                    edits starting capital *after* revealing, that stored
-                    pair goes stale relative to the now-current
-                    effectiveStartingCapital driving HeroStat/the chart
-                    below. Rescale it the same way every other dollar
-                    figure on this page rescales (real bug, found in code
-                    review: this used to render the raw stored guess
-                    unrescaled, silently comparing against the wrong
-                    baseline once starting capital changed post-reveal). */}
-                You guessed{" "}
-                {formatHeroCurrency(
-                  rescaleFromStartingCapital(
-                    guess,
-                    guessStartingCapital ?? effectiveStartingCapital,
-                    effectiveStartingCapital,
-                  ),
-                )}
-                .
-              </p>
-            </>
-          )}
+          <p className="text-sm text-[var(--text-secondary)]">
+            Best possible outcome on {formatDate(activeDay.date)}, with at most{" "}
+            {data.maxTradesPerDay} same-day all-in trades across the S&amp;P 500, using real
+            60-minute intraday prices. As of {data.dataAsOf}.
+          </p>
         </div>
 
-        {guess !== null && (
-          <>
-            {/* Keyed the same as HeroAndWorstCase's own heroKey above
-                (issue #85), for the same reason the window model's own
-                PortfolioChart call site documents: without this key, the
-                reveal animation would only replay on a genuine range
-                fetch, not on every day/mode switch the way HeroStat's
-                count-up/glow already do. */}
-            <PortfolioChart key={`${activeDay.date}-${mode}`} points={points} />
-
-            <div className="flex flex-col gap-3">
-              <h2 className="text-lg font-semibold text-[var(--text-primary)]">Trades</h2>
-              {isEmptyDay ? (
-                <div className="surface-card rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
-                  No trade would have beaten holding cash on {formatDate(activeDay.date)}.
-                </div>
-              ) : (
-                <IntradayTradeList trades={dayVariant.trades} />
-              )}
+        <div className="flex flex-col gap-3">
+          <h2 className="text-lg font-semibold text-[var(--text-primary)]">Trades</h2>
+          {isEmptyDay ? (
+            <div className="surface-card rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-6 text-center text-sm text-[var(--text-secondary)]">
+              No trade would have beaten holding cash on {formatDate(activeDay.date)}.
             </div>
-          </>
-        )}
+          ) : (
+            <IntradayTradeList trades={dayVariant.trades} />
+          )}
+        </div>
       </FadeInWrapper>
     );
   }

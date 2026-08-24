@@ -22,7 +22,7 @@ interface StartingCapitalInputProps {
  * the user rescale every dollar figure on the page without a server
  * round-trip (see ResultsPanel, which feeds this value into HeroStat's
  * displayStartingCapital and straight into
- * derivePortfolioSeries/deriveIntradayPortfolioSeries for the chart).
+ * derivePortfolioSeries/deriveWholeRangeIntradaySeries for the chart).
  *
  * Keeps its own local "draft" text state, separate from the committed
  * `value` prop, so the user can freely clear/backspace/retype mid-edit

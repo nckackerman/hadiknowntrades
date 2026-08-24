@@ -721,7 +721,19 @@ the same two-layer shape `lib/daily-guess-storage.ts` establishes:
   established for range changes - a changed key must re-read storage
   fresh, not carry over the previous key's in-memory state.
 
-## Daily guessing game (issue #34)
+## Daily guessing game (issue #34) -- REMOVED by issue #91, kept for history
+
+**Superseded.** Issue #91 removed per-day guessing entirely -- every
+individual day's `HeroStat`/worst-case stat/trade list now renders
+unconditionally, no `DailyGuessForm`, no per-(range, date, mode) gate.
+`DailyGuessForm.tsx`, `use-daily-guess.ts`, and `daily-guess-storage.ts`
+are deleted. The page's only remaining guess-then-reveal control is
+`WholeRangeBalance`, scoped to the whole range -- see "Whole-range-only
+guessing (issue #91)" below for the current model. The section below
+this note is left as-is as a historical record of what issue #34
+originally shipped and why (its own reasoning about `(range, date,
+mode)` keying still informed #91's simpler `(range, mode)` key) -- do
+not treat anything below as describing current behavior.
 
 `ResultsPanel.tsx`'s intraday-daily branch (see "Two result models"
 above) gates `HeroStat`, `PortfolioChart`, and the trade list behind a
@@ -2566,16 +2578,20 @@ call-site fixes are covered above (this file's "rescaleFromStartingCapital's
 per-day pattern..." section) -- this section covers the new UI surfaces
 and one real accessibility gotcha found along the way.
 
-- **`WholeRangeBalance.tsx`** is the new whole-range running-balance
+- **`WholeRangeBalance.tsx`** is the whole-range running-balance
   headline (issue #84's own spoiler-fix design, section 4.2) -- rendered
-  above `DayOverview` in the intraday-daily branch, count-gated (not
-  order-gated) on `revealedCount === data.days.length`: masked with a
-  neutral progress placeholder ("Reveal all N days below... -- X of N
+  above `DayOverview` in the intraday-daily branch. **Gating superseded
+  by issue #91**: originally count-gated (not order-gated) on
+  `revealedCount === data.days.length`, masked with a neutral progress
+  placeholder ("Reveal all N days below... -- X of N
   revealed so far") until every day in the currently-viewed range has
-  been individually guessed/revealed via `DailyGuessForm`, in any order.
-  A user can still guess days in any order (issue #80's free-browsing
-  design is untouched) -- the headline simply doesn't unlock until the
-  _count_ reaches the total. Computes its own `finalBalance` via a
+  been individually guessed/revealed via `DailyGuessForm`, in any order
+  -- **issue #91 replaced this whole mechanism**: `WholeRangeBalance`
+  now owns its own independent guess-then-reveal form (backed by
+  `range-guess-storage.ts`/`use-range-guess.ts`, keyed `(range, mode)`
+  with no date dimension), unrelated to any per-day state -- see
+  "Whole-range-only guessing (issue #91)" below for the current design.
+  Computes its own `finalBalance` via a
   _single_ rescale from the range's own root `data.startingCapital` to
   the final chained day's own selected-track `endingBalance` -- see the
   section above for why this must NOT reuse the per-day rescale pattern
@@ -2627,3 +2643,87 @@ and one real accessibility gotcha found along the way.
 $32.81`, matching modulo rounding) -- confirming the headline's
   root-based rescale produces the real compounded figure, not a
   per-day-cancelled one.
+
+## Whole-range-only guessing (issue #91)
+
+Replaced per-day guessing (issue #34) and count-gated whole-range
+unlocking (issue #84) with a single guess-then-reveal control scoped to
+the whole range -- guessing every individual day before seeing one
+summary figure was tedious, and the point of the game is "what did the
+whole range turn into," not any one day along the way. Window-model
+ranges (5Y/MAX) are untouched -- they never had guessing at all.
+
+- **Every individual day is now unconditionally visible.** In
+  `ResultsPanel.tsx`'s intraday-daily branch, `HeroAndWorstCase` and
+  `IntradayTradeList` render immediately for whichever day is selected
+  -- no `DailyGuessForm`, no gate. `DayOverview`'s own rows show real
+  `endingBalance` figures unconditionally too (`DayOverviewRow.endingBalance`
+  is now a plain `number`, not `number | null` -- no more "Guess to
+  reveal" placeholder).
+
+  **A known, accepted trade-off, not an oversight** (raised in this
+  issue's own `high` code review, and explicitly decided by the user
+  rather than fixed unilaterally): every row's real dollar figure lets a
+  sufficiently motivated user multiply each day's own implied ratio
+  together and back out `WholeRangeBalance`'s exact "protected" final
+  answer without ever submitting a guess -- precisely the reconstruction
+  risk this file's own "Chained per-day starting capital" section
+  documents as the reason the pre-#91 design was count-gated in the
+  first place. Decided to ship anyway: the point of this issue was
+  removing per-day guessing _interaction_ tedium, not information-hiding
+  rigor, and multiplying out 5-20+ per-day ratios by hand is real
+  friction essentially no one will bother with. If this ever needs
+  revisiting, the fix would be obscuring `DayOverview`'s own dollar
+  figures (e.g. a gain/loss direction indicator instead of the exact
+  amount) rather than re-gating the rows behind a guess again.
+
+- **`WholeRangeBalance.tsx` is the page's one remaining guess-then-reveal control**, independent of any per-day state. It shows a guess form ("Before you look: starting from $X, riding {range} start to finish... what do you think it became?") until the user submits a guess, then shows the real dollar figures plus their own guessed amount.
+
+  The storage backing it is two new modules, both keyed by the pair (range, mode): `range-guess-storage.ts` for the plain read/write functions, `use-range-guess.ts` for the React hook wrapping them. That's a simpler key than the deleted per-day `daily-guess-storage.ts` needed -- no date at all, since there's exactly one guess per range now, not one per (range, date, mode) triple.
+
+  Revealing this headline is also what unlocks `BenchmarkStat` and the whole-range chart below it -- both would otherwise spoil the same answer, and both used to be gated by the _selected day's_ own per-day guess despite being whole-range figures, a scoping mismatch this issue also fixed.
+
+- **The whole-range chart replaces the old per-day intraday chart
+  entirely** -- there is exactly one chart in the intraday-daily branch
+  now, not one per selected day. `portfolio-series.ts`'s new
+  `deriveWholeRangeIntradaySeries` chains every day in the range into one
+  continuous `PortfolioPoint[]`: each day keeps real intraday spacing
+  (reusing the module's shared `appendTradeSteps` helper), and each
+  day's starting value carries forward from the _previous day's real
+  ending value_ -- the same chaining `wholeRangeFinalBalance` already
+  relied on (issue #84), now expressed as a full series instead of just
+  a start/end pair. A zero-trade day renders as a single flat point at
+  the running value (mirroring `deriveIntradayPortfolioSeries`'s own
+  zero-trade handling), not a gap.
+- **`PortfolioChart`/`formatDateTime` needed a real fix, found by
+  actually looking at a screenshot, not assumed from the data alone**:
+  `formatDateTime` used to format every datetime-labeled point as
+  time-only ("9:30 AM"), correct for a single day's own chart (the day
+  is shown elsewhere on the page) but silently wrong for a chart
+  spanning many days -- a bare time is ambiguous about _which_ day it's
+  on, and the whole-range chart's axis/tooltip/data-table all rendered
+  this way until caught live. Fixed by giving `formatDateTime` a
+  required second `includeDate: boolean` param (no default -- forces
+  every call site to decide deliberately) and a new
+  `portfolio-series.ts` export, `spansMultipleDays(points)`, that
+  `PortfolioChart` computes once from its own `points` prop and threads
+  into all four `formatDateTime` call sites (axis start/end labels,
+  hover tooltip, the data-table fallback). `ChartDataTable` is a
+  separately memoized child component (see its own doc comment on why),
+  so it recomputes `spansMultipleDays` from its own `points` prop rather
+  than receiving it as a prop threaded down -- cheap, and one fewer
+  thing for a caller to keep in sync with the same array.
+- **Live-verified via the "Screenshotting a component locally" throwaway
+  debug-route technique** (issue #45's own pattern, no real
+  `LOCAL_RESULTS_DIR`/AWS creds needed) -- a 6-day hand-built
+  intraday-daily fixture with a mix of gains/losses/a flat day. Confirmed:
+  every day's `HeroAndWorstCase`/trades render immediately with no guess
+  prompt anywhere per-day; `DayOverview` rows show real dollar figures
+  immediately; `WholeRangeBalance`'s guess form gates only itself,
+  `BenchmarkStat`, and the chart; switching the selected day after
+  revealing leaves the whole-range reveal untouched (confirming the two
+  are genuinely independent, not accidentally coupled); the revealed
+  chart's line visibly spans the entire 6-day range with the axis
+  reading "Aug 14, 9:30 AM" -> "Aug 21, 1:30 PM" (confirming the
+  `formatDateTime` fix above); and the mobile (390px) layout reflows
+  cleanly with no horizontal overflow.
