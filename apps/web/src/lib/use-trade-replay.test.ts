@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PortfolioPoint } from "./portfolio-series";
 import { createRafPump } from "./raf-pump.test-util";
 import { stubPrefersReducedMotion } from "./stub-prefers-reduced-motion.test-util";
-import { useTradeReplay } from "./use-trade-replay";
+import { useTradeReplay, type ReplayPacing } from "./use-trade-replay";
 
 // The rewind intro beat (issue #97) is 700ms -- with performance.now()
 // pinned to 1000 throughout this file's tests (see each test's own
@@ -541,6 +541,132 @@ describe("useTradeReplay", () => {
     raf.tick(3400); // tween settles -- natural completion
     expect(result.current.phase).toBe("done");
     expect(result.current.completedRuns).toBe(2);
+  });
+
+  describe("pacing parameter (issue #105)", () => {
+    it("defaults preserved when omitted -- every existing test above already exercises this implicitly (300ms/600ms/700ms), confirmed explicitly here too", () => {
+      vi.spyOn(performance, "now").mockReturnValue(1000);
+      const raf = createRafPump();
+
+      const { result } = renderHook(() => useTradeReplay(ONE_TRADE_POINTS));
+
+      act(() => {
+        result.current.play();
+      });
+      raf.tick(699); // 1ms short of the default 700ms rewindMs -- not yet complete
+      expect(result.current.phase).toBe("rewinding");
+      raf.tick(1700); // 700ms elapsed -- completes on schedule
+      expect(result.current.phase).toBe("playing");
+    });
+
+    it("a custom pacing object's values actually drive the RAF timing, not the module's own defaults", () => {
+      vi.spyOn(performance, "now").mockReturnValue(1000);
+      const raf = createRafPump();
+      const pacing: ReplayPacing = { transitionMs: 100, eventPauseMs: 50, rewindMs: 200 };
+
+      const { result } = renderHook(() => useTradeReplay(ONE_TRADE_POINTS, pacing));
+
+      act(() => {
+        result.current.play();
+      });
+      expect(result.current.phase).toBe("rewinding");
+
+      // The default rewindMs (700ms) would still be mid-rewind here --
+      // this custom 200ms value completes well before that.
+      raf.tick(1100); // 100ms elapsed -- not yet complete under this custom rewindMs
+      expect(result.current.phase).toBe("rewinding");
+      raf.tick(1200); // 200ms elapsed -- completes
+      expect(result.current.phase).toBe("playing");
+
+      // transitionMs=100 (not the default 300ms) drives the first
+      // segment's tween toward the "open" event.
+      raf.tick(1050); // 50ms elapsed -- still tweening under this custom transitionMs
+      expect(result.current.frame.revealedCount).toBe(1);
+      raf.tick(1100); // 100ms elapsed -- reaches & pauses on the open event
+      expect(result.current.frame.revealedCount).toBe(2);
+      expect(result.current.frame.activeEvent?.event.type).toBe("open");
+
+      // eventPauseMs=50 (not the default 600ms) governs this pause.
+      raf.tick(1140); // 40ms elapsed since the pause began -- still paused
+      expect(result.current.frame.activeEvent?.event.type).toBe("open");
+      raf.tick(1150); // 50ms elapsed -- pause elapses, advances toward the next point
+      raf.tick(1250); // the next segment's own 100ms tween completes -- the flat vertex (no event), revealed with no further pause
+      expect(result.current.frame.revealedCount).toBe(3);
+      expect(result.current.frame.activeEvent).toBeNull();
+    });
+  });
+
+  describe("datetime-labeled (chained-intraday) points -- issue #105", () => {
+    // Mirrors deriveWholeRangeIntradaySeries's own point shape (issue
+    // #91/#105): datetime-labeled ("YYYY-MM-DDTHH:MM:SS"), spanning more
+    // than one calendar day.
+    const DATETIME_POINTS: PortfolioPoint[] = [
+      { date: "2025-08-21T09:30:00", value: 20, event: null },
+      {
+        date: "2025-08-21T10:30:00",
+        value: 20,
+        event: { type: "open", direction: "long", ticker: "AAPL", price: 100 },
+      },
+      { date: "2025-08-21T11:30:00", value: 20, event: null },
+      {
+        date: "2025-08-21T11:30:00",
+        value: 40,
+        event: { type: "close", direction: "long", ticker: "AAPL", price: 200 },
+      },
+      { date: "2025-08-22T09:30:00", value: 40, event: null },
+    ];
+
+    it("the rewind tween's own target date formats correctly against a datetime-labeled point, not 'Invalid Date' (real bug, found while implementing issue #105)", () => {
+      // The old `Date.parse(`${points[0]!.date}T00:00:00Z`)` produced a
+      // malformed double-`T` string against a datetime-labeled point
+      // ("2025-08-21T09:30:00T00:00:00Z"), which Date.parse silently
+      // resolves to NaN -- the rewind's own tween target would be NaN,
+      // and every formatted value from that point on reads "Invalid
+      // Date" for the whole rewind beat.
+      vi.spyOn(performance, "now").mockReturnValue(1000);
+      vi.spyOn(Date, "now").mockReturnValue(Date.parse("2025-08-25T00:00:00Z"));
+      const raf = createRafPump();
+
+      const { result } = renderHook(() => useTradeReplay(DATETIME_POINTS));
+
+      act(() => {
+        result.current.play();
+      });
+      raf.tick(1000); // t=0, tweening from "now"
+      expect(result.current.displayDate).not.toBe("Invalid Date");
+      raf.tick(1690); // t close to 1 -- would already show NaN under the old bug
+      expect(result.current.displayDate).not.toBe("Invalid Date");
+      raf.tick(1700); // completes the rewind, landing on the series' own real start datetime
+      expect(result.current.phase).toBe("playing");
+    });
+
+    it("the playing-phase readout formats a datetime-labeled point with its own date, not just a bare time -- and not 'Invalid Date' (real bug, same class as the rewind fix above, found while implementing issue #105)", () => {
+      // The old bare `formatDate(points[index]!.date)` call unconditionally
+      // did the exact same malformed-double-`T` `Date.parse` the rewind
+      // fix above avoids -- the identical bug for the whole rest of
+      // forward playback, not just the rewind beat.
+      vi.spyOn(performance, "now").mockReturnValue(1000);
+      vi.spyOn(Date, "now").mockReturnValue(Date.parse("2025-08-25T00:00:00Z"));
+      const raf = createRafPump();
+
+      const { result } = renderHook(() => useTradeReplay(DATETIME_POINTS));
+
+      act(() => {
+        result.current.play();
+      });
+      raf.tick(1700); // completes the rewind, landing on "playing"
+      expect(result.current.phase).toBe("playing");
+      // Lands on the series' own first point's real datetime, formatted
+      // with the date included (chained-intraday points always
+      // disambiguate their own day, per formatDateTime's own doc
+      // comment) -- "Aug 21, 9:30 AM", not "Invalid Date".
+      expect(result.current.displayDate).toBe("Aug 21, 9:30 AM");
+
+      raf.tick(1000); // tween toward the "open" event
+      raf.tick(1300); // arrives at the "open" event, pauses
+      expect(result.current.frame.activeEvent?.event.type).toBe("open");
+      expect(result.current.displayDate).toBe("Aug 21, 10:30 AM");
+    });
   });
 
   describe("rewinding phase (issue #97)", () => {

@@ -1137,6 +1137,62 @@ describe("ResultsPanel", () => {
         expect(within(headline).getByText("$200.00")).toBeInTheDocument();
         expect(within(headline).queryByText("$100.00")).not.toBeInTheDocument();
       });
+
+      it("renders WholeRangeReplay (not a bare PortfolioChart) once revealed -- a 'Watch it happen' button now exists, which the old bare chart call never had", async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureChainedResult() };
+        render(<ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />);
+        await submitWholeRangeGuess(user);
+
+        expect(screen.getByRole("button", { name: "Watch it happen" })).toBeInTheDocument();
+        expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+      });
+
+      it("computes and rescales the whole-range worst-case figure (issue #105) from the range's own root, mirroring wholeRangeFinalBalance's own pattern -- mode='long'", async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureChainedResult() };
+        render(
+          <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" startingCapital={100} />,
+        );
+        await submitWholeRangeGuess(user);
+
+        // finalDay (2026-08-21).worstCase = { startingCapital: 10, endingBalance: 20 };
+        // wholeRangeWorstCaseStartingCapital is always the range's own
+        // root (20), not the day's own chained worstCase.startingCapital
+        // -- rescaleFromStartingCapital(20, from=20 [root], to=100) = 100.
+        const caption = screen.getByText(
+          "Whole-range running balance -- carried day to day, start to finish",
+        );
+        const row = caption.closest(".relative")!.parentElement!;
+        const worstCase = within(row).getByText("Worst case, same budget").parentElement!;
+        expect(within(worstCase).getByText("$100.00")).toBeInTheDocument();
+      });
+
+      it("computes and rescales the whole-range worst-case figure from the long+short track under mode='long-short'", async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureChainedResult() };
+        render(
+          <ResultsPanel
+            range="1M"
+            state={state}
+            selectedDay="2026-08-21"
+            mode="long-short"
+            startingCapital={100}
+          />,
+        );
+        await submitWholeRangeGuess(user);
+
+        // finalDay.longShort.worstCase = { startingCapital: 5, endingBalance: 15 };
+        // still rescaled from the range's own root (20), not the track's
+        // own chained worstCase.startingCapital (5) --
+        // rescaleFromStartingCapital(15, from=20 [root], to=100) = 75.
+        const caption = screen.getByText(
+          "Whole-range running balance -- carried day to day, start to finish",
+        );
+        const row = caption.closest(".relative")!.parentElement!;
+        const worstCase = within(row).getByText("Worst case, same budget").parentElement!;
+        expect(within(worstCase).getByText("$75.00")).toBeInTheDocument();
+      });
     });
   });
 

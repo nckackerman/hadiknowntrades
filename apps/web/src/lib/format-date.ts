@@ -54,13 +54,33 @@ export function formatTime(time: string): string {
  * ("2025-08-21T14:30:00", an intraday day's chart -- issue #28) rather
  * than a plain calendar date ("2025-08-21", the window model) --
  * detected by the presence of a "T" separator. The single canonical
- * place this detection happens: PortfolioChart's `toTimestamp` uses
- * this too (instead of its own copy of the same check), so the two
- * can't drift on what counts as "a datetime" the way two independently
- * written string-sniffing checks otherwise could.
+ * place this detection happens: this module's own `toPortfolioTimestamp`
+ * (below) and `formatDateTime` both delegate to it instead of each
+ * keeping their own copy of the same check, so the two can't drift on
+ * what counts as "a datetime" the way two independently written
+ * string-sniffing checks otherwise could.
  */
 export function isPortfolioDatetime(date: string): boolean {
   return date.includes("T");
+}
+
+/**
+ * A PortfolioPoint's `date` is either a plain calendar date
+ * ("2025-08-21", the window model) or a full local datetime
+ * ("2025-08-21T14:30:00", an intraday day's chart -- issue #28). Both
+ * are parsed "as if UTC" (a "Z" appended, not re-interpreted through any
+ * real timezone) purely to get a monotonic numeric timestamp -- e.g. for
+ * laying points out along a chart's x-axis, or for a rewind-intro-beat
+ * tween target (issue #97/#105). Extracted from PortfolioChart.tsx's own
+ * private `toTimestamp` (issue #105's own plan, section 5/6) so
+ * use-trade-replay.ts can share it too, rather than re-deriving the same
+ * "is this a datetime or a plain date" check a third time via its own
+ * inline `Date.parse` -- see isPortfolioDatetime's own doc comment for
+ * why that's the one thing this module already guards against
+ * duplicating.
+ */
+export function toPortfolioTimestamp(date: string): number {
+  return new Date(isPortfolioDatetime(date) ? `${date}Z` : `${date}T00:00:00Z`).getTime();
 }
 
 /**

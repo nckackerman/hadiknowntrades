@@ -18,14 +18,13 @@
 
 import { useMemo, type ReactNode } from "react";
 
-import { formatHeroCurrency, formatMultiplier, formatPercent } from "@/lib/format-currency";
-import { formatDateTime } from "@/lib/format-date";
+import { formatHeroCurrency, formatMultiplier } from "@/lib/format-currency";
 import type { PortfolioPoint } from "@/lib/portfolio-series";
 import { spansMultipleDays } from "@/lib/portfolio-series";
+import { calloutText } from "@/lib/replay-callout";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
-import { tradeVerbsPastCapitalized } from "@/lib/trade-math";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
-import { useTradeReplay, type ReplayEvent } from "@/lib/use-trade-replay";
+import { useTradeReplay } from "@/lib/use-trade-replay";
 import { HeroAndWorstCase } from "@/components/HeroAndWorstCase";
 import {
   heroLabelClassName,
@@ -51,29 +50,6 @@ interface TradeReplayProps {
   startingCapitalInput?: ReactNode;
   /** Rendered between the hero row and the chart (BenchmarkStat) -- unaffected by playback, always the same regardless of phase. */
   children?: ReactNode;
-}
-
-/**
- * Past-tense narration for one playback callout, matching TradeList's
- * established voice ("bought AAPL on Mar 12, 2025 at $142.00") rather
- * than inventing new copy -- per the issue's own Background section.
- * Always retrospective, never present/future tense: this app's premise
- * is hindsight, not a live trading terminal. Verb pair comes from
- * trade-math.ts's `tradeVerbsPastCapitalized` (code-review follow-up --
- * a one-off `capitalize()` helper used to live in this file instead,
- * reinventing exactly the class of verb-pair fragmentation that
- * module's own header comment already centralizes).
- */
-function calloutText(replayEvent: ReplayEvent, includeDate: boolean): string {
-  const { point, event, tradeReturn } = replayEvent;
-  const verb = tradeVerbsPastCapitalized(event.direction)[
-    event.type === "open" ? "openVerb" : "closeVerb"
-  ];
-  const sentence = `${verb} ${event.ticker} on ${formatDateTime(point.date, includeDate)} at ${formatHeroCurrency(event.price)}`;
-  if (event.type === "close" && tradeReturn) {
-    return `${sentence} (${formatPercent(tradeReturn.returnFraction)}).`;
-  }
-  return `${sentence}.`;
 }
 
 const buttonClassName =

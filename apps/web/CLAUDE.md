@@ -405,7 +405,9 @@ model) or a full local datetime (`YYYY-MM-DDTHH:MM:SS`, one intraday
 day's chart, via `portfolio-series.ts`'s `deriveIntradayPortfolioSeries`)
 -- detected by `format-date.ts`'s exported `isPortfolioDatetime` (a "T"
 separator check), the single shared place this detection happens.
-`PortfolioChart`'s `toTimestamp` and `format-date.ts`'s own
+`format-date.ts`'s own exported `toPortfolioTimestamp` (called by
+`PortfolioChart.tsx` for its x-axis timestamps, and by
+`use-trade-replay.ts` for its rewind-tween target, issue #105) and
 `formatDateTime` both call it rather than each re-implementing the same
 check -- a real duplication caught in code review before this note was
 written; don't reintroduce a second copy of the check.
@@ -4659,3 +4661,240 @@ lower-confidence robustness gap, both fixed before merge.
 - All five routine checks (lint, `next typegen && tsc --noEmit`, `pnpm
 build`, `pnpm test`, `pnpm format:check`) re-ran green after both
   fixes.
+
+## "Watch it happen" replay for 1W (issue #105)
+
+Extends #96/#97/#107/#108's window-model-only replay to the
+intraday-daily whole-range headline, for the 1W preset range
+specifically (1M/3M/1Y are a materially different pacing/scale problem,
+tracked separately -- see issue #106's own sibling plan). Implements
+`docs/plans/issue-105-plan.md` essentially as designed -- the plan's own
+independent-review process (two rounds before any code was written)
+caught the load-bearing mistakes early, so implementation matched the
+plan closely; only a couple of small, obvious gaps in the plan's own
+prop lists needed filling in mechanically (see below), not real design
+deviations.
+
+- **`useTradeReplay` gained an optional second parameter, `pacing?:
+ReplayPacing` (`{ transitionMs, eventPauseMs, rewindMs }`), defaulting
+  to a module-level `DEFAULT_PACING` matching the pre-#105 window-model
+  constants exactly** -- `TradeReplay.tsx` needed zero changes, it
+  simply never passes the parameter. Both RAF effects (`playing` and
+  `rewinding`) include `pacing` in their own dependency arrays alongside
+  `phase`/`points`, so a genuinely different `pacing` object (by
+  reference) restarts the effect the same way a `points` change does --
+  every real caller passes one fixed, module-level object for its entire
+  lifetime, so this is satisfied by construction, not extra bookkeeping.
+- **`WholeRangeReplay.tsx`'s own `WHOLE_RANGE_REPLAY_PACING`
+  (`transitionMs: 130, eventPauseMs: 220, rewindMs: 700`) is what the
+  plan's own section 2.3 worked out analytically for 1W's real worst
+  case (50 points/49 segments/30 event-pauses against
+  `deriveWholeRangeIntradaySeries`'s own point shape -- one leading
+  boundary point per trading day, no trailing boundary point, a
+  genuinely different layout than `derivePortfolioSeries`).** Live-
+  measured (see "Live verification" below) at **~14.4s** for a real
+  worst-case 15-trade run -- under the plan's own 15s ceiling, but
+  ~1.4s (~11%) over its ~13.0s analytical estimate, confirming the
+  plan's own explicit caveat that real browser RAF-scheduling overhead
+  wasn't accounted for in that number. Still comfortably inside the
+  ceiling; not re-tightened further, matching the plan's own explicit
+  warning against pushing `eventPauseMs` down purely to chase a duration
+  target once it's already short enough to risk reading as "flicker"
+  rather than "brisk" across up to 30 pauses in one run.
+- **Two real, previously-undocumented date-formatting bugs fixed in
+  `use-trade-replay.ts`, exactly as the plan's own section 5
+  identified** -- both only reachable against a datetime-labeled
+  (chained-intraday) series, never against the window model's own
+  plain-date points, which is why they'd sat latent since #96/#97/#107
+  shipped:
+  1. The rewind effect's own target-date parse (``Date.parse(`${points[0]!.date}T00:00:00Z`)``)
+     assumed a plain calendar date -- against a datetime-labeled point
+     ("2025-08-21T09:30:00") this produced a malformed double-`T` string,
+     which `Date.parse` silently resolves to `NaN`, rendering "Invalid
+     Date" for the entire rewind beat.
+  2. `displayDate`'s `"playing"` branch called bare `formatDate(...)`,
+     which does the exact same unconditional `Date.parse` -- the
+     identical bug for the whole rest of forward playback, not just the
+     rewind beat.
+
+  Both fixed by extracting `PortfolioChart.tsx`'s own private
+  `toTimestamp` into `format-date.ts`'s newly-exported
+  `toPortfolioTimestamp` (the rewind effect now calls this instead of
+  its own inline `Date.parse`) and swapping the bare `formatDate(...)`
+  call for `formatDateTime(points[index]!.date, true)` (`formatDateTime`
+  already delegates to `formatDate` unconditionally for a plain-date
+  point, so this is a zero-behavior-change swap for the window model and
+  the correct multi-day-aware format, e.g. "Aug 21, 9:30 AM", for the
+  chained-intraday case). Both fixes are regression-tested in
+  `use-trade-replay.test.ts` against a real datetime-labeled fixture --
+  see its own "datetime-labeled (chained-intraday) points" describe
+  block.
+
+- **`WholeRangeBalance.tsx` gained `worstCase?`/`revealSlot?` props,
+  restructuring its `revealed` branch so the caption and headline `<p>`s
+  are genuinely paired inside one `relative` wrapper** (mirroring
+  `HeroAndWorstCase.tsx`'s own `<div className="relative">` around
+  `HeroStat`, not a new pattern) -- the caption text moved from
+  "rendered once, before the guess/revealed ternary" to "rendered once
+  per branch" (the unrevealed branch is unchanged; the revealed branch
+  gets its own copy, now paired with the headline). With no `revealSlot`
+  passed (every pre-#105 caller, and the idle/done phases of the new
+  one), this is a pure no-op -- same text, same classes, same document
+  position. Exports its own `wholeRangeLabelClassName`/
+  `wholeRangeValueRowClassName` pair (mirroring `HeroStat.tsx`'s own
+  exported pair, issue #96 follow-up round four's precedent) for
+  `WholeRangeReplay.tsx` to build its overlay content from -- **not** a
+  reuse of `HeroStat`'s classes, since `WholeRangeBalance` is a
+  different component with its own typography (the plan's first draft
+  tried reusing `HeroStat`'s classes directly and found, on inspection,
+  that `WholeRangeBalance` had no matching paired label+value structure
+  to overlay onto as shipped -- see the plan's own section 3.2 for the
+  full "rejected approach" writeup).
+- **New `WholeRangeReplay.tsx` composes `WholeRangeBalance` (extended as
+  above) instead of `HeroAndWorstCase`** -- a deliberate divergence from
+  issue #106's own sibling plan sketch (written before a shipped 1W
+  existed to check the assumption against), stated explicitly in both
+  the plan's section 3.1 and this component's own doc comment:
+  `WholeRangeBalance` already _is_ this range's one hero moment (the one
+  place its ending balance is headlined); composing through
+  `HeroAndWorstCase` too would render the exact same "$X -> $Y" figure
+  twice. `ResultsPanel.tsx`'s intraday-daily branch now renders
+  `<WholeRangeReplay>` in place of the old bare `<WholeRangeBalance>` +
+  `<PortfolioChart>` pair -- `WholeRangeReplay` owns the chart
+  internally now, alongside the "Watch it happen"/"Skip to end" button
+  row, both gated behind the same `rangeGuess !== null` value
+  `ResultsPanel.tsx` already threads to `BenchmarkStat`, not a second,
+  independent gate.
+- **The overlay design during `"rewinding"`/`"playing"` is a single
+  shape for both phases** (unlike `TradeReplay.tsx`, which needs two:
+  a giant date-only rewind figure, then a compact "Watching {date}"
+  label once the dollar-figure row needs its own space back) --
+  `WholeRangeBalance`'s headline has no multiplier badge competing for
+  room, so there's no equivalent layout-forced split here. The label
+  always folds in the date ("Watching {date}", per issue #107's own
+  proven pattern, reused rather than rediscovering its overflow lesson a
+  second time) and the value row stays byte-for-byte the same three-span
+  shape as the real headline's own markup, just with
+  `frame.currentValue` substituted for `finalBalance`.
+- **Two items the plan explicitly left for the implementer (its own
+  section 7), both resolved during this build:**
+  1. **`PortfolioChart`'s own `key` for the `WholeRangeReplay`-owned
+     chart instance**: a new `chartKey: string` prop on
+     `WholeRangeReplayProps`, threaded straight through from
+     `ResultsPanel.tsx` as the exact same string the bare
+     `<PortfolioChart key={...}>` call it replaces already used --
+     `` `${range}-${data.dataAsOf}-${mode}` `` -- stable across every
+     phase transition within one playback run, changing only on a
+     genuine new result (a fetch, a mode switch), matching
+     `TradeReplay.tsx`'s own `heroKey` contract for its identical chart
+     instance exactly (see that component's own doc comment, issue #96
+     follow-up round two's key-stability fix -- one of the most-
+     relitigated bugs in this whole feature's review history).
+     `WholeRangeReplay` itself is **not** separately keyed by
+     `ResultsPanel.tsx` at its own call site (same as `TradeReplay.tsx`)
+     -- its internal `useTradeReplay(points, ...)` call already resets
+     to idle on a genuine `points`-identity change via the hook's own
+     `useResetWhenChanged` mechanism, with no external re-keying needed.
+  2. **No confetti/count-up reward moment on replay completion** -- a
+     considered tradeoff, not an oversight. `WholeRangeBalance` has none
+     of `HeroStat`'s reveal machinery (no `useCountUp`, no
+     `CelebrationBurst`, no reveal-accent glow) and the plan didn't
+     design any new machinery for it. Reasoning for shipping it this
+     way: the guess-then-reveal moment (issue #91) is already this
+     range's own "reward" beat, and issue #105's own acceptance criteria
+     never asked for a second one specifically for the _replay_.
+     Landing on `"done"` simply returns to the same static, unanimated
+     headline the guess reveal itself already showed. Worth revisiting
+     only if a future reviewer/user genuinely finds the replay's own
+     ending feels anticlimactic next to the window model's -- not
+     preemptively built.
+- **`calloutText` (the past-tense trade narration, "Bought AAPL on ...")
+  extracted out of `TradeReplay.tsx`'s own private function into
+  `lib/replay-callout.ts`**, so `WholeRangeReplay.tsx` reuses the exact
+  same narration/voice rather than a second hand-copied version --
+  `TradeReplay.tsx` now imports it instead of defining it locally, with
+  no behavior change at its own call site.
+- **Test coverage**: `use-trade-replay.test.ts` gained a "pacing
+  parameter" describe block (defaults preserved when omitted; a custom
+  pacing object's values genuinely drive the RAF timing, not the
+  module's own defaults) and a "datetime-labeled (chained-intraday)
+  points" describe block (both date-formatting fixes, against a real
+  datetime fixture). `WholeRangeBalance.test.tsx` gained "worstCase
+  prop"/"revealSlot prop" describe blocks (no worst-case stat when
+  omitted; rendered only once revealed; rescaled from its own raw/
+  native-root pair, not a pre-rescaled one; the overlay genuinely hides
+  the real caption+headline pair via `invisible`/`aria-hidden`, not just
+  "some text changed"; the guess/"You guessed" line unaffected).
+  `WholeRangeReplay.test.tsx` (new, mirroring `TradeReplay.test.tsx`'s
+  own coverage shape): the guess-then-reveal gate (button/chart
+  genuinely absent from the DOM pre-reveal, not just visually hidden);
+  `canReplay` (zero-trade result, reduced motion); "Skip to end" staying
+  available regardless of `canReplay`; a mid-playback pause showing a
+  real chart-anchored callout; Skip-to-end landing on the exact final
+  state; a day switch (same `points` reference, mirroring
+  `ResultsPanel`'s own `wholeRangePoints` memo never depending on the
+  selected day) leaving an in-flight replay undisturbed, contrasted with
+  a genuine `points`-identity change (a mode/capital edit) correctly
+  resetting to idle; the worst-case figure's own raw/native-root rescale
+  contract. `ResultsPanel.test.tsx` gained coverage for the new
+  `wholeRangeWorstCaseEndingBalance`/`wholeRangeWorstCaseStartingCapital`
+  computations (both modes, mirroring the existing `wholeRangeFinalBalance`
+  coverage's own "rescale from the range's own root, not a per-day
+  pattern" shape) and that `WholeRangeReplay` (not a bare
+  `PortfolioChart`) is what's rendered post-reveal.
+- **Live-verified via the established throwaway-debug-route +
+  no-root-headless-Chromium technique** (a debug route rendering
+  `ResultsPanel` directly with a hand-built 1W-shaped `IntradayResult`
+  fixture -- 5 trading days x 3 trades each, the plan's own literal
+  worst case -- since no real Yahoo/local-pipeline run reliably produces
+  exactly 15 trades in one real week; a synthetic fixture is what this
+  specific worst-case timing check needs, the same class of deliberate
+  synthetic-edge-case fixture issue #108's own "500,000x close" log-scale
+  fixture already established precedent for). Confirmed: the idle
+  pre-reveal state (no button, no chart at all -- genuinely absent from
+  the DOM, not just hidden); a real mid-playback pause showing a genuine
+  chart-anchored callout (`.marker-landing-bubble` present, matching sr-
+  only status text); Skip-to-end landing on the exact final state;
+  **a full un-skipped worst-case playback measured at ~14.4s real
+  elapsed time** (see the pacing note above); the reduced-motion
+  fallback (zero button, real chart/hero shown instantly); a zero-trade
+  result (no button, chart/worst-case stat still render); the
+  guess-then-reveal gate (button/chart absent pre-reveal, present
+  post-reveal); and a day switch mid-replay leaving an in-flight replay
+  fully undisturbed (`Skip to end` still present, the sr-only status
+  text byte-for-byte unchanged before and after the switch). Zero
+  console errors across the full-playback run. The debug route and the
+  temporary `playwright` devDependency were both reverted before
+  committing, per this file's own established convention; confirmed via
+  `git status`/`git diff --stat` showing no trace of either afterward.
+  - **One hydration-mismatch console warning did appear, but only under
+    `reducedMotion: "reduce"` context emulation, and it's the exact same
+    debug-harness artifact this file's own "Trade replay" section
+    already documents for #96/#108's debug routes, not a real bug** --
+    the harness hardcodes `state={{status:"success",...}}` directly,
+    bypassing `useResults`'s fetch state machine (which always starts
+    `"loading"` in the real app, on both server and initial client
+    render); that lets the intraday-daily branch actually SSR, with the
+    server computing `FadeInWrapper`'s `useReducedMotionAtMount()` as
+    `false` (no `matchMedia` during SSR) while the client's very first
+    render already sees the emulated `true` -- mismatching the
+    `results-fade-in` class. Never reachable in the real app (the
+    genuine `useResults` fetch never resolves to `"success"` before the
+    client-only effect runs), and unrelated to any of this issue's own
+    changes.
+  - **A real debug-harness gotcha worth remembering for the next
+    multi-fixture debug page in this app**: the first version of this
+    debug route rebuilt its own `state: ResultsState` object as a fresh
+    literal on every render (`{ status: "success", data: FIXTURES[fixture] }`,
+    recomputed inline in the component body) -- since `ResultsPanel.tsx`'s
+    own `wholeRangePoints` memo is keyed on `state` by reference, this
+    silently defeated that memo on _every_ unrelated re-render (e.g. a
+    `DayOverview` day-switch click, which flows through the debug page's
+    own `onSelectDay` state setter), making a day switch look like it
+    reset an in-flight replay when it wouldn't in the real app (where
+    `useResults`'s own state object is stable across such unrelated
+    re-renders). Fixed by wrapping the debug page's own `state` in
+    `useMemo(() => ({ status: "success", data: FIXTURES[fixture] }),
+[fixture])` -- the harness needs the same object-identity discipline
+    the real app gets for free from `useResults`, or it can produce a
+    false "regression" that isn't real.
