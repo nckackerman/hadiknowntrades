@@ -18,7 +18,7 @@ import { memo, useId, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 
 import { formatAxisCurrency, formatHeroCurrency } from "@/lib/format-currency";
-import { formatDateTime, isPortfolioDatetime } from "@/lib/format-date";
+import { formatDateTime, isPortfolioDatetime, toPortfolioTimestamp } from "@/lib/format-date";
 import {
   buildChainedIntradayXPositions,
   buildLogScale,
@@ -143,21 +143,6 @@ const PLOT_HEIGHT = HEIGHT - MARGIN.top - MARGIN.bottom;
 const BUBBLE_WIDTH = 220;
 const BUBBLE_HEIGHT = 60;
 const BUBBLE_MARKER_GAP = 14;
-
-/**
- * A PortfolioPoint's `date` is either a plain calendar date
- * ("2025-08-21", the window model) or a full local datetime
- * ("2025-08-21T14:30:00", an intraday day's chart -- issue #28) -- see
- * format-date.ts's isPortfolioDatetime for the (single, shared)
- * detection this and formatDateTime both use. Both are parsed "as if
- * UTC" (a "Z" appended, not re-interpreted through any real timezone)
- * purely to get a monotonic numeric timestamp to lay out points along
- * the x-axis -- consistent with how plain calendar dates were already
- * treated here before intraday support existed.
- */
-function toTimestamp(date: string): number {
-  return new Date(isPortfolioDatetime(date) ? `${date}Z` : `${date}T00:00:00Z`).getTime();
-}
 
 interface BubblePlacement {
   x: number;
@@ -314,7 +299,7 @@ export const PortfolioChart = memo(function PortfolioChart({
     const yScale = buildLogScale(yDomain, [PLOT_HEIGHT, 0]);
     const yTicks = niceLogTicks(yDomain[0], yDomain[1], 5);
 
-    const timestamps = points.map((p) => toTimestamp(p.date));
+    const timestamps = points.map((p) => toPortfolioTimestamp(p.date));
 
     // x-positions, one per point, built one of two ways depending on
     // isChainedIntradaySeries (see that flag's own comment above):

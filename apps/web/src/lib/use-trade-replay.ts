@@ -13,13 +13,42 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { tweenValue } from "./easing";
-import { formatDate, formatEpochAsDate } from "./format-date";
+import { formatDateTime, formatEpochAsDate, toPortfolioTimestamp } from "./format-date";
 import type { PortfolioEvent, PortfolioPoint } from "./portfolio-series";
 import { prefersReducedMotion } from "./prefers-reduced-motion";
 import { computeTradeReturn, type TradeReturn } from "./trade-math";
 import { useResetWhenChanged } from "./use-reset-when-changed";
 
 export type ReplayPhase = "idle" | "rewinding" | "playing" | "done";
+
+/**
+ * Whether `phase` represents the real, live, un-animated view (idle or
+ * done) -- shared between `TradeReplay.tsx` and `WholeRangeReplay.tsx`
+ * (issue #105 code review finding), which each independently re-derived
+ * this exact two-value check as their own `showLive` local. Worth
+ * sharing specifically because `TradeReplay.tsx`'s own history already
+ * needed this precise expression fixed once (round two's own "Skip to
+ * end" gating fix used `!showLive` in place of a second, independently-
+ * written complement expression for the same reason) -- a second
+ * independent copy is exactly the kind of thing that class of fix is
+ * meant to prevent from recurring.
+ */
+export function isReplayLive(phase: ReplayPhase): boolean {
+  return phase === "idle" || phase === "done";
+}
+
+/**
+ * The idle/done "Watch it happen"/"Replay" button's own core gate --
+ * shared between `TradeReplay.tsx` and `WholeRangeReplay.tsx` (issue
+ * #105 code review finding). A caller with its own additional gate on
+ * top (e.g. `WholeRangeReplay.tsx`'s own 1W-only restriction) ANDs that
+ * extra condition alongside this function's result, rather than this
+ * function growing a parameter for every caller's own scope-specific
+ * rule.
+ */
+export function canReplayFor(tradeCount: number, reducedMotionAtMount: boolean): boolean {
+  return tradeCount > 0 && !reducedMotionAtMount;
+}
 
 /** One trade-event pause during playback (see TradeReplay.tsx for the callout this renders as). */
 export interface ReplayEvent {
@@ -57,16 +86,40 @@ export interface ReplayFrame {
   activeEvent: ReplayEvent | null;
 }
 
-// Tuned by feel (per the issue's own scope note: "roughly 3-6 seconds for
-// a typical 1-3 trade window... doesn't need to be exact") against
-// derivePortfolioSeries's own point shape: 3 points per trade
-// (open/flat/close) plus a leading and trailing boundary point. A
-// 1-trade window plays in ~2.4s, a 3-trade window in ~6.6s.
-const TRANSITION_MS = 300;
-const EVENT_PAUSE_MS = 600;
-// Per the issue's own scope note ("~0.6-1s") -- brief enough to read as
-// an intro beat, not its own event to sit through.
-const REWIND_MS = 700;
+/**
+ * How fast this hook's two RAF loops move -- `transitionMs` per segment
+ * tween, `eventPauseMs` per trade-event pause, `rewindMs` for the whole
+ * rewind-intro-beat tween (issue #97). A module-level parameter (issue
+ * #105), not module-level constants baked into the RAF effects directly,
+ * so a caller walking a materially larger point series (1W's whole-range
+ * chained intraday series, up to 50 points/49 segments/30 event-pauses
+ * worst case -- see docs/plans/issue-105-plan.md section 2 for the full
+ * derivation) can use tighter pacing without forking this hook.
+ */
+export interface ReplayPacing {
+  transitionMs: number;
+  eventPauseMs: number;
+  rewindMs: number;
+}
+
+// The window model's own pacing (issues #96/#97), tuned by feel (per the
+// issue's own scope note: "roughly 3-6 seconds for a typical 1-3 trade
+// window... doesn't need to be exact") against derivePortfolioSeries's
+// own point shape: 3 points per trade (open/flat/close) plus a leading
+// and trailing boundary point. A 1-trade window plays in ~2.4s, a
+// 3-trade window in ~6.6s. `rewindMs` (~0.6-1s) is brief enough to read
+// as an intro beat, not its own event to sit through. This is the
+// default `useTradeReplay` uses when a caller omits `pacing` entirely
+// (every window-model caller, TradeReplay.tsx included -- it needs zero
+// changes for issue #105) -- a module-level constant object, not an
+// inline literal, so its identity stays stable across renders the same
+// way any other caller-supplied `pacing` object must (see
+// `useTradeReplay`'s own parameter doc comment below).
+const DEFAULT_PACING: ReplayPacing = {
+  transitionMs: 300,
+  eventPauseMs: 600,
+  rewindMs: 700,
+};
 
 function initialFrame(points: readonly PortfolioPoint[]): ReplayFrame {
   return {
@@ -275,8 +328,25 @@ export interface UseTradeReplayResult {
  * genuine restart (and its cleanup's `cancelAnimationFrame` still tears
  * down the prior loop first) on every *real* transition, which is now
  * the only kind `play()`/`skipToEnd()` ever produce.
+ *
+ * **`pacing` (issue #105) must be a stable-identity object across
+ * renders, same discipline this file's own `points` parameter already
+ * requires.** Both RAF effects below include `pacing` in their own
+ * dependency array alongside `phase`/`points`, so a genuinely different
+ * `pacing` object (by reference) restarts the effect the same way a
+ * `points` change does -- an inline object literal passed on every
+ * render would therefore restart the RAF loop on every render too,
+ * exactly the same failure mode this file's own doc comments already
+ * warn about for `points`/`landing` elsewhere in this feature. Every
+ * real caller passes one fixed, module-level object for its entire
+ * lifetime (`TradeReplay.tsx`'s implicit `DEFAULT_PACING`,
+ * `WholeRangeReplay.tsx`'s own `WHOLE_RANGE_REPLAY_PACING`), so this is
+ * satisfied today by construction, not by extra bookkeeping.
  */
-export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeReplayResult {
+export function useTradeReplay(
+  points: readonly PortfolioPoint[],
+  pacing: ReplayPacing = DEFAULT_PACING,
+): UseTradeReplayResult {
   const [phase, setPhase] = useState<ReplayPhase>("idle");
   const [frame, setFrame] = useState<ReplayFrame>(() => initialFrame(points));
   // The rewind tween's own current value -- only meaningful while
@@ -363,14 +433,28 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
   useEffect(() => {
     if (phase !== "rewinding") return;
 
-    const targetEpoch = Date.parse(`${points[0]!.date}T00:00:00Z`);
+    // toPortfolioTimestamp (issue #105), not a bare
+    // `Date.parse(`${points[0]!.date}T00:00:00Z`)` -- that inline parse
+    // assumed `points[0].date` is always a plain calendar date, which is
+    // true for the window model this hook originally shipped against
+    // but not for a chained-intraday series (1W's whole-range replay):
+    // a datetime-labeled point ("2025-08-21T09:30:00") produced a
+    // malformed double-`T` string ("2025-08-21T09:30:00T00:00:00Z"),
+    // which Date.parse silently resolves to NaN -- the rewind's own
+    // tween target would be NaN, and formatEpochAsDate(NaN) renders
+    // "Invalid Date" for the entire rewind beat. toPortfolioTimestamp
+    // already handles both shapes correctly (the same function
+    // PortfolioChart.tsx uses for its own x-axis timestamps), so this
+    // reuses it instead of inventing a third copy of the same
+    // datetime-vs-plain-date check.
+    const targetEpoch = toPortfolioTimestamp(points[0]!.date);
     const startEpoch = Date.now();
     const startTime = performance.now();
     let frameId: number;
 
     function tick(now: number) {
       const elapsed = now - startTime;
-      const t = Math.min(elapsed / REWIND_MS, 1);
+      const t = Math.min(elapsed / pacing.rewindMs, 1);
       if (t >= 1) {
         // Clear the internal tween state in this same tick, not just on
         // some later setPhase("done")/points-change -- so a *future*
@@ -399,7 +483,7 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
 
     frameId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frameId);
-  }, [phase, points]);
+  }, [phase, points, pacing]);
 
   // The `let frameId; function tick(now) {...}; frameId =
   // requestAnimationFrame(tick); return () => cancelAnimationFrame(frameId)`
@@ -444,7 +528,7 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
       const elapsed = now - phaseStart;
 
       if (subPhase === "tween") {
-        const t = Math.min(elapsed / TRANSITION_MS, 1);
+        const t = Math.min(elapsed / pacing.transitionMs, 1);
         if (t < 1) {
           setFrame({
             revealedCount: segment.toIndex,
@@ -501,7 +585,7 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
         // No event on this point -- fall through to advance immediately,
         // in the same tick, rather than scheduling a whole extra frame
         // just to notice there's nothing to pause for.
-      } else if (elapsed < EVENT_PAUSE_MS) {
+      } else if (elapsed < pacing.eventPauseMs) {
         frameId = requestAnimationFrame(tick);
         return;
       }
@@ -548,7 +632,7 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
 
     frameId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frameId);
-  }, [phase, points]);
+  }, [phase, points, pacing]);
 
   // The one field UseTradeReplayResult actually exposes for the date
   // readout (issue #107) -- see its own doc comment for the full
@@ -562,10 +646,25 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
   // Memoized (code review finding) -- without this, a mid-tween frame
   // (most of them: `revealedCount` only advances once per segment, but
   // `setFrame` fires roughly a dozen times per segment as `currentValue`
-  // tweens) would re-run `formatDate` for a string that hasn't actually
-  // changed, the same wasted-work class `TradeReplay.tsx`'s own
+  // tweens) would re-run `formatDateTime` for a string that hasn't
+  // actually changed, the same wasted-work class `TradeReplay.tsx`'s own
   // `endingBalanceDisplayValue`/`displayStartingCapitalFormatted`/
   // `multiplier` already guard against on this identical hot path.
+  //
+  // `formatDateTime(..., true)` (issue #105), not a bare
+  // `formatDate(points[index]!.date)` -- `formatDate` unconditionally
+  // does the exact same `Date.parse(`${isoDate}T00:00:00Z`)` this file's
+  // own rewind-effect fix above just moved off of, so it hit the
+  // identical malformed-double-`T` bug against a chained-intraday
+  // series' datetime-labeled points, for the whole rest of forward
+  // playback rather than just the rewind beat. `formatDateTime` already
+  // delegates to `formatDate` unconditionally for a plain-date point
+  // (`includeDate` is simply ignored in that branch), so this is a safe,
+  // zero-behavior-change swap for the window model and the correct
+  // multi-day-aware format ("Aug 21, 9:30 AM") for the chained intraday
+  // case -- `true` is always the right value here, since a single day in
+  // isolation is never what this hook walks; only multi-day window/
+  // whole-range series are.
   //
   // Clamped to `[1, points.length]` (code review finding) -- `revealedCount`
   // is fully internal state, always set by this hook's own `setFrame`
@@ -588,7 +687,7 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
     if (phase === "rewinding") return rewindTweenDate;
     if (phase !== "playing") return null;
     const index = Math.min(Math.max(frame.revealedCount, 1), points.length) - 1;
-    return formatDate(points[index]!.date);
+    return formatDateTime(points[index]!.date, true);
   }, [phase, points, frame.revealedCount, rewindTweenDate]);
 
   return { phase, frame, displayDate, play, skipToEnd, completedRuns };

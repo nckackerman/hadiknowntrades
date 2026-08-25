@@ -27,11 +27,10 @@ import { BenchmarkStat } from "@/components/BenchmarkStat";
 import { DayOverview } from "@/components/DayOverview";
 import { HeroAndWorstCase } from "@/components/HeroAndWorstCase";
 import { IntradayTradeList } from "@/components/IntradayTradeList";
-import { PortfolioChart } from "@/components/PortfolioChart";
 import { StartingCapitalInput } from "@/components/StartingCapitalInput";
 import { TradeList } from "@/components/TradeList";
 import { TradeReplay } from "@/components/TradeReplay";
-import { WholeRangeBalance } from "@/components/WholeRangeBalance";
+import { WholeRangeReplay } from "@/components/WholeRangeReplay";
 
 const RANGE_COPY: Record<PresetRange, string> = {
   "1W": "the past week",
@@ -624,45 +623,89 @@ export function ResultsPanel({
         )
       : 0;
 
+    // The whole range's own worst-case (max-trade, every choice wrong)
+    // figure (issue #105) -- computed the same unconditional, alongside-
+    // wholeRangeFinalBalance way that figure already is. Deliberately
+    // RAW (not pre-rescaled the way wholeRangeFinalBalance is above) --
+    // WholeRangeBalance's own `worstCase` prop does its own single
+    // rescale internally via rescaleFromStartingCapital, the same
+    // raw-value contract every other WorstCaseStat/HeroAndWorstCase
+    // caller in this app already uses. Pre-rescaling here too would
+    // double-rescale -- see apps/web/CLAUDE.md's
+    // "rescaleFromStartingCapital's per-day pattern..." section and
+    // docs/plans/issue-105-plan.md section 3.3 for the full derivation
+    // of why this specific pair must stay raw.
+    const wholeRangeWorstCaseEndingBalance = finalDay
+      ? mode === "long"
+        ? finalDay.worstCase.endingBalance
+        : finalDay.longShort.worstCase.endingBalance
+      : 0;
+    // The range's own root -- identical across all four independently-
+    // chained tracks on day 0 by issue #84's own chaining design.
+    const wholeRangeWorstCaseStartingCapital = data.startingCapital;
+
+    // Total trades across the whole currently-viewed range, this mode
+    // (issue #105) -- the whole-range analogue of TradeReplay.tsx's own
+    // `tradeCount` prop, gating WholeRangeReplay's "Watch it happen"
+    // button the same way. Summed from `dayOverviewRows`' own already-
+    // memoized per-row `tradeCount` field (found in code review, fixed:
+    // an earlier version re-derived this via a fresh
+    // `data.days.reduce(...selectVariant(...))` traversal, duplicating --
+    // unmemoized, on every render -- the exact same per-day
+    // `selectVariant` work `dayOverviewRows` above already does and
+    // memoizes).
+    const wholeRangeTradeCount = dayOverviewRows.reduce((sum, row) => sum + row.tradeCount, 0);
+
+    // Whether this range actually supports "Watch it happen" (issue
+    // #105) -- 1W only, per that issue's own scope; 1M/3M/1Y are a
+    // materially different pacing/scale problem tracked separately
+    // (issue #106's sibling plan). See WholeRangeReplay's own
+    // `replaySupported` prop doc comment for why this must be threaded
+    // in explicitly rather than inferred inside that component.
+    const replaySupported = range === "1W";
+
     return (
       <FadeInWrapper>
         {/* This page's one guess-then-reveal control (issue #91), scoped
             to the whole range -- see WholeRangeBalance's own doc comment
             for why per-day guessing was removed entirely. Revealing it
             is also what unlocks BenchmarkStat and the whole-range chart
-            below -- both would otherwise spoil the same answer. */}
-        <WholeRangeBalance
+            below -- both would otherwise spoil the same answer. Since
+            issue #105, this range's own opt-in "Watch it happen" replay
+            (1W specifically -- see WholeRangeReplay's own doc comment)
+            sequences with this exact same gate, not a second one. The
+            methodology paragraph and BenchmarkStat are passed as
+            `children`, rendered between WholeRangeReplay's own button
+            row and its chart -- exactly where they sat before this
+            issue, mirroring TradeReplay.tsx's own identical `children`
+            slot for the window model (see that component's own doc
+            comment) rather than reordering them relative to the chart. */}
+        <WholeRangeReplay
           rangeLabel={RANGE_COPY[range]}
           startingCapital={effectiveStartingCapital}
           finalBalance={wholeRangeFinalBalance}
+          points={wholeRangePoints}
+          tradeCount={wholeRangeTradeCount}
+          worstCaseEndingBalance={wholeRangeWorstCaseEndingBalance}
+          worstCaseStartingCapital={wholeRangeWorstCaseStartingCapital}
           guess={rangeGuess}
           guessStartingCapital={rangeGuessStartingCapital}
           onSubmitGuess={submitRangeGuess}
-        />
-
-        {rangeGuess !== null && (
-          <>
-            <p className="text-sm text-[var(--text-secondary)]">
-              Every trading day&apos;s own best possible outcome, chained day to day across{" "}
-              {RANGE_COPY[range]} -- up to {data.maxTradesPerDay} same-day all-in trades per day
-              across the S&amp;P 500, using real 60-minute intraday prices. As of {data.dataAsOf}.
-            </p>
-            <BenchmarkStat
-              benchmark={data.benchmark}
-              startingCapital={data.startingCapital}
-              displayStartingCapital={effectiveStartingCapital}
-              rangeLabel={`over ${RANGE_COPY[range]}`}
-            />
-            {/* The whole-range chart (issue #91) -- spans every day in
-                the currently-viewed range, chained continuously, rather
-                than the single active day's own intraday movement this
-                replaced. Keyed on range/dataAsOf/mode (not activeDay),
-                since it no longer depends on which day is selected
-                below -- switching days must not remount/replay this
-                chart's own reveal animation. */}
-            <PortfolioChart key={`${range}-${data.dataAsOf}-${mode}`} points={wholeRangePoints} />
-          </>
-        )}
+          replaySupported={replaySupported}
+          chartKey={`${range}-${data.dataAsOf}-${mode}`}
+        >
+          <p className="text-sm text-[var(--text-secondary)]">
+            Every trading day&apos;s own best possible outcome, chained day to day across{" "}
+            {RANGE_COPY[range]} -- up to {data.maxTradesPerDay} same-day all-in trades per day
+            across the S&amp;P 500, using real 60-minute intraday prices. As of {data.dataAsOf}.
+          </p>
+          <BenchmarkStat
+            benchmark={data.benchmark}
+            startingCapital={data.startingCapital}
+            displayStartingCapital={effectiveStartingCapital}
+            rangeLabel={`over ${RANGE_COPY[range]}`}
+          />
+        </WholeRangeReplay>
 
         <DayOverview
           rows={dayOverviewRows}

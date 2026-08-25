@@ -170,4 +170,126 @@ describe("WholeRangeBalance", () => {
       );
     });
   });
+
+  describe("worstCase prop (issue #105)", () => {
+    it("renders no worst-case stat when omitted, matching this component's pre-#105 shape", () => {
+      render(
+        <WholeRangeBalance
+          rangeLabel="the past month"
+          startingCapital={20}
+          finalBalance={32.8}
+          guess={40}
+          guessStartingCapital={20}
+          onSubmitGuess={vi.fn()}
+        />,
+      );
+
+      expect(screen.queryByText("Worst case, same budget")).not.toBeInTheDocument();
+    });
+
+    it("renders the worst-case stat, rescaled from its own raw/native-root pair, only once revealed", () => {
+      const { rerender } = render(
+        <WholeRangeBalance
+          rangeLabel="the past month"
+          startingCapital={20}
+          finalBalance={32.8}
+          guess={null}
+          guessStartingCapital={null}
+          onSubmitGuess={vi.fn()}
+          worstCase={{ startingCapital: 20, endingBalance: 15 }}
+        />,
+      );
+
+      // Unrevealed -- the worst-case stat must not leak the answer
+      // before the guess is submitted.
+      expect(screen.queryByText("Worst case, same budget")).not.toBeInTheDocument();
+
+      rerender(
+        <WholeRangeBalance
+          rangeLabel="the past month"
+          startingCapital={20}
+          finalBalance={32.8}
+          guess={40}
+          guessStartingCapital={20}
+          onSubmitGuess={vi.fn()}
+          worstCase={{ startingCapital: 20, endingBalance: 15 }}
+        />,
+      );
+
+      expect(screen.getByText("Worst case, same budget")).toBeInTheDocument();
+      expect(screen.getByText("$15.00")).toBeInTheDocument();
+    });
+
+    it("rescales the worst-case figure from its own native-root starting capital, not the display one, avoiding a double-rescale", () => {
+      render(
+        <WholeRangeBalance
+          rangeLabel="the past month"
+          startingCapital={40} // display capital, doubled from the worst-case track's own root
+          finalBalance={65.6}
+          guess={40}
+          guessStartingCapital={20}
+          onSubmitGuess={vi.fn()}
+          worstCase={{ startingCapital: 20, endingBalance: 15 }}
+        />,
+      );
+
+      // rescaleFromStartingCapital(15, 20, 40) === 30 -- a single
+      // rescale from the worst-case track's own raw root, not a
+      // pre-rescaled value that would double-rescale here.
+      expect(screen.getByText("$30.00")).toBeInTheDocument();
+    });
+  });
+
+  describe("revealSlot prop (issue #105)", () => {
+    it("with no revealSlot, the revealed headline/caption render pixel-identical to before this prop existed (same text, same classes, same document position)", () => {
+      render(
+        <WholeRangeBalance
+          rangeLabel="the past month"
+          startingCapital={20}
+          finalBalance={32.8}
+          guess={40}
+          guessStartingCapital={20}
+          onSubmitGuess={vi.fn()}
+        />,
+      );
+
+      const caption = screen.getByText(
+        "Whole-range running balance -- carried day to day, start to finish",
+      );
+      expect(caption).not.toHaveClass("invisible");
+      expect(caption.closest("div")).not.toHaveAttribute("aria-hidden");
+      expect(screen.getByText("$20.00")).toBeInTheDocument();
+      expect(screen.getByText("$32.80")).toBeInTheDocument();
+    });
+
+    it("overlays the caption+headline pair specifically -- the real pair goes invisible/aria-hidden, the overlay's own content renders instead, and the guess/'You guessed' line is unaffected", () => {
+      render(
+        <WholeRangeBalance
+          rangeLabel="the past month"
+          startingCapital={20}
+          finalBalance={32.8}
+          guess={40}
+          guessStartingCapital={20}
+          onSubmitGuess={vi.fn()}
+          revealSlot={<p>Watching a date</p>}
+        />,
+      );
+
+      const realCaption = screen.getByText(
+        "Whole-range running balance -- carried day to day, start to finish",
+      );
+      const invisibleWrapper = realCaption.closest("div")!;
+      expect(invisibleWrapper).toHaveClass("invisible");
+      expect(invisibleWrapper).toHaveAttribute("aria-hidden", "true");
+      // The real figures are still in the DOM (an overlay, not a
+      // replacement -- HeroAndWorstCase's own heroSlot precedent), just
+      // visually hidden via the wrapper above.
+      expect(screen.getByText("$20.00")).toBeInTheDocument();
+      expect(screen.getByText("$32.80")).toBeInTheDocument();
+      // The overlay's own content is present too.
+      expect(screen.getByText("Watching a date")).toBeInTheDocument();
+      // The guess line, sitting outside the overlaid box, is untouched.
+      expect(screen.getByText(/you guessed/i)).toHaveTextContent("$40.00");
+    });
+  });
 });
