@@ -4146,3 +4146,18 @@ across the whole verification run. `playwright` was added temporarily
 (`pnpm add -D -w playwright`) and reverted afterward (`git checkout --
 package.json pnpm-lock.yaml`, confirmed via `git status`), per this file's
 own "Headless-browser screenshot verification" convention.
+
+**`high` code review found three doc-staleness/dead-code findings, all
+fixed:** ResultsPage.tsx's own `anchorsState` doc comment and
+CustomRangeSelector.tsx's own `anchorsState` prop doc comment both still
+described the manifest being threaded down to "both mounted
+CustomRangeSelector instances (desktop + mobile)" -- exactly the
+duplication this same PR removed, in the same diff, one function above
+each stale comment. Both reworded to describe the current single-instance
+reality while keeping the historical issue #63/#75 pointers. Third: the
+`<div className="flex flex-wrap items-center gap-3">` wrapping
+`RangeSelector` alone (its former sibling, the desktop always-visible
+`CustomRangeSelector`/`ModeToggle` block, is what the collapse above
+removed) had nothing left to wrap -- `RangeSelector` now renders as a
+direct child of `<header>` instead of inside a single-child wrapper div,
+re-screenshotted afterward to confirm no visual change.

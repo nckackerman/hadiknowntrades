@@ -20,12 +20,13 @@ interface CustomRangeSelectorProps {
    * The published anchors manifest's own fetch state -- lifted up and
    * fetched **once** by the caller (ResultsPage.tsx's `useCustomAnchors()`
    * call) rather than by this component itself (issue #75 code review
-   * finding, fixed): `CustomRangeSelector` is mounted twice (desktop +
-   * mobile, issue #63's own responsive duplication), and each instance
-   * calling `useCustomAnchors()` independently doubled the
-   * `GET /api/custom-anchors` request on every page load, and risked
-   * visibly inconsistent UI if one request failed while the other
-   * succeeded. See ResultsPage.tsx's own doc comment on its
+   * finding, fixed): a `CustomRangeSelector` instance calling
+   * `useCustomAnchors()` itself would refetch on every mount, and (back
+   * when this component was mounted twice for desktop/mobile -- issue
+   * #63's own responsive duplication, collapsed to one instance by issue
+   * #103) doubled the `GET /api/custom-anchors` request on every page
+   * load and risked visibly inconsistent UI if one request failed while
+   * the other succeeded. See ResultsPage.tsx's own doc comment on its
    * `anchorsState` for the full reasoning.
    */
   anchorsState: ResultsState<CustomAnchorsManifest> | null;
