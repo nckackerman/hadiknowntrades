@@ -11,7 +11,8 @@ import { useTradeReplay } from "./use-trade-replay";
 // vi.spyOn(performance, "now") call), any raf.tick(now) with `now >=
 // 1700` completes it in a single tick, auto-advancing phase straight to
 // "playing" with `frame` still exactly the untouched initial frame (the
-// rewind never touches `frame`, only `rewindDate`) -- see
+// rewind never touches `frame`, only its own tween state feeding
+// `displayDate`) -- see
 // use-trade-replay.ts's own doc comment on why one tick is enough here,
 // unlike the multi-segment playing effect below it.
 const REWIND_COMPLETE_NOW = 1700;
@@ -59,7 +60,7 @@ describe("useTradeReplay", () => {
     expect(result.current.frame.activeEvent).toBeNull();
   });
 
-  it("walks every point in order, pausing on each real trade event and tweening the balance between them", () => {
+  it("walks every point in order, pausing on each real trade event and tweening the balance between them, with displayDate advancing alongside revealedCount throughout (issue #107)", () => {
     // phaseStart is captured once via performance.now() when the effect
     // first runs -- pinning it to a fixed value lets every subsequent
     // pumped `now` argument encode an exact elapsed-time offset, the
@@ -82,36 +83,52 @@ describe("useTradeReplay", () => {
     expect(result.current.phase).toBe("playing");
 
     // Mid-tween toward the "open" event (t=0): still showing only the
-    // start point, balance untouched.
+    // start point, balance untouched. displayDate (issue #107) tracks
+    // whichever point is currently revealed, not the tween's own
+    // in-flight target -- still the window's own opening date here,
+    // matching revealedCount === 1.
     raf.tick(1000);
     expect(result.current.frame.revealedCount).toBe(1);
     expect(result.current.frame.currentValue).toBe(20);
+    expect(result.current.displayDate).toBe("Jan 1, 2024");
 
     // Arrives at the "open" event (t=1, 300ms elapsed) -- reveals that
     // point and pauses on its callout. No value change (opening a
-    // position doesn't move the balance).
+    // position doesn't move the balance). displayDate lands on the
+    // open event's own real date in this same tick, no tween of its
+    // own -- "landing on each trade's real event date at the moment its
+    // callout shows," per the issue's own acceptance criterion.
     raf.tick(1300);
     expect(result.current.frame.revealedCount).toBe(2);
     expect(result.current.frame.currentValue).toBe(20);
     expect(result.current.frame.activeEvent?.event.type).toBe("open");
     expect(result.current.frame.activeEvent?.event.ticker).toBe("AAPL");
     expect(result.current.frame.activeEvent?.tradeReturn).toBeNull();
+    expect(result.current.displayDate).toBe("Jan 2, 2024");
 
-    // Still within the 600ms pause on the open event -- nothing changes.
+    // Still within the 600ms pause on the open event -- nothing changes,
+    // displayDate included.
     raf.tick(1500);
     expect(result.current.frame.activeEvent?.event.type).toBe("open");
+    expect(result.current.displayDate).toBe("Jan 2, 2024");
 
     // Pause elapses (600ms) and the mid-trade flat vertex (no event) is
-    // reached in the same tick -- no pause for a plain point.
+    // reached in the same tick -- no pause for a plain point. displayDate
+    // still advances to this point's own real date even though it
+    // carries no trade event of its own.
     raf.tick(1900);
     raf.tick(2200);
     expect(result.current.frame.revealedCount).toBe(3);
     expect(result.current.frame.activeEvent).toBeNull();
+    expect(result.current.displayDate).toBe("Jan 5, 2024");
 
     // Arrives at the "close" event -- the one point where the balance
     // actually jumps ($20 -> $40, a real 100% return), with a computed
     // tradeReturn matching the open price this hook found by scanning
-    // backward.
+    // backward. The close event shares its date with the prior flat
+    // vertex here (both "2024-01-05"), so displayDate reads the same
+    // text either side of this tick -- expected, not a bug: it's still
+    // correctly tracking the real, currently-revealed point's own date.
     raf.tick(2500);
     expect(result.current.frame.revealedCount).toBe(4);
     expect(result.current.frame.currentValue).toBe(40);
@@ -119,16 +136,27 @@ describe("useTradeReplay", () => {
     expect(result.current.frame.activeEvent?.tradeReturn?.returnFraction).toBeCloseTo(1);
     expect(result.current.frame.activeEvent?.tradeReturn?.isGain).toBe(true);
     expect(result.current.phase).toBe("playing");
+    expect(result.current.displayDate).toBe("Jan 5, 2024");
 
     // Pause elapses, the trailing end point (no event) is reached, and
     // playback finishes -- lands on exactly the same final state a
-    // non-animated page load would show.
+    // non-animated page load would show. This fixture's trailing point
+    // carries no event, so its own arrival and the natural-completion
+    // transition to "done" land in the same synchronous tick with
+    // nothing in between to assert on -- the "natural completion resets
+    // activeEvent to null..." test below (a fixture whose *last* point
+    // is itself a close event) covers the case where the final point's
+    // own displayDate genuinely is observable mid-playback, still
+    // "playing", before the completion tick after it. displayDate
+    // returns to null once "done" (per its own doc comment, only
+    // "rewinding"/"playing" populate it).
     raf.tick(3100);
     raf.tick(3400);
     expect(result.current.phase).toBe("done");
     expect(result.current.frame.revealedCount).toBe(ONE_TRADE_POINTS.length);
     expect(result.current.frame.currentValue).toBe(40);
     expect(result.current.frame.activeEvent).toBeNull();
+    expect(result.current.displayDate).toBeNull();
     expect(raf.hasQueuedFrame()).toBe(false);
   });
 
@@ -160,7 +188,7 @@ describe("useTradeReplay", () => {
     expect(result.current.frame.revealedCount).toBe(ONE_TRADE_POINTS.length);
     expect(result.current.frame.currentValue).toBe(40);
     expect(result.current.frame.activeEvent).toBeNull();
-    expect(result.current.rewindDate).toBeNull();
+    expect(result.current.displayDate).toBeNull();
 
     // The stale in-flight frame from before skipToEnd must not clobber
     // this final state once it (would have) fired.
@@ -276,7 +304,7 @@ describe("useTradeReplay", () => {
     });
     raf.tick(1000); // mid-rewind, well before it completes
     expect(result.current.phase).toBe("rewinding");
-    expect(result.current.rewindDate).not.toBeNull();
+    expect(result.current.displayDate).not.toBeNull();
 
     const RESCALED_POINTS: PortfolioPoint[] = ONE_TRADE_POINTS.map((p) => ({
       ...p,
@@ -292,7 +320,7 @@ describe("useTradeReplay", () => {
     // it fires for any phase !== "idle", "rewinding" included, so this
     // needed no separate code path, only this test to confirm it.
     expect(result.current.phase).toBe("idle");
-    expect(result.current.rewindDate).toBeNull();
+    expect(result.current.displayDate).toBeNull();
     expect(result.current.frame.revealedCount).toBe(1);
     expect(result.current.frame.currentValue).toBe(RESCALED_POINTS[0]!.value);
     expect(result.current.frame.activeEvent).toBeNull();
@@ -343,11 +371,12 @@ describe("useTradeReplay", () => {
     expect(result.current.frame.revealedCount).toBe(CORRUPT_POINTS.length);
     expect(result.current.frame.currentValue).toBe(40);
     expect(result.current.frame.activeEvent).toBeNull();
-    // rewindDate must also be cleared here, not just by skipToEnd/natural
-    // completion (code review follow-up, issue #97 -- this defensive
-    // catch is one of this hook's three setPhase("done") call sites, and
-    // rewindDate's own doc comment promises "null in every other phase").
-    expect(result.current.rewindDate).toBeNull();
+    // displayDate must also be null here, not just after skipToEnd/
+    // natural completion (code review follow-up, issue #97 -- this
+    // defensive catch is one of this hook's three setPhase("done") call
+    // sites, and displayDate's own doc comment promises "null in
+    // idle/done").
+    expect(result.current.displayDate).toBeNull();
     expect(consoleError).toHaveBeenCalledOnce();
     expect(raf.hasQueuedFrame()).toBe(false);
   });
@@ -387,6 +416,17 @@ describe("useTradeReplay", () => {
     raf.tick(1900); // pause elapses, flat vertex reached (no pause)
     raf.tick(2200); // tween toward the close event
     raf.tick(2500); // pauses on the close event -- activeEvent set here
+
+    // The close event is this fixture's own *last* point, so this is
+    // the one case where the final point's displayDate is genuinely
+    // observable while phase is still "playing" (issue #107) -- unlike
+    // a fixture with a trailing no-event point, where the last
+    // point's own arrival and the natural-completion transition happen
+    // in the same synchronous tick with nothing in between to assert.
+    expect(result.current.frame.revealedCount).toBe(NO_TRAILING_POINT.length);
+    expect(result.current.phase).toBe("playing");
+    expect(result.current.displayDate).toBe("Jan 5, 2024");
+
     raf.tick(3100); // pause elapses -- no more segments, natural completion
 
     expect(result.current.phase).toBe("done");
@@ -396,6 +436,9 @@ describe("useTradeReplay", () => {
     // frame on natural completion, this would still be the close
     // event's own ReplayEvent, left over from the tick(2500) pause.
     expect(result.current.frame.activeEvent).toBeNull();
+    // displayDate also returns to null once "done" -- see its own doc
+    // comment (only "rewinding"/"playing" populate it).
+    expect(result.current.displayDate).toBeNull();
   });
 
   it("play() while already rewinding is a no-op -- same hook-level API contract as the already-playing case below (issue #97)", () => {
@@ -409,7 +452,7 @@ describe("useTradeReplay", () => {
     });
     raf.tick(1000); // mid-rewind, well before it completes
     expect(result.current.phase).toBe("rewinding");
-    const rewindDateBeforeSecondPlay = result.current.rewindDate;
+    const displayDateBeforeSecondPlay = result.current.displayDate;
 
     act(() => {
       result.current.play();
@@ -418,7 +461,7 @@ describe("useTradeReplay", () => {
     // Still rewinding, undisturbed -- not reset back to the very start
     // of a fresh rewind.
     expect(result.current.phase).toBe("rewinding");
-    expect(result.current.rewindDate).toBe(rewindDateBeforeSecondPlay);
+    expect(result.current.displayDate).toBe(displayDateBeforeSecondPlay);
 
     // The original rewind keeps advancing normally afterward.
     raf.tick(REWIND_COMPLETE_NOW);
@@ -523,28 +566,31 @@ describe("useTradeReplay", () => {
       expect(result.current.frame.currentValue).toBe(20);
       // No tick has fired yet -- the readout hasn't rendered its first
       // value.
-      expect(result.current.rewindDate).toBeNull();
+      expect(result.current.displayDate).toBeNull();
 
       // t=0: the readout starts at "now" (the mocked Date.now() above).
       raf.tick(1000);
-      expect(result.current.rewindDate).toBe("Jun 15, 2024");
+      expect(result.current.displayDate).toBe("Jun 15, 2024");
       expect(result.current.phase).toBe("rewinding");
 
       // t=1 (700ms elapsed, REWIND_COMPLETE_NOW): auto-advances to
       // "playing" on its own, with no further action needed from a
-      // caller. rewindDate is cleared to null on this exact same tick
-      // (code-review follow-up, real bug: this used to still render the
-      // fully-tweened target date, "Jan 1, 2024", for one tick -- and
-      // every tick thereafter throughout the whole subsequent
-      // trade-playback stretch -- contradicting rewindDate's own doc
-      // comment, which promises "null in every other phase" and
-      // "playing" is exactly such a phase).
+      // caller. `displayDate` doesn't drop to null here (issue #107
+      // extended the readout through "playing" too) -- it switches from
+      // the rewind's own tweened value to the real revealed point's own
+      // date instead, with no visible gap: `frame` is still untouched
+      // (revealedCount 1, the window's own opening point), so this
+      // lands on that same point's real date, `points[0].date` --
+      // exactly the value the rewind was ticking *toward* in the first
+      // place, so the readout reads as continuous across this exact
+      // tick, not as a value disappearing and a different one
+      // appearing.
       raf.tick(REWIND_COMPLETE_NOW);
-      expect(result.current.rewindDate).toBeNull();
+      expect(result.current.displayDate).toBe("Jan 1, 2024");
       expect(result.current.phase).toBe("playing");
     });
 
-    it("rewindDate is cleared on natural completion, not just skipToEnd -- a stale target date must not survive into a fresh Replay (code review follow-up, real bug)", () => {
+    it("displayDate returns to null on natural completion, not just skipToEnd -- a stale value must not survive into a fresh Replay (code review follow-up, real bug -- originally about rewindDate, still applies to its displayDate successor)", () => {
       vi.spyOn(performance, "now").mockReturnValue(1000);
       vi.spyOn(Date, "now").mockReturnValue(Date.parse("2024-06-15T00:00:00Z"));
       const raf = createRafPump();
@@ -554,15 +600,19 @@ describe("useTradeReplay", () => {
       act(() => {
         result.current.play();
       });
-      raf.tick(1000); // mid-rewind -- rewindDate is genuinely non-null here
-      expect(result.current.rewindDate).not.toBeNull();
+      raf.tick(1000); // mid-rewind -- displayDate is genuinely non-null here
+      expect(result.current.displayDate).not.toBeNull();
       raf.tick(REWIND_COMPLETE_NOW); // completes the rewind, landing on "playing"
 
       // Walk all the way to a *natural* completion (not skipToEnd, which
-      // already clears rewindDate correctly) -- the real gap this test
-      // guards: the "advance past the last segment" branch used to only
-      // call setPhase("done"), leaving rewindDate holding the previous
-      // run's own target date all through "done".
+      // already clears the rewind's own internal tween state correctly)
+      // -- the real gap this test guards: the "advance past the last
+      // segment" branch used to only call setPhase("done"), leaving that
+      // internal state holding the previous run's own target date all
+      // through "done" (back when this field was still `rewindDate`,
+      // directly exposing that state rather than deriving `displayDate`
+      // fresh -- see that field's own doc comment for the current
+      // shape).
       raf.tick(1300); // pauses on the open event
       raf.tick(1900); // pause elapses, flat vertex reached
       raf.tick(2200); // tween toward the close event
@@ -570,17 +620,17 @@ describe("useTradeReplay", () => {
       raf.tick(3100); // pause elapses, trailing flat point reached
       raf.tick(3400); // tween settles -- natural completion
       expect(result.current.phase).toBe("done");
-      expect(result.current.rewindDate).toBeNull();
+      expect(result.current.displayDate).toBeNull();
 
       // Replay must not flash the previous run's own stale target date
       // for even one frame before the first new tick corrects it --
-      // rewindDate should already be null the instant "rewinding" is
+      // displayDate should already be null the instant "rewinding" is
       // (re-)entered, not just once the next tick fires.
       act(() => {
         result.current.play();
       });
       expect(result.current.phase).toBe("rewinding");
-      expect(result.current.rewindDate).toBeNull();
+      expect(result.current.displayDate).toBeNull();
     });
 
     it("prefers-reduced-motion skips the rewind entirely -- play() lands straight on 'playing', matching pre-#97 behavior", () => {
@@ -598,10 +648,16 @@ describe("useTradeReplay", () => {
       });
 
       expect(result.current.phase).toBe("playing");
-      expect(result.current.rewindDate).toBeNull();
       // The rewinding effect's own body never ran (phase skipped
-      // straight past "rewinding"), but the playing effect's did --
-      // still one real queued frame, from the playing effect.
+      // straight past "rewinding"), so its own tween state never fed
+      // `displayDate` -- but the playing-phase readout (issue #107)
+      // doesn't come from that state at all, it's derived straight from
+      // `frame`/`points`, so it's already populated even before the
+      // playing effect's own first tick fires: `frame` is still the
+      // initial frame `play()` itself set (revealedCount 1), so this is
+      // the window's own opening point's real date.
+      expect(result.current.displayDate).toBe("Jan 1, 2024");
+      // Still one real queued frame, from the playing effect.
       expect(raf.hasQueuedFrame()).toBe(true);
     });
   });

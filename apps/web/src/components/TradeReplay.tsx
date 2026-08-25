@@ -5,8 +5,12 @@
 // re-sequencing data already on the page (derivePortfolioSeries's own
 // PortfolioPoint[]) rather than computing or fetching anything new.
 // Issue #97 added a brief "rewinding" intro beat (a backward-ticking
-// date readout) immediately before real trade playback begins. See
-// use-trade-replay.ts for the RAF-driven state machine this orchestrates.
+// date readout) immediately before real trade playback begins. Issue
+// #107 carried that same date readout through the rest of forward
+// playback too, so it no longer disappears the moment "rewinding" hands
+// off to "playing" -- see use-trade-replay.ts for the RAF-driven state
+// machine this orchestrates, and its own `displayDate` doc comment for
+// the per-phase reasoning.
 
 import { useMemo, type ReactNode } from "react";
 
@@ -94,9 +98,12 @@ const buttonClassName =
  * merely because playback started or was aborted early. While `phase`
  * is `"rewinding"` or `"playing"` (issue #97 added the former, a brief
  * intro beat before the latter begins -- see use-trade-replay.ts's own
- * doc comment) the hero slot additionally overlays either the rewind's
- * own backward-ticking date readout or, once `"playing"`, a plain
- * non-animated "$X -> $Y" figure (driven by the replay hook's own
+ * doc comment) the hero slot additionally overlays a date readout (the
+ * rewind's own backward tween while `"rewinding"`, then a running
+ * readout of whichever point is currently revealed once `"playing"` --
+ * issue #107, see `useTradeReplay`'s own `displayDate` doc comment for
+ * why the latter needs no tween of its own) plus, once `"playing"`, a
+ * plain non-animated "$X -> $Y" figure (driven by the replay hook's own
  * tween, not useCountUp -- HeroStat's own count-up is mount-only and
  * can't be re-driven mid-mount) via `HeroAndWorstCase`'s own `heroSlot`
  * prop, and a truncated view of the same `PortfolioChart` instance
@@ -104,6 +111,26 @@ const buttonClassName =
  * see that component's own prop doc comments, code review issue #96
  * follow-up round 3) -- pinned at just the window's own opening point
  * throughout the rewind, since no trade has actually played yet.
+ *
+ * **The date readout (issue #107) sits at the same position -- the
+ * label line, top-left of the hero slot -- in both `"rewinding"` and
+ * `"playing"`, carried by the label text itself rather than a value row
+ * of its own once `"playing"` begins.** During `"rewinding"` the date is
+ * still the label's own big sibling value row (unchanged from #97 --
+ * nothing else needs that row yet). Once `"playing"` starts, the
+ * pre-existing "$X -> $Y (Nx)" figure (issue #96, the thing this issue
+ * is additive to) needs that value row back for itself, so the date
+ * folds into the label line instead: `"Watching " + displayDate`,
+ * e.g. "Watching Aug 21, 2025." This is a **deliberate, layout-forced
+ * choice, not the first design tried** -- see the playing branch's own
+ * doc comment below for why a separate `<p>` (or sharing the value row
+ * alongside the dollar figures) both broke `heroSlot`'s fixed box height
+ * in a real screenshot, not just in theory. The label position and
+ * styling (`heroLabelClassName`) never change across the transition,
+ * which is what actually carries the "reads as a continuation" acceptance
+ * criterion here -- the date's own visual size shrinking (giant while
+ * alone during the rewind, small once folded into the label during
+ * playback) is an accepted trade-off, not an oversight.
  *
  * **`heroKey` carries `useTradeReplay`'s own `completedRuns` counter as a
  * suffix, bumped only when phase *lands on* "done" (code review, issue
@@ -196,7 +223,7 @@ export function TradeReplay({
   children,
 }: TradeReplayProps) {
   const reducedMotionAtMount = useReducedMotionAtMount();
-  const { phase, frame, rewindDate, play, skipToEnd, completedRuns } = useTradeReplay(points);
+  const { phase, frame, displayDate, play, skipToEnd, completedRuns } = useTradeReplay(points);
 
   // Memoized (code-review finding, issue #96 follow-up): constant for
   // the whole result, but this component re-renders on every one of the
@@ -297,12 +324,16 @@ export function TradeReplay({
     // this per-frame-changing readout). Reuses HeroStat.tsx's own
     // exported label/value-row classes so this reads as "the same hero
     // figure, mid-transition" the same way the playing-phase overlay
-    // already does.
+    // already does. The date is this row's *only* content, so it's free
+    // to use the same giant value-row size the dollar figures normally
+    // get -- there's no risk yet of outgrowing `heroSlot`'s own fixed box
+    // height (see the "playing" branch's own doc comment below), since
+    // nothing else is competing for space in this phase.
     heroSlot = (
       <div aria-hidden="true" className="absolute inset-0 flex flex-col items-start gap-1">
         <p className={heroLabelClassName}>Rewinding to</p>
         <p className={heroValueRowClassName}>
-          <span>{rewindDate}</span>
+          <span>{displayDate}</span>
         </p>
       </div>
     );
@@ -319,9 +350,44 @@ export function TradeReplay({
     // classes as literal strings, so this figure reads as "the same
     // hero figure, mid-transition" without risking drift if HeroStat's
     // own typography ever changes.
+    //
+    // **The date (issue #107) folds into the label line ("Watching " +
+    // displayDate) rather than getting its own row or sharing the
+    // dollar-figure row -- a real layout constraint found live, not a
+    // style preference.** `heroSlot`'s own `absolute inset-0` sizes
+    // itself against `HeroAndWorstCase`'s invisible, real `HeroStat` box
+    // (see that component's own doc comment) -- whatever height *that*
+    // content happens to need, including any wrapping its own "(Nx)"
+    // badge does at a given viewport width (the app's own real
+    // `max-w-3xl` layout width is narrow enough that this genuinely
+    // happens). This overlay's own content must reproduce that exact
+    // same wrapped height or its content visibly spills past whatever
+    // renders next -- confirmed live with two rejected designs, not
+    // just reasoned about: a separate third `<p>` for the date pushed
+    // the "Skip to end" button down and out from underneath it in a real
+    // screenshot; folding the date into the *value* row (prepending it
+    // ahead of the dollar figures in the same `<p>`) still broke,
+    // because a row now wider than the invisible box's own same-line
+    // content wraps differently and no longer reproduces that box's
+    // exact height either. The value row below is therefore left
+    // **byte-for-byte identical to this branch's own pre-#107 shape** --
+    // the one part of this overlay whose wrap behavior is proven to
+    // track the invisible box's own (it renders the equivalent figures,
+    // just tweened) -- and the date goes on the label line instead,
+    // whose text stays short enough ("Watching Aug 21, 2025") to never
+    // wrap at this app's own real content width, confirmed live. See
+    // this function's own doc comment above for why this is an accepted
+    // trade-off (the date visually shrinks at this exact transition, but
+    // the label's own position/styling stays identical throughout).
+    // `displayDate` tracks `frame.revealedCount` with no tween of its
+    // own -- see `useTradeReplay`'s own doc comment for why "playing"
+    // needs none.
     heroSlot = (
       <div aria-hidden="true" className="absolute inset-0 flex flex-col items-start gap-1">
-        <p className={heroLabelClassName}>Starting from</p>
+        <p className={`${heroLabelClassName} flex items-baseline gap-2`}>
+          <span>Watching</span>
+          <span className="text-[var(--text-muted)]">{displayDate}</span>
+        </p>
         <p className={heroValueRowClassName}>
           <span>{displayStartingCapitalFormatted}</span>
           <span className="text-[var(--text-muted)]">→</span>

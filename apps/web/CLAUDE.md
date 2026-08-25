@@ -4251,3 +4251,206 @@ details underneath it) -- collapsed into one small, clearly-labeled
   **over the past year** instead..." and the intraday-daily model's
   reads "...**over the past month** instead...", both with zero console
   errors.
+
+## Carrying the ticking date readout through forward playback (issue #107)
+
+Extends #97's rewind-to-start-date readout through the rest of forward
+playback -- before this issue, `rewindDate` (`use-trade-replay.ts`) was
+`null` the instant `phase` left `"rewinding"`, so the date readout that
+sells the "had I known" fantasy vanished the moment real trade playback
+began, right when it's arguably most relevant (each trade event has its
+own real date). `UseTradeReplayResult.rewindDate` is generalized into
+`displayDate: string | null`, non-null in both `"rewinding"` and
+`"playing"` (still `null` in `"idle"`/`"done"`):
+
+- **`"rewinding"`**: unchanged from #97 -- the existing tween from "now"
+  to `points[0].date`, now stored in a private `rewindTweenDate` state
+  (the same value, just no longer the field returned directly).
+- **`"playing"`**: no tween of its own, and no state of its own either --
+  computed fresh on every render, straight from `frame`/`points` (see
+  `UseTradeReplayResult.displayDate`'s own doc comment in
+  `use-trade-replay.ts` for the exact expression), i.e. "whichever point
+  is currently revealed's own real date." `revealedCount` already jumps
+  point-to-point (the chart itself never interpolates a position between
+  two points, see `ReplayFrame.currentValue`'s own doc comment for the
+  identical reasoning), so there's nothing to tween between two real
+  trading dates -- the readout just tracks `frame` directly, which is
+  also what keeps it automatically correct at every one of `tick()`'s
+  several `setFrame` call sites with zero new bookkeeping. Safe to read
+  unconditionally in the "playing" branch: `play()` already guards a
+  too-short `points` array before phase can ever reach "playing," and
+  `revealedCount` is always a valid index into it for the same reason
+  `initialFrame`/`finalFrame` already read `points`' own first/last entry
+  unconditionally elsewhere in this file.
+
+**A real layout bug, found live (not caught by the unit test suite at
+all) -- worth internalizing before the next `heroSlot` addition to this
+component.** `HeroAndWorstCase.tsx`'s `heroSlot` prop is an
+`absolute inset-0` overlay whose own box height is forced to exactly
+match its invisible, real `HeroStat` sibling's height (both `top` and
+`bottom` pinned to `0` with `height: auto` computes to fill the
+containing block exactly, per the CSS box model -- content taller than
+that box doesn't grow the box, it just visibly overflows past its
+bottom edge with nothing stopping it, since neither element sets
+`overflow: hidden`). Two designs were tried and both broke this live,
+confirmed by an actual screenshot each time, not just reasoned about in
+advance:
+
+1. **A third `<p>` line** (label, a new date row, then the pre-existing
+   dollar-figure row) pushed the "Skip to end" button and
+   `WorstCaseStat`'s own figures visibly out from underneath the
+   overlay -- the invisible `HeroStat` box is only ever two lines tall
+   (its own label + one value row), so a third line always overflows,
+   regardless of viewport width.
+2. **Folding the date into the _same_ value row as the dollar figures**
+   (prepending a date span ahead of `displayStartingCapitalFormatted`)
+   still broke, for a subtler reason: `heroValueRowClassName` is
+   `flex flex-wrap`, and this app's own real page width
+   (`ResultsPage.tsx`'s `max-w-3xl`, confirmed the same constraint
+   applies to the actual production layout, not just the debug-route
+   harness) is narrow enough that `HeroStat`'s own "(Nx)" badge already
+   sometimes wraps onto its own second line even without any of this
+   issue's changes -- so the invisible box's real height is
+   content-length-dependent, not a fixed two lines. Widening the visible
+   overlay's own value row (by prepending date text) changes _where_ it
+   wraps without changing where the invisible box's own, unwidened
+   content wraps -- the two no longer wrap in lockstep, and a taller
+   overlay overflows the same way design 1 did, just by a smaller
+   margin.
+
+**The fix that actually holds**: the date folds into the **label**
+line instead (`"Watching " + displayDate`, e.g. "Watching Aug 21,
+2025"), and the value row is left **byte-for-byte identical to this
+branch's own pre-#107 markup** -- the one piece of content whose wrap
+behavior is proven to track the invisible box's own (it renders the
+literal same-shaped figures, just a tweened value instead of the final
+one). A short label line ("Watching " plus a ~13-character date) never
+wraps at this app's own real content width, confirmed live, so this
+sidesteps the wrap-parity problem entirely rather than trying to solve
+it. **Accepted trade-off, not an oversight**: the date's own visual
+_size_ shrinks the instant `"rewinding"` hands off to `"playing"` (giant,
+alone in the value row during the rewind; small, folded into the label
+during playback) -- what actually carries the issue's own "reads as a
+continuation... same position in the hero slot" acceptance criterion is
+the label's _position_ and _styling_ staying identical across the
+transition, not the date's own rendered size. The label text itself is
+a second deliberate choice the issue's own acceptance criteria left
+open ("Rewinding to" -> "Watching" vs. a constant label): chosen to
+change, since "Rewinding to" stops describing what's happening once real
+trades are playing out, and "Watching" ties back to this feature's own
+"Watch it happen" name.
+
+- `format-date.ts` needed no changes -- `formatDate` (already exported,
+  already used by `calloutText` in this same file) is exactly the right
+  formatter for a window-model point's plain `"YYYY-MM-DD"` date; no new
+  `includeDate`/datetime-awareness concern applies here the way it does
+  for `calloutText`'s own `formatDateTime` call, since this readout only
+  ever needs the point's own calendar date.
+- Existing #96/#97 tests needed real updates, not just a `rewindDate` ->
+  `displayDate` rename, at exactly the tick where phase transitions from
+  `"rewinding"` to `"playing"`: the old contract asserted `displayDate`
+  (then `rewindDate`) was `null` the instant `"playing"` began; the new
+  contract asserts it equals `points[0].date`'s own formatted value (the
+  window's own opening point, still the only one revealed at that exact
+  instant) -- continuous with the rewind's own tweened target, which is
+  exactly that same date. `TradeReplay.test.tsx` needed a small
+  `readoutDate(label)` test helper (walks from the unambiguous label text
+  to its immediate next sibling's own `textContent`) rather than a plain
+  `screen.getByText(dateString)`, since `PortfolioChart`'s own
+  always-rendered `ChartDataTable` disclosure gets a row for the exact
+  same date once more than the opening point is revealed, and a bare
+  text match throws on more than one hit.
+- Tests cover the new per-tick date value in both hook and component
+  tests: `use-trade-replay.test.ts`'s "walks every point..." test asserts
+  `displayDate` at every tick (including the two same-date points around
+  the close event, confirming that's expected, not a bug), plus a
+  dedicated assertion in the "natural completion... last point is a
+  close event" test for the one case where the _final_ point's own
+  `displayDate` is genuinely observable while still `"playing"` (a
+  fixture with a trailing no-event point completes in the same
+  synchronous tick as its own arrival, with nothing in between to
+  assert); `TradeReplay.test.tsx` extends the existing "pauses on each
+  trade event" test with matching readout assertions at each event.
+- No new `react-hooks/set-state-in-effect` violations, and no new
+  reduced-motion logic needed -- both confirmed, not just assumed:
+  `displayDate`'s "playing" branch is a plain derived render-time
+  expression (no `setState` involved at all, let alone inside an
+  effect), and this whole phase stays unreachable under reduced motion
+  via the pre-existing `canReplay` gate, confirmed live with
+  `reducedMotion: "reduce"` context emulation showing zero "Watch it
+  happen" button and zero "Rewinding to"/"Watching" text anywhere,
+  identical to #96/#97's own established bypass.
+- **Live-verified** via the established throwaway-debug-route (a
+  hardcoded two-trade `points` series, dated in the past) plus the
+  documented no-root headless-Chromium workaround: screenshotted idle,
+  mid-rewind, the instant playing begins, mid-playback on each trade
+  event (confirming the date genuinely advances -- "Watching Aug 21,
+  2025" -> "Watching Aug 26, 2025" as the second trade's own event is
+  reached), and done -- confirming the label-in-the-value-row layout
+  bug above, then confirming the label-line fix renders cleanly with no
+  overlap at every one of those steps. `aria-live` announcements
+  unchanged (still just the buy/sell callouts + final sentence,
+  confirmed by inspecting the status region throughout). The debug
+  route and the temporary `playwright` devDependency were both reverted
+  before committing, per this file's own established convention;
+  confirmed via `git status`/`git diff --stat` showing no trace of
+  either afterward. All five routine checks (lint, `next typegen && tsc
+--noEmit`, `pnpm build`, `pnpm test`, `pnpm format:check`) green on the
+  resulting clean tree.
+
+### Code-review follow-up -- four findings, all fixed before merge
+
+A `high` review of the PR above found four real, lower-severity issues
+-- no live/reachable correctness bug survived scrutiny, matching this
+issue's own unusually thorough test coverage.
+
+- **`displayDate`'s "playing" branch read `points[frame.revealedCount -
+1]!` with a bare non-null assertion and no runtime clamp**, unlike
+  `PortfolioChart.tsx`'s own established precedent for this exact class
+  of risk (its `revealed` local, issue #96 follow-up round four -- see
+  that component's own doc comment). `frame.revealedCount` is fully
+  internal state here (unlike `PortfolioChart`'s public, caller-supplied
+  `revealedCount` prop), but it stays in range today only via an
+  emergent combination of independently-maintained invariants elsewhere
+  (`play()`'s length guard, `buildSegments`'s 1-indexed loop) -- not one
+  explicit check at this read site. Fixed with the identical
+  `Math.min(Math.max(..., 1), points.length)` clamp shape
+  `PortfolioChart.tsx` already uses. **Not independently regression-
+  tested** -- unlike `PortfolioChart`'s own clamp (directly testable by
+  passing an out-of-range `revealedCount` prop), there's no way to force
+  this internal state out of range through `useTradeReplay`'s public API
+  without exposing internals purely for testing, which this codebase
+  avoids elsewhere too (see e.g. the deleted, confirmed-unreachable
+  `segments.length === 0` branch, issue #96 follow-up round three).
+- **Four doc-comment references called this feature "issue #108"**
+  (a copy/paste slip), while every other touched file, the branch name,
+  and this very section's own header all correctly say "issue #107."
+  Fixed -- a wrong issue number in a comment is exactly the kind of
+  thing that sends a future reader chasing the wrong GitHub issue.
+- **`displayDate`'s "playing" branch recomputed `formatDate` on every
+  RAF-driven re-render, even mid-tween frames where `revealedCount`
+  (and therefore the result) hadn't changed** -- roughly a dozen wasted
+  calls per ~300ms segment tween, the identical class of waste this
+  file's own `endingBalanceDisplayValue`/`displayStartingCapitalFormatted`/
+  `multiplier` already guard against on this same hot path. Wrapped in
+  `useMemo` alongside the clamp fix above, keyed on
+  `[phase, points, frame.revealedCount, rewindTweenDate]`.
+- **A stale comment in `TradeReplay.test.tsx`** (the "starting-capital
+  edit mid-playback" test) still claimed the playing-phase overlay shows
+  "its own 'Starting from' caption... alongside the animated overlay's
+  identical caption text" -- which this issue's own label-line design
+  (see above) makes false (the overlay reads "Watching {date}," not a
+  second "Starting from"). The test itself still passed regardless (it
+  only reads index `[0]` of `getAllByText`, now legitimately one match
+  instead of two), but the comment would have misled a future reader.
+  Fixed, and also noted that this particular click never actually
+  advances past "rewinding" in this test (no RAF ticks are pumped) --
+  true either way, since neither non-live phase's overlay uses "Starting
+  from" as its own label text.
+- All five routine checks (lint, `next typegen && tsc --noEmit`, `pnpm
+build`, `pnpm test`, `pnpm format:check`) re-ran green after every fix
+  -- no new live-browser verification pass, since none of the four
+  changes are observable in the shipped UI (a doc-comment fix, a
+  defensive clamp on an already-provably-in-range internal value, a
+  memoization with no behavioral difference, and a test-only comment
+  fix).
