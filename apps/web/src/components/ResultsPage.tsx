@@ -10,7 +10,6 @@ import { useCustomAnchors } from "@/lib/use-custom-anchors";
 import { useStartingCapital } from "@/lib/use-starting-capital";
 import { parseAnchorDate, parseRange } from "@/lib/results-api";
 import { DEFAULT_MODE, parseMode, type Mode } from "@/lib/mode";
-import { AboutSection } from "@/components/AboutSection";
 import { CustomRangeSelector } from "@/components/CustomRangeSelector";
 import { ModeToggle } from "@/components/ModeToggle";
 import { OnboardingIntro } from "@/components/OnboardingIntro";
@@ -127,13 +126,7 @@ export function ResultsPage() {
       <OnboardingIntro />
 
       <header className="flex flex-col gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Had I Known Trades</h1>
-          <p className="text-sm text-[var(--text-secondary)]">
-            A hindsight toy, not investment advice: the best possible outcome from $20 with at most
-            3 sequential trades, in hindsight.
-          </p>
-        </div>
+        <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Had I Known Trades</h1>
         <RangeSelector selected={range} onSelect={selectRange} />
         {/* CustomRangeSelector and ModeToggle collapse behind this one
             "More options" disclosure at every viewport width (issue
@@ -177,8 +170,6 @@ export function ResultsPage() {
         startingCapital={startingCapital}
         onStartingCapitalChange={setStartingCapital}
       />
-
-      <AboutSection />
     </div>
   );
 }

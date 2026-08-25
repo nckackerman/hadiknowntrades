@@ -2,11 +2,13 @@
 
 // First-visit onboarding intro banner (issue #64) -- a one-line explainer
 // shown above the results for a visitor who hasn't dismissed it yet, so
-// they don't land mid-result (e.g. "$20 -> $472K") with no framing beyond
-// the terse one-line disclaimer already under the <h1> (ResultsPage.tsx).
-// AboutSection's fuller methodology/disclaimer sits at the very bottom of
-// the page and isn't a substitute for this -- see the issue's own
-// background section.
+// they don't land mid-result (e.g. "$20 -> $472K") with no framing at
+// all. Since issue #104 collapsed every disclaimer/methodology surface
+// behind a single click (AboutSection, now rendered per result view, not
+// at the page level), this banner is the only unclick-required framing
+// left on first paint -- not a substitute for AboutSection's fuller
+// disclaimer/methodology content, just this app's one remaining
+// always-visible context for a first-time visitor.
 
 import { useOnboardingDismissed } from "@/lib/use-onboarding-dismissed";
 

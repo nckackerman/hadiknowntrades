@@ -512,7 +512,9 @@ describe("ResultsPanel", () => {
       }),
     };
     const { rerender } = render(<ResultsPanel range="1Y" state={withBenchmark} />);
-    expect(screen.getByText(/Buying and holding SPY instead/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Buying and holding SPY over the past year instead/),
+    ).toBeInTheDocument();
 
     const withoutBenchmark: ResultsState = {
       status: "success",
@@ -1200,7 +1202,9 @@ describe("ResultsPanel", () => {
       };
       render(<ResultsPanel range="1Y" state={state} />);
 
-      expect(screen.getByText(/Buying and holding SPY instead/)).toBeInTheDocument();
+      expect(
+        screen.getByText(/Buying and holding SPY since mar 1, 2019 instead/i),
+      ).toBeInTheDocument();
     });
 
     it("passes the user's rescaled starting capital into TradeList, not the raw precomputed startingCapital", () => {

@@ -41,7 +41,7 @@ interface TradeReplayProps {
   displayStartingCapital: number;
   /** Rendered next to the hero row, e.g. StartingCapitalInput -- unaffected by playback. */
   startingCapitalInput?: ReactNode;
-  /** Rendered between the hero row and the chart (the methodology paragraph, BenchmarkStat) -- unaffected by playback, always the same regardless of phase. */
+  /** Rendered between the hero row and the chart (BenchmarkStat) -- unaffected by playback, always the same regardless of phase. */
   children?: ReactNode;
 }
 
@@ -82,9 +82,10 @@ const buttonClassName =
  * "Trades" block below, preserving that flex column's own `gap-8`
  * spacing between all three (code-review finding, fixed: an earlier
  * version put both inside one shared `gap-2` div, which silently shrank
- * the pre-existing spacing between `children` -- the methodology
- * paragraph/BenchmarkStat -- and the chart, on *every* page load, not
- * just during replay).
+ * the pre-existing spacing between `children` -- BenchmarkStat, plus the
+ * per-view methodology paragraph before issue #104 moved it into
+ * AboutSection -- and the chart, on *every* page load, not just during
+ * replay).
  *
  * Idle and done both render the *real*, untouched `HeroAndWorstCase`
  * pairing -- `HeroStat` inside it reveals fresh (a genuinely new
