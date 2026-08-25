@@ -12,13 +12,22 @@ plan-first convention for design/blast-radius work -- #75, #84, #85,
 `DEFAULT_MAX_TRADES_PER_DAY = 3`, confirmed against `preset-ranges.ts`
 and `pipeline.ts` directly, not assumed), not the ~63/~186/~750 that make
 1M/3M/1Y need issue #106's day-chunking redesign. **Correcting the
-issue's own figure**: at `use-trade-replay.ts`'s unmodified pacing this
-plays in **~31.8s, not "~27s"** (the hook's own header comment gives the
-exact formula, `2100ms x trades + 300ms`, worked out in section 2 below)
--- clearly not "still workable" as the issue's Background speculates, so
-pacing genuinely needs tightening, not just verifying. The core walk
-mechanism itself, however, needs **no new segment-builder or chunking
-abstraction** -- `use-trade-replay.ts`'s existing per-point
+issue's own figure, against the right point structure this time**: an
+earlier draft of this plan reused `derivePortfolioSeries`' (window
+model's) own per-trade pacing formula for this section, which is wrong --
+1W's replay actually walks `deriveWholeRangeIntradaySeries`, a
+structurally different point layout (one leading boundary point _per
+trading day_, not one for the whole series; no trailing boundary point
+at all). Re-derived against that real shape (section 2): 1W's true
+worst case is 50 points / 49 segments / 30 event-pauses, and unmodified
+pacing plays in **~32.7s**, not the issue body's "~27s" and not this
+plan's own earlier (also wrong) "~31.8s." Still clearly not "still
+workable" as the issue's Background speculates, so pacing genuinely
+needs tightening, not just verifying -- and, corrected further below,
+the tightened figure sits close enough to the stated ceiling that this
+plan revises its own recommended constants too, not just its arithmetic.
+The core walk mechanism itself, however, needs **no new segment-builder
+or chunking abstraction** -- `use-trade-replay.ts`'s existing per-point
 `buildSegments`/RAF/phase machinery is confirmed data-shape-agnostic
 (`PortfolioPoint`/`PortfolioEvent` are identical between
 `derivePortfolioSeries` and `deriveWholeRangeIntradaySeries`) and can be
@@ -38,13 +47,18 @@ which has no page-level equivalent outside `HeroAndWorstCase`. Composing
 through `HeroAndWorstCase` instead would render the exact same "$X ->
 $Y" figure twice, once in `WholeRangeBalance`'s own already-revealed
 headline and again in a parallel `HeroAndWorstCase`. This plan instead
-extends `WholeRangeBalance` itself with a `heroSlot`-equivalent overlay
-prop (following that exact, already-proven overlay-not-replace pattern)
-and a new worst-case sibling stat, and wraps it in a new
-`WholeRangeReplay.tsx` that owns the replay button, the animated
-overlay, and the whole-range chart -- see section 3 for the full design
-and section 3.5 for what this means for #106's own eventual
-reconciliation pass.
+extends `WholeRangeBalance` itself with its own `heroSlot`-equivalent
+overlay prop and a new worst-case sibling stat, and wraps it in a new
+`WholeRangeReplay.tsx` that owns the replay button (gated on trade count
+and reduced motion, mirroring `TradeReplay.tsx`'s own `canReplay`), the
+animated overlay, and the whole-range chart -- see section 3 for the
+full design (revised from this plan's first draft, which proposed
+reusing `HeroStat.tsx`'s exported label/value-row classes for the
+overlay without checking that `WholeRangeBalance` actually has a
+matching two-line label+value structure to overlay onto -- it doesn't,
+as shipped; section 3.2 designs the real restructuring needed) and
+section 3.5 for what this means for #106's own eventual reconciliation
+pass.
 
 The worst-case figure itself needs **zero new pipeline work** -- issue
 #84's chained per-track `startingCapital` on `IntradayWorstCaseResult`/
@@ -57,9 +71,7 @@ component only ever computes real chart data once `rangeGuess !== null`
 returns `[]` pre-reveal), so there is nothing to replay before the guess
 is submitted, with no bypass and no duplicate gate.
 
-## 1. Architecture recap (read in full before this plan, and before any
-
-follow-up build issue)
+## 1. Architecture recap (read in full before this plan, and before any follow-up build issue)
 
 `apps/web/src/lib/use-trade-replay.ts`, `apps/web/src/components/
 TradeReplay.tsx`, `apps/web/src/lib/portfolio-series.ts`, `apps/web/src/
@@ -113,7 +125,7 @@ and 5:**
   needs to become an optional, defaulted parameter so 1W's replay can
   use tighter values than the window model's without forking the hook.
 - `use-trade-replay.ts`'s two date-reading call sites assume a plain
-  calendar date (`formatDate`, `Date.parse(\`${date}T00:00:00Z\`)`) --
+  calendar date (`formatDate`, ``Date.parse(`${date}T00:00:00Z`)``) --
   a real, previously-undocumented bug against a datetime-labeled chained
   series (section 5).
 - No `WorstCaseStat`-equivalent exists for the whole-range headline
@@ -122,94 +134,151 @@ and 5:**
   worst-case balance, only `wholeRangeFinalBalance` for the best-case
   track) -- section 3 resolves this.
 
-## 2. Correcting the issue's own pacing figure, worked through with real numbers
+## 2. Correcting the issue's own pacing figure, worked through against the real point structure
 
-`use-trade-replay.ts`'s own header comment gives the authoritative
-per-trade cost formula, confirmed against its own two worked examples
-("a 1-trade window plays in ~2.4s, a 3-trade window in ~6.6s"): for `n`
-trades, the walk produces `3n + 1` segments (an initial
-start-to-first-open segment, then per trade: open->flat, flat->close,
-and close-to-next-open), of which `2n` land on a real event (each
-trade's own open and close) and therefore pause. Total time:
+**This section is a full re-derivation, not a patch -- an earlier draft
+of this plan got the underlying formula wrong, caught in independent
+review, and the correction changes the final numbers materially.** That
+earlier draft borrowed `use-trade-replay.ts`'s own header-comment
+formula (`3n + 1` segments / `2n` event-pauses per `n` trades), which is
+correct **only for `derivePortfolioSeries`** (the window model) -- 1W's
+replay actually walks `deriveWholeRangeIntradaySeries` (`portfolio-
+series.ts`), a genuinely different point layout, and plugging 1W's trade
+count into the wrong function's formula produced a wrong duration
+estimate that happened to still support the right qualitative
+conclusion ("too slow, needs tightening") without being numerically
+correct. Re-derived below against the actual function.
+
+### 2.1 The real point structure, read directly from `deriveWholeRangeIntradaySeries`
+
+For each day in the range, the function pushes exactly one point with
+no event: `${day.date}T12:00:00` (a no-trade day) or a leading
+`${day.date}T${trades[0].openTime}` boundary point (a day with trades),
+**then**, only if the day has trades, `appendTradeSteps` appends 3
+points per trade (open, flat, close) on top of that leading point.
+Unlike `derivePortfolioSeries`, there is **no trailing boundary point**
+at the series' end at all -- the array simply stops after the last
+day's own points.
+
+So for a range with `D` trading days and `T` total trades across all of
+them (whether concentrated in a few days or spread out -- the day-level
+split doesn't matter, only the totals do):
 
 ```
-total_ms(n) = (3n + 1) x TRANSITION_MS + 2n x EVENT_PAUSE_MS
-            = (3n + 1) x 300 + 2n x 600
-            = 2100n + 300
+points   = D + 3T           (one boundary point per day, plus 3 per trade)
+segments = points - 1 = D + 3T - 1
+events   = 2T                (each trade's own open + close)
+
+total_ms = segments x TRANSITION_MS + events x EVENT_PAUSE_MS
+         = (D + 3T - 1) x TRANSITION_MS + 2T x EVENT_PAUSE_MS
 ```
 
-Verified against both of the hook's own documented examples: `n=1` ->
-`2100 + 300 = 2400ms` (matches "~2.4s"); `n=3` -> `6300 + 300 = 6600ms`
-(matches "~6.6s" exactly).
-
-**Applying this to 1W's real worst case (15 trades, confirmed in section
-2.1 below), unmodified pacing plays in `2100 x 15 + 300 = 31,800ms ~
-31.8s`, not the issue body's "~27s" figure.** The issue's own number
-appears to come from a simpler (and inexact) `15 x 1800ms` estimate --
-2 pauses of `600ms` plus their own `300ms` transitions per trade, which
-undercounts the "close of trade N to open of trade N+1" transition
-segments and the leading boundary segment. **This plan trusts the
-hook's own documented, twice-verified formula over the issue body's
-unverified estimate, per this plan's explicit mandate to confirm rather
-than trust the issue body's numbers as-is.**
-
-Either way, the conclusion is the same and stronger than the issue's own
-hedge ("that's still plausibly workable... verify live, and cap/tighten
-pacing if it drags"): **31.8s is well outside a "watch it happen"
-feel**, especially compared to the window model's established ~2.4-6.6s
-and #106's own proposed ~4-14s target for 1M/3M/1Y. Pacing needs
-tightening for 1W, not just live-verifying as an afterthought.
-
-### 2.1 Confirming "15 trades worst case" itself
+### 2.2 Confirming 1W's real worst case: `D = 5`, `T = 15`
 
 `packages/core/src/preset-ranges.ts`: `presetRangeStartDate("1W", asOf)`
-returns `daysBeforeUtc(asOf, 7)` -- 7 calendar days back. Seven calendar
-days always spans exactly one full week, so it covers 5 weekdays
-(possibly fewer around a market holiday, never more). `apps/pipeline/src/
-pipeline.ts` line 109: `const DEFAULT_MAX_TRADES_PER_DAY = 3;`, and
-`INTRADAY_RANGES` (line 163) includes `"1W"`. `5 trading days x 3
-trades/day = 15` -- confirmed exactly, matching the issue body's own
-figure (unlike the ~27s pacing estimate, which this plan corrects
-above).
+returns `daysBeforeUtc(asOf, 7)` -- 7 calendar days back, always exactly
+one full week, so `D = 5` trading days (possibly fewer around a market
+holiday, never more). `apps/pipeline/src/pipeline.ts` line 109:
+`const DEFAULT_MAX_TRADES_PER_DAY = 3;`, `INTRADAY_RANGES` (line 163)
+includes `"1W"` -- worst case every one of the 5 days hits the cap,
+`T = 5 x 3 = 15`. Both figures confirmed directly against the real code,
+matching the issue body's own "15 trades worst case" claim (only the
+_duration_ estimate built on top of it was wrong, both in the issue body
+and in this plan's own first draft).
 
-### 2.2 Proposed pacing: parameterize, don't hardcode a second copy
+Plugging in: `points = 5 + 45 = 50`, `segments = 49`, `events = 30` --
+**independently verified by the reviewer against these same real
+numbers**, not just re-derived here.
 
-**Recommendation: `useTradeReplay` gains an optional second parameter,
-`pacing?: ReplayPacing` (`{ transitionMs, eventPauseMs, rewindMs }`),
-defaulting to the current window-model constants** (so `TradeReplay.tsx`
-needs zero changes -- it simply doesn't pass the parameter). 1W's own
+**Unmodified pacing** (`TRANSITION_MS = 300`, `EVENT_PAUSE_MS = 600`):
+`49 x 300 + 30 x 600 = 14,700 + 18,000 = 32,700ms ~ 32.7s`, not the
+issue body's "~27s" and not this plan's own earlier (also wrong,
+window-model-formula-based) "~31.8s." Still the same qualitative
+conclusion as both prior estimates -- **32.7s is well outside a "watch
+it happen" feel**, stronger than the issue's own hedge ("that's still
+plausibly workable... verify live, and cap/tighten pacing if it
+drags") -- but now backed by a formula actually derived from the
+function this feature really walks, not borrowed from a different one.
+
+### 2.3 Proposed pacing: parameterize, don't hardcode a second copy
+
+**Recommendation unchanged in shape from this plan's first draft:
+`useTradeReplay` gains an optional second parameter, `pacing?:
+ReplayPacing` (`{ transitionMs, eventPauseMs, rewindMs }`), defaulting
+to the current window-model constants** (so `TradeReplay.tsx` needs
+zero changes -- it simply doesn't pass the parameter). 1W's own
 `WholeRangeReplay.tsx` passes a tighter, module-level constant object
 (not an inline literal -- its identity must stay stable across renders,
 the same "identity stability" discipline this file already applies to
 `points`/`landing` elsewhere, or the RAF effect's own `[phase, points]`-
-style dependency array would restart on every parent render).
+style dependency array would restart on every parent render). **The
+concrete numbers themselves change, and the honesty about margin
+changes with them:**
 
-**Concrete starting values, tuned by feel against the `2100n + 300`-style
-formula above (not pinned as a hard requirement -- see section 6, matching
-this repo's own established "tuned by feel" precedent for every prior
-pacing constant)**:
+Applying this plan's own first-draft constants (`transitionMs: 150`,
+`eventPauseMs: 250`) against the _correct_ formula: `49 x 150 + 30 x 250
+= 7,350 + 7,500 = 14,850ms ~ 14.85s` -- independently verified by the
+reviewer to match. **This is not "comfortably inside" the issue's own
+suggested 10-15s ceiling, as this plan's first draft claimed -- it sits
+right at the top of that range, with under 200ms of margin.** Stating
+that plainly rather than implying headroom that isn't really there:
+those constants leave essentially no room for the real browser's own
+RAF scheduling overhead (never yet measured, see below) to push the
+actual figure over the stated ceiling.
+
+**Revised recommendation: tighten further, to build real margin, while
+being explicit about the tradeoff this creates.** `EVENT_PAUSE_MS` is
+the dominant term at this trade count (30 pauses vs. 49 transitions,
+and the transitions are already fast) -- pushing it down is what buys
+the most duration back, but it's also the one constant whose job is
+literally "stay on screen long enough to read a callout sentence." The
+window model's `EVENT_PAUSE_MS = 600` was tuned for at most 6 pauses
+total (3 trades); 1W's worst case has 5x that many. A proposed revised
+pair:
 
 ```
 WHOLE_RANGE_REPLAY_PACING = {
-  transitionMs: 150,   // half of the window model's 300ms
-  eventPauseMs: 250,   // ~42% of the window model's 600ms
-  rewindMs: 700,        // unchanged -- REWIND_MS is a fixed intro beat, not per-trade
+  transitionMs: 130,
+  eventPauseMs: 220,
+  rewindMs: 700,   // unchanged -- REWIND_MS is a fixed intro beat, not per-trade
 }
 ```
 
-Worst case (15 trades): `(3x15+1) x 150 + 2x15 x 250 = 6900 + 7500 =
-14,400ms ~ 14.4s` -- comfortably inside the issue's own suggested
-"10-15 seconds" target. A typical 1W result (many real weeks produce 0-3
-trades total across all 5 days, not the worst-case ceiling) plays far
-faster, well under 5s.
+Worst case: `49 x 130 + 30 x 220 = 6,370 + 6,600 = 12,970ms ~ 12.97s` --
+roughly 2 seconds of real margin under the 15s ceiling this time, not a
+sliver. But **220ms is genuinely short for reading a full callout
+sentence** ("Bought AAPL on Aug 21 at $142.00 (+3.2%).") -- shorter than
+the window model's already-brisk 600ms, and this happens up to 30 times
+in one run rather than up to 6. This plan does not claim 220ms is
+provably "long enough to read" -- that's exactly the kind of judgment
+call this repo's own established convention (see section 6) leaves to
+live verification against real data and a real browser, not something
+worked out on paper. What this plan _does_ claim: going meaningfully
+below ~200ms starts trading "brisk but readable" for "flicker," so
+tightening further than the pair above to buy back more margin is a
+real cost, not a free lever -- worth the implementer's/reviewer's own
+judgment call after watching a real worst-case 1W result play back, not
+a number to keep pushing down purely to satisfy a duration target on
+paper.
 
-**Target playback durations to state in the build issue's own Scope
-section**: worst-case (15 trades) ~14s; typical (0-3 trades) ~2-5s.
+**Typical-case durations, using the same corrected formula with `D = 5`
+fixed and `T` varying** (most real 1W weeks don't hit the 15-trade
+ceiling): `T=0` (no trades all week) -> `4 x 130 = 520ms`, near-instant;
+`T=3` -> `13 x 130 + 6 x 220 = 3,010ms ~ 3.0s`; `T=6` -> `22 x 130 + 12 x
+220 = 5,500ms ~ 5.5s`. **Target playback durations to state in the build
+issue's own Scope section**: worst-case (15 trades, every day maxed)
+~13s with the revised constants above; typical (a handful of trades)
+well under a second to ~5-6s.
+
 **Requires live verification against real current 1W data before
-shipping**, per this repo's own working agreement -- these are worked
-out analytically from the hook's own documented formula, not yet
-measured against a real browser's RAF scheduling overhead, matching the
-same caveat #106's plan states for its own ~7-14s chunk-based figures.
+shipping, more pointedly than this plan's first draft implied** --
+these figures are worked out analytically from the corrected formula,
+not yet measured against a real browser's actual RAF scheduling
+overhead, and the pause duration specifically needs a real "can I
+actually read this" check, not just a stopwatch check against the
+15s ceiling. Matches the same caveat #106's plan states for its own
+~7-14s chunk-based figures, but carries more weight here given how thin
+the margin already is even at the revised, tightened constants.
 
 ## 3. Hero/reveal component: extend `WholeRangeBalance`, don't compose through `HeroAndWorstCase`
 
@@ -253,40 +322,111 @@ never be touched by anything replay-related.
 
 ### 3.2 Concrete design
 
-**`WholeRangeBalance.tsx` gains two new props** (both effectively
-required in practice, since this plan's only real caller will always
-pass them -- left as an implementation-time call whether to make them
-strictly required or optional-with-a-sensible-default, matching this
-component's own existing convention of documenting "every real call site
-passes this" rather than defending an unused default):
+**Revised from this plan's first draft, which claimed `revealSlot`
+could just reuse `HeroStat.tsx`'s exported label/value-row classes --
+independent review checked that claim against the real component and
+found it doesn't fit as written, before any code was built on top of
+it.** `HeroStat.tsx` genuinely has a paired two-line structure (a label
+`<p>` reading "Starting from," then a value `<p>` with the dollar
+figures) that `heroSlot` overlays as one unit -- but `WholeRangeBalance.
+tsx`'s `revealed` branch, read directly, is **not** the same shape: its
+headline `<p>` (the "$X -> $Y" line) has no _paired_ label line sitting
+next to it inside that branch. The component does have a label-like
+line ("Whole-range running balance -- carried day to day, start to
+finish"), but it's rendered **once, before the `revealed` ternary**,
+shared unconditionally by both the guess-form state and the revealed
+state -- not inside the revealed branch alongside the headline the way
+`HeroStat`'s own label/value pair are siblings inside one component.
+Exporting `HeroStat`'s classes for `WholeRangeReplay.tsx` to reuse, as
+the first draft proposed, would have had nowhere correct to put a
+two-line "Watching {date}" + tweened "$X -> $Y" overlay: folding it
+into the headline `<p>` alone (this plan's own original, narrower
+`revealSlot` scope, "overlays _just_ the headline `<p>`") leaves no room
+for a label line at all without either overflowing a single-line box or
+widening that one line unpredictably -- precisely the two failure modes
+issue #107's own live-verification history (`apps/web/CLAUDE.md`, cited
+in section 1's required reading) already found and rejected for this
+exact class of overlay-onto-an-existing-box problem.
 
+**The actual fix: restructure `WholeRangeBalance`'s `revealed` branch to
+genuinely pair a label line with its value line, the same shape
+`HeroStat` already has -- not by borrowing `HeroStat`'s classes, but by
+giving `WholeRangeBalance` its own equivalent pair, since it's a
+different component with its own typography.** Concretely:
+
+- The persistent caption text ("Whole-range running balance -- carried
+  day to day, start to finish") moves from being rendered once, before
+  the ternary, to being rendered **inside each branch of the ternary
+  separately** (the unrevealed branch keeps it exactly as today,
+  unconditionally visible above the guess form; the revealed branch
+  gets its own copy, now paired with the headline). A plain string
+  duplicated across two branches, not new logic -- an implementer may
+  choose to hoist it into one shared local constant reused by both
+  branches instead of two literal copies, an implementation-time
+  choice, not a design one.
+- Inside the revealed branch, the caption `<p>` and the headline `<p>`
+  are wrapped together in one `relative` div (mirroring `HeroAndWorstCase`'s
+  own `<div className="relative">` around `HeroStat`, not a new
+  pattern): `<div className={revealSlot ? "invisible" : undefined}
+aria-hidden={revealSlot ? "true" : undefined}>` containing both `<p>`s,
+  with `{revealSlot}` painted as a sibling `absolute inset-0` overlay --
+  the exact overlay-not-replace idiom `HeroAndWorstCase.tsx` already
+  established, just applied to this component's own two-line pair
+  instead of `HeroStat`'s.
+- `WholeRangeBalance.tsx` exports its **own** two class-name constants
+  for this pair -- `wholeRangeLabelClassName` (the caption's existing
+  classes, `"text-sm font-medium text-[var(--text-muted)]"`) and
+  `wholeRangeValueRowClassName` (the headline's existing classes,
+  unchanged) -- mirroring `HeroStat.tsx`'s own
+  `heroLabelClassName`/`heroValueRowClassName` export pattern (issue #96
+  round four's precedent), but as `WholeRangeBalance`'s own pair, not a
+  reuse of `HeroStat`'s.
+- With no `revealSlot` passed (idle/done phases), the added `relative`/
+  conditional-`invisible` wrapper is a pure no-op -- `invisible` never
+  applies, so the revealed headline renders pixel-identical to today.
+  **Confirmed against the real component, not assumed**: the only
+  structural change to the non-replay revealed appearance is the
+  caption text moving from "rendered once, before the ternary" to
+  "rendered once per branch, wrapped one div deeper in the revealed
+  case" -- same text, same classes, same document position, no visible
+  difference.
+- `revealSlot`'s own content (built by `WholeRangeReplay.tsx`, not
+  `WholeRangeBalance` itself) follows issue #107's own proven pattern
+  exactly, rather than re-discovering its overflow lesson independently
+  a second time: the date folds into the **label** line ("Watching
+  {date}," replacing the caption text for the overlay's duration), and
+  the **value** line stays byte-for-byte the same shape as the real
+  headline's own three-span markup (starting capital, arrow, ending
+  value), just with `frame.currentValue` substituted for `finalBalance`
+  -- the one piece of content whose wrap behavior is proven to track the
+  invisible box's own, per issue #107's own hard-won reasoning.
 - `worstCase: { startingCapital: number; endingBalance: number }` --
-  rendered as a `<WorstCaseStat>` sibling next to the headline, in the
-  same `flex flex-col gap-4 sm:flex-row sm:items-end sm:gap-8` row shape
-  `HeroAndWorstCase` already establishes for the day-level pairing above
-  it (visual consistency between the two "hero rows" on the same page).
-  Rendered only inside the `revealed` branch, same as the headline
-  itself -- no new gate, reuses the existing `guess !== null` check this
-  component already computes.
-- `revealSlot?: ReactNode` -- overlays _just_ the headline `<p>` (not
-  the "You guessed $X" line below it, not the worst-case stat), via the
-  exact same CSS idiom `HeroAndWorstCase`'s own `heroSlot` already uses:
-  the headline `<p>` moves inside a `relative` wrapper, gets
-  `invisible`/`aria-hidden` conditionally on `revealSlot`'s presence,
-  and `revealSlot` paints as an `absolute inset-0` sibling. The "You
-  guessed $X" paragraph, the `sr-only` status region, and the entire
-  guess-form branch are all completely untouched by this prop -- it can
-  only ever affect the headline `<p>`'s own visual slot.
+  a new prop, rendered as a `<WorstCaseStat>` sibling to the
+  headline-plus-caption box (a `flex flex-col gap-4 sm:flex-row
+sm:items-end sm:gap-8` row wrapping both, matching `HeroAndWorstCase`'s
+  own row shape for the day-level pairing above it). Rendered only
+  inside the `revealed` branch -- no new gate, reuses the existing
+  `guess !== null` check this component already computes. (Left as an
+  implementation-time call, same as the first draft: whether this prop
+  and `revealSlot` are strictly required or optional-with-a-default,
+  since this plan's one real caller always passes both.)
 
 **New component: `WholeRangeReplay.tsx`**, sibling to `TradeReplay.tsx`,
 composing `WholeRangeBalance` (extended as above) plus the whole-range
-`PortfolioChart`:
+`PortfolioChart`. **Also revised from the first draft: the props
+interface never mentioned trade count or reduced motion at all, despite
+issue #105's own acceptance criteria requiring "no button under reduced
+motion or a zero-trade result" -- the exact gate `TradeReplay.tsx`'s own
+`canReplay` already establishes for the window model, which this
+plan's own required-reading section 1 already points at.** Added
+explicitly:
 
 ```
 interface WholeRangeReplayProps {
   rangeLabel: string;
   startingCapital: number;            // display starting capital
   points: readonly PortfolioPoint[];  // wholeRangePoints, from ResultsPanel
+  tradeCount: number;                 // total trades across the whole range, this mode -- gates the button (added, was missing)
   worstCaseEndingBalance: number;     // raw, native-root -- see 3.3
   worstCaseStartingCapital: number;
   guess: number | null;
@@ -295,24 +435,38 @@ interface WholeRangeReplayProps {
 }
 ```
 
+- `WholeRangeReplay` calls `useReducedMotionAtMount()` itself (the same
+  hook `TradeReplay.tsx` already uses) and computes `canReplay =
+tradeCount > 0 && !reducedMotionAtMount`, gating the idle/done
+  "Watch it happen"/"Replay" button exactly the way `TradeReplay.tsx`'s
+  own `canReplay` does -- not "Skip to end," which (mirroring
+  `TradeReplay.tsx`'s own established, code-review-fixed distinction)
+  stays available throughout `"rewinding"`/`"playing"` regardless of
+  `canReplay`'s value.
+- `tradeCount` is computed in `ResultsPanel.tsx` as the sum of every
+  day's own mode-selected trade count across the whole range (`data.days
+.reduce((sum, day) => sum + selectVariant(day, day.longShort,
+mode).trades.length, 0)`, or equivalently derived from the existing
+  `dayOverviewRows` memo's own `tradeCount` field, summed) -- the
+  whole-range analogue of `TradeReplay.tsx`'s own `tradeCount` prop
+  (`WindowResultBody`'s live `variant.trades.length`), computed fresh
+  the same way `wholeRangeWorstCaseEndingBalance` (section 3.3) already
+  is, alongside it.
 - Calls `useTradeReplay(points, WHOLE_RANGE_REPLAY_PACING)` directly
-  (section 2.2, section 5).
-- Computes `revealSlot` (only during `"rewinding"`/`"playing"`) the same
-  "Rewinding to"/"Watching {date}" + tweened "$X -> $Y" shape
-  `TradeReplay.tsx` already established -- reusing `WholeRangeBalance`'s
-  own typography, which needs to export its label/value-row class names
-  the same way `HeroStat.tsx` already exports `heroLabelClassName`/
-  `heroValueRowClassName` for exactly this reuse (issue #96 round four's
-  own precedent, applied a second time rather than hand-copying string
-  literals a second time).
+  (section 2.3, section 5).
+- Computes `revealSlot` (only during `"rewinding"`/`"playing"`) via the
+  corrected design above, importing `WholeRangeBalance`'s own newly-
+  exported `wholeRangeLabelClassName`/`wholeRangeValueRowClassName`.
 - Renders `<WholeRangeBalance ... worstCase={...} revealSlot={...} />`
   unconditionally (same as today), then -- **only once `guess !== null`**
-  -- the "Watch it happen"/"Skip to end" button row and the whole-range
-  `PortfolioChart` (`revealedCount`/`interactive`/`landing`, identical
-  wiring shape to `TradeReplay.tsx`). Returns a Fragment of these two
-  top-level blocks, not one wrapping div -- explicitly avoiding the
-  exact `gap-8`-collapsing bug issue #96's own round-one code review
-  found and fixed for `TradeReplay.tsx`'s identical shape.
+  -- the "Watch it happen"/"Skip to end" button row (the former gated by
+  `canReplay` above; the latter available throughout `"rewinding"`/
+  `"playing"` unconditionally) and the whole-range `PortfolioChart`
+  (`revealedCount`/`interactive`/`landing`, identical wiring shape to
+  `TradeReplay.tsx`). Returns a Fragment of these two top-level blocks,
+  not one wrapping div -- explicitly avoiding the exact `gap-8`-
+  collapsing bug issue #96's own round-one code review found and fixed
+  for `TradeReplay.tsx`'s identical shape.
 - `calloutText` is reused directly rather than hand-copied a second time
   -- worth extracting `TradeReplay.tsx`'s private `calloutText` function
   into a small shared module (e.g. alongside `trade-math.ts`'s existing
@@ -323,13 +477,14 @@ interface WholeRangeReplayProps {
 **`ResultsPanel.tsx` changes**: replace the `<WholeRangeBalance>` call
 (currently line 634) with `<WholeRangeReplay>`, passing the two new
 worst-case values (computed unconditionally, alongside the existing
-`wholeRangeFinalBalance`, per section 3.3) and `wholeRangePoints`;
-delete the bare `<PortfolioChart key={...} points={wholeRangePoints} />`
-call (currently line 663) entirely, since `WholeRangeReplay` now owns
-rendering that chart internally. `BenchmarkStat` and the explanatory
-paragraph stay exactly where and how gated as today (`rangeGuess !==
-null`, unchanged) -- this plan touches only the headline/worst-case/
-chart trio, not the whole gated fragment.
+`wholeRangeFinalBalance`, per section 3.3), the new `tradeCount` sum
+above, and `wholeRangePoints`; delete the bare `<PortfolioChart
+key={...} points={wholeRangePoints} />` call (currently line 663)
+entirely, since `WholeRangeReplay` now owns rendering that chart
+internally. `BenchmarkStat` and the explanatory paragraph stay exactly
+where and how gated as today (`rangeGuess !== null`, unchanged) -- this
+plan touches only the headline/worst-case/chart trio, not the whole
+gated fragment.
 
 ### 3.3 The worst-case figure's own computation (mirrors #106's corrected design, verified against real code)
 
@@ -430,16 +585,26 @@ reconsider from scratch.
   values actually drive the RAF timing) and the date-formatting fix
   (section 5) against a fixture using datetime-labeled points.
 - `WholeRangeBalance.test.tsx`: new coverage for the `worstCase`/
-  `revealSlot` props -- worst-case stat renders only once revealed;
-  `revealSlot` overlays only the headline, leaving the guess form/
-  "You guessed" line/sr-only region unaffected in every state.
+  `revealSlot` props (the revised, section-3.2 design) -- worst-case
+  stat renders only once revealed; with no `revealSlot`, the revealed
+  headline/caption render pixel-identical to today (a snapshot-style
+  regression guard against the restructuring itself); with `revealSlot`
+  present, it overlays the caption-plus-headline pair specifically
+  (asserted via the `invisible`/`aria-hidden` wrapper, not just "some
+  text changed"), leaving the guess form/"You guessed" line/sr-only
+  region unaffected in every state.
 - `WholeRangeReplay.test.tsx`, mirroring `TradeReplay.test.tsx`'s
   existing coverage shape: idle/rewinding/playing/done rendering; the
   button/chart genuinely absent pre-reveal (not just visually hidden);
-  a day switch (`DayOverview`, an unrelated prop) leaves an in-flight
-  replay undisturbed (section 3.4); reduced motion's full bypass;
-  worst-case figure computed via the raw/native-root contract (section
-  3.3), not a pre-rescaled one.
+  the button absent under reduced motion and under a zero-`tradeCount`
+  result, mirroring `TradeReplay.test.tsx`'s own `canReplay` coverage
+  (section 3.2's must-fix -- these two cases had no coverage plan at
+  all in this plan's first draft); "Skip to end" staying available
+  regardless of `canReplay`, matching `TradeReplay.tsx`'s own
+  established distinction; a day switch (`DayOverview`, an unrelated
+  prop) leaves an in-flight replay undisturbed (section 3.4); worst-case
+  figure computed via the raw/native-root contract (section 3.3), not a
+  pre-rescaled one.
 - `ResultsPanel.test.tsx`: coverage for the two new
   `wholeRangeWorstCaseEndingBalance`/`wholeRangeWorstCaseStartingCapital`
   computations (both modes, mirroring existing `wholeRangeFinalBalance`
@@ -448,10 +613,14 @@ reconsider from scratch.
 - Live verification (per this repo's working agreement): a real
   local-pipeline-run measurement of actual 1W worst-case playback
   duration against real current data (the established `local-run.ts`/
-  headless-Chromium technique), since section 2.2's ~14.4s figure is
+  headless-Chromium technique), since section 2.3's ~13.0s figure is
   worked out analytically, not yet measured against real RAF scheduling
-  overhead -- plus the reduced-motion full-bypass check and a
-  day-switch-mid-replay screenshot pass confirming section 3.4's claim.
+  overhead -- and this one specifically needs a "was that pause actually
+  readable" judgment call, not just a stopwatch check against the 15s
+  ceiling (section 2.3's own thin-margin discussion) -- plus the
+  reduced-motion full-bypass check, the zero-trade-result button-absence
+  check (section 3.2's `canReplay`), and a day-switch-mid-replay
+  screenshot pass confirming section 3.4's claim.
 
 ## 5. Does this reuse `use-trade-replay.ts` directly? Yes, with one real fix found, not zero changes
 
@@ -463,22 +632,25 @@ nothing in `buildSegments`, `replayEventFor`, `initialFrame`,
 a particular format; they only read `.value`/`.event`.
 
 **But two call sites inside the same file genuinely do assume a plain
-calendar date, and would break silently against `deriveWholeRangeIntraday
-Series`'s datetime-labeled points (e.g. `"2025-08-21T09:30:00"`) --
+calendar date, and would break silently against
+`deriveWholeRangeIntradaySeries`'s datetime-labeled points (e.g.
+`"2025-08-21T09:30:00"`) --
 this is a real, previously-undocumented bug this plan's own verification
 pass found, not a hypothetical:**
 
-1. **The rewind effect's target-date parse**: `Date.parse(\`${points[0]!
-   .date}T00:00:00Z\`)`. Given a window-model point (`"2025-08-21"`), this
-correctly produces `"2025-08-21T00:00:00Z"`. Given a chained-intraday
-point (`"2025-08-21T09:30:00"`), this produces
-`"2025-08-21T09:30:00T00:00:00Z"`-- a malformed ISO string with two`T`s, which `Date.parse`returns`NaN`for. The rewind's own tween
-target would be`NaN`, and `formatEpochAsDate(NaN)`renders`"Invalid
-   Date"` for the entire rewind beat.
-2. **`displayDate`'s "playing" branch**: `formatDate(points[index]!
-.date)`. `formatDate` (`format-date.ts`) unconditionally does the exact
-   same `Date.parse(\`${isoDate}T00:00:00Z\`)` -- the identical bug,
-   this time for the whole rest of forward playback (issue #107's own
+1. **The rewind effect's target-date parse**:
+   ``Date.parse(`${points[0]!.date}T00:00:00Z`)``. Given a window-model
+   point (`"2025-08-21"`), this correctly produces
+   `"2025-08-21T00:00:00Z"`. Given a chained-intraday point
+   (`"2025-08-21T09:30:00"`), this produces
+   `"2025-08-21T09:30:00T00:00:00Z"` -- a malformed ISO string with two
+   `T`s, which `Date.parse` returns `NaN` for. The rewind's own tween
+   target would be `NaN`, and `formatEpochAsDate(NaN)` renders
+   `"Invalid Date"` for the entire rewind beat.
+2. **`displayDate`'s "playing" branch**: `formatDate(points[index]!.date)`.
+   `formatDate` (`format-date.ts`) unconditionally does the exact same
+   ``Date.parse(`${isoDate}T00:00:00Z`)`` -- the identical bug, this
+   time for the whole rest of forward playback (issue #107's own
    extended readout), not just the rewind beat.
 
 **Both are small, surgical fixes, not a redesign -- and both should
@@ -512,7 +684,7 @@ value for any series a caller would ever animate through (a single day
 in isolation is never what this hook walks; only whole multi-day
 window/whole-range series are).
 
-**With these two fixes plus the `pacing` parameter (section 2.2), the
+**With these two fixes plus the `pacing` parameter (section 2.3), the
 hook is genuinely, fully reusable as-is for 1W -- confirming a firm
 "yes" to question 5, not a "yes with an asterisk."** This is the
 concrete basis for this plan's broader claim that 1W needs a materially
@@ -534,16 +706,19 @@ points, but worth the general robustness gain regardless).
   `toPortfolioTimestamp` instead of defining it locally. No other
   change.
 - **`apps/web/src/lib/use-trade-replay.ts`** -- add the optional
-  `pacing` parameter (section 2.2) with defaults matching today's
+  `pacing` parameter (section 2.3) with defaults matching today's
   constants; fix the two date-handling call sites (section 5) using the
   newly-exported `toPortfolioTimestamp`/`formatDateTime`.
 - **`apps/web/src/components/WholeRangeBalance.tsx`** -- add
-  `worstCase`/`revealSlot` props (section 3.2); export its label/
-  value-row class names for `WholeRangeReplay.tsx` to reuse (mirroring
-  `HeroStat.tsx`'s existing `heroLabelClassName`/`heroValueRowClassName`
-  exports).
+  `worstCase`/`revealSlot` props; restructure the `revealed` branch so
+  its caption text and headline `<p>` are paired inside one `relative`
+  wrapper (moving the caption from "rendered once, before the ternary"
+  to "rendered per-branch"); export `wholeRangeLabelClassName`/
+  `wholeRangeValueRowClassName` (this component's own pair, not a reuse
+  of `HeroStat.tsx`'s) for `WholeRangeReplay.tsx` to build `revealSlot`
+  content from (section 3.2, revised from this plan's first draft).
 - **New: `apps/web/src/components/WholeRangeReplay.tsx`** -- per section
-  3.2.
+  3.2, including the `tradeCount`/reduced-motion `canReplay` gate.
 - **New or relocated: a shared `calloutText`-equivalent module** --
   extracting `TradeReplay.tsx`'s currently-private `calloutText` so
   `WholeRangeReplay.tsx` can reuse it without a second copy (section
@@ -564,12 +739,23 @@ points, but worth the general robustness gain regardless).
 
 Two things this plan could not resolve unilaterally:
 
-1. **The exact `WHOLE_RANGE_REPLAY_PACING` values** (section 2.2) are
+1. **The exact `WHOLE_RANGE_REPLAY_PACING` values** (section 2.3) are
    proposed and worked through analytically against the hook's own
-   documented formula, but -- consistent with how this repo has treated
-   every prior pacing constant -- are left as an implementer/reviewer
-   call to finalize against real data and a real browser, not pinned as
-   a hard requirement here.
+   documented formula (corrected, per independent review, to the
+   formula `deriveWholeRangeIntradaySeries` actually produces -- this
+   plan's first draft had plugged 1W's trade count into the wrong
+   function's formula). Unlike every prior pacing constant this repo has
+   tuned "by feel" with comfortable margin, **this one's own margin is
+   genuinely thin at any value that also keeps `EVENT_PAUSE_MS` long
+   enough to read a callout sentence** -- section 2.3's own worked
+   example (`transitionMs: 130, eventPauseMs: 220`, ~13.0s worst case)
+   buys real but not generous headroom under the 10-15s ceiling, and
+   this plan is explicit that it does not know whether 220ms reads as
+   "brisk" or "flicker" across up to 30 pauses in one run -- only a real
+   browser against real data can answer that. Left as an implementer/
+   reviewer call to finalize, per this repo's established convention,
+   but flagged here as a call that genuinely trades duration against
+   readability, not just a number to tune freely.
 2. **Whether `WholeRangeBalance`'s new `worstCase`/`revealSlot` props
    should be strictly required or optional-with-a-default** (section
    3.2) -- a small API-shape call this plan didn't think worth blocking
@@ -579,6 +765,50 @@ Two things this plan could not resolve unilaterally:
    generally treats this exact class of prop-shape decision (e.g.
    `BenchmarkStat`'s `rangeLabel`, left optional with no live caller
    relying on the default).
+
+Two more things worth surfacing explicitly rather than leaving as silent
+gaps in this plan's own design, per independent review:
+
+3. **`PortfolioChart`'s own `key` for the `WholeRangeReplay`-owned chart
+   instance isn't pinned down here** -- this is one of the most-
+   relitigated bugs in this whole feature's own review history
+   (`apps/web/CLAUDE.md`'s "Trade replay" section, round three: a chart
+   `key` that toggles between two values at exactly the moments playback
+   starts/stops forces an unwanted remount and replays the reveal-CSS
+   animation right then; the fix that held was a single, always-stable
+   `key={heroKey}`, never toggled). `WholeRangeReplay.tsx` needs the
+   identical property -- stable across every phase transition, changing
+   only on a genuine new result (a fetch, a mode switch) -- but this
+   plan doesn't work out what that key string should actually be built
+   from for the whole-range case (candidates: `` `${range}-${data
+.dataAsOf}-${mode}` ``, the same string the bare `<PortfolioChart>` call
+   it replaces already uses as its own `key` today). Flagged explicitly
+   for the follow-up build issue's own first-implementation-day
+   attention, given how reliably this exact class of bug has recurred
+   across #96's five review rounds whenever a new chart-owning component
+   in this feature area is built -- not something to leave to be
+   rediscovered live a sixth time.
+4. **This design silently forgoes a confetti/count-up "reward" moment on
+   replay completion, unlike the window model's `TradeReplay`** (which
+   deliberately re-triggers `HeroStat`'s full reveal -- count-up tween,
+   celebration burst, reveal-accent glow -- via its own `completedRuns`-
+   keyed remount whenever playback genuinely finishes, per `apps/web/
+CLAUDE.md`'s own documented reasoning for why that remount exists at
+   all). `WholeRangeBalance` has none of `HeroStat`'s reveal machinery
+   today -- no `useCountUp`, no `CelebrationBurst`, no reveal-accent glow
+   -- so this plan's own `revealSlot` design (section 3.2) has nothing
+   equivalent to hand playback completion into; landing on `"done"`
+   simply returns to the same static, unanimated headline the guess
+   reveal itself already showed. **This may well be the right call**:
+   the guess-then-reveal moment is already this range's own "reward"
+   beat (issue #91), and a second celebration on top of it for the
+   _replay_ specifically wasn't asked for by issue #105's own acceptance
+   criteria. But it's a considered tradeoff this plan is naming
+   explicitly, not an oversight silently carried forward -- worth the
+   manager's/implementer's own sign-off that "no second reward moment"
+   is the intended product feel here, rather than discovering the gap
+   only once a reviewer notices playback's own ending feels anticlimactic
+   next to the window model's.
 
 Also worth the manager's explicit awareness, not left ambiguous: this
 plan's section 3 is a genuine, reasoned **divergence** from #106's
