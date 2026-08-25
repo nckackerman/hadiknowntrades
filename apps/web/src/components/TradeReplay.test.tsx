@@ -50,6 +50,24 @@ function statusRegion() {
   return screen.getByRole("status", { name: "Trade replay status" });
 }
 
+// The overlay's own date readout text (issue #107) can't be located by
+// exact text match alone once real trade playback begins -- once a
+// point past the window's own opening one is revealed,
+// PortfolioChart's always-rendered ChartDataTable disclosure gets a row
+// for that same date too, and `screen.getByText` throws on more than
+// one match. The readout's own label ("Rewinding to" or "Watching",
+// whichever is currently rendered) is unambiguous, so this walks from
+// there instead, reading its very next sibling's own text -- while
+// "rewinding" that's a sibling `<p>` (the value row, holding only the
+// date); while "playing" it's a sibling `<span>` inside the same label
+// `<p>` (the date folded into the label line itself, see
+// TradeReplay.tsx's own heroSlot doc comment on the playing branch for
+// why) -- either way, `.textContent` on the immediate next sibling is
+// exactly the date, so this needs no phase-specific branching.
+function readoutDate(label: "Rewinding to" | "Watching"): string | null {
+  return screen.getByText(label).nextElementSibling?.textContent ?? null;
+}
+
 describe("TradeReplay (issue #96)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -125,17 +143,24 @@ describe("TradeReplay (issue #96)", () => {
     expect(statusRegion()).toHaveTextContent("");
 
     raf.tick(1000); // t=0: the readout starts at "now"
-    expect(screen.getByText("Jun 15, 2024")).toBeInTheDocument();
+    expect(readoutDate("Rewinding to")).toBe("Jun 15, 2024");
 
     raf.tick(REWIND_COMPLETE_NOW); // lands exactly on the result's own start date
 
     // Auto-advances into real playback on its own -- no second click
     // needed, per the issue's own "no manual second step" acceptance
-    // criterion. Two "Starting from" matches now (the real, still-
-    // mounted HeroStat's own caption, plus the playing-phase overlay's
-    // identical one) -- see TradeReplay.tsx's own heroSlot doc comment.
+    // criterion. "Rewinding to" is gone, replaced by "Watching" (issue
+    // #107's own carried-through readout, see TradeReplay.tsx's own
+    // heroSlot doc comment for why the label text changes here) --
+    // still showing a date, now the result's own real start date
+    // ("Jan 1, 2024," POINTS[0]'s own date) rather than the rewind's
+    // tweened value, with no visible gap between the two. Only one
+    // "Starting from" match now (the real, still-mounted HeroStat's own
+    // caption) -- the overlay's own label reads "Watching" instead, not
+    // a second "Starting from".
     expect(screen.queryByText("Rewinding to")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Starting from")).toHaveLength(2);
+    expect(readoutDate("Watching")).toBe("Jan 1, 2024");
+    expect(screen.getAllByText("Starting from")).toHaveLength(1);
   });
 
   it("Skip to end during the rewind readout works identically to Skip to end during trade playback (issue #97)", async () => {
@@ -184,7 +209,7 @@ describe("TradeReplay (issue #96)", () => {
     expect(screen.getByRole("button", { name: "Skip to end" })).toBeInTheDocument();
   });
 
-  it("pauses on each trade event, announcing it once (not per-frame) and showing a matching visible callout", async () => {
+  it("pauses on each trade event, announcing it once (not per-frame) and showing a matching visible callout, with the date readout advancing alongside it (issue #107)", async () => {
     vi.spyOn(performance, "now").mockReturnValue(1000);
     const raf = createRafPump();
     const user = userEvent.setup();
@@ -200,6 +225,11 @@ describe("TradeReplay (issue #96)", () => {
     // status region -- both hold the identical sentence.
     expect(screen.getAllByText(openCallout)).toHaveLength(2);
     expect(statusRegion()).toHaveTextContent(openCallout);
+    // The date readout (issue #107) lands on this same event's own real
+    // date, alongside the callout -- "landing on each trade's real
+    // event date at the moment its callout shows," per the issue's own
+    // acceptance criterion.
+    expect(readoutDate("Watching")).toBe("Jan 2, 2024");
 
     raf.tick(1900); // pause elapses, mid-trade flat vertex reached (no event)
     raf.tick(2200);
@@ -208,6 +238,8 @@ describe("TradeReplay (issue #96)", () => {
     const closeCallout = "Sold AAPL on Jan 5, 2024 at $200.00 (+100.0%).";
     expect(screen.getAllByText(closeCallout)).toHaveLength(2);
     expect(statusRegion()).toHaveTextContent(closeCallout);
+    // The readout advanced again, past the earlier "Jan 2, 2024".
+    expect(readoutDate("Watching")).toBe("Jan 5, 2024");
   });
 
   it("Skip to end works at any point during playback, landing on the exact same final state as a non-animated load", async () => {
@@ -278,8 +310,12 @@ describe("TradeReplay (issue #96)", () => {
     expect(screen.getByRole("button", { name: "Skip to end" })).toBeInTheDocument();
 
     // HeroStat itself stays mounted (visually hidden) throughout playback
-    // now -- its own "Starting from" caption is reachable even while
-    // playing, alongside the animated overlay's identical caption text.
+    // now -- its own "Starting from" caption is reachable even mid-flight
+    // (this click alone lands on "rewinding", not "playing" -- no raf
+    // ticks are pumped in this test -- but the overlay's own label reads
+    // "Rewinding to"/"Watching" in either non-live phase, issue #107, not
+    // a second "Starting from", so `getAllByText` here returns exactly
+    // one match: the real HeroStat's own caption).
     const heroCaptionDuringPlayback = screen.getAllByText("Starting from")[0]!;
 
     // Stands in for a live starting-capital edit: derivePortfolioSeries

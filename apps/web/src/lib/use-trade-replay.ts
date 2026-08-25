@@ -10,10 +10,10 @@
 // open/close) this issue's own Background section calls out as "already
 // the exact data shape this feature needs to walk through."
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { tweenValue } from "./easing";
-import { formatEpochAsDate } from "./format-date";
+import { formatDate, formatEpochAsDate } from "./format-date";
 import type { PortfolioEvent, PortfolioPoint } from "./portfolio-series";
 import { prefersReducedMotion } from "./prefers-reduced-motion";
 import { computeTradeReturn, type TradeReturn } from "./trade-math";
@@ -146,15 +146,41 @@ export interface UseTradeReplayResult {
   phase: ReplayPhase;
   frame: ReplayFrame;
   /**
-   * The backward-ticking date readout for the `"rewinding"` phase
-   * (issue #97) -- a formatted date string ("Aug 21, 2025") while
-   * `phase === "rewinding"`, `null` in every other phase. Deliberately
-   * not folded into `ReplayFrame`: it has nothing to do with the trade
-   * walk `ReplayFrame` describes (no revealedCount/currentValue/
-   * activeEvent meaning applies during a rewind), so giving it its own
-   * top-level field keeps `ReplayFrame` describing exactly one thing.
+   * A formatted date readout ("Aug 21, 2025"), non-null while `phase`
+   * is `"rewinding"` or `"playing"`, `null` in `"idle"`/`"done"`.
+   * Generalized from the `"rewinding"`-only `rewindDate` issue #97
+   * introduced (issue #107 extends the same readout through forward
+   * playback too, per that issue's own Background section) -- kept as
+   * one field, not two, since both phases are the same continuous
+   * on-screen readout from the caller's point of view (see
+   * `TradeReplay.tsx`'s own doc comment on why the transition between
+   * them must read as continuous).
+   *
+   * Two different sources feed it, chosen per phase:
+   *  - `"rewinding"`: a tween from "now" to the result's own start date
+   *    (see this hook's own doc comment) -- there's no discrete "point"
+   *    to read a date off yet, so this genuinely needs animating.
+   *  - `"playing"`: `points[frame.revealedCount - 1].date`, the real
+   *    date of whichever point is currently revealed -- no tween at
+   *    all, since `revealedCount` already jumps point-to-point (the
+   *    chart itself never interpolates a position between two points,
+   *    see `ReplayFrame.currentValue`'s own doc comment for the parallel
+   *    reasoning) and there's nothing to animate between: a "date"
+   *    between two real trading days isn't a meaningful intermediate
+   *    value the way a dollar figure is. This is computed fresh from
+   *    `frame`/`points` below (not written into a `useState` from
+   *    inside the playing effect's `tick()`), which is what keeps this
+   *    always exactly in sync with `revealedCount` for free -- no
+   *    separate state to remember to update at every one of `tick()`'s
+   *    several `setFrame` call sites.
+   *  - `"idle"`/`"done"`: `null` -- deliberately not folded into
+   *    `ReplayFrame`: it has nothing to do with the trade walk
+   *    `ReplayFrame` describes (no revealedCount/currentValue/
+   *    activeEvent meaning applies to a date readout), so giving it its
+   *    own top-level field keeps `ReplayFrame` describing exactly one
+   *    thing.
    */
-  rewindDate: string | null;
+  displayDate: string | null;
   /** Starts (or restarts, from "done") playback from the very beginning -- via a brief `"rewinding"` intro beat first (issue #97), or straight to `"playing"` under reduced motion (see this hook's own doc comment). A no-op while already `"rewinding"` or `"playing"`. */
   play: () => void;
   /** Jumps straight to the final state and marks playback "done" -- always available during playback *or* the rewinding intro beat (issue #97's own "works identically whether triggered during this phase or during trade playback" acceptance criterion), per the issue's own "give me the answer fast" scope note. */
@@ -193,8 +219,9 @@ export interface UseTradeReplayResult {
  * point `initialFrame`/`finalFrame` already read) -- that `play()` now
  * enters before `"playing"` begins, selling the "had I known" fantasy
  * this app's whole premise is built on. It carries no new data and
- * doesn't touch `frame` at all (see `rewindDate`'s own doc comment for
- * why it's a separate top-level field, not folded into `ReplayFrame`).
+ * doesn't touch `frame` at all (see `displayDate`'s own doc comment --
+ * issue #107 later extended the same readout through the `"playing"`
+ * phase too, but "rewinding" itself still never touches `frame`).
  * Respects the same reduced-motion posture #96 already established for
  * this feature (see that issue's own "the button doesn't render at all,
  * not an instant step-through equivalent" note): `play()` checks
@@ -252,9 +279,14 @@ export interface UseTradeReplayResult {
 export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeReplayResult {
   const [phase, setPhase] = useState<ReplayPhase>("idle");
   const [frame, setFrame] = useState<ReplayFrame>(() => initialFrame(points));
-  // Non-null only while phase === "rewinding" -- see UseTradeReplayResult's
-  // own rewindDate doc comment.
-  const [rewindDate, setRewindDate] = useState<string | null>(null);
+  // The rewind tween's own current value -- only meaningful while
+  // phase === "rewinding". Not returned directly; `displayDate` below
+  // combines this with the playing-phase readout (derived straight from
+  // `frame`/`points`, no state of its own needed) into the one field
+  // UseTradeReplayResult actually exposes. See that field's own doc
+  // comment for why "rewinding" alone needs a tween and "playing"
+  // doesn't.
+  const [rewindTweenDate, setRewindTweenDate] = useState<string | null>(null);
   // Bumped at every one of the three `setPhase("done")` call sites below
   // -- see `UseTradeReplayResult.completedRuns`'s own doc comment for why
   // this hook (not a caller shadow-tracking `phase`) owns the count.
@@ -274,7 +306,7 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
 
   const skipToEnd = useCallback(() => {
     setFrame(finalFrame(points));
-    setRewindDate(null);
+    setRewindTweenDate(null);
     setPhase("done");
     setCompletedRuns((run) => run + 1);
   }, [points]);
@@ -311,7 +343,7 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
       // #97) -- clear the stale readout the same defensive way `frame`
       // itself is reset, so a caller never renders a leftover rewind
       // date against an "idle" phase.
-      setRewindDate(null);
+      setRewindTweenDate(null);
     }
   });
 
@@ -340,24 +372,28 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
       const elapsed = now - startTime;
       const t = Math.min(elapsed / REWIND_MS, 1);
       if (t >= 1) {
-        // Clear rewindDate in this same tick, not just on some later
-        // setPhase("done")/points-change -- rewindDate's own doc comment
-        // promises "null in every other phase," and "playing" is exactly
-        // such a phase (code review follow-up, real bug: this branch used
-        // to call setRewindDate(...) with the fully-tweened target date
-        // and *then* setPhase("playing") on the same tick, leaving that
-        // stale string sitting in rewindDate for the entire subsequent
-        // trade-playback stretch -- TradeReplay.tsx only reads it while
-        // phase === "rewinding" so this was never visibly wrong in the
-        // shipped UI, but it's a real hook-level API contract gap, the
-        // same class this hook's own doc comment already treats as worth
-        // fixing regardless of shipped-UI reachability -- see the
-        // runId/idempotent-play() fix noted there).
-        setRewindDate(null);
+        // Clear the internal tween state in this same tick, not just on
+        // some later setPhase("done")/points-change -- so a *future*
+        // rewind (a "Replay" click) starts its own tween fresh rather
+        // than briefly showing this run's stale fully-tweened value
+        // before its first tick recomputes it (code review follow-up,
+        // real bug once fixed for a distinct reason: this branch used
+        // to call setRewindTweenDate(...) with the fully-tweened target
+        // date and *then* setPhase("playing") on the same tick, which
+        // used to leave that stale string sitting in the then-directly-
+        // exposed `rewindDate` field for the entire subsequent
+        // trade-playback stretch, visible the whole time TradeReplay.tsx
+        // read it while phase === "playing" -- issue #107 later made
+        // that reachable case moot by deriving the playing-phase
+        // readout straight from `frame`/`points` instead of this state
+        // at all (see `displayDate`'s own doc comment), but clearing
+        // this internal tween state here is still the right hygiene for
+        // the *next* rewind).
+        setRewindTweenDate(null);
         setPhase("playing");
         return;
       }
-      setRewindDate(formatEpochAsDate(tweenValue(startEpoch, targetEpoch, t)));
+      setRewindTweenDate(formatEpochAsDate(tweenValue(startEpoch, targetEpoch, t)));
       frameId = requestAnimationFrame(tick);
     }
 
@@ -446,7 +482,7 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
             error,
           );
           setFrame(finalFrame(points));
-          setRewindDate(null);
+          setRewindTweenDate(null);
           setPhase("done");
           setCompletedRuns((run) => run + 1);
           return;
@@ -484,19 +520,23 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
         // hypothetical, shape: the best trade in a 5Y/MAX window closing
         // on the most recent trading day).
         //
-        // Also clears rewindDate here (issue #97 follow-up, code review
-        // found and fixed) -- this is one of the three setPhase("done")
-        // call sites this hook has (alongside skipToEnd and the
-        // corrupted-price catch above), and rewindDate's own doc comment
-        // promises "null in every other phase." Without this, a natural
-        // (non-skipped) completion left the *previous* run's target date
-        // sitting in rewindDate all through "done", genuinely visible
+        // Also clears the internal rewind-tween state here (issue #97
+        // follow-up, code review found and fixed) -- this is one of the
+        // three setPhase("done") call sites this hook has (alongside
+        // skipToEnd and the corrupted-price catch above). Without this,
+        // a natural (non-skipped) completion left the *previous* run's
+        // target date sitting in that state all through "done", visible
         // for one frame as a wrong date at the very start of the *next*
         // rewind if the user then clicks "Replay" -- skipToEnd already
         // got this right; natural completion and the defensive catch
-        // above didn't.
+        // above didn't. (This state feeds `displayDate` only while
+        // phase === "rewinding" -- see that field's own doc comment --
+        // so it's pure hygiene for the next rewind now, not required to
+        // satisfy `displayDate`'s own "null in idle/done" contract,
+        // which the derivation below already guarantees regardless of
+        // this state's value.)
         setFrame(finalFrame(points));
-        setRewindDate(null);
+        setRewindTweenDate(null);
         setPhase("done");
         setCompletedRuns((run) => run + 1);
         return;
@@ -510,5 +550,46 @@ export function useTradeReplay(points: readonly PortfolioPoint[]): UseTradeRepla
     return () => cancelAnimationFrame(frameId);
   }, [phase, points]);
 
-  return { phase, frame, rewindDate, play, skipToEnd, completedRuns };
+  // The one field UseTradeReplayResult actually exposes for the date
+  // readout (issue #107) -- see its own doc comment for the full
+  // per-phase reasoning. Derived fresh from `frame`/`points` rather than
+  // written into a state of its own for the "playing" branch: `frame` is
+  // already the single source of truth for "which point is currently
+  // revealed" (`revealedCount`), so reading `points[revealedCount -
+  // 1].date` straight from it can never drift out of sync the way a
+  // second, independently-`setState`'d value could.
+  //
+  // Memoized (code review finding) -- without this, a mid-tween frame
+  // (most of them: `revealedCount` only advances once per segment, but
+  // `setFrame` fires roughly a dozen times per segment as `currentValue`
+  // tweens) would re-run `formatDate` for a string that hasn't actually
+  // changed, the same wasted-work class `TradeReplay.tsx`'s own
+  // `endingBalanceDisplayValue`/`displayStartingCapitalFormatted`/
+  // `multiplier` already guard against on this identical hot path.
+  //
+  // Clamped to `[1, points.length]` (code review finding) -- `revealedCount`
+  // is fully internal state, always set by this hook's own `setFrame`
+  // calls, but today that stays in range only via an emergent
+  // combination of independently-maintained invariants elsewhere
+  // (`play()`'s own `points.length < 2` guard, `buildSegments`'s
+  // 1-indexed loop), not one explicit check at this read site -- the
+  // same "emergent, not enforced" gap `PortfolioChart.tsx`'s own
+  // `revealedCount` prop had before its own code-review fix (see that
+  // component's `revealed` local's own doc comment, issue #96 follow-up
+  // round four). A future change that lets `phase` reach `"playing"`
+  // without going through `play()`'s guard, or that weakens
+  // `useResetWhenChanged`'s reset condition, would otherwise crash this
+  // derivation on `undefined.date` mid-render with no defensive catch
+  // (unlike the RAF `tick()`'s own corrupted-price path, which does
+  // catch the analogous risk) -- this clamp makes the same invariant
+  // `PortfolioChart.tsx` already enforces real here too, regardless of
+  // what a future change to this hook does to `frame.revealedCount`.
+  const displayDate = useMemo(() => {
+    if (phase === "rewinding") return rewindTweenDate;
+    if (phase !== "playing") return null;
+    const index = Math.min(Math.max(frame.revealedCount, 1), points.length) - 1;
+    return formatDate(points[index]!.date);
+  }, [phase, points, frame.revealedCount, rewindTweenDate]);
+
+  return { phase, frame, displayDate, play, skipToEnd, completedRuns };
 }
