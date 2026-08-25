@@ -14,8 +14,8 @@
 // comment. This route is what makes the published anchor list reachable
 // from the browser at all.
 
+import { createResultReader } from "@/lib/create-result-reader";
 import { getCustomAnchorsResponse } from "@/lib/results-api";
-import { S3ResultReader } from "@/lib/s3-result-reader";
 
 // Always runs at request time: it reads live from S3 (not through Next's
 // own `fetch` cache), and the Cache-Control header set in results-api.ts
@@ -23,10 +23,15 @@ import { S3ResultReader } from "@/lib/s3-result-reader";
 // build-time static optimization. Same convention as ../results/route.ts.
 export const dynamic = "force-dynamic";
 
-// Built once per warm process and reused across requests, same reasoning
-// as ../results/route.ts's own module-level reader.
-const bucket = process.env.RESULTS_BUCKET;
-const reader = bucket ? new S3ResultReader(bucket) : null;
+// Built once per warm process and reused across requests, via the same
+// shared ../../../lib/create-result-reader.ts both routes call -- keeps
+// this route's reader precedence (including the LOCAL_RESULTS_DIR
+// dev-only escape hatch) from silently drifting from ../results/route.ts's.
+// Without this, the calendar picker always shows its "Start-date picker
+// unavailable" fallback under local `next dev`, even when
+// ../results/route.ts is serving real preset-range/custom-anchor data
+// just fine off the same local directory.
+const reader = createResultReader();
 
 export async function GET(): Promise<Response> {
   return getCustomAnchorsResponse(reader);
