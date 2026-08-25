@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { PortfolioChart } from "./PortfolioChart";
+import { PortfolioChart, type ChartLanding } from "./PortfolioChart";
 import type { PortfolioPoint } from "@/lib/portfolio-series";
 import { stubMatchMedia } from "@/lib/stub-match-media.test-util";
 import { stubPrefersReducedMotion } from "@/lib/stub-prefers-reduced-motion.test-util";
@@ -446,6 +446,131 @@ describe("PortfolioChart", () => {
       expect(within(container).getAllByRole("row")).toHaveLength(seriesPoints.length + 1); // header + every point
       // Both trade markers (open + close) are drawn, nothing more.
       expect(container.querySelectorAll("circle")).toHaveLength(2);
+    });
+  });
+
+  describe("marker landing pulse/shake/speech-bubble during trade replay (issue #108)", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    const eventPoints: PortfolioPoint[] = [
+      { date: "2024-01-01", value: 20, event: null },
+      {
+        date: "2024-01-02",
+        value: 20,
+        event: { type: "open", direction: "long", ticker: "AAPL", price: 10 },
+      },
+      {
+        date: "2024-01-03",
+        value: 40,
+        event: { type: "close", direction: "long", ticker: "AAPL", price: 20 },
+      },
+    ];
+
+    const openEvent = eventPoints[1]!.event!;
+    const closeEvent = eventPoints[2]!.event!;
+    const openLanding: ChartLanding = { event: openEvent, calloutText: "Bought AAPL on Jan 2." };
+    const closeLanding: ChartLanding = {
+      event: closeEvent,
+      calloutText: "Sold AAPL on Jan 3 (+100.0%).",
+    };
+
+    it("renders no pulse ring, no shake class, and no bubble when landing is omitted (unaffected baseline)", () => {
+      const { container } = render(<PortfolioChart points={eventPoints} />);
+
+      expect(container.querySelector(".marker-landing-pulse")).not.toBeInTheDocument();
+      expect(container.querySelector(".marker-landing-shake")).not.toBeInTheDocument();
+      expect(container.querySelector(".marker-landing-bubble")).not.toBeInTheDocument();
+    });
+
+    it("renders a pulse ring on the landed open marker, but no shake (opens don't move the value)", () => {
+      stubPrefersReducedMotion(false);
+      const { container } = render(
+        <PortfolioChart points={eventPoints} revealedCount={2} landing={openLanding} />,
+      );
+
+      expect(container.querySelector(".marker-landing-pulse")).toBeInTheDocument();
+      expect(container.querySelector(".marker-landing-shake")).not.toBeInTheDocument();
+    });
+
+    it("renders both a pulse ring and a shake on the landed close marker (the point where value actually jumps)", () => {
+      stubPrefersReducedMotion(false);
+      const { container } = render(
+        <PortfolioChart points={eventPoints} revealedCount={3} landing={closeLanding} />,
+      );
+
+      expect(container.querySelector(".marker-landing-pulse")).toBeInTheDocument();
+      expect(container.querySelector(".marker-landing-shake")).toBeInTheDocument();
+    });
+
+    it("shows the landing's own callout text as a chart-anchored speech bubble, not a plain paragraph", () => {
+      stubPrefersReducedMotion(false);
+      render(<PortfolioChart points={eventPoints} revealedCount={3} landing={closeLanding} />);
+
+      const bubble = screen.getByText("Sold AAPL on Jan 3 (+100.0%).");
+      expect(bubble).toHaveClass("marker-landing-bubble");
+    });
+
+    it("skips the pulse/shake entirely under reduced motion (JS-level gate), but still shows the bubble content", () => {
+      stubPrefersReducedMotion(true);
+      const { container } = render(
+        <PortfolioChart points={eventPoints} revealedCount={3} landing={closeLanding} />,
+      );
+
+      expect(container.querySelector(".marker-landing-pulse")).not.toBeInTheDocument();
+      expect(container.querySelector(".marker-landing-shake")).not.toBeInTheDocument();
+      expect(screen.getByText("Sold AAPL on Jan 3 (+100.0%).")).toBeInTheDocument();
+    });
+
+    it("shows no landing effects for an event that isn't (yet) revealed -- `landing` referencing a later marker than `revealedCount` allows", () => {
+      stubPrefersReducedMotion(false);
+      const { container } = render(
+        <PortfolioChart points={eventPoints} revealedCount={2} landing={closeLanding} />,
+      );
+
+      expect(container.querySelector(".marker-landing-pulse")).not.toBeInTheDocument();
+      expect(container.querySelector(".marker-landing-bubble")).not.toBeInTheDocument();
+    });
+
+    it("points the bubble's own tail at the real marker instead of the box's own center once the box is horizontally clamped near a plot edge (code-review regression guard)", () => {
+      // An open event just one day into a ~10-year window -- its own x
+      // position sits deep inside bubblePlacement's left-edge clamp
+      // zone, so the box's own x gets clamped to 0 well away from
+      // centering on the marker. Before the fix, the CSS tail sat at a
+      // fixed 50% regardless, visually pointing at empty chart space to
+      // the marker's own right.
+      const edgePoints: PortfolioPoint[] = [
+        { date: "2020-01-01", value: 20, event: null },
+        {
+          date: "2020-01-02",
+          value: 20,
+          event: { type: "open", direction: "long", ticker: "AAPL", price: 10 },
+        },
+        { date: "2029-12-31", value: 20, event: null },
+        {
+          date: "2030-01-01",
+          value: 40,
+          event: { type: "close", direction: "long", ticker: "AAPL", price: 20 },
+        },
+      ];
+      const edgeOpenEvent = edgePoints[1]!.event!;
+      stubPrefersReducedMotion(false);
+      const { container } = render(
+        <PortfolioChart
+          points={edgePoints}
+          revealedCount={2}
+          landing={{ event: edgeOpenEvent, calloutText: "Bought AAPL on Jan 2, 2020." }}
+        />,
+      );
+
+      const bubble = container.querySelector(".marker-landing-bubble") as HTMLElement;
+      expect(bubble).toBeInTheDocument();
+      const tailOffset = bubble.style.getPropertyValue("--marker-landing-bubble-tail-offset");
+      // Clamped to the 12% floor (bubblePlacement's own doc comment) --
+      // never the un-clamped, marker-blind 50% the pre-fix code always
+      // used regardless of how far the box itself got shifted.
+      expect(tailOffset).toBe("12%");
     });
   });
 

@@ -209,7 +209,7 @@ describe("TradeReplay (issue #96)", () => {
     expect(screen.getByRole("button", { name: "Skip to end" })).toBeInTheDocument();
   });
 
-  it("pauses on each trade event, announcing it once (not per-frame) and showing a matching visible callout, with the date readout advancing alongside it (issue #107)", async () => {
+  it("pauses on each trade event, announcing it once (not per-frame) and showing a matching chart-anchored callout, with the date readout advancing alongside it (issues #107/#108)", async () => {
     vi.spyOn(performance, "now").mockReturnValue(1000);
     const raf = createRafPump();
     const user = userEvent.setup();
@@ -221,10 +221,17 @@ describe("TradeReplay (issue #96)", () => {
     raf.tick(1300); // arrives at the open event, pauses
 
     const openCallout = "Bought AAPL on Jan 2, 2024 at $100.00.";
-    // Two matches: the aria-hidden visible callout, and the sr-only
-    // status region -- both hold the identical sentence.
-    expect(screen.getAllByText(openCallout)).toHaveLength(2);
+    // Two matches: the sr-only status region, and PortfolioChart's own
+    // chart-anchored speech bubble (issue #108) -- both hold the
+    // identical sentence. `TradeReplay.tsx` itself no longer renders a
+    // second, plain <p> copy of this text (see its own doc comment).
+    const openMatches = screen.getAllByText(openCallout);
+    expect(openMatches).toHaveLength(2);
     expect(statusRegion()).toHaveTextContent(openCallout);
+    expect(openMatches.some((el) => el.classList.contains("marker-landing-bubble"))).toBe(true);
+    // An open event moves no value -- pulse only, no shake.
+    expect(document.querySelector(".marker-landing-pulse")).toBeInTheDocument();
+    expect(document.querySelector(".marker-landing-shake")).not.toBeInTheDocument();
     // The date readout (issue #107) lands on this same event's own real
     // date, alongside the callout -- "landing on each trade's real
     // event date at the moment its callout shows," per the issue's own
@@ -236,8 +243,15 @@ describe("TradeReplay (issue #96)", () => {
     raf.tick(2500); // arrives at the close event, pauses -- the real 100% return
 
     const closeCallout = "Sold AAPL on Jan 5, 2024 at $200.00 (+100.0%).";
-    expect(screen.getAllByText(closeCallout)).toHaveLength(2);
+    const closeMatches = screen.getAllByText(closeCallout);
+    expect(closeMatches).toHaveLength(2);
     expect(statusRegion()).toHaveTextContent(closeCallout);
+    expect(closeMatches.some((el) => el.classList.contains("marker-landing-bubble"))).toBe(true);
+    // A close event is "the point where value actually jumps" -- both
+    // the pulse and the shake render for it (issue #108's own scope:
+    // shake is close-events-only, timed to the value change).
+    expect(document.querySelector(".marker-landing-pulse")).toBeInTheDocument();
+    expect(document.querySelector(".marker-landing-shake")).toBeInTheDocument();
     // The readout advanced again, past the earlier "Jan 2, 2024".
     expect(readoutDate("Watching")).toBe("Jan 5, 2024");
   });

@@ -4454,3 +4454,208 @@ build`, `pnpm test`, `pnpm format:check`) re-ran green after every fix
   defensive clamp on an already-provably-in-range internal value, a
   memoization with no behavioral difference, and a test-only comment
   fix).
+
+## Marker pulse, shake, and speech-bubble callout during trade replay (issue #108)
+
+Extends #96's own marker/callout language rather than replacing it:
+`PortfolioChart.tsx`'s open/close marker shapes (hollow ring vs. filled
+dot, gain/loss colored) are untouched, and the callout's own wording
+(`TradeReplay.tsx`'s `calloutText`) is unchanged too -- this issue only
+adds motion tied to a marker landing during playback and relocates the
+existing callout text from a plain `<p>` below the hero row onto the
+chart itself, anchored near its own marker.
+
+- **`PortfolioChart.tsx` gained one new prop, `landing?: ChartLanding |
+null`** (`{ event: PortfolioEvent; calloutText: string }`), rather than
+  splitting this into two separate props (an event identifier plus a
+  text string) -- bundling them means the JSX below never has to
+  separately null-check both. `TradeReplay.tsx` computes it from its own
+  `frame.activeEvent`/`activeCallout` (both already existed, see #96's
+  own doc comment) as a `useMemo`, non-null only during `phase ===
+"playing"` while a real event is being narrated -- `null` during
+  `"rewinding"` (no event landed yet) and `"idle"`/`"done"` (no active
+  event at all).
+- **The matching marker is found by reference equality
+  (`eventMarkers.find((p) => p.event === landing.event)`), not by
+  rebuilding a string key.** This works because `landing.event` (from
+  `frame.activeEvent.event`, ultimately `segment.event`, ultimately
+  `point.event`) and `PortfolioChart`'s own `points` prop both trace back
+  to the exact same array TradeReplay.tsx passes to both
+  `useTradeReplay(points)` and `<PortfolioChart points={points} />` --
+  the same precondition `use-trade-replay.ts`'s own `Segment.event` doc
+  comment already relies on elsewhere in this feature. No string-based
+  matching (date+type+ticker) was needed, and no new identifier had to
+  be invented.
+- **Three distinct visual effects, each independently gated, not one
+  combined "landing" animation:**
+  - **Pulse** (`.marker-landing-pulse`, `globals.css`): every open _and_
+    close event gets this. A **decorative sibling `<circle>`**, not
+    applied to the real marker directly -- reuses the existing
+    `chart-tap-hint-pulse`'s own `chart-tap-pulse` keyframe (issue #66)
+    verbatim, just a single iteration instead of three and a shorter
+    550ms duration (tuned to sit inside `EVENT_PAUSE_MS`, 600ms, rather
+    than outlasting it). Applying that keyframe's own scale-up/fade-to-0
+    directly to the real marker would make it visibly vanish once the
+    animation finishes (its `animation-fill-mode: forwards` holds the
+    _final_ frame, opacity 0) -- exactly the failure mode a decorative
+    overlay sidesteps, the identical reasoning the pre-existing touch
+    tap hint already established for the same keyframe.
+  - **Shake** (`.marker-landing-shake`): close events only, applied
+    _directly_ to the real marker's own `<circle>` -- safe here (unlike
+    the pulse) because its own keyframe starts and ends at
+    `translateX(0)`, the marker's resting position, so the marker's
+    permanent appearance is untouched once it finishes. Scoped to close
+    events specifically because a close is "the point where value
+    actually jumps" (this file's own pre-existing marker doc comment,
+    issue #85) -- an open event moves no value, so it gets the pulse
+    alone.
+  - **Speech bubble** (`.marker-landing-bubble` + `-above`/`-below`):
+    both open and close events, rendered inside an SVG `<foreignObject>`
+    so ordinary HTML text wrapping applies to a real sentence-length
+    string -- sidesteps the per-character width estimation issue #85's
+    now-deleted `chart-label-layout.ts` needed for its own (always-on,
+    many-at-once) on-chart labels; this bubble shows at most one
+    narration at a time, so none of that collision-avoidance machinery
+    is needed. `bubblePlacement` (a small pure function, `PortfolioChart.tsx`)
+    horizontally clamps to the plot's own width and flips
+    above/below the marker based on available headroom near the plot's
+    top edge -- **deliberately not gated on `animateReveal`/reduced
+    motion at all**, since the bubble itself has no CSS animation of its
+    own; it's a relocated version of always-present callout content, not
+    motion, so it renders identically regardless of motion preference
+    (the pulse/shake are what motion preference actually gates).
+- **`TradeReplay.tsx`'s own plain `<p aria-hidden="true">{activeCallout}</p>`
+  is deleted outright, not left alongside the bubble** -- the issue's own
+  acceptance criteria say "anchored near the marker... not a plain
+  paragraph," and keeping both would just show the identical sentence
+  twice. The sr-only `role="status"` announcement (`announced`) is
+  completely unaffected -- still reads `activeCallout` directly, per the
+  issue's own "aria-live announcement content is unaffected" acceptance
+  criterion. Existing tests that asserted `screen.getAllByText(callout)`
+  has length 2 (previously: the paragraph + the status region) needed no
+  count change at all -- the bubble simply replaced the paragraph as the
+  second match; only the _reason_ for the second match changed, verified
+  explicitly with a `classList.contains("marker-landing-bubble")` check
+  added to that same test.
+- **`PortfolioChart` is `React.memo`'d (issue #96 follow-up round four),
+  so `landing` needed to be memoized by its caller, not just typed as an
+  object.** `TradeReplay.tsx`'s own `landing` is wrapped in `useMemo`
+  keyed on `[phase, frame.activeEvent, activeCallout]` specifically so
+  its object identity stays stable across any parent re-render that
+  doesn't actually change which event is active -- a fresh-but-
+  equivalent object literal every render (the obvious first draft) would
+  have made `PortfolioChart`'s own memo comparison see a "changed" prop
+  on every tick and defeat the point of memoizing it at all. In practice
+  this doesn't cost much regardless: `TradeReplay.tsx` doesn't even
+  re-render during the `EVENT_PAUSE_MS` pause itself (`use-trade-
+replay.ts`'s own `tick()` makes no `setFrame` call while paused), so
+  `landing` is naturally stable for the whole time a bubble is visible --
+  but memoizing is still the correct, defensive thing to do rather than
+  relying on that emergent property.
+- **Live-verified via screenshot** (throwaway debug route + the
+  documented no-root headless-Chromium workaround, both a gain-close and
+  a loss-close event, plus a `reducedMotion: "reduce"` pass): the bubble
+  rendered legibly (this app is dark-mode-only, issue #76, so only one
+  theme to check) with correct gain/loss coloring on the marker/line
+  matching the bubble's own adjacent narration, and
+  `document.querySelector(".marker-landing-pulse"/".marker-landing-shake")`
+  both present at the close-event pause for both scenarios.
+  - **The "above" case is by far the common one -- the "below" flip
+    (`bubblePlacement`'s own doc comment) genuinely needs an extreme
+    fixture to reach, and the first live-verification pass missed it
+    entirely** (both the gain and loss fixtures above rendered "above,"
+    caught only by a self-review re-read after the fact, not by the
+    original pass). The log-scale y-axis's own multiplicative padding
+    (`padFactor = 1.15`, see the scale-building `useMemo` above) means a
+    marker at the series' own max value still sits several px below the
+    plot's absolute top, comfortably inside `bubblePlacement`'s "still
+    room above" branch, for any ordinary gain -- reaching the "below"
+    branch needs the _log-scale fraction_ of that 15% padding to be tiny,
+    which only happens with a genuinely huge value range. A third debug
+    fixture (`$20 -> $10,000,000`, a 500,000x close) computed (via a
+    throwaway Node script against this same log-scale math, before
+    touching the browser at all) to place the close marker within ~3px
+    of the plot's top edge -- confirmed live afterward: `below: 1,
+above: 0`, and the screenshot shows the tail correctly flipped to the
+    bubble's top edge, rotated the other way, with no overlap against
+    the hero row above or the topmost gridline label. Worth remembering
+    for any future fixture aimed at this branch: an "extreme gain" isn't
+    enough on a log scale the way it would be on a linear one -- the
+    range needs to be extreme in _log_ terms (many orders of magnitude),
+    not just a large absolute number.
+  - **Reduced motion**: confirmed via the pre-existing `canReplay` gate
+    that no "Watch it happen" button renders at all (unchanged, pre-#108
+    behavior) -- the pulse/shake's own JS-level reduced-motion gate
+    (`animateReveal`) is separately covered by direct `PortfolioChart`
+    component tests (`stubPrefersReducedMotion(true)`, asserting the
+    pulse/shake classes never appear while the bubble's own text still
+    does), since the button-hiding behavior alone doesn't exercise that
+    gate -- `PortfolioChart.tsx` is a public component whose `landing`
+    prop a future caller could reach independent of `TradeReplay.tsx`'s
+    own upstream gate, so it needed its own direct verification, not
+    just an inference from the button being hidden.
+- **One hydration-warning artifact, same class as issue #96's own note
+  above** -- the debug route hardcoded a `"use client"` page rendering
+  `TradeReplay` unconditionally (no `useResults` fetch-state gate), which
+  _can_ render during SSR unlike the real app (see that section's own
+  explanation) -- a floating-point serialization mismatch on one marker's
+  `cy` value (`44.830906949144435` vs. `"44.83090694914432"`, an
+  `Intl`/`Number`-to-string precision difference between Node's server
+  render and the browser) triggered React's hydration-mismatch warning on
+  page load. Confirmed unrelated to this issue's own changes (it fires on
+  the _first_, non-`landing` marker too, present before this issue's own
+  code ever touched anything) and, like #96's own documented instance,
+  never reachable in the real app (the real `WindowResultBody` never
+  SSRs a `"success"` state). Not fixed -- a debug-harness artifact, per
+  this file's own established precedent for the identical class of
+  false alarm.
+
+### Code-review follow-up -- one real bug, one lower-confidence hardening fix
+
+A `high` review of the PR above found one real, reachable bug and one
+lower-confidence robustness gap, both fixed before merge.
+
+- **The bubble's CSS tail was fixed at the box's own 50% center, but
+  `bubblePlacement`'s own horizontal clamp can decenter the box from the
+  marker it's narrating -- a trade opening/closing near either edge of
+  the window (a realistic case, not hypothetical: this file's own #85
+  section already documents "the best trade... closing on the most
+  recent trading day" as real) clamps the box away from the marker,
+  leaving the tail pointing at empty chart space instead.** Fixed by
+  computing the tail's own position as a percentage of the marker's real
+  offset _within_ the final, possibly-clamped box
+  (`bubblePlacement`'s new `tailOffsetPercent` field, clamped to
+  `[12, 88]` so it never slides onto the bubble's own rounded corner) and
+  threading it into the bubble's own inline style as a CSS custom
+  property (`--marker-landing-bubble-tail-offset`) that
+  `.marker-landing-bubble::after`'s `left` now reads, falling back to
+  the old fixed `50%` only for a hypothetical caller that renders the
+  class without setting the property at all -- every real render always
+  sets it. **Live-verified, not just unit-tested**: a debug fixture with
+  an open event two days into a ~10-year window (its own x position deep
+  inside the left-edge clamp zone) confirmed live that the tail sits at
+  the clamped 12% offset -- visibly near the bubble's own left edge,
+  correctly pointing down-left at the real marker below it -- rather
+  than centered over empty space to the marker's right. Regression-
+  tested in `PortfolioChart.test.tsx` with the same edge fixture,
+  asserting the rendered `--marker-landing-bubble-tail-offset` inline
+  style is `"12%"`, not `"50%"`.
+- **The bubble box has a fixed height (`BUBBLE_HEIGHT`) with no overflow
+  handling -- a long enough callout sentence (a long ticker/verb/percent
+  combination) could wrap past what the box comfortably fits and spill
+  past its own rounded border into the surrounding chart.** Fixed with
+  `overflow: hidden` on `.marker-landing-bubble` -- any excess simply
+  gets contained within the box's own rounded corners rather than
+  bleeding out; the sr-only `aria-live` announcement
+  (`TradeReplay.tsx`'s own `announced`) never truncates regardless, so no
+  information is lost, only the decorative bubble's own visual overflow.
+  Deliberately not also resized (`BUBBLE_WIDTH`/`BUBBLE_HEIGHT` left
+  unchanged) -- `overflow: hidden` alone fully closes the "spills into
+  the chart" failure mode the finding named, and resizing would have
+  meant re-verifying the "above"/"below" placement thresholds
+  (`bubblePlacement`'s own math, already live-verified once for both
+  branches) against new constants for a lower-confidence finding whose
+  actual risk this simpler fix already eliminates.
+- All five routine checks (lint, `next typegen && tsc --noEmit`, `pnpm
+build`, `pnpm test`, `pnpm format:check`) re-ran green after both
+  fixes.

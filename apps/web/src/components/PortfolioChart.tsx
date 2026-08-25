@@ -15,6 +15,7 @@
 // history as indistinguishable from zero.
 
 import { memo, useId, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
 
 import { formatAxisCurrency, formatHeroCurrency } from "@/lib/format-currency";
 import { formatDateTime, isPortfolioDatetime } from "@/lib/format-date";
@@ -52,6 +53,28 @@ function eventLabelVerb(event: PortfolioEvent): string {
 function eventTooltipVerb(event: PortfolioEvent): string {
   const { openVerb, closeVerb } = tradeVerbsPast(event.direction);
   return event.type === "open" ? openVerb : closeVerb;
+}
+
+/**
+ * What "just landed" during trade replay playback (issue #108) --
+ * TradeReplay.tsx computes this from its own useTradeReplay `frame` and
+ * hands it down so this component can pulse/shake the matching marker
+ * and show its own narration as a speech-bubble callout anchored near
+ * it, replacing the plain `<p>` TradeReplay.tsx used to render below the
+ * hero row instead.
+ */
+export interface ChartLanding {
+  /**
+   * Reference-identifies which marker this is, matched via `===`
+   * against each `eventMarkers` entry's own `event` field below -- safe
+   * because both this and this component's own `points` ultimately come
+   * from the exact same array TradeReplay.tsx passes to both this
+   * component and useTradeReplay (see that hook's own `Segment.event`
+   * field, itself read straight off a `PortfolioPoint`).
+   */
+  event: PortfolioEvent;
+  /** TradeReplay.tsx's own `calloutText(...)` narration -- unchanged wording/voice, just relocated from a plain paragraph into this bubble. */
+  calloutText: string;
 }
 
 interface PortfolioChartProps {
@@ -100,6 +123,13 @@ interface PortfolioChartProps {
    * again (code review, issue #96 follow-up round 3).
    */
   interactive?: boolean;
+  /**
+   * What "just landed" during trade replay playback (issue #108) --
+   * `null`/omitted (the default) renders none of the marker-landing
+   * pulse/shake/speech-bubble effects below, this component's pre-#108
+   * behavior. See `ChartLanding`'s own doc comment.
+   */
+  landing?: ChartLanding | null;
 }
 
 const WIDTH = 880;
@@ -107,6 +137,12 @@ const HEIGHT = 400;
 const MARGIN = { top: 56, right: 16, bottom: 32, left: 76 };
 const PLOT_WIDTH = WIDTH - MARGIN.left - MARGIN.right;
 const PLOT_HEIGHT = HEIGHT - MARGIN.top - MARGIN.bottom;
+
+// The marker-landing speech bubble's own fixed box (issue #108) -- see
+// bubblePlacement's own doc comment for how these are used.
+const BUBBLE_WIDTH = 220;
+const BUBBLE_HEIGHT = 60;
+const BUBBLE_MARKER_GAP = 14;
 
 /**
  * A PortfolioPoint's `date` is either a plain calendar date
@@ -123,6 +159,51 @@ function toTimestamp(date: string): number {
   return new Date(isPortfolioDatetime(date) ? `${date}Z` : `${date}T00:00:00Z`).getTime();
 }
 
+interface BubblePlacement {
+  x: number;
+  y: number;
+  below: boolean;
+  /**
+   * Where the CSS tail (`.marker-landing-bubble::after`) sits along the
+   * bubble's own width, as a percentage -- see this function's own doc
+   * comment for why this can't just be a fixed 50%.
+   */
+  tailOffsetPercent: number;
+}
+
+/**
+ * Where the marker-landing speech bubble (issue #108) sits relative to
+ * its own marker: horizontally centered on the marker's `x`, clamped to
+ * the plot's own width so it can never run off either edge; above the
+ * marker by default, flipping below only when there isn't enough
+ * headroom (the marker sits close enough to the plot's own top edge,
+ * inside `MARGIN.top`, that the bubble's fixed height wouldn't fit
+ * above it). No collision avoidance against other markers/labels is
+ * needed the way issue #85's now-deleted `chart-label-layout.ts` needed
+ * -- at most one bubble is ever shown at once, since playback only ever
+ * pauses on a single event at a time.
+ *
+ * **`tailOffsetPercent` exists because the box's own horizontal
+ * clamp above can decenter it from the marker (code review finding,
+ * fixed) -- a marker near either plot edge (a trade opening shortly
+ * after the window's own start, or closing on its final day, both
+ * realistic per the "natural completion" note elsewhere in this file)
+ * clamps `x` away from `marker.x - BUBBLE_WIDTH / 2`, so a tail fixed at
+ * the box's own 50% would visually point at empty chart space instead
+ * of the marker it's narrating.** Computed as the marker's own offset
+ * *within* the final (possibly-clamped) box, as a percentage of the
+ * box's width, then clamped to `[12, 88]` so the tail stays on the
+ * bubble's straight body rather than sliding onto its own rounded
+ * corner (`border-radius: 8px` in `globals.css`).
+ */
+function bubblePlacement(marker: { x: number; y: number }): BubblePlacement {
+  const x = Math.min(Math.max(marker.x - BUBBLE_WIDTH / 2, 0), PLOT_WIDTH - BUBBLE_WIDTH);
+  const above = marker.y - BUBBLE_MARKER_GAP - BUBBLE_HEIGHT;
+  const below = above < -MARGIN.top + 4;
+  const tailOffsetPercent = Math.min(Math.max(((marker.x - x) / BUBBLE_WIDTH) * 100, 12), 88);
+  return { x, y: below ? marker.y + BUBBLE_MARKER_GAP : above, below, tailOffsetPercent };
+}
+
 /**
  * Wrapped in `React.memo` (code review, issue #96 follow-up round four)
  * -- matches `ChartDataTable` below, which was already memoized for the
@@ -131,16 +212,21 @@ function toTimestamp(date: string): number {
  * unchanged (only the hero figure's own `currentValue`, owned entirely
  * by TradeReplay.tsx, moves) -- without this, `linePath`/`areaPath`/
  * `eventMarkers` still recomputed and the full SVG still re-diffed on
- * every one of those frames for no visible difference. All three props
- * are safe under `memo`'s default shallow comparison: `points` is a
- * stable reference for the whole run (TradeReplay.tsx passes the same
- * array throughout, only `revealedCount` grows -- see that prop's own
- * doc comment), and `revealedCount`/`interactive` are primitives.
+ * every one of those frames for no visible difference. All props are
+ * safe under `memo`'s default shallow comparison: `points` is a stable
+ * reference for the whole run (TradeReplay.tsx passes the same array
+ * throughout, only `revealedCount` grows -- see that prop's own doc
+ * comment), `revealedCount`/`interactive` are primitives, and `landing`
+ * (issue #108) is `null`/memoized by TradeReplay.tsx itself specifically
+ * so its object identity stays stable whenever the actual landed event
+ * hasn't changed -- a fresh-but-equivalent object every render would
+ * otherwise make this memo pointless whenever `landing` is non-null.
  */
 export const PortfolioChart = memo(function PortfolioChart({
   points,
   revealedCount,
   interactive = true,
+  landing = null,
 }: PortfolioChartProps) {
   const gradientId = useId();
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
@@ -284,6 +370,21 @@ export const PortfolioChart = memo(function PortfolioChart({
   const areaPath = `${linePath} L ${drawn[drawn.length - 1]!.x.toFixed(2)},${PLOT_HEIGHT} L ${drawn[0]!.x.toFixed(2)},${PLOT_HEIGHT} Z`;
 
   const eventMarkers = drawn.filter((p) => p.event !== null);
+
+  // The marker `landing` refers to (issue #108), found by reference
+  // equality against `landing.event` -- safe because both ultimately
+  // come from the same `points` array TradeReplay.tsx passes to both
+  // this component and useTradeReplay (see `ChartLanding`'s own doc
+  // comment). `landedBubble` bundles the placement with the narration
+  // text so the JSX below never has to separately null-check `landing`
+  // alongside `landedMarker` -- if either is missing, there's no bubble.
+  const landedMarker = landing
+    ? (eventMarkers.find((p) => p.event === landing.event) ?? null)
+    : null;
+  const landedBubble =
+    landedMarker && landing
+      ? { ...bubblePlacement(landedMarker), calloutText: landing.calloutText }
+      : null;
 
   // Gain/loss-aware color (issue #85), replacing the single flat
   // --series-1 accent this chart used to render regardless of outcome.
@@ -509,6 +610,18 @@ export const PortfolioChart = memo(function PortfolioChart({
             {eventMarkers.map((p, i) => {
               const event = p.event!;
               const isOpen = event.type === "open";
+              // Issue #108: a subtle shake on the real marker itself,
+              // close events only -- "the point where value actually
+              // jumps" per this comment block's own open/close
+              // distinction above, i.e. the moment a value change is
+              // worth calling out with motion, not just a color/shape
+              // distinction. Gated on `animateReveal` (the same
+              // mount-latched reduced-motion read `.portfolio-chart-reveal`
+              // already uses just above) as the JS-level "don't render
+              // the animated element at all" half of this app's two-layer
+              // reduced-motion pattern; globals.css's own media query on
+              // `.marker-landing-shake` is the CSS belt on top.
+              const isLanded = animateReveal && landing?.event === event;
               return (
                 <circle
                   key={`${p.date}-${event.type}-${event.ticker}-${i}`}
@@ -518,10 +631,90 @@ export const PortfolioChart = memo(function PortfolioChart({
                   fill={isOpen ? "none" : seriesColor}
                   stroke={isOpen ? seriesColor : "var(--surface-1)"}
                   strokeWidth={2}
+                  className={
+                    isLanded && event.type === "close" ? "marker-landing-shake" : undefined
+                  }
                 />
               );
             })}
           </g>
+
+          {/* One-shot marker-landing pulse ring (issue #108) -- every
+              open/close event gets this (not just close, unlike the
+              shake above), reusing chart-tap-hint-pulse's own
+              chart-tap-pulse keyframe/shape (a single iteration instead
+              of three, see globals.css's own `.marker-landing-pulse`) so
+              this reads as the same visual language, not a competing
+              one. A decorative sibling overlay, not applied to the real
+              marker's own circle above -- that keyframe's own scale/fade
+              would make the *real* marker vanish once it finishes if
+              applied directly, the same reasoning the pre-existing touch
+              tap hint just below already established. Mounts fresh
+              (a plain conditional render, no key trickery needed) every
+              time a new event lands -- `landing` only stays pointed at
+              one event for the length of use-trade-replay.ts's own
+              EVENT_PAUSE_MS pause, during which this component never
+              re-renders (see that hook's own `tick()`), so this element
+              is always a genuinely fresh DOM node when it appears,
+              which is what makes the CSS animation replay correctly on
+              every landing rather than needing to be manually
+              retriggered. Same `animateReveal` JS-level gate as the
+              shake above. */}
+          {animateReveal && landedMarker && (
+            <circle
+              cx={landedMarker.x}
+              cy={landedMarker.y}
+              r={4}
+              fill="none"
+              stroke={seriesColor}
+              strokeWidth={2}
+              className="marker-landing-pulse"
+              pointerEvents="none"
+              aria-hidden="true"
+            />
+          )}
+
+          {/* Marker-landing speech-bubble callout (issue #108) --
+              replaces TradeReplay.tsx's old plain <p> rendered below the
+              hero row (see that file's own doc comment) with a callout
+              anchored near its own marker instead. Rendered inside an
+              SVG <foreignObject> so ordinary HTML text wrapping applies
+              to a real sentence-length string, instead of hand-measuring
+              per-character SVG <text> widths the way issue #85's now-
+              deleted chart-label-layout.ts had to for its own on-chart
+              labels. Purely decorative/duplicate of the sr-only
+              aria-live announcement (TradeReplay.tsx's own `announced`)
+              -- aria-hidden, `pointerEvents="none"` so it can never
+              intercept a hover/tap on the chart underneath it, and
+              deliberately never gated on `animateReveal`: unlike the
+              pulse/shake above, the bubble's own *presence* isn't
+              itself an animation (no CSS keyframe of its own), it just
+              mounts/unmounts as `landing` changes -- the same "content,
+              not motion" treatment this app's other reduced-motion-gated
+              features don't extend to their own static text either. */}
+          {landedBubble && (
+            <foreignObject
+              x={landedBubble.x}
+              y={landedBubble.y}
+              width={BUBBLE_WIDTH}
+              height={BUBBLE_HEIGHT}
+              pointerEvents="none"
+            >
+              <div
+                aria-hidden="true"
+                className={`marker-landing-bubble ${
+                  landedBubble.below ? "marker-landing-bubble-below" : "marker-landing-bubble-above"
+                }`}
+                style={
+                  {
+                    "--marker-landing-bubble-tail-offset": `${landedBubble.tailOffsetPercent}%`,
+                  } as CSSProperties
+                }
+              >
+                {landedBubble.calloutText}
+              </div>
+            </foreignObject>
+          )}
 
           {/* One-time touch "you can tap this" pulse hint (issue #66) --
               only rendered for a touch-primary device that hasn't
