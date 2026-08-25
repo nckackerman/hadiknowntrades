@@ -10,7 +10,11 @@
 // playback too, so it no longer disappears the moment "rewinding" hands
 // off to "playing" -- see use-trade-replay.ts for the RAF-driven state
 // machine this orchestrates, and its own `displayDate` doc comment for
-// the per-phase reasoning.
+// the per-phase reasoning. Issue #108 replaced this file's own plain
+// `<p>` buy/sell callout with a marker pulse/shake + a chart-anchored
+// speech-bubble callout, both owned by PortfolioChart.tsx via its own
+// `landing` prop (see `ChartLanding`'s doc comment there) -- this file
+// only computes *what* landed (`landing`, below), never how it's drawn.
 
 import { useMemo, type ReactNode } from "react";
 
@@ -29,7 +33,7 @@ import {
   heroMultiplierColor,
   heroValueRowClassName,
 } from "@/components/HeroStat";
-import { PortfolioChart } from "@/components/PortfolioChart";
+import { PortfolioChart, type ChartLanding } from "@/components/PortfolioChart";
 
 interface TradeReplayProps {
   /** The already-rendered window-model result's own chart series (derivePortfolioSeries's output, already display-rescaled -- see ResultsPanel.tsx's own `points`). */
@@ -292,11 +296,29 @@ export function TradeReplay({
   );
 
   // Computed once per render, not twice (code-review finding, fixed) --
-  // the sr-only status region and the visible callout paragraph below
-  // both need this exact same sentence, and computing it independently
-  // at each call site was both wasted work every frame and a drift risk
-  // if one call site's wording ever changed without the other.
+  // the sr-only status region and the chart-anchored speech-bubble
+  // callout (PortfolioChart's own `landing` prop, issue #108) both need
+  // this exact same sentence, and computing it independently at each
+  // call site was both wasted work every frame and a drift risk if one
+  // call site's wording ever changed without the other.
   const activeCallout = frame.activeEvent ? calloutText(frame.activeEvent, includeDate) : null;
+
+  // Issue #108: identifies "the marker + narration that just landed"
+  // for PortfolioChart's own marker-pulse/shake/speech-bubble effects --
+  // null except during the exact EVENT_PAUSE_MS window after a real
+  // open/close event is reached (frame.activeEvent, the same value
+  // driving `activeCallout`/the sr-only announcement above). Memoized so
+  // its object identity stays stable across any parent re-render that
+  // doesn't actually change which event is active -- this component
+  // doesn't re-render mid-tween while paused (use-trade-replay.ts's own
+  // tick() makes no setFrame call during the pause itself), but
+  // memoizing here is what lets PortfolioChart's own React.memo actually
+  // pay off rather than treating a fresh-but-equivalent object as a prop
+  // change every time (see that component's own memo doc comment).
+  const landing: ChartLanding | null = useMemo(() => {
+    if (phase !== "playing" || !frame.activeEvent || !activeCallout) return null;
+    return { event: frame.activeEvent.event, calloutText: activeCallout };
+  }, [phase, frame.activeEvent, activeCallout]);
 
   // A single role="status" aria-live="polite" region, always present,
   // that announces each trade event once (not per-frame -- see
@@ -423,12 +445,6 @@ export function TradeReplay({
           {announced}
         </div>
 
-        {!showLive && activeCallout && (
-          <p aria-hidden="true" className="text-sm text-[var(--text-secondary)]">
-            {activeCallout}
-          </p>
-        )}
-
         {/* One wrapper, varying only the inner button (code-review
             finding, issue #96 follow-up round 3) -- an earlier version
             duplicated this identical `flex items-center gap-3` div in
@@ -472,6 +488,7 @@ export function TradeReplay({
         points={points}
         revealedCount={showLive ? undefined : frame.revealedCount}
         interactive={showLive}
+        landing={landing}
       />
     </>
   );

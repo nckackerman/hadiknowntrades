@@ -161,6 +161,160 @@ body {
 }
 
 /*
+ * Trade replay marker landing pulse + shake (issue #108) --
+ * PortfolioChart.tsx's own `landing` prop drives both, on whichever
+ * open/close marker "Watch it happen" playback just revealed.
+ *
+ * `.marker-landing-pulse` is a one-shot version of the tap-hint pulse
+ * directly above -- the *same* chart-tap-pulse keyframe/shape (so this
+ * reads as the same visual language, not a competing one), just a
+ * single iteration instead of three and a shorter duration tuned to sit
+ * comfortably inside use-trade-replay.ts's own EVENT_PAUSE_MS (600ms)
+ * pause window rather than outlasting it. Applied to a decorative
+ * sibling ring, never to the real marker's own circle -- see
+ * PortfolioChart.tsx's own render comment for why (the real marker
+ * would visibly vanish once the keyframe's fade-to-0 finished if
+ * applied directly). Same `transform-box: fill-box` need as
+ * `.chart-tap-hint-pulse` above, for the same reason (an SVG <circle>,
+ * not an HTML element).
+ *
+ * `.marker-landing-shake` is a small, symmetric translateX wobble (a
+ * couple px, ~2 cycles) applied directly to the real marker -- safe to
+ * apply to the real element (unlike the pulse) because its own keyframe
+ * starts and ends at `translateX(0)`, the marker's resting position, so
+ * nothing about its permanent appearance changes once the animation
+ * finishes. Close events only (PortfolioChart.tsx's own `isLanded`
+ * check) -- "the point where value actually jumps," per this app's
+ * existing open/close marker doc comment, i.e. the one moment worth the
+ * extra emphasis beyond the pulse every marker already gets.
+ *
+ * Both are two-layer reduced-motion, same shape as every other
+ * animation in this file: PortfolioChart.tsx's own `animateReveal` (the
+ * same mount-latched read `.portfolio-chart-reveal` already uses) is
+ * the primary JS-level gate deciding whether either class is ever added
+ * at all; the media queries below are defense-in-depth for a future
+ * caller that skips the check.
+ */
+.marker-landing-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: chart-tap-pulse 550ms ease-out 1;
+  animation-fill-mode: forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marker-landing-pulse {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+@keyframes marker-landing-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-2px);
+  }
+  40% {
+    transform: translateX(2px);
+  }
+  60% {
+    transform: translateX(-1.5px);
+  }
+  80% {
+    transform: translateX(1.5px);
+  }
+}
+
+.marker-landing-shake {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: marker-landing-shake 400ms ease-in-out 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marker-landing-shake {
+    animation: none;
+  }
+}
+
+/*
+ * The marker-landing speech-bubble/toast callout itself (issue #108) --
+ * PortfolioChart.tsx renders this inside an SVG <foreignObject>
+ * positioned near whichever marker `landing` refers to (see that
+ * component's own `bubblePlacement`), replacing TradeReplay.tsx's old
+ * plain `<p>` rendered below the hero row. A classic CSS speech-bubble
+ * shape: a rounded surface-toned box plus a small rotated-square tail
+ * (`::after`, showing two of its own borders) pointing toward the
+ * marker -- `.marker-landing-bubble-above`/`-below` flip which edge the
+ * tail sits on and which way it rotates, matching whichever side
+ * `bubblePlacement` chose. Not itself gated on reduced motion -- unlike
+ * `.marker-landing-pulse`/`.marker-landing-shake` above, this box has no
+ * CSS animation of its own; it's content (a relocated version of the
+ * always-present callout text), not motion, so it mounts/unmounts
+ * plainly as `landing` changes regardless of motion preference.
+ *
+ * `overflow: hidden` (code review finding, fixed) -- this box has a
+ * fixed height (`BUBBLE_HEIGHT`, `PortfolioChart.tsx`), and an unusually
+ * long callout sentence (a long ticker/verb/percent combination) could
+ * wrap past the ~3 lines that height comfortably fits; without this, the
+ * overflow text would spill past the bubble's own rounded border into
+ * the surrounding chart rather than being contained by it. The callout's
+ * full text is always available regardless -- the sr-only `aria-live`
+ * announcement (`TradeReplay.tsx`'s own `announced`) never truncates.
+ *
+ * `--marker-landing-bubble-tail-offset` (code review finding, fixed) --
+ * set inline by `PortfolioChart.tsx` per bubble (from `bubblePlacement`'s
+ * own `tailOffsetPercent`), not a fixed 50%: the box's own horizontal
+ * position is clamped to the plot's width and can be decentered from the
+ * marker it's narrating (a trade opening/closing near either edge of the
+ * window), and a tail fixed at the box's own center would then point at
+ * empty chart space instead of the real marker. The `50%` fallback below
+ * only matters for a hypothetical caller that renders this class without
+ * setting the property at all -- every real render always sets it.
+ */
+.marker-landing-bubble {
+  position: relative;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: 100%;
+  overflow: hidden;
+  padding: 6px 10px;
+  border: 1px solid var(--gridline);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.3;
+  box-shadow: var(--shadow-surface);
+}
+
+.marker-landing-bubble::after {
+  content: "";
+  position: absolute;
+  left: var(--marker-landing-bubble-tail-offset, 50%);
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  background: var(--surface-2);
+  border-right: 1px solid var(--gridline);
+  border-bottom: 1px solid var(--gridline);
+}
+
+.marker-landing-bubble-above::after {
+  bottom: -6px;
+  transform: rotate(45deg);
+}
+
+.marker-landing-bubble-below::after {
+  top: -6px;
+  transform: rotate(225deg);
+}
+
+/*
  * Softens the LoadingSkeleton -> success-tree handoff when switching
  * preset range or custom-anchor month (issue #65) -- applied to
  * ResultsPanel.tsx's three success-branch outer wrappers ("window",
