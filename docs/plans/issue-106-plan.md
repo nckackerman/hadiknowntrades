@@ -41,13 +41,33 @@ worst-case balance a single rescale away, exactly mirroring how
 today.
 
 **A correction to this issue's own Background, verified rather than
-assumed**: the sibling 1W issue (#105) has **not landed**, and has no
-open PR (`gh issue view 105` shows `state: OPEN`; `gh pr list --search
-"105"` returns zero results; no `105`-referencing branch exists). There
-is no shipped 1W implementation to read or build on. This plan proceeds
-by designing 1M/3M/1Y's own hero/reveal component and gate sequencing
-independently, but flags the sequencing risk this creates for the
-manager (section 6).
+assumed, and a plain statement of what it implies for what happens
+next.** Issue #106's own Goal sentence frames this plan as happening
+"once the closer-to-shippable 1W replay [issue #105] has landed" -- a
+firmer commitment than this plan can actually honor: the sibling 1W
+issue (#105) has **not landed**, and has no open PR (`gh issue view 105`
+shows `state: OPEN`; `gh pr list --search "105"` returns zero results;
+no `105`-referencing branch exists). There is no shipped 1W
+implementation to read or build on. This plan was written ahead of #105
+anyway, per the manager's own scheduling choice (the manager's own
+delegation explicitly asked this plan to proceed and check #105's status
+rather than block on it) -- so sections 3.3/3.4/6 design 1M/3M/1Y's own
+hero/reveal component and gate sequencing independently, in a shape
+intended to converge with whatever #105 ships rather than diverge from
+it, but with no real 1W code to verify that convergence against yet.
+
+**The concrete implication: the actual follow-up _build_ issue for
+1M/3M/1Y should not be filed or started until #105 has genuinely
+shipped**, so its real implementation choices (the shape of its own
+hero/reveal component, its exact gate sequencing, whatever pacing
+tweaks it needs for 1W's own ~15-trade worst case) can be read and
+reconciled with -- or deliberately diverged from, with a stated reason --
+at that point, rather than this plan's own independent guesses standing
+in unverified. This was previously disclosed only in section 6, as a
+"could not resolve unilaterally" item late in the doc; stated here
+instead, up front, since it's a real precondition on when the next
+concrete step (filing the build issue) is appropriate, not just an
+open question to weigh later.
 
 ## 1. Architecture recap: what's already reusable, verified against the real code
 
@@ -214,14 +234,33 @@ realistic upper bound, analogous to how #96's own "3-trade window in
 **The 3M/1Y worst-case durations land on the identical ~14s ceiling by
 construction, not coincidence** -- this is the entire point of capping
 `NUM_CHUNKS` rather than deriving a per-day pause budget from a
-per-range-tuned total (an approach this plan tried first and rejected:
-a fixed per-day pause reused across ranges blows past any reasonable
-target once day count exceeds ~30-40, and a total-budget-divided-by-
-day-count formula degenerates at 1Y's 250 days, since even a minimal
-per-day transition time alone already consumes the whole budget before
-any pause time is left -- worked through and rejected during this plan's
-own drafting). 1M lands lower automatically because it has fewer real
-days than the cap, with **no separate 1M-specific constant needed** --
+per-range-tuned total. **Worked through and rejected during this plan's
+own drafting, with the actual numbers, not just prose**: the rejected
+alternative picks a target total per range (say 1Y's own ~15s) and
+derives `perDayPauseMs = (targetTotalMs - dayCount × dayTransitionMs) /
+tradeDayCount`. At a plausible `dayTransitionMs = 60`, 1Y's 250 days
+alone already cost `250 × 60ms = 15,000ms` -- **the entire 15s target,
+before a single pause is budgeted at all**. The formula then has zero
+(or negative) budget left to divide across trade days, forcing
+`perDayPauseMs` down to whatever floor it's clamped to (e.g. an 80ms
+minimum) regardless of the target -- so worst-case total becomes
+`15,000ms + 250 × 80ms = 35,000ms ≈ 35s`, **more than double the 15s
+target the formula was supposed to guarantee**, purely because day count
+alone already exceeded the transition budget before pauses entered the
+picture. 3M (62 days, `62 × 60ms = 3,720ms` of transitions against an
+~11s target) doesn't hit this failure mode, which is exactly the
+problem: **the per-day-tuned-budget formula's own correctness depends on
+day count staying comfortably under the target, an assumption 1Y
+violates on its own transition cost alone** -- it isn't a tuning
+problem fixable by picking different constants, it's a structural
+mismatch between "budget scales with target duration" and "cost scales
+with day count," which diverge once day count grows large enough. The
+chosen `NUM_CHUNKS`-capped design in Steps 1-3 above sidesteps this
+entirely by making chunk count (not day count) the thing multiplied
+against the constants, with day count only affecting how many real days
+each chunk groups together -- 1M lands lower automatically because it
+has fewer real days than the cap, with **no separate 1M-specific
+constant needed** --
 this is also why one shared mechanism genuinely covers all three ranges
 (see section 3.2).
 
@@ -261,25 +300,42 @@ even the _capped_ worst case (~14s) is long enough that a user who just
 wants the answer benefits from it more than a ~6.6s window-model replay
 ever did.
 
-**Shared hook design, not a forked copy of `use-trade-replay.ts`.**
-Recommend generalizing the existing hook rather than writing a second,
-independent one: extract the "walk points one at a time, pause on any
-event" logic (`buildSegments`) behind a pluggable segment-builder
-argument, and add a second builder (`buildChunkSegments`, per the design
-above) that produces the identical `Segment[]` shape `tick()` already
-consumes. Every other piece of the hook -- the `idle -> rewinding ->
-playing -> done` phase machine, the rewind intro beat, `skipToEnd`, the
-`useResetWhenChanged`-based mid-flight reset, the corrupted-price
-defensive catch, `completedRuns` -- is untouched and shared verbatim,
-inheriting five rounds of already-fixed correctness work for free rather
-than risking reintroducing any of it independently in a second hook.
-This is the same "shared, not copy-pasted" instinct this codebase
-already applies everywhere else (`trade-math.ts`, `easing.ts`,
-`use-reset-when-changed.ts`) -- a build issue should treat "does this
-generalize `use-trade-replay.ts` cleanly, or does it need its own
+**Shared hook design, not a forked copy of `use-trade-replay.ts` -- but
+the segment shape itself needs to grow, not stay identical.** Recommend
+generalizing the existing hook rather than writing a second, independent
+one: extract the "walk points one at a time, pause on any event" logic
+(`buildSegments`) behind a pluggable segment-builder argument, and add a
+second builder (`buildChunkSegments`, per the design above). **This is
+not a claim that the two builders produce an identical `Segment`/
+`ReplayEvent` shape -- an earlier draft of this plan overstated it that
+way, corrected here to match section 4's own hedge instead of
+contradicting it.** The existing `Segment`/`ReplayEvent` types
+(`use-trade-replay.ts`) are sized for exactly one trade per pause (one
+`PortfolioEvent`, one nullable `TradeReturn`); this plan's own dual-voice
+callout design (a multi-trade date-range summary for a real chunk,
+falling through to the existing single-trade `calloutText` voice only in
+the one-day/one-trade degenerate case) needs materially richer per-chunk
+data those types can't hold as written -- at minimum a trade count and a
+date range, likely the underlying day-group list itself. `Segment`/
+`ReplayEvent` (or their renamed equivalents once this generalization
+lands) will need new fields or a new variant to carry that, not a
+type-compatible drop-in. **What _is_ still fully reusable unmodified,
+and is the real reason to generalize rather than fork**: the phase
+machine (`idle -> rewinding -> playing -> done`), the rewind intro beat,
+`skipToEnd`, the `useResetWhenChanged`-based mid-flight reset, the
+corrupted-price defensive catch, and `completedRuns` -- none of that
+scaffold actually depends on `Segment`'s own internal shape, only on
+`tick()` walking _some_ ordered list of steps and calling `setFrame`/
+pausing on demand, so it inherits five rounds of already-fixed
+correctness work for free either way. This is the same "shared, not
+copy-pasted" instinct this codebase already applies elsewhere
+(`trade-math.ts`, `easing.ts`, `use-reset-when-changed.ts`) -- a build
+issue should treat "does this generalize `use-trade-replay.ts` cleanly
+with a widened `Segment` shape, or does it need its own
 `use-whole-range-replay.ts`" as its own first implementation decision,
-with a strong prior toward generalizing given how much correctness work
-already lives in the existing hook.
+with a strong prior toward generalizing the scaffold (even though the
+segment _data_ itself must genuinely widen) given how much correctness
+work already lives in the existing hook.
 
 ### 3.2 One build issue, or split further?
 
@@ -328,10 +384,50 @@ computation.** `IntradayWorstCaseResult` has carried its own chained
 `startingCapital`/`endingBalance` since issue #84 (confirmed by reading
 `intraday-optimizer.ts`'s interface directly) -- exactly the same field
 `ResultsPanel.tsx`'s existing `wholeRangeFinalBalance` already reads off
-`finalDay`'s _best-case_ track:
+`finalDay`'s _best-case_ track. **A first draft of this section wired the
+new figure through `wholeRangeFinalBalance`'s own pre-rescaled pattern,
+which independent review correctly flagged as under-specified in exactly
+the way `apps/web/CLAUDE.md`'s "`rescaleFromStartingCapital`'s per-day
+pattern silently cancels out per-day capital chaining (issue #84...)"
+section documents this codebase has been bitten by three times already
+(two `effectiveStartingCapital` misses plus a wrong-track
+`startingCapital` mix-up, all in that same section) -- corrected below,
+wired through `HeroAndWorstCase`'s own established contract instead,
+which avoids the ambiguity entirely rather than resolving it with a
+disambiguating comment.**
+
+**The root cause of the ambiguity**: `wholeRangeFinalBalance` and
+`HeroAndWorstCase`'s `worstCaseEndingBalance`/`worstCaseStartingCapital`
+props have two _different_ contracts that look interchangeable but
+aren't. `wholeRangeFinalBalance` feeds `WholeRangeBalance.tsx`'s
+`finalBalance` prop, a plain leaf display with no rescale of its own --
+so `wholeRangeFinalBalance` is deliberately computed _already rescaled_
+to `effectiveStartingCapital` (`rescaleFromStartingCapital(..., data.
+startingCapital, effectiveStartingCapital)`). `HeroAndWorstCase`, by
+contrast, does its _own_ single internal rescale
+(`worstCaseDisplayValue = rescaleFromStartingCapital(worstCaseEndingBalance,
+worstCaseStartingCapital, displayStartingCapital)`) -- every existing
+caller (`TradeReplay.tsx`, `ResultsPanel.tsx`'s own day-level
+`HeroAndWorstCase` call) passes it **raw, native-root-unit** values, never
+pre-rescaled ones. Feeding a `wholeRangeFinalBalance`-style pre-rescaled
+number into `worstCaseEndingBalance` would double-rescale unless
+`worstCaseStartingCapital` is _also_ deliberately set to
+`effectiveStartingCapital` (not the track's real root) to cancel the
+second rescale back out to ratio 1 -- a correct but fragile trick, and
+exactly the kind of "which value does this variable actually hold"
+confusion the CLAUDE.md section above warns is this codebase's most
+recurring bug class. **Rejected in favor of the option below, which
+needs no such disambiguation at all.**
+
+**Corrected design: keep the worst-case figure in raw, native-root
+units, matching every other `HeroAndWorstCase` caller's established
+contract exactly, and let its own internal rescale do the one necessary
+conversion:**
 
 ```ts
-// Existing, today (ResultsPanel.tsx ~line 615):
+// Existing, today (ResultsPanel.tsx ~line 615) -- unchanged, still
+// pre-rescaled, because WholeRangeBalance.tsx's finalBalance prop is a
+// plain leaf display with no rescale of its own:
 const wholeRangeFinalBalance = finalDay
   ? rescaleFromStartingCapital(
       selectVariant<IntradayTrade>(finalDay, finalDay.longShort, mode).endingBalance,
@@ -340,41 +436,49 @@ const wholeRangeFinalBalance = finalDay
     )
   : 0;
 
-// New, parallel, same rescale-from-root pattern -- NOT the per-day
-// rescale pattern (see apps/web/CLAUDE.md's own "silently cancels out"
-// warning, which applies identically here):
-const wholeRangeWorstCaseBalance = finalDay
-  ? rescaleFromStartingCapital(
-      // mode-aware worst-case track, mirroring dayWorstCaseStartingCapital's
-      // own mode branch above in the same file
-      mode === "long"
-        ? finalDay.worstCase.endingBalance
-        : finalDay.longShort.worstCase.endingBalance,
-      data.startingCapital,
-      effectiveStartingCapital,
-    )
+// New -- deliberately NOT pre-rescaled, unlike wholeRangeFinalBalance
+// above. This pair feeds HeroAndWorstCase's worstCaseEndingBalance/
+// worstCaseStartingCapital props directly, the same raw-value contract
+// every existing caller (TradeReplay.tsx, this file's own day-level
+// HeroAndWorstCase call) already uses -- HeroAndWorstCase's own
+// worstCaseDisplayValue computation is what applies displayStartingCapital,
+// exactly once. Pre-rescaling here too would double-rescale (see this
+// section's own note on the rejected first draft).
+const wholeRangeWorstCaseEndingBalance = finalDay
+  ? mode === "long"
+    ? finalDay.worstCase.endingBalance
+    : finalDay.longShort.worstCase.endingBalance
   : 0;
+// The range's own root -- identical across all four independently-
+// chained tracks on day 0 by issue #84's own chaining design (see
+// docs/plans/issue-84-plan.md section 6.2: "all four tracks start from
+// the identical root capital on day 0 of every range"), so unlike every
+// OTHER per-track startingCapital in this codebase (which genuinely
+// diverge day to day once chained), data.startingCapital is correct here
+// as the worst-case track's own "from" value too, not just the
+// best-case track's.
+const wholeRangeWorstCaseStartingCapital = data.startingCapital;
 ```
 
-This is exactly the same single-rescale-from-root pattern
-`wholeRangeFinalBalance` already uses (deliberately _not_ the per-day
-`rescaleFromStartingCapital(dayValue, day.startingCapital, ...)` pattern,
-which algebraically cancels chaining back out -- see
-`apps/web/CLAUDE.md`'s "rescaleFromStartingCapital's per-day pattern
-silently cancels out chaining" section, which applies identically to a
-worst-case rescale as it does to the best-case one). **No pipeline
-change, no schema bump, no new field** -- this is purely an `apps/web`
-read of data already being written.
+`WholeRangeReplay.tsx` then forwards `wholeRangeWorstCaseEndingBalance`/
+`wholeRangeWorstCaseStartingCapital` straight into `HeroAndWorstCase`'s
+`worstCaseEndingBalance`/`worstCaseStartingCapital` props, with
+`displayStartingCapital={effectiveStartingCapital}` -- structurally
+identical to how `TradeReplay.tsx` already wires the window model's own
+worst-case figure (which also passes a flat, non-chained
+`worstCaseStartingCapital` straight through). **No pipeline change, no
+schema bump, no new field** -- this is purely an `apps/web` read of data
+already being written, and (unlike the rejected first draft) needs no
+inline comment disambiguating which capital a variable holds, because
+every value here is in the one contract `HeroAndWorstCase` already
+expects.
 
 **Recommendation: render this new worst-case figure via
 `HeroAndWorstCase`'s existing `WorstCaseStat` half**, the same
 unconditional-rendering, muted-tone treatment every other `WorstCaseStat`
 instance in this app already gets (issue #31's own "fixed muted tone...
 not meant to compete with the hero figure" design decision) -- no new
-component needed, `WholeRangeReplay.tsx` just passes
-`wholeRangeWorstCaseBalance`/its own `startingCapital` straight into the
-`worstCaseEndingBalance`/`worstCaseStartingCapital` props
-`HeroAndWorstCase` already accepts.
+component needed.
 
 ### 3.4 Guess-then-reveal gate relationship
 
@@ -444,10 +548,11 @@ list below `DayOverview`). Reasoning:
 - **New: `apps/web/src/components/WholeRangeReplay.tsx`** -- parallel to
   `TradeReplay.tsx`, per section 3.3.
 - **`apps/web/src/components/ResultsPanel.tsx`** -- the intraday-daily
-  branch (currently ~lines 604-661): add `wholeRangeWorstCaseBalance`
-  (section 3.3's snippet) alongside the existing `wholeRangeFinalBalance`
-  computation, and replace the bare `<PortfolioChart>` call (line 659)
-  with `<WholeRangeReplay>`, inside the same `rangeGuess !== null` block.
+  branch (currently ~lines 604-661): add `wholeRangeWorstCaseEndingBalance`/
+  `wholeRangeWorstCaseStartingCapital` (section 3.3's corrected snippet)
+  alongside the existing `wholeRangeFinalBalance` computation, and replace
+  the bare `<PortfolioChart>` call (line 659) with `<WholeRangeReplay>`,
+  inside the same `rangeGuess !== null` block.
 - **No changes expected**: `PortfolioChart.tsx`, `HeroAndWorstCase.tsx`,
   `WholeRangeBalance.tsx`, any pipeline/schema file, per sections 1 and
   3.3.
@@ -468,10 +573,13 @@ list below `DayOverview`). Reasoning:
   #96's round-five review caught once already), reduced-motion full
   bypass, and the new worst-case figure rendering unconditionally
   alongside the hero figure in every phase.
-- `ResultsPanel.test.tsx` gains coverage for `wholeRangeWorstCaseBalance`'s
-  rescale (both modes, mirroring the existing
-  `wholeRangeFinalBalance`/mode coverage) and confirms `WholeRangeReplay`
-  only renders once `rangeGuess !== null`.
+- `ResultsPanel.test.tsx` gains coverage for
+  `wholeRangeWorstCaseEndingBalance`/`wholeRangeWorstCaseStartingCapital`'s
+  values (both modes, mirroring the existing `wholeRangeFinalBalance`/mode
+  coverage) -- asserting the _raw_ mode-selected worst-case track and
+  `data.startingCapital` specifically, not a pre-rescaled figure, per
+  section 3.3's corrected design -- and confirms `WholeRangeReplay` only
+  renders once `rangeGuess !== null`.
 - Live verification (per this repo's working agreement) should include a
   real local-pipeline-run measurement of actual worst-case playback
   duration for at least 3M or 1Y against real data (the same
@@ -485,21 +593,18 @@ CLAUDE.md` already documents at length) -- this plan's ~7-14s figures
 
 Two things this plan could not resolve unilaterally:
 
-1. **#105 has not landed** (confirmed via `gh issue view 105` and `gh pr
-list --search "105"` -- open issue, zero PRs, no branch). The
-   delegation prompt that produced this plan assumed real 1W
-   implementation choices existed to read and build on; they don't yet.
-   This plan designed 1M/3M/1Y's hero/reveal component
-   (`WholeRangeReplay.tsx`) and gate sequencing independently, in a shape
-   intended to be reconcilable with whatever #105 eventually ships (same
-   `WholeRangeBalance` gate, same `HeroAndWorstCase`/`heroSlot` reuse
-   pattern) -- but there's a real risk of two independently-built,
-   subtly-diverging components if both issues proceed without one having
-   read the other's actual code. Recommend either sequencing 1M/3M/1Y's
-   build issue strictly after #105 lands (so it can literally extend/
-   reuse #105's own component), or explicitly assigning one of the two
-   to extract the shared pieces once both exist -- a scheduling call, not
-   an engineering one, and the manager's is the right seat for it.
+1. **The sequencing question section 0 already flags up front**: #105
+   hasn't landed, this plan proceeded anyway per the manager's own
+   scheduling choice, and section 0 already states the concrete
+   implication -- don't file/start the actual 1M/3M/1Y build issue until
+   #105 has shipped, so its real implementation choices can be read and
+   reconciled with first. Restated here only for the specific _decision_
+   this plan can't make unilaterally: whether to hold 1M/3M/1Y's build
+   issue strictly until #105 merges (so it can literally extend/reuse
+   #105's own component), or let both proceed in parallel with an
+   explicit later reconciliation pass assigned to one of the two. Either
+   is workable; which one is a scheduling call, not an engineering one,
+   and the manager's is the right seat for it.
 2. **The exact `NUM_CHUNKS`/`CHUNK_TRANSITION_MS`/`CHUNK_PAUSE_MS`
    values** (section 3.1) are proposed and worked through analytically,
    but -- consistent with how this repo has treated every prior pacing
