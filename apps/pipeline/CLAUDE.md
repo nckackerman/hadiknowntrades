@@ -42,14 +42,25 @@ code.
   2048MB in code as part of #29 (see "Granularity overrides" below), but that
   bump is not yet deployed; this 903MB/1024MB figure is the last real
   measured number until a post-#29 run confirms a new one.
-- Two entry points, both thin wrappers around the shared
+- Three entry points now, not two -- `src/index.ts` and
+  `src/lambda-handler.ts` are thin wrappers around the shared
   `runNightlyPipeline()` in `src/run.ts` (kept DRY on purpose — same
-  logic, different completion handling):
-  - `src/index.ts` — local/manual CLI run, sets `process.exitCode` on
-    failure.
+  logic, different completion handling); `src/local-run.ts` is a third,
+  genuinely different one (its own ticker sample, its own store), not a
+  third wrapper around `runNightlyPipeline()`:
+  - `src/index.ts` -- local/manual CLI run against a **real S3 bucket**
+    (`RESULTS_BUCKET`), sets `process.exitCode` on failure.
   - `src/lambda-handler.ts` — the real AWS Lambda entry point, wired up
     by infra/cdk's EventBridge nightly schedule. Lets errors propagate
     to fail the Lambda invocation (no custom retry/alerting).
+  - `src/local-run.ts` -- local/manual CLI run against a **local
+    directory** (`LOCAL_RESULTS_DIR`), via `LocalFileResultStore`
+    (`src/local-file-store.ts`) instead of `S3ResultStore`, and a small
+    real ticker sample (`LOCAL_TICKER_COUNT`, default 20) instead of the
+    full universe. A permanent, committed dev tool -- see
+    `apps/web/CLAUDE.md`'s "Local development without AWS credentials"
+    section for the full read-side-plus-write-side workflow this is
+    half of. Run via `pnpm run local-run`.
 
 ## Two independent paths since issue #28: window (5Y/MAX) vs. intraday (1W/1M/3M/1Y)
 

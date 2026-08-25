@@ -20,8 +20,8 @@
 
 import type { NextRequest } from "next/server";
 
+import { createResultReader } from "@/lib/create-result-reader";
 import { getCustomResultsResponse, getResultsResponse } from "@/lib/results-api";
-import { S3ResultReader } from "@/lib/s3-result-reader";
 
 // Always runs at request time: it reads live from S3 (not through
 // Next's own `fetch` cache), and the Cache-Control header set in
@@ -33,9 +33,12 @@ export const dynamic = "force-dynamic";
 // reconstructed on every GET -- an S3Client resolves its credential
 // provider chain and opens its own connection pool at construction time,
 // so a fresh one per request would throw away keep-alive reuse for no
-// benefit on a bucket name that never changes at runtime.
-const bucket = process.env.RESULTS_BUCKET;
-const reader = bucket ? new S3ResultReader(bucket) : null;
+// benefit on a bucket name that never changes at runtime. See
+// ../../../lib/create-result-reader.ts for which reader this resolves
+// to (including the LOCAL_RESULTS_DIR dev-only escape hatch) -- shared
+// with ../custom-anchors/route.ts so the two routes can't drift on this
+// precedence.
+const reader = createResultReader();
 
 export async function GET(request: NextRequest): Promise<Response> {
   const params = request.nextUrl.searchParams;

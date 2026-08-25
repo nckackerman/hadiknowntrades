@@ -7,6 +7,48 @@ always-visible methodology/disclaimer section. Live-verified against the
 real deployed S3 bucket (see `infra/CLAUDE.md`'s "Current deployment
 state"), not just fixtures.
 
+## Local development without AWS credentials
+
+This machine (and most agent sandboxes) has no `RESULTS_BUCKET` env var
+and no AWS credentials wired up for local `next dev` -- both
+`/api/results` and `/api/custom-anchors` 500 with `server_misconfigured`
+before any real page ever renders, and `CustomRangeSelector.tsx` shows
+its "Start-date picker unavailable" fallback. **This is a permanent,
+committed local-dev workflow now, not a throwaway pattern to recreate
+from scratch** -- earlier notes in this file (issues #45, #85, #75)
+describe an ad hoc script-plus-manual-cleanup version of this exact
+technique, recreated independently at least three separate times before
+it became real, checked-in tooling. If you're about to write a
+throwaway debug route or a one-off local pipeline script for a results-
+dependent verification, use this instead:
+
+1. `LOCAL_RESULTS_DIR=/some/dir pnpm --filter @hadiknowntrades/pipeline run local-run`
+   -- runs the real pipeline (`apps/pipeline/src/local-run.ts`) against a
+   small, real ticker sample (`LOCAL_TICKER_COUNT`, default 20 -- real
+   Yahoo network calls, not fixtures) with `computeCustomAnchors: true`,
+   writing real, current-schema results to that directory via
+   `LocalFileResultStore` (`apps/pipeline/src/local-file-store.ts`), the
+   same S3-key layout (`results/{RANGE}.json`,
+   `results/custom/{ANCHOR}.json`, `results/custom/index.json`) a real
+   bucket would have.
+2. `LOCAL_RESULTS_DIR=/some/dir pnpm --filter web dev` -- same directory,
+   picked up by `LocalFileResultReader`
+   (`src/lib/local-file-result-reader.ts`), wired into both
+   `app/api/results/route.ts` and `app/api/custom-anchors/route.ts`
+   (checked before `RESULTS_BUCKET`, so setting both env vars prefers
+   the local directory). Every page/control that depends on real
+   results data -- the range selector, the trade replay button, the
+   custom-date calendar picker -- now works exactly like it would
+   against a real bucket, with no code path skipped.
+
+Never set `LOCAL_RESULTS_DIR` in any real deployment -- `RESULTS_BUCKET`
+is the only reader either route configures in production. For a
+verification that genuinely doesn't need real results data at all (a
+single component in isolation, hardcoded props), the older "Screenshotting
+a component locally" throwaway-debug-route technique (below) is still
+the right, lighter-weight tool -- this local-run workflow is for
+verifying the real fetch-through-render path end to end.
+
 ## Chart: hand-rolled SVG, no library
 
 `PortfolioChart.tsx` is plain SVG, not a charting library -- the dataviz

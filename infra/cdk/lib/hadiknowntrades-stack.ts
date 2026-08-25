@@ -179,14 +179,30 @@ export class HadIKnownTradesStack extends Stack {
       // estimate (corrected during its plan review -- see
       // docs/plans/issue-29-plan.md's addendum) puts the new 1-minute
       // fetch's added memory at roughly ~350-450MB on top of that
-      // baseline, on a Lambda that already had only ~121MB of headroom
-      // -- very likely to exceed 1024MB without a bump. 2048MB is a
-      // proactive starting point (2x current), not yet confirmed against
-      // a real measured run with this issue's code -- see the PR for
-      // issue #29. This is a code-only change: deploying it is a
-      // separate, explicit-go-ahead action per this repo's real-AWS
-      // working agreement, not performed as part of landing this code.
-      memorySize: 2048,
+      // baseline. That 2048MB estimate has since been live-disproven:
+      // a real full-universe run (short-selling mode, chained per-day
+      // capital, and more granularity overrides had all landed by
+      // then, none accounted for in the #29 estimate) genuinely
+      // OOM'd at 2048MB (twice -- once container-killed, once a real V8
+      // heap OOM). **Bumped again, 2048 -> 3008, confirmed against a
+      // real measured run**: a full 503-ticker run with
+      // `computeCustomAnchors: true` (1,255 real anchors) completed
+      // successfully at 3008MB, peaking at 2686MB -- 3008 is this
+      // account's actual Lambda memory ceiling (a service quota below
+      // the documented 10,240MB max), not a chosen headroom target, so
+      // there's no further proactive bump available if usage keeps
+      // growing -- watch this if a future feature adds real memory
+      // pressure. 3008MB was deployed directly (real-AWS action,
+      // approved) via `update-function-code` +
+      // `update-function-configuration` rather than a full `cdk deploy`,
+      // since the stack was (and, as of this writing, still is) paused
+      // in `UPDATE_FAILED` by the known CloudFront account-verification
+      // block (see infra/CLAUDE.md's "Current deployment state") --
+      // this code-level value is updated to match so the *next* real
+      // `cdk deploy`, whenever the stack is unstuck, doesn't silently
+      // regress the deployed memory back to 2048 and reintroduce the
+      // OOM.
+      memorySize: 3008,
       timeout: Duration.minutes(15),
       environment: {
         RESULTS_BUCKET: resultsBucket.bucketName,
