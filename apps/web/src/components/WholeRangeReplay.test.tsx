@@ -124,15 +124,17 @@ describe("WholeRangeReplay (issue #105)", () => {
       expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
     });
 
-    it("renders no button when replaySupported is false, even with real trades and no reduced motion (issue #105 code review finding: 1M/3M/1Y must never get this button, only 1W)", () => {
+    it("renders no button and no worst-case stat when replaySupported is false, even with real trades and no reduced motion (issue #105 code review: 1M/3M/1Y must never get this button; independent-review follow-up: nor the new worst-case stat, an undisclosed scope expansion beyond this issue's own 1W-only scope)", () => {
       render(<WholeRangeReplay {...BASE_PROPS} replaySupported={false} />);
 
       expect(screen.queryByRole("button", { name: /watch it happen/i })).not.toBeInTheDocument();
-      // Zero information loss for an unsupported range -- the chart/
-      // worst-case stat/children still render exactly as they did before
-      // issue #105, only without a replay button.
+      // Zero information loss for an unsupported range beyond that -- the
+      // chart/children still render exactly as they did before issue
+      // #105. The worst-case stat, however, is new surface issue #105
+      // introduced -- it must stay 1W-only, matching the pre-#105 shape
+      // for every other range exactly (no new stat at all).
       expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
-      expect(screen.getByText("Worst case, same budget")).toBeInTheDocument();
+      expect(screen.queryByText("Worst case, same budget")).not.toBeInTheDocument();
     });
 
     it("Skip to end stays available regardless of canReplay, matching TradeReplay.tsx's own established distinction", async () => {

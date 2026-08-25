@@ -1148,7 +1148,7 @@ describe("ResultsPanel", () => {
         expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
       });
 
-      it("renders the chart (via WholeRangeReplay) but no 'Watch it happen' button on 1M -- replay is 1W-only (issue #105 code review finding: the button must never appear for 1M/3M/1Y)", async () => {
+      it("renders the chart (via WholeRangeReplay) but no 'Watch it happen' button or whole-range worst-case stat on 1M -- both are 1W-only (issue #105 code review finding: the button must never appear for 1M/3M/1Y; independent-review follow-up: nor the whole-range worst-case stat, an undisclosed scope expansion beyond this issue's own 1W-only scope -- the per-day WorstCaseStat elsewhere on the page, issue #84, is unrelated and unaffected)", async () => {
         const user = userEvent.setup();
         const state: ResultsState = { status: "success", data: fixtureChainedResult() };
         render(<ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />);
@@ -1156,13 +1156,23 @@ describe("ResultsPanel", () => {
 
         expect(screen.queryByRole("button", { name: /watch it happen/i })).not.toBeInTheDocument();
         expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+
+        // Scoped to the whole-range headline's own row -- the per-day
+        // detail view (issue #84) renders its own independent
+        // "Worst case, same budget" stat elsewhere on the same page, so
+        // an unscoped query would false-negative here.
+        const caption = screen.getByText(
+          "Whole-range running balance -- carried day to day, start to finish",
+        );
+        const row = caption.closest(".relative")!.parentElement!;
+        expect(within(row).queryByText("Worst case, same budget")).not.toBeInTheDocument();
       });
 
-      it("computes and rescales the whole-range worst-case figure (issue #105) from the range's own root, mirroring wholeRangeFinalBalance's own pattern -- mode='long'", async () => {
+      it("computes and rescales the whole-range worst-case figure (issue #105) from the range's own root, mirroring wholeRangeFinalBalance's own pattern -- mode='long' (1W, the only range this stat is gated on)", async () => {
         const user = userEvent.setup();
         const state: ResultsState = { status: "success", data: fixtureChainedResult() };
         render(
-          <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" startingCapital={100} />,
+          <ResultsPanel range="1W" state={state} selectedDay="2026-08-21" startingCapital={100} />,
         );
         await submitWholeRangeGuess(user);
 
@@ -1178,12 +1188,12 @@ describe("ResultsPanel", () => {
         expect(within(worstCase).getByText("$100.00")).toBeInTheDocument();
       });
 
-      it("computes and rescales the whole-range worst-case figure from the long+short track under mode='long-short'", async () => {
+      it("computes and rescales the whole-range worst-case figure from the long+short track under mode='long-short' (1W)", async () => {
         const user = userEvent.setup();
         const state: ResultsState = { status: "success", data: fixtureChainedResult() };
         render(
           <ResultsPanel
-            range="1M"
+            range="1W"
             state={state}
             selectedDay="2026-08-21"
             mode="long-short"
@@ -1203,6 +1213,29 @@ describe("ResultsPanel", () => {
         const worstCase = within(row).getByText("Worst case, same budget").parentElement!;
         expect(within(worstCase).getByText("$75.00")).toBeInTheDocument();
       });
+
+      it.each(["1M", "3M", "1Y"] as const)(
+        "renders no worst-case stat on %s even though the underlying data is identical to 1W's (issue #105 independent-review follow-up: worstCase must be 1W-gated, not just the replay button)",
+        async (range) => {
+          const user = userEvent.setup();
+          const state: ResultsState = { status: "success", data: fixtureChainedResult() };
+          render(
+            <ResultsPanel
+              range={range}
+              state={state}
+              selectedDay="2026-08-21"
+              startingCapital={100}
+            />,
+          );
+          await submitWholeRangeGuess(user);
+
+          const caption = screen.getByText(
+            "Whole-range running balance -- carried day to day, start to finish",
+          );
+          const row = caption.closest(".relative")!.parentElement!;
+          expect(within(row).queryByText("Worst case, same budget")).not.toBeInTheDocument();
+        },
+      );
     });
   });
 

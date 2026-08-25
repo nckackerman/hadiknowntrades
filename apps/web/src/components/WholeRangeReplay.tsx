@@ -54,7 +54,15 @@ interface WholeRangeReplayProps {
   points: readonly PortfolioPoint[];
   /** Total trades across the whole range, this mode -- gates the "Watch it happen" button the same way TradeReplay.tsx's own `canReplay` does. */
   tradeCount: number;
-  /** The whole range's own worst-case ending balance, raw/native-root -- see WholeRangeBalance's own `worstCase` prop doc comment for the exact rescale contract. */
+  /**
+   * The whole range's own worst-case ending balance, raw/native-root --
+   * see WholeRangeBalance's own `worstCase` prop doc comment for the
+   * exact rescale contract. Always passed as a real number regardless of
+   * range (cheap to compute alongside `wholeRangeFinalBalance`), but only
+   * ever forwarded to `WholeRangeBalance` when `replaySupported` is true
+   * -- see that prop's own doc comment for why. Callers don't need to
+   * gate this themselves.
+   */
   worstCaseEndingBalance: number;
   worstCaseStartingCapital: number;
   guess: number | null;
@@ -79,6 +87,17 @@ interface WholeRangeReplayProps {
    * `WholeRangeBalance`/the chart/`children` themselves -- 1M/3M/1Y keep
    * rendering their own whole-range headline and (non-animated) chart
    * exactly as they did before this issue, only without a replay button.
+   *
+   * **Also gates the `worstCase` object forwarded to `WholeRangeBalance`
+   * (independent-review finding, post-PR)** -- `WholeRangeBalance` grew
+   * its own "Worst case, same budget" stat as part of this issue, and
+   * that stat is real, well-computed data for every intraday-daily range
+   * (issue #84 already ships per-day worst-case everywhere), so it would
+   * have been easy to let it render unconditionally. Issue #105's own
+   * scope is explicit that only 1W gets new replay-related surface,
+   * though, so 1M/3M/1Y's whole-range headline must render exactly as it
+   * did before this issue -- no new stat -- until issue #106's own future
+   * plan decides that question for the larger ranges on purpose.
    */
   replaySupported: boolean;
   /**
@@ -249,9 +268,22 @@ export function WholeRangeReplay({
   // if this object's own identity stays stable when neither of its two
   // numeric inputs has changed; a fresh object literal passed inline on
   // every render would defeat that memo entirely.
+  //
+  // Gated by `replaySupported` (independent-review finding, post-PR):
+  // `WholeRangeBalance` renders a `WorstCaseStat` sibling whenever
+  // `worstCase` is non-`undefined` and revealed, with no range awareness
+  // of its own -- passing a real object unconditionally here would have
+  // given 1M/3M/1Y a brand-new "Worst case, same budget" stat they never
+  // had before this issue, an undisclosed scope expansion beyond issue
+  // #105's own explicit scope ("1W specifically, not 1M/3M/1Y"). Issue
+  // #106's own future plan is where that question gets decided for the
+  // larger ranges, not preempted here.
   const worstCase = useMemo(
-    () => ({ startingCapital: worstCaseStartingCapital, endingBalance: worstCaseEndingBalance }),
-    [worstCaseStartingCapital, worstCaseEndingBalance],
+    () =>
+      replaySupported
+        ? { startingCapital: worstCaseStartingCapital, endingBalance: worstCaseEndingBalance }
+        : undefined,
+    [replaySupported, worstCaseStartingCapital, worstCaseEndingBalance],
   );
 
   // One overlay design for both "rewinding" and "playing" (unlike

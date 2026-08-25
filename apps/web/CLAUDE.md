@@ -5049,3 +5049,91 @@ build`, `pnpm test`, `pnpm format:check`) re-ran green after every fix,
   them touching the RAF-hot-path memoization or the button's own gating
   logic) had regressed the original worst-case-timing (~14.4s, unchanged)
   or day-switch-undisturbed behavior.
+
+### Independent-review follow-up (post-PR) -- one release-blocking scope-creep finding, one verification gap, both fixed
+
+A second, independent review round on the already-opened PR (after the
+nine code-review findings above) found two more real things, neither
+caught by the `high`-effort self-review pass:
+
+- **`WholeRangeBalance`'s new "Worst case, same budget" stat (see above)
+  was forwarded unconditionally to every intraday-daily range, not
+  gated by `replaySupported` the way the "Watch it happen" button
+  itself already was -- an undisclosed scope expansion beyond issue
+  #105's own explicit scope ("1W specifically, not 1M/3M/1Y").**
+  `ResultsPanel.tsx` computes `wholeRangeWorstCaseEndingBalance`/
+  `wholeRangeWorstCaseStartingCapital` unconditionally (cheap, alongside
+  `wholeRangeFinalBalance`, for every range -- this part is fine and
+  unchanged) and always passed them to `<WholeRangeReplay
+worstCaseEndingBalance={...} worstCaseStartingCapital={...}>`, which in
+  turn always built a real `worstCase` object and forwarded it to
+  `<WholeRangeBalance worstCase={...}>`, which renders a `WorstCaseStat`
+  sibling whenever `worstCase` is non-`undefined` and revealed, with no
+  range awareness of its own. The result: 1M/3M/1Y's whole-range
+  headline permanently gained a stat it never had before this issue,
+  reachable by any real user on those ranges, not just a latent bug --
+  confirmed via `ResultsPanel.test.tsx`'s own pre-fix assertions, which
+  asserted the stat rendered for `range="1M"`. This is legitimately
+  correct, well-computed data (issue #84 already ships per-day
+  worst-case for every intraday range) and arguably a good enhancement,
+  but shipping it silently preempts issue #106's own future plan-first
+  design work for exactly this question on the larger ranges, and was
+  never flagged for sign-off anywhere the way the "no confetti" tradeoff
+  explicitly was (see this file's own "Two items the plan explicitly
+  left for the implementer" bullet above). Fixed by gating the `worstCase`
+  object itself on `replaySupported` inside `WholeRangeReplay.tsx`
+  (`replaySupported ? { startingCapital, endingBalance } : undefined`,
+  memoized on `[replaySupported, worstCaseStartingCapital,
+worstCaseEndingBalance]`) -- the same prop that already gates the
+  button, so 1M/3M/1Y's whole-range headline now renders exactly as it
+  did before issue #105 (no `WorstCaseStat` sibling at all), while 1W
+  keeps the stat. `ResultsPanel.tsx` itself needed no change -- it still
+  computes the two raw numbers unconditionally and passes them straight
+  through; `WholeRangeReplay` is the one place that decides whether they
+  ever reach `WholeRangeBalance`. Regression-tested: `WholeRangeReplay.test.tsx`'s
+  `replaySupported={false}` test now asserts the stat is genuinely absent
+  (previously asserted the opposite); `ResultsPanel.test.tsx` gained an
+  `it.each(["1M", "3M", "1Y"])` case confirming no whole-range worst-case
+  stat renders on any of them even with real trade data present, plus its
+  two existing worst-case-computation tests were moved from `range="1M"`
+  to `range="1W"` (the only range this stat is still gated on) rather
+  than deleted, since the underlying rescale-from-root computation itself
+  is unaffected and still needs coverage. **Live-verified against real
+  pipeline data** (see below) that 1M genuinely shows no stat next to its
+  whole-range headline while the page's unrelated per-day `WorstCaseStat`
+  (issue #84) is unaffected.
+- **Every prior verification pass for issue #105 (both the original PR
+  and the nine-finding follow-up above) used a synthetic hardcoded
+  fixture, consistent with this feature's own established precedent
+  across #96/#97/#107/#108 -- but issue #105's own acceptance criteria
+  ask for a live-verified real 1W result specifically, and that had
+  never actually been done.** Added one additional real-data pass using
+  this file's own "Local development without AWS credentials" workflow
+  (documented at the top of this file): `LOCAL_RESULTS_DIR=<dir> pnpm
+--filter @hadiknowntrades/pipeline run local-run` (real Yahoo network
+  calls against the default 20-ticker sample) produced a real 1W result
+  with 6 trading days x 3 trades each (18 trades total -- more than the
+  plan's own 15-trade synthetic "worst case," since this ticker sample
+  happened to find 3 trades on every single day), then `LOCAL_RESULTS_DIR=<dir>
+pnpm --filter web dev` plus the documented no-root headless-Chromium
+  workaround (`playwright` temporarily added via `pnpm add -D -w
+playwright`, reverted afterward) drove the real page end to end:
+  submitted the whole-range guess, clicked "Watch it happen," and let a
+  full un-skipped playback run to completion against real tickers
+  (ABNB, ACN, ALB, ARE, and others) and real dollar figures -- landing
+  cleanly on the real final headline ($20.00 -> $34.68) with the
+  "Replay" button back, a genuine chart-anchored callout mid-playback
+  ("Bought ABNB on Aug 18, 9:30 AM at $181.08."), and **zero console
+  errors or page errors** across the whole run (~16.1s real elapsed for
+  18 real trades, a hair over the plan's 15s ceiling tuned for its
+  15-trade synthetic worst case -- expected given 3 more real trades
+  than that fixture, not a regression). Screenshotted at four points
+  (idle pre-reveal, revealed with the worst-case stat and button, a
+  mid-playback callout, and the finished state). The same real
+  `LOCAL_RESULTS_DIR` also drove a real 1M page through the identical
+  guess-then-reveal flow, confirming live (not just via the unit tests
+  above) that its whole-range headline shows no "Watch it happen" button
+  and no whole-range worst-case stat, with zero console errors. The
+  debug scripts and the temporary `playwright` devDependency were both
+  reverted before committing, per this file's own established
+  convention.
