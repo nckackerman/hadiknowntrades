@@ -17,7 +17,7 @@ import { OnboardingIntro } from "@/components/OnboardingIntro";
 import { RangeSelector } from "@/components/RangeSelector";
 import { ResultsPanel } from "@/components/ResultsPanel";
 
-const DEFAULT_RANGE: PresetRange = "1Y";
+const DEFAULT_RANGE: PresetRange = "1W";
 
 /**
  * Owns the selected range (?range=1Y, case-insensitive on read) or
@@ -141,56 +141,29 @@ export function ResultsPage() {
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <RangeSelector selected={range} onSelect={selectRange} />
-          {/* Below 640px, RangeSelector alone already fills most of the
-              row's width, so CustomRangeSelector and ModeToggle used to
-              each wrap onto their own near-full-width line -- confirmed
-              via a real screenshot (apps/web/CLAUDE.md's "Mobile layout
-              pass" section, issue #63) to push the actual result (chart,
-              trade list) below the fold on a real phone viewport. Fixed
-              by collapsing this group behind a "More options" disclosure
-              on narrow viewports only, matching the collapsed-by-default
-              pattern PortfolioChart.tsx's own "View chart data as a
-              table" disclosure already establishes.
-
-              This renders CustomRangeSelector/ModeToggle **twice** --
-              once here (visible at sm and up, hidden below it) and once
-              inside the <details> below (visible only below sm) --
-              rather than one shared instance toggled by CSS alone. A
-              single-instance version (a <details> forced open via CSS at
-              sm and up, overriding its native "closed hides content"
-              behavior) was tried first and reverted: a real, live-
-              verified Chromium bug (not a hypothetical) fails to paint
-              (and fails hit-testing on) a closed <details>'s content even
-              when every computed style says it should render -- see
-              apps/web/CLAUDE.md's "Mobile layout pass" section for the
-              full repro. Two real controlled-component instances with
-              identical props/handlers, gated by plain `hidden`/`sm:`
-              utilities (the ordinary, well-supported responsive-nav
-              duplication pattern), sidesteps that bug entirely -- neither
-              instance's own state or behavior can drift from the other
-              since both are driven by the same `anchor`/`mode` props and
-              `selectAnchor`/`selectMode` handlers. */}
-          <div
-            data-testid="controls-more-desktop"
-            className="hidden flex-wrap items-center gap-3 sm:flex"
-          >
-            <span className="text-sm text-[var(--text-muted)]">or</span>
-            <CustomRangeSelector
-              selected={anchor}
-              onSelect={selectAnchor}
-              anchorsState={anchorsState}
-            />
-            <ModeToggle selected={mode} onSelect={selectMode} />
-          </div>
         </div>
-        <details className="sm:hidden">
+        {/* CustomRangeSelector and ModeToggle collapse behind this one
+            "More options" disclosure at every viewport width (issue
+            #103), not just below 640px -- so the only always-visible
+            control in the header, at any screen size, is RangeSelector
+            itself. This used to be two real rendered instances (one
+            `hidden sm:flex` div always visible at desktop widths, one
+            inside a `sm:hidden` <details> for narrow viewports -- see
+            git history / apps/web/CLAUDE.md's "Mobile layout pass"
+            section for the full issue #63 story, including a real,
+            live-verified Chromium bug that ruled out a single instance
+            forced open via CSS at desktop widths back then). That
+            forced-open trick is no longer needed at all: neither
+            breakpoint wants an always-expanded state any more, both want
+            the same native closed-by-default/opens-on-click behavior, so
+            there's nothing left to force open via CSS and no reason to
+            keep two copies in sync -- one plain, always-rendered
+            <details> collapses this group identically at every width. */}
+        <details>
           <summary className="cursor-pointer text-sm text-[var(--text-secondary)]">
             More options
           </summary>
-          <div
-            data-testid="controls-more-mobile"
-            className="mt-3 flex flex-wrap items-center gap-3"
-          >
+          <div data-testid="controls-more" className="mt-3 flex flex-wrap items-center gap-3">
             <span className="text-sm text-[var(--text-muted)]">or</span>
             <CustomRangeSelector
               selected={anchor}

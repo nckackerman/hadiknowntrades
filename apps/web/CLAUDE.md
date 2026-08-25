@@ -1929,10 +1929,10 @@ guessed $X" line, `PortfolioChart`, the trade list) had just appeared.
 `OnboardingIntro.tsx` is a one-line, dismissible callout rendered above
 `ResultsPage.tsx`'s `<header>`, framing what the page is for a first-time
 visitor who otherwise lands directly on a fully-resolved result (default
-range is 1Y, see `DEFAULT_RANGE`) with no context beyond the terse
-one-line disclaimer already under the `<h1>`. `AboutSection`'s fuller
-methodology/disclaimer sits at the very bottom of the page and isn't a
-substitute -- unlikely to be the first thing read.
+range is 1W as of issue #103, previously 1Y -- see `DEFAULT_RANGE`) with
+no context beyond the terse one-line disclaimer already under the `<h1>`.
+`AboutSection`'s fuller methodology/disclaimer sits at the very bottom of
+the page and isn't a substitute -- unlikely to be the first thing read.
 
 - **Storage is the simplest possible shape in this app so far**:
   `lib/onboarding-storage.ts` is one namespaced key
@@ -2232,6 +2232,24 @@ scale(...)` on an SVG `<circle>`, which needs `transform-box: fill-box`
   see that issue's own section below.
 
 ## Mobile layout pass for the top controls (issue #63)
+
+**Superseded by issue #103 for the desktop-vs-mobile duplication
+specifically -- read this section for history, but see this file's own
+"Default range to 1W; single 'More options' disclosure at every width
+(issue #103)" section (near the end of this file) for what's actually true
+today.** #103 collapsed the two real rendered instances this section
+describes (`hidden sm:flex` desktop div + `sm:hidden` mobile `<details>`)
+into one instance, rendered unconditionally at every viewport width. The
+Chromium bug this section documents (a closed `<details>`'s content failing
+to paint/hit-test even when CSS forces its `display` back from `none`) is
+what originally ruled out a single instance -- but #103's single instance
+sidesteps that failure mode entirely rather than re-triggering it: neither
+breakpoint wants an _always-open_ state any more (both now want the same
+native closed-by-default/opens-on-click behavior), so there's no longer any
+CSS-forced-open trick being attempted at all. The bug itself was never
+re-tested and may well still be real; it just stopped being relevant to
+this control's own design once the "force it open via CSS at wide widths"
+requirement went away.
 
 **The epic issue's own premise ("three stacked rows") was wrong, but the
 real risk it was gesturing at was real.** `ResultsPage.tsx`'s controls
@@ -4071,3 +4089,60 @@ happen`" above) applies here too. Fixed by reordering the `t >= 1`
   live-browser verification pass, since neither change is observable in
   the shipped UI today (the first is a latent hook-contract gap; the
   second is a pure refactor to an already-exhaustive condition).
+
+## Default range to 1W; single "More options" disclosure at every width (issue #103)
+
+Two small, independent changes to `ResultsPage.tsx`, both in its header:
+
+- **`DEFAULT_RANGE` changed from `"1Y"` to `"1W"`.** A first-time visitor
+  with no `?range=`/`?anchor=` param now lands on the intraday-daily model
+  (see "Two result models" above), not the window model -- worth knowing if
+  a future change assumes the very first render is always the window model.
+- **`CustomRangeSelector` + `ModeToggle` now collapse behind exactly one
+  "More options" `<details>`, unconditionally, at every viewport width** --
+  not just below 640px (issue #63's original scope). See the "Mobile
+  layout pass" section above for why this used to be two real rendered
+  instances (`hidden sm:flex` desktop div + `sm:hidden` mobile
+  `<details>`) and why that duplication is now gone: neither breakpoint
+  wants an always-open state any more, so there's nothing left to force
+  open via CSS and no reason to keep two copies in sync. `data-testid`
+  went from `"controls-more-desktop"`/`"controls-more-mobile"` to a single
+  `"controls-more"`.
+
+**`ResultsPage.test.tsx` needed real updates, not just new assertions**
+(same class of change the issue's own Scope section called out): the
+`desktopControls()` test helper became `moreOptions()`, pointing at the
+one remaining `data-testid`; every call site across the file (mode toggle,
+custom-anchor calendar selection) now goes through it. The dedicated
+"mobile 'More options' disclosure" describe block (issue #63's own
+regression coverage for the second instance) was removed rather than kept
+-- with only one instance left, its two tests exercised the exact same
+code path `moreOptions()`-based tests elsewhere in the file already cover,
+so keeping it would just be testing the same thing twice under a different
+describe name. In its place, a small "single disclosure at every viewport
+width" test asserts the actual acceptance criterion structurally: exactly
+one `"controls-more"` node exists, and it's a descendant of a `<details>`
+whose `<summary>` reads "More options."
+
+**Live-verified against a real local pipeline run** (the permanent
+`LOCAL_RESULTS_DIR` workflow documented at the top of this file, not a
+throwaway fixture route -- this change touches real fetched data via
+`DEFAULT_RANGE`, not just static layout), screenshotted at 1280px desktop
+and 375px mobile via the established no-root headless-Chromium technique.
+Confirmed at both widths: `/` with no query params shows the 1W pill
+pressed and fetches `/api/results?range=1W`; the only always-visible
+header control is the 6-pill `RangeSelector` plus a closed "More options"
+disclosure; clicking it reveals `CustomRangeSelector` and `ModeToggle`
+correctly. One thing only a real browser could catch (jsdom loads no
+stylesheet in the test file, so this is invisible to the unit tests, which
+is why this file's own "Mobile layout pass" section already documents
+querying through a scope helper rather than relying on visibility): a
+closed native `<details>`'s content is genuinely not visible pre-click in
+a real browser (confirmed by querying `getByRole("button", { name: "Long
+only" }).isVisible()` before opening the disclosure -- `false`), unlike in
+the jsdom test environment where it reports as visible regardless of the
+`open` attribute. Zero console errors/warnings and zero `pageerror` events
+across the whole verification run. `playwright` was added temporarily
+(`pnpm add -D -w playwright`) and reverted afterward (`git checkout --
+package.json pnpm-lock.yaml`, confirmed via `git status`), per this file's
+own "Headless-browser screenshot verification" convention.

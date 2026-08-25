@@ -54,17 +54,14 @@ describe("ResultsPage", () => {
     vi.unstubAllGlobals();
   });
 
-  // CustomRangeSelector/ModeToggle each render twice (issue #63) -- once
-  // in a `sm:flex` div visible at desktop widths, once inside a `sm:hidden`
-  // <details> "More options" disclosure for narrow viewports -- see
-  // ResultsPage.tsx's own doc comment on why this is two real instances
-  // rather than one CSS-toggled instance. jsdom loads no stylesheet in
-  // this test file, so both instances report as equally "visible" to
-  // Testing Library queries; scope to the desktop copy (arbitrary but
-  // consistent -- both instances share the same props/handlers, so which
-  // one a test interacts with doesn't affect what it's actually proving).
-  function desktopControls() {
-    return within(screen.getByTestId("controls-more-desktop"));
+  // CustomRangeSelector/ModeToggle render exactly once, inside a single
+  // "More options" <details> disclosure that collapses this group at
+  // every viewport width (issue #103) -- see ResultsPage.tsx's own doc
+  // comment. jsdom loads no stylesheet in this test file, so the
+  // disclosure's content reports as "visible" to Testing Library queries
+  // regardless of its native open/closed state.
+  function moreOptions() {
+    return within(screen.getByTestId("controls-more"));
   }
 
   /**
@@ -86,23 +83,26 @@ describe("ResultsPage", () => {
     await user.click(scope.getByRole("button", { name: day }));
   }
 
-  it("defaults to 1Y when the URL has no range param", () => {
+  it("defaults to 1W when the URL has no range param", () => {
     render(<ResultsPage />);
 
-    expect(screen.getByRole("button", { name: "1Y" })).toHaveAttribute("aria-pressed", "true");
-    expect(fetch).toHaveBeenCalledWith("/api/results?range=1Y");
+    expect(screen.getByRole("button", { name: "1W" })).toHaveAttribute("aria-pressed", "true");
+    expect(fetch).toHaveBeenCalledWith("/api/results?range=1W");
   });
 
-  it("fetches the custom-anchors manifest exactly once, even though CustomRangeSelector is mounted twice (issue #63's desktop/mobile duplication) -- code review finding", async () => {
+  it("fetches the custom-anchors manifest exactly once", async () => {
     render(<ResultsPage />);
 
-    // Both mounted CustomRangeSelector instances (desktop + mobile) share
-    // the one anchorsState fetched here in ResultsPage, rather than each
-    // independently calling useCustomAnchors() -- confirm both actually
-    // render as interactive (not stuck on "Loading start dates…") before
-    // counting calls, so a regression that broke the sharing and left
-    // one instance perpetually loading wouldn't slip past a naive call
-    // count check for the wrong reason.
+    // ResultsPage fetches the manifest exactly once itself and threads it
+    // into CustomRangeSelector as a prop, rather than CustomRangeSelector
+    // calling useCustomAnchors() itself -- confirm the control actually
+    // renders as interactive (not stuck on "Loading start dates…") before
+    // counting calls, so a regression that broke the sharing and left it
+    // perpetually loading wouldn't slip past a naive call count check for
+    // the wrong reason. (Before issue #103 collapsed the desktop/mobile
+    // duplication from issue #63 into one instance, this asserted the
+    // fetch was still deduplicated across two mounted copies -- now
+    // there's only ever one copy to begin with.)
     await screen.findAllByTestId("custom-range-trigger");
 
     const customAnchorsCalls = vi
@@ -123,7 +123,7 @@ describe("ResultsPage", () => {
     search = "range=bogus";
     render(<ResultsPage />);
 
-    expect(screen.getByRole("button", { name: "1Y" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "1W" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("writes the selected range to the URL via router.replace when a range button is clicked", async () => {
@@ -139,7 +139,7 @@ describe("ResultsPage", () => {
     it("defaults to long-only when the URL has no mode param", () => {
       render(<ResultsPage />);
 
-      expect(desktopControls().getByRole("button", { name: "Long only" })).toHaveAttribute(
+      expect(moreOptions().getByRole("button", { name: "Long only" })).toHaveAttribute(
         "aria-pressed",
         "true",
       );
@@ -149,7 +149,7 @@ describe("ResultsPage", () => {
       search = "mode=LONG-SHORT";
       render(<ResultsPage />);
 
-      expect(desktopControls().getByRole("button", { name: "Long + short" })).toHaveAttribute(
+      expect(moreOptions().getByRole("button", { name: "Long + short" })).toHaveAttribute(
         "aria-pressed",
         "true",
       );
@@ -159,7 +159,7 @@ describe("ResultsPage", () => {
       search = "mode=bogus";
       render(<ResultsPage />);
 
-      expect(desktopControls().getByRole("button", { name: "Long only" })).toHaveAttribute(
+      expect(moreOptions().getByRole("button", { name: "Long only" })).toHaveAttribute(
         "aria-pressed",
         "true",
       );
@@ -169,7 +169,7 @@ describe("ResultsPage", () => {
       const user = userEvent.setup();
       render(<ResultsPage />);
 
-      await user.click(desktopControls().getByRole("button", { name: "Long + short" }));
+      await user.click(moreOptions().getByRole("button", { name: "Long + short" }));
 
       expect(replace).toHaveBeenCalledWith("/?mode=long-short", { scroll: false });
     });
@@ -179,7 +179,7 @@ describe("ResultsPage", () => {
       const user = userEvent.setup();
       render(<ResultsPage />);
 
-      await user.click(desktopControls().getByRole("button", { name: "Long + short" }));
+      await user.click(moreOptions().getByRole("button", { name: "Long + short" }));
 
       expect(replace).toHaveBeenCalledWith("/?range=5Y&mode=long-short", { scroll: false });
     });
@@ -192,7 +192,7 @@ describe("ResultsPage", () => {
       render(<ResultsPage />);
 
       expect(fetch).toHaveBeenCalledWith(`/api/results?anchor=${anchor}`);
-      for (const name of ["1M", "3M", "1Y", "5Y", "Max"]) {
+      for (const name of ["1W", "1M", "3M", "1Y", "5Y", "Max"]) {
         expect(screen.getByRole("button", { name })).toHaveAttribute("aria-pressed", "false");
       }
     });
@@ -209,8 +209,8 @@ describe("ResultsPage", () => {
       search = "anchor=not-a-date";
       render(<ResultsPage />);
 
-      expect(screen.getByRole("button", { name: "1Y" })).toHaveAttribute("aria-pressed", "true");
-      expect(fetch).toHaveBeenCalledWith("/api/results?range=1Y");
+      expect(screen.getByRole("button", { name: "1W" })).toHaveAttribute("aria-pressed", "true");
+      expect(fetch).toHaveBeenCalledWith("/api/results?range=1W");
     });
 
     it("writes the selected anchor to the URL, clearing ?range=, when a start date is chosen", async () => {
@@ -219,7 +219,7 @@ describe("ResultsPage", () => {
       search = "range=5Y";
       render(<ResultsPage />);
 
-      await selectAnchorViaCalendar(user, desktopControls(), anchor);
+      await selectAnchorViaCalendar(user, moreOptions(), anchor);
 
       expect(replace).toHaveBeenCalledWith(`/?anchor=${anchor}`, { scroll: false });
     });
@@ -243,7 +243,7 @@ describe("ResultsPage", () => {
       render(<ResultsPage />);
 
       expect(fetch).toHaveBeenCalledWith(`/api/results?anchor=${anchor}`);
-      expect(desktopControls().getByRole("button", { name: "Long + short" })).toHaveAttribute(
+      expect(moreOptions().getByRole("button", { name: "Long + short" })).toHaveAttribute(
         "aria-pressed",
         "true",
       );
@@ -255,7 +255,7 @@ describe("ResultsPage", () => {
       const user = userEvent.setup();
       render(<ResultsPage />);
 
-      await user.click(desktopControls().getByRole("button", { name: "Long + short" }));
+      await user.click(moreOptions().getByRole("button", { name: "Long + short" }));
 
       expect(replace).toHaveBeenCalledWith(`/?anchor=${anchor}&mode=long-short`, {
         scroll: false,
@@ -268,7 +268,7 @@ describe("ResultsPage", () => {
       const user = userEvent.setup();
       render(<ResultsPage />);
 
-      await selectAnchorViaCalendar(user, desktopControls(), anchor);
+      await selectAnchorViaCalendar(user, moreOptions(), anchor);
 
       expect(replace).toHaveBeenCalledWith(`/?mode=long-short&anchor=${anchor}`, {
         scroll: false,
@@ -276,38 +276,19 @@ describe("ResultsPage", () => {
     });
   });
 
-  describe('mobile "More options" disclosure (issue #63)', () => {
-    // The mobile-only copy (data-testid="controls-more-mobile", inside a
-    // sm:hidden <details>) has identical props/handlers to the desktop
-    // copy every other describe block above exercises via
-    // desktopControls() -- every prior test here only proves the desktop
-    // instance is wired correctly, never this one. Without a dedicated
-    // check here, a future bug isolated to just the <details> copy (a
-    // typo in its own onSelect prop, the <details>/summary structure
-    // getting mangled) would pass the full suite untouched (`high` code
-    // review finding on this issue's own PR, fixed).
-    function mobileControls() {
-      return within(screen.getByTestId("controls-more-mobile"));
-    }
-
-    it("writes the selected mode to the URL when the toggle inside the mobile disclosure is clicked", async () => {
-      const user = userEvent.setup();
+  describe('single "More options" disclosure at every viewport width (issue #103)', () => {
+    // Issue #103 collapsed the old desktop-always-visible/mobile-<details>
+    // duplication (issue #63) into one instance rendered unconditionally,
+    // not gated by any sm: breakpoint -- so there's exactly one
+    // "controls-more" node, and it lives inside a <details> whose summary
+    // reads "More options", at any screen size.
+    it("renders RangeSelector unconditionally and CustomRangeSelector/ModeToggle only inside a single More options disclosure", () => {
       render(<ResultsPage />);
 
-      await user.click(mobileControls().getByRole("button", { name: "Long + short" }));
-
-      expect(replace).toHaveBeenCalledWith("/?mode=long-short", { scroll: false });
-    });
-
-    it("writes the selected anchor to the URL when a start date is chosen inside the mobile disclosure", async () => {
-      const user = userEvent.setup();
-      const anchor = TEST_ANCHORS[2]!;
-      search = "range=5Y";
-      render(<ResultsPage />);
-
-      await selectAnchorViaCalendar(user, mobileControls(), anchor);
-
-      expect(replace).toHaveBeenCalledWith(`/?anchor=${anchor}`, { scroll: false });
+      expect(screen.getByRole("group", { name: "Preset date range" })).toBeInTheDocument();
+      expect(screen.getAllByTestId("controls-more")).toHaveLength(1);
+      const summary = screen.getByText("More options");
+      expect(summary.closest("details")).toContainElement(screen.getByTestId("controls-more"));
     });
   });
 });
