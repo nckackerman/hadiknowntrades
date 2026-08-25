@@ -12,27 +12,36 @@ interface BenchmarkStatProps {
   /** The user's chosen display capital (issue #15) -- defaults to startingCapital, a no-op rescale, same convention as HeroStat's own displayStartingCapital prop. */
   displayStartingCapital?: number;
   /**
-   * Disambiguates that this comparison spans the *whole* range, not just
-   * whatever's currently on screen -- pass e.g. "the past month" from
-   * ResultsPanel's intraday-daily branch, where everything else visible
-   * (HeroStat, the chart, the trade list) is scoped to a single selected
-   * day, so without this the benchmark figure could easily be misread as
-   * day-scoped too. Omit for the window model, where the whole view is
-   * already range-scoped and the methodology paragraph right above
-   * already names the range -- no disambiguation needed there.
+   * The full disambiguating phrase to render right after the ticker,
+   * already including its own preposition (e.g. "over the past month" or
+   * "since Mar 1, 2019") -- every call site already has one of these on
+   * hand (ResultsPanel.tsx's own RANGE_COPY-derived phrase or
+   * WindowResultBody's descriptionPhrase prop), so this component just
+   * renders it verbatim rather than hardcoding "over " and only
+   * accepting a bare label.
+   *
+   * Required for the intraday-daily model (issue #12's original
+   * reasoning still applies there: the benchmark spans the *whole*
+   * range, not the single day HeroStat/the chart/trade list below it are
+   * scoped to, so without this the figure could easily be misread as
+   * day-scoped too). For the window/custom-window model, this used to be
+   * optional -- omitted on the premise that an adjacent, always-visible
+   * methodology paragraph already named the range. Issue #104 moved that
+   * paragraph behind AboutSection's single click, so every call site now
+   * passes this explicitly instead of relying on nearby always-visible
+   * text that no longer exists at that position.
    */
   rangeLabel?: string;
 }
 
 /**
  * A single prose line contrasting the optimizer's result with simply
- * buying and holding SPY over the same window (issue #12) -- sits
- * directly below the methodology paragraph in both of ResultsPanel's
- * render branches (window and intraday-daily), textual and
- * secondary-sized (`text-sm`, matching that paragraph's own weight) so it
- * reads as context rather than competing with HeroStat/WorstCaseStat for
- * attention. Same reasoning this app's prose trade narration (issue #32)
- * already established: a single contextual dollar figure reads fine as a
+ * buying and holding SPY over the same window (issue #12) -- rendered in
+ * both of ResultsPanel's render branches (window and intraday-daily),
+ * textual and secondary-sized (`text-sm`) so it reads as context rather
+ * than competing with HeroStat/WorstCaseStat for attention. Same
+ * reasoning this app's prose trade narration (issue #32) already
+ * established: a single contextual dollar figure reads fine as a
  * sentence, no second stat tile needed.
  *
  * Shown for all 5 ranges, not just the window model's 5Y/MAX -- this is a
@@ -70,7 +79,7 @@ export function BenchmarkStat({
   return (
     <p className="text-sm text-[var(--text-secondary)]">
       Buying and holding {benchmark.ticker}
-      {rangeLabel ? ` over ${rangeLabel}` : ""} instead
+      {rangeLabel ? ` ${rangeLabel}` : ""} instead
       {benchmark.truncated
         ? ` (since its earliest available data, ${formatDate(benchmark.startDate)})`
         : ""}{" "}

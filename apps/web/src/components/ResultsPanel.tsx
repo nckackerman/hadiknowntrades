@@ -22,6 +22,7 @@ import { DEFAULT_MODE, MODE_LABELS, type Mode } from "@/lib/mode";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { useRangeGuess } from "@/lib/use-range-guess";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
+import { AboutSection } from "@/components/AboutSection";
 import { BenchmarkStat } from "@/components/BenchmarkStat";
 import { DayOverview } from "@/components/DayOverview";
 import { HeroAndWorstCase } from "@/components/HeroAndWorstCase";
@@ -252,10 +253,12 @@ interface WindowResultBodyProps {
  * The hero row + chart pairing is delegated to TradeReplay (issue #96),
  * which renders the same HeroAndWorstCase + PortfolioChart this body
  * rendered directly before that issue, plus an opt-in "Watch it happen"
- * replay button -- see that component's own doc comment. The methodology
- * paragraph and BenchmarkStat are passed as `children`, rendered between
- * TradeReplay's own hero row and chart exactly where they sat before,
- * unaffected by playback.
+ * replay button -- see that component's own doc comment. BenchmarkStat is
+ * passed as `children`, rendered between TradeReplay's own hero row and
+ * chart exactly where it sat before, unaffected by playback -- the
+ * methodology paragraph that used to sit alongside it there is gone
+ * (issue #104 collapsed it into AboutSection, rendered below the trade
+ * list instead).
  */
 function WindowResultBody({
   data,
@@ -295,14 +298,11 @@ function WindowResultBody({
           )
         }
       >
-        <p className="text-sm text-[var(--text-secondary)]">
-          Best possible outcome {descriptionPhrase}, with at most {data.maxTrades} sequential all-in
-          trades across the S&amp;P 500, using only closed (EOD) prices. As of {data.dataAsOf}.
-        </p>
         <BenchmarkStat
           benchmark={data.benchmark}
           startingCapital={data.startingCapital}
           displayStartingCapital={effectiveStartingCapital}
+          rangeLabel={descriptionPhrase}
         />
       </TradeReplay>
 
@@ -316,6 +316,10 @@ function WindowResultBody({
           <TradeList trades={variant.trades} startingCapital={effectiveStartingCapital} />
         )}
       </div>
+
+      <AboutSection
+        viewDetails={`Best possible outcome ${descriptionPhrase}, with at most ${data.maxTrades} sequential all-in trades across the S&P 500, using only closed (EOD) prices. As of ${data.dataAsOf}.`}
+      />
     </FadeInWrapper>
   );
 }
@@ -647,7 +651,7 @@ export function ResultsPanel({
               benchmark={data.benchmark}
               startingCapital={data.startingCapital}
               displayStartingCapital={effectiveStartingCapital}
-              rangeLabel={RANGE_COPY[range]}
+              rangeLabel={`over ${RANGE_COPY[range]}`}
             />
             {/* The whole-range chart (issue #91) -- spans every day in
                 the currently-viewed range, chained continuously, rather
@@ -724,11 +728,6 @@ export function ResultsPanel({
               )}
             </div>
           </div>
-          <p className="text-sm text-[var(--text-secondary)]">
-            Best possible outcome on {formatDate(activeDay.date)}, with at most{" "}
-            {data.maxTradesPerDay} same-day all-in trades across the S&amp;P 500, using real
-            60-minute intraday prices. As of {data.dataAsOf}.
-          </p>
         </div>
 
         <div className="flex flex-col gap-3">
@@ -741,6 +740,10 @@ export function ResultsPanel({
             <IntradayTradeList trades={dayVariant.trades} />
           )}
         </div>
+
+        <AboutSection
+          viewDetails={`Best possible outcome on ${formatDate(activeDay.date)}, with at most ${data.maxTradesPerDay} same-day all-in trades across the S&P 500, using real 60-minute intraday prices. As of ${data.dataAsOf}.`}
+        />
       </FadeInWrapper>
     );
   }

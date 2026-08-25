@@ -2,10 +2,12 @@
 
 The real app (issues #7/#8/#10): `GET /api/results?range=...` (thin S3
 read, see `src/lib/results-api.ts`), a `useResults` fetch state machine,
-and a range selector + hero stat + portfolio chart + trade list + an
-always-visible methodology/disclaimer section. Live-verified against the
-real deployed S3 bucket (see `infra/CLAUDE.md`'s "Current deployment
-state"), not just fixtures.
+and a range selector + hero stat + portfolio chart + trade list + a
+click-to-reveal disclaimer/methodology section (issue #104 collapsed
+this from always-visible to behind a single click -- see "Disclaimer/
+methodology collapsed behind a single click" below). Live-verified
+against the real deployed S3 bucket (see `infra/CLAUDE.md`'s "Current
+deployment state"), not just fixtures.
 
 ## Local development without AWS credentials
 
@@ -4161,3 +4163,91 @@ reality while keeping the historical issue #63/#75 pointers. Third: the
 removed) had nothing left to wrap -- `RangeSelector` now renders as a
 direct child of `<header>` instead of inside a single-child wrapper div,
 re-screenshotted afterward to confirm no visual change.
+
+## Disclaimer/methodology collapsed behind a single click (issue #104)
+
+Deliberately reverses issue #10's original "always visible, not tucked
+behind a click" reasoning -- confirmed by the human user as intentional,
+not an oversight. Before this issue, the same "hindsight toy, not
+investment advice" framing was repeated in four always-visible surfaces
+at once (`ResultsPage.tsx`'s header subtitle, `AboutSection.tsx`'s own
+always-visible `role="alert"` box, `ResultsPanel.tsx`'s per-view "Best
+possible outcome..." sentence in both result models, plus that same
+`AboutSection.tsx`'s already-collapsed "Methodology & assumptions"
+details underneath it) -- collapsed into one small, clearly-labeled
+`<details>`/`<summary>` affordance ("Disclaimer & methodology").
+
+- **`AboutSection` moved from the page level into each result view,
+  not just restyled in place.** It used to be a single instance
+  `ResultsPage.tsx` rendered once, page-wide, regardless of fetch state.
+  It's now rendered once per success branch instead --
+  `WindowResultBody` (shared by the "window"/"custom-window" models) and
+  the "intraday-daily" branch each render their own instance, right
+  after their own "Trades" section. This wasn't a stylistic choice: the
+  removed per-view sentence's substance (the description phrase, the
+  trade-count ceiling, the "as of" timestamp) had to go _somewhere_, and
+  only the branch currently rendering has that data on hand --
+  `AboutSection` now takes a required `viewDetails: string` prop each
+  call site builds from its own local variables (`descriptionPhrase`/
+  `data.maxTrades`/`data.dataAsOf` for the window model;
+  `formatDate(activeDay.date)`/`data.maxTradesPerDay`/`data.dataAsOf`
+  for the intraday-daily model). One real consequence: `AboutSection`
+  (and therefore any disclaimer/methodology content at all) no longer
+  renders during a loading or error state -- only once a result has
+  actually loaded. Accepted as a reasonable tradeoff for a small
+  learning project; revisit only if that gap actually bites.
+- **Rendered unconditionally, not gated behind the intraday-daily
+  model's whole-range guess-then-reveal flow (issue #91).** Both
+  `AboutSection` call sites sit outside the `rangeGuess !== null`
+  fragment in `ResultsPanel.tsx` -- a disclaimer isn't part of "the
+  answer" the guessing game protects, so it should never be spoiler-
+  gated behind guessing it.
+- **Doesn't touch a different, unrelated always-visible sentence**: the
+  intraday-daily model's `WholeRangeBalance` headline (issue #91) still
+  has its own always-visible "Every trading day's own best possible
+  outcome, chained day to day..." paragraph once the whole-range guess
+  is revealed. That explains the day-to-day chaining mechanic, not a
+  disclaimer or a restatement of the "not investment advice" framing --
+  out of this issue's own named scope (its Background section cited
+  specific line numbers for the sentence this issue does consolidate),
+  left as-is deliberately, not missed.
+- **`BenchmarkStat`'s `rangeLabel` prop changed meaning, not just
+  gained a new caller (found in this issue's own `high` code review,
+  fixed).** Before this issue, `rangeLabel` was a bare label
+  (`"the past month"`) and the component always hardcoded a literal
+  `" over "` prefix in front of it -- justified for the window model's
+  own omission by "an adjacent, always-visible methodology paragraph
+  already names the range." That premise stopped holding the moment
+  this issue moved that paragraph behind `AboutSection`'s click, so the
+  window model's `BenchmarkStat` line lost its own range disambiguation
+  with nothing left nearby restating it. Fixed by widening `rangeLabel`
+  to accept the **full phrase including its own preposition**
+  (`"over the past year"` or `"since Mar 1, 2019"` -- reusing
+  `WindowResultBody`'s own `descriptionPhrase` prop directly, which
+  already has the right preposition for either the preset-range or
+  custom-anchor case) rather than a bare label the component always
+  prefixes with a hardcoded "over ". The intraday-daily call site was
+  updated to match (`` `over ${RANGE_COPY[range]}` `` instead of the
+  bare `RANGE_COPY[range]`) so both call sites share the same contract.
+  Every real call site now passes `rangeLabel` explicitly -- there's no
+  live caller left that relies on the prop's own default omission
+  behavior, though the prop itself stays optional (nothing enforces
+  every future caller must pass it, and `BenchmarkStat.test.tsx` still
+  covers the omitted case).
+- **Live-verified** (throwaway debug route + the documented no-root
+  headless-Chromium workaround, both window and intraday-daily model
+  fixtures, `colorScheme: "light"` and `"dark"` emulation -- this app is
+  dark-mode-only since issue #76, so both render identically, confirmed
+  rather than assumed): collapsed state shows only the small
+  "Disclaimer & methodology" summary line at the bottom of each result
+  view, no paragraph text visible anywhere on first paint; clicking it
+  reveals the view-specific sentence, the "Not investment advice"
+  paragraph (no red border/background, no `role="alert"` -- confirmed
+  via a live `[role="alert"]` query that the only alert-role element
+  left on the page is Next.js's own route announcer, unrelated), and
+  the still-nested, still-collapsed "Methodology & assumptions" details
+  underneath. Also confirmed live (after the `BenchmarkStat` fix above)
+  that the window model's benchmark line reads "Buying and holding SPY
+  **over the past year** instead..." and the intraday-daily model's
+  reads "...**over the past month** instead...", both with zero console
+  errors.

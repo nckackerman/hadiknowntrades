@@ -93,7 +93,7 @@ describe("BenchmarkStat", () => {
     expect(text).toContain("$40.00");
   });
 
-  it("omits any range disambiguation when rangeLabel isn't passed (the window model)", () => {
+  it("omits any range disambiguation when rangeLabel isn't passed", () => {
     const { container } = render(
       <BenchmarkStat benchmark={fixtureBenchmark()} startingCapital={20} />,
     );
@@ -103,16 +103,28 @@ describe("BenchmarkStat", () => {
     expect(text).not.toContain("over the");
   });
 
-  it("includes the range disambiguation when rangeLabel is passed (the intraday-daily model's whole-range-vs-single-day juxtaposition, issue #12)", () => {
+  it("renders rangeLabel verbatim right after the ticker -- callers pass the full phrase including its own preposition (issue #104)", () => {
     const { container } = render(
       <BenchmarkStat
         benchmark={fixtureBenchmark()}
         startingCapital={20}
-        rangeLabel="the past month"
+        rangeLabel="over the past month"
       />,
     );
 
     expect(proseText(container)).toContain("Buying and holding SPY over the past month instead");
+  });
+
+  it("also renders a 'since' phrase verbatim (the custom-window model's own preposition, issue #104)", () => {
+    const { container } = render(
+      <BenchmarkStat
+        benchmark={fixtureBenchmark()}
+        startingCapital={20}
+        rangeLabel="since Mar 1, 2019"
+      />,
+    );
+
+    expect(proseText(container)).toContain("Buying and holding SPY since Mar 1, 2019 instead");
   });
 
   it("does not apply any gain/loss coloring to the figures -- a deliberate simplicity decision, this is a comparison figure, not a win/loss signal", () => {
