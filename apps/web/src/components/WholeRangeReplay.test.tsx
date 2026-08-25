@@ -39,6 +39,7 @@ const BASE_PROPS = {
   guess: 30,
   guessStartingCapital: 20,
   onSubmitGuess: vi.fn(),
+  replaySupported: true,
   chartKey: "1W-2025-08-21-long",
 };
 
@@ -76,6 +77,32 @@ describe("WholeRangeReplay (issue #105)", () => {
       expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
       expect(statusRegion()).toHaveTextContent("");
     });
+
+    it("renders children (issue #105 code review finding) only once revealed, between the button row and the chart -- mirroring TradeReplay.tsx's own children slot so BenchmarkStat/the methodology paragraph keep their pre-#105 relative position against the chart", () => {
+      const { container, rerender } = render(
+        <WholeRangeReplay {...BASE_PROPS} guess={null} guessStartingCapital={null} points={[]}>
+          <p data-testid="probe">probe content</p>
+        </WholeRangeReplay>,
+      );
+
+      expect(screen.queryByTestId("probe")).not.toBeInTheDocument();
+
+      rerender(
+        <WholeRangeReplay {...BASE_PROPS}>
+          <p data-testid="probe">probe content</p>
+        </WholeRangeReplay>,
+      );
+
+      const probe = screen.getByTestId("probe");
+      expect(probe).toBeInTheDocument();
+      // The probe sits after the button row and before the chart's own
+      // <svg>, matching the real order BenchmarkStat/the paragraph had
+      // before this issue.
+      const button = screen.getByRole("button", { name: "Watch it happen" });
+      const svg = container.querySelector("svg")!;
+      expect(button.compareDocumentPosition(probe) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(probe.compareDocumentPosition(svg) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
   });
 
   describe("canReplay gate (tradeCount / reduced motion)", () => {
@@ -95,6 +122,17 @@ describe("WholeRangeReplay (issue #105)", () => {
       expect(screen.queryByRole("button", { name: /watch it happen/i })).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /replay/i })).not.toBeInTheDocument();
       expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+    });
+
+    it("renders no button when replaySupported is false, even with real trades and no reduced motion (issue #105 code review finding: 1M/3M/1Y must never get this button, only 1W)", () => {
+      render(<WholeRangeReplay {...BASE_PROPS} replaySupported={false} />);
+
+      expect(screen.queryByRole("button", { name: /watch it happen/i })).not.toBeInTheDocument();
+      // Zero information loss for an unsupported range -- the chart/
+      // worst-case stat/children still render exactly as they did before
+      // issue #105, only without a replay button.
+      expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+      expect(screen.getByText("Worst case, same budget")).toBeInTheDocument();
     });
 
     it("Skip to end stays available regardless of canReplay, matching TradeReplay.tsx's own established distinction", async () => {

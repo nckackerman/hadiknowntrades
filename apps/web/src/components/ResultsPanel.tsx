@@ -647,13 +647,22 @@ export function ResultsPanel({
     // Total trades across the whole currently-viewed range, this mode
     // (issue #105) -- the whole-range analogue of TradeReplay.tsx's own
     // `tradeCount` prop, gating WholeRangeReplay's "Watch it happen"
-    // button the same way. Summed from the same per-day `selectVariant`
-    // call `dayOverviewRows` above already makes per day, not a second
-    // traversal with different logic.
-    const wholeRangeTradeCount = data.days.reduce(
-      (sum, day) => sum + selectVariant<IntradayTrade>(day, day.longShort, mode).trades.length,
-      0,
-    );
+    // button the same way. Summed from `dayOverviewRows`' own already-
+    // memoized per-row `tradeCount` field (found in code review, fixed:
+    // an earlier version re-derived this via a fresh
+    // `data.days.reduce(...selectVariant(...))` traversal, duplicating --
+    // unmemoized, on every render -- the exact same per-day
+    // `selectVariant` work `dayOverviewRows` above already does and
+    // memoizes).
+    const wholeRangeTradeCount = dayOverviewRows.reduce((sum, row) => sum + row.tradeCount, 0);
+
+    // Whether this range actually supports "Watch it happen" (issue
+    // #105) -- 1W only, per that issue's own scope; 1M/3M/1Y are a
+    // materially different pacing/scale problem tracked separately
+    // (issue #106's sibling plan). See WholeRangeReplay's own
+    // `replaySupported` prop doc comment for why this must be threaded
+    // in explicitly rather than inferred inside that component.
+    const replaySupported = range === "1W";
 
     return (
       <FadeInWrapper>
@@ -664,7 +673,13 @@ export function ResultsPanel({
             below -- both would otherwise spoil the same answer. Since
             issue #105, this range's own opt-in "Watch it happen" replay
             (1W specifically -- see WholeRangeReplay's own doc comment)
-            sequences with this exact same gate, not a second one. */}
+            sequences with this exact same gate, not a second one. The
+            methodology paragraph and BenchmarkStat are passed as
+            `children`, rendered between WholeRangeReplay's own button
+            row and its chart -- exactly where they sat before this
+            issue, mirroring TradeReplay.tsx's own identical `children`
+            slot for the window model (see that component's own doc
+            comment) rather than reordering them relative to the chart. */}
         <WholeRangeReplay
           rangeLabel={RANGE_COPY[range]}
           startingCapital={effectiveStartingCapital}
@@ -676,24 +691,21 @@ export function ResultsPanel({
           guess={rangeGuess}
           guessStartingCapital={rangeGuessStartingCapital}
           onSubmitGuess={submitRangeGuess}
+          replaySupported={replaySupported}
           chartKey={`${range}-${data.dataAsOf}-${mode}`}
-        />
-
-        {rangeGuess !== null && (
-          <>
-            <p className="text-sm text-[var(--text-secondary)]">
-              Every trading day&apos;s own best possible outcome, chained day to day across{" "}
-              {RANGE_COPY[range]} -- up to {data.maxTradesPerDay} same-day all-in trades per day
-              across the S&amp;P 500, using real 60-minute intraday prices. As of {data.dataAsOf}.
-            </p>
-            <BenchmarkStat
-              benchmark={data.benchmark}
-              startingCapital={data.startingCapital}
-              displayStartingCapital={effectiveStartingCapital}
-              rangeLabel={`over ${RANGE_COPY[range]}`}
-            />
-          </>
-        )}
+        >
+          <p className="text-sm text-[var(--text-secondary)]">
+            Every trading day&apos;s own best possible outcome, chained day to day across{" "}
+            {RANGE_COPY[range]} -- up to {data.maxTradesPerDay} same-day all-in trades per day
+            across the S&amp;P 500, using real 60-minute intraday prices. As of {data.dataAsOf}.
+          </p>
+          <BenchmarkStat
+            benchmark={data.benchmark}
+            startingCapital={data.startingCapital}
+            displayStartingCapital={effectiveStartingCapital}
+            rangeLabel={`over ${RANGE_COPY[range]}`}
+          />
+        </WholeRangeReplay>
 
         <DayOverview
           rows={dayOverviewRows}

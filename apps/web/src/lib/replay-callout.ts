@@ -1,7 +1,8 @@
 import { formatHeroCurrency, formatPercent } from "@/lib/format-currency";
 import { formatDateTime } from "@/lib/format-date";
 import { tradeVerbsPastCapitalized } from "@/lib/trade-math";
-import type { ReplayEvent } from "@/lib/use-trade-replay";
+import type { ReplayEvent, ReplayPhase } from "@/lib/use-trade-replay";
+import type { ChartLanding } from "@/components/PortfolioChart";
 
 /**
  * Past-tense narration for one trade-replay pause, matching TradeList's
@@ -29,4 +30,24 @@ export function calloutText(replayEvent: ReplayEvent, includeDate: boolean): str
     return `${sentence} (${formatPercent(tradeReturn.returnFraction)}).`;
   }
   return `${sentence}.`;
+}
+
+/**
+ * What "just landed" for `PortfolioChart`'s own marker-pulse/shake/
+ * speech-bubble effects (issue #108) -- `null` except during the exact
+ * pause window after a real open/close event is reached while actually
+ * `"playing"`. Shared between `TradeReplay.tsx` and
+ * `WholeRangeReplay.tsx` (issue #105 code review finding) -- both used
+ * to independently re-derive this identical three-condition check from
+ * their own `phase`/`frame.activeEvent`/`activeCallout` locals; a future
+ * change to when a landing should be considered active (a new phase, a
+ * new `ChartLanding` field) now only has one place to make it.
+ */
+export function chartLandingFor(
+  phase: ReplayPhase,
+  activeEvent: ReplayEvent | null,
+  activeCallout: string | null,
+): ChartLanding | null {
+  if (phase !== "playing" || !activeEvent || !activeCallout) return null;
+  return { event: activeEvent.event, calloutText: activeCallout };
 }

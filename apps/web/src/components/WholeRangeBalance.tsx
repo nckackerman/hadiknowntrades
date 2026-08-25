@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState, type ReactNode } from "react";
+import { useId, useMemo, useState, type ReactNode } from "react";
 import type { FormEvent } from "react";
 
 import { formatHeroCurrency } from "@/lib/format-currency";
@@ -136,6 +136,24 @@ export function WholeRangeBalance({
 
   const revealed = guess !== null;
 
+  // Memoized (issue #105 code review finding) -- constant for the whole
+  // replay run, but this component re-renders on every one of the
+  // dozens of RAF-driven frames WholeRangeReplay.tsx produces while
+  // playing (its own `revealSlot` content changes every tick). Keyed on
+  // `worstCase` by reference, not its two numeric fields individually --
+  // safe only because WholeRangeReplay.tsx itself already memoizes the
+  // `worstCase` object it passes down (see that file's own doc comment);
+  // this memo would otherwise never actually hit given a fresh object
+  // literal every render.
+  const worstCaseDisplayValue = useMemo(() => {
+    if (!worstCase) return null;
+    return rescaleFromStartingCapital(
+      worstCase.endingBalance,
+      worstCase.startingCapital,
+      startingCapital,
+    );
+  }, [worstCase, startingCapital]);
+
   return (
     <div className="surface-card flex flex-col gap-2 rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-4">
       {/* aria-label disambiguates this region from any other status region on the page. */}
@@ -176,14 +194,10 @@ export function WholeRangeBalance({
               </div>
               {revealSlot}
             </div>
-            {worstCase && (
+            {worstCaseDisplayValue !== null && (
               <WorstCaseStat
                 startingCapital={startingCapital}
-                endingBalance={rescaleFromStartingCapital(
-                  worstCase.endingBalance,
-                  worstCase.startingCapital,
-                  startingCapital,
-                )}
+                endingBalance={worstCaseDisplayValue}
               />
             )}
           </div>

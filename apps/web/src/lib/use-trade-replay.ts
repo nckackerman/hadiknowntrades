@@ -21,6 +21,35 @@ import { useResetWhenChanged } from "./use-reset-when-changed";
 
 export type ReplayPhase = "idle" | "rewinding" | "playing" | "done";
 
+/**
+ * Whether `phase` represents the real, live, un-animated view (idle or
+ * done) -- shared between `TradeReplay.tsx` and `WholeRangeReplay.tsx`
+ * (issue #105 code review finding), which each independently re-derived
+ * this exact two-value check as their own `showLive` local. Worth
+ * sharing specifically because `TradeReplay.tsx`'s own history already
+ * needed this precise expression fixed once (round two's own "Skip to
+ * end" gating fix used `!showLive` in place of a second, independently-
+ * written complement expression for the same reason) -- a second
+ * independent copy is exactly the kind of thing that class of fix is
+ * meant to prevent from recurring.
+ */
+export function isReplayLive(phase: ReplayPhase): boolean {
+  return phase === "idle" || phase === "done";
+}
+
+/**
+ * The idle/done "Watch it happen"/"Replay" button's own core gate --
+ * shared between `TradeReplay.tsx` and `WholeRangeReplay.tsx` (issue
+ * #105 code review finding). A caller with its own additional gate on
+ * top (e.g. `WholeRangeReplay.tsx`'s own 1W-only restriction) ANDs that
+ * extra condition alongside this function's result, rather than this
+ * function growing a parameter for every caller's own scope-specific
+ * rule.
+ */
+export function canReplayFor(tradeCount: number, reducedMotionAtMount: boolean): boolean {
+  return tradeCount > 0 && !reducedMotionAtMount;
+}
+
 /** One trade-event pause during playback (see TradeReplay.tsx for the callout this renders as). */
 export interface ReplayEvent {
   point: PortfolioPoint;

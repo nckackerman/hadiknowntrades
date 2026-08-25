@@ -21,10 +21,10 @@ import { useMemo, type ReactNode } from "react";
 import { formatHeroCurrency, formatMultiplier } from "@/lib/format-currency";
 import type { PortfolioPoint } from "@/lib/portfolio-series";
 import { spansMultipleDays } from "@/lib/portfolio-series";
-import { calloutText } from "@/lib/replay-callout";
+import { calloutText, chartLandingFor } from "@/lib/replay-callout";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
-import { useTradeReplay } from "@/lib/use-trade-replay";
+import { canReplayFor, isReplayLive, useTradeReplay } from "@/lib/use-trade-replay";
 import { HeroAndWorstCase } from "@/components/HeroAndWorstCase";
 import {
   heroLabelClassName,
@@ -52,7 +52,14 @@ interface TradeReplayProps {
   children?: ReactNode;
 }
 
-const buttonClassName =
+/**
+ * Shared with `WholeRangeReplay.tsx` (issue #105 code review finding) --
+ * both files' own "Watch it happen"/"Replay"/"Skip to end" buttons need
+ * to read as the same control, so this is exported rather than each
+ * file keeping a byte-for-byte copy that could silently drift apart on
+ * a future visual tweak applied to only one of them.
+ */
+export const buttonClassName =
   "self-start rounded-md border border-[var(--gridline)] px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] transition-colors hover:border-[var(--text-muted)] hover:text-[var(--text-primary)]";
 
 /**
@@ -222,12 +229,13 @@ export function TradeReplay({
   // changes, phase resets to "idle" on its own, and this button row
   // re-renders in its idle shape (present or absent per the *new*
   // `canReplay`) rather than lingering in "playing" with the wrong gate.
-  const canReplay = tradeCount > 0 && !reducedMotionAtMount;
+  const canReplay = canReplayFor(tradeCount, reducedMotionAtMount);
   // Issue #97's rewinding intro beat is part of the same animated
   // stretch "playing" already was -- the hero slot/chart both need to
   // stay in their non-live, animated shape through the rewind too, not
-  // just once real trade playback begins.
-  const showLive = phase === "idle" || phase === "done";
+  // just once real trade playback begins. `isReplayLive` is shared with
+  // WholeRangeReplay.tsx (issue #105 code review finding).
+  const showLive = isReplayLive(phase);
 
   // Memoized (code-review finding, issue #96 follow-up): constant for
   // the whole playback run, but this component re-renders on every one
@@ -291,10 +299,13 @@ export function TradeReplay({
   // memoizing here is what lets PortfolioChart's own React.memo actually
   // pay off rather than treating a fresh-but-equivalent object as a prop
   // change every time (see that component's own memo doc comment).
-  const landing: ChartLanding | null = useMemo(() => {
-    if (phase !== "playing" || !frame.activeEvent || !activeCallout) return null;
-    return { event: frame.activeEvent.event, calloutText: activeCallout };
-  }, [phase, frame.activeEvent, activeCallout]);
+  // `chartLandingFor` is shared with WholeRangeReplay.tsx (issue #105
+  // code review finding) -- both used to independently re-derive this
+  // identical check.
+  const landing: ChartLanding | null = useMemo(
+    () => chartLandingFor(phase, frame.activeEvent, activeCallout),
+    [phase, frame.activeEvent, activeCallout],
+  );
 
   // A single role="status" aria-live="polite" region, always present,
   // that announces each trade event once (not per-frame -- see

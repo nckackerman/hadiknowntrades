@@ -1138,13 +1138,23 @@ describe("ResultsPanel", () => {
         expect(within(headline).queryByText("$100.00")).not.toBeInTheDocument();
       });
 
-      it("renders WholeRangeReplay (not a bare PortfolioChart) once revealed -- a 'Watch it happen' button now exists, which the old bare chart call never had", async () => {
+      it("renders WholeRangeReplay (not a bare PortfolioChart) once revealed on 1W -- a 'Watch it happen' button now exists there, which the old bare chart call never had", async () => {
+        const user = userEvent.setup();
+        const state: ResultsState = { status: "success", data: fixtureChainedResult() };
+        render(<ResultsPanel range="1W" state={state} selectedDay="2026-08-21" />);
+        await submitWholeRangeGuess(user);
+
+        expect(screen.getByRole("button", { name: "Watch it happen" })).toBeInTheDocument();
+        expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+      });
+
+      it("renders the chart (via WholeRangeReplay) but no 'Watch it happen' button on 1M -- replay is 1W-only (issue #105 code review finding: the button must never appear for 1M/3M/1Y)", async () => {
         const user = userEvent.setup();
         const state: ResultsState = { status: "success", data: fixtureChainedResult() };
         render(<ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />);
         await submitWholeRangeGuess(user);
 
-        expect(screen.getByRole("button", { name: "Watch it happen" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: /watch it happen/i })).not.toBeInTheDocument();
         expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
       });
 

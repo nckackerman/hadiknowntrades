@@ -27,9 +27,15 @@ import { useMemo, type ReactNode } from "react";
 import { formatHeroCurrency } from "@/lib/format-currency";
 import type { PortfolioPoint } from "@/lib/portfolio-series";
 import { spansMultipleDays } from "@/lib/portfolio-series";
-import { calloutText } from "@/lib/replay-callout";
+import { calloutText, chartLandingFor } from "@/lib/replay-callout";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
-import { useTradeReplay, type ReplayPacing } from "@/lib/use-trade-replay";
+import {
+  canReplayFor,
+  isReplayLive,
+  useTradeReplay,
+  type ReplayPacing,
+} from "@/lib/use-trade-replay";
+import { buttonClassName } from "@/components/TradeReplay";
 import { PortfolioChart, type ChartLanding } from "@/components/PortfolioChart";
 import {
   WholeRangeBalance,
@@ -54,6 +60,39 @@ interface WholeRangeReplayProps {
   guess: number | null;
   guessStartingCapital: number | null;
   onSubmitGuess: (guess: number, startingCapital: number) => void;
+  /**
+   * Whether this range actually supports replay at all (issue #105 code
+   * review finding, fixed) -- `range === "1W"`, computed by
+   * `ResultsPanel.tsx`. This component itself has no notion of "range"
+   * otherwise (every other prop is range-agnostic), so it can't derive
+   * this on its own; the caller must say so explicitly. **Load-bearing,
+   * not cosmetic**: `WHOLE_RANGE_REPLAY_PACING` below is tuned and
+   * live-verified only against 1W's own worst case (15 trades/50 points).
+   * 1M/3M/1Y's own whole-range series can run into the hundreds of
+   * points (see `ResultsPanel.tsx`'s own `wholeRangePoints` doc comment),
+   * for which this pacing has no duration ceiling at all -- issue #105's
+   * own scope, and issue #106's sibling plan, both explicitly defer
+   * those three ranges to their own future build. ANDed with
+   * `canReplayFor`'s own tradeCount/reduced-motion gate below, so the
+   * "Watch it happen" button never renders for an unsupported range
+   * regardless of trade count or motion preference. Does **not** gate
+   * `WholeRangeBalance`/the chart/`children` themselves -- 1M/3M/1Y keep
+   * rendering their own whole-range headline and (non-animated) chart
+   * exactly as they did before this issue, only without a replay button.
+   */
+  replaySupported: boolean;
+  /**
+   * Rendered between the button row and the chart, inside the same
+   * `guess !== null` gate -- e.g. the methodology paragraph +
+   * `BenchmarkStat`, unaffected by playback. Mirrors `TradeReplay.tsx`'s
+   * own `children` prop exactly (see that component's own doc comment):
+   * without this slot, `ResultsPanel.tsx` would have nowhere to put that
+   * content except before or after this component's own two top-level
+   * blocks, silently reordering it relative to the chart from what the
+   * pre-#105 layout had (a real regression caught in code review, not a
+   * design this component invented on its own).
+   */
+  children?: ReactNode;
   /**
    * Identifies "this result" for the whole-range `PortfolioChart`
    * instance's own `key` -- must stay stable across every phase
@@ -91,20 +130,22 @@ interface WholeRangeReplayProps {
 // stable across renders (this component's own call to useTradeReplay
 // depends on it -- see that hook's own `pacing` parameter doc comment),
 // or its RAF effects would restart on every WholeRangeReplay render.
+//
+// **This pacing is only ever exercised for 1W** -- see `replaySupported`
+// above; a caller not gating on `range === "1W"` would let this untested-
+// at-scale pacing loose on 1M/3M/1Y's own much larger point series.
 const WHOLE_RANGE_REPLAY_PACING: ReplayPacing = {
   transitionMs: 130,
   eventPauseMs: 220,
   rewindMs: 700,
 };
 
-const buttonClassName =
-  "self-start rounded-md border border-[var(--gridline)] px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] transition-colors hover:border-[var(--text-muted)] hover:text-[var(--text-primary)]";
-
 /**
  * Wraps `WholeRangeBalance` (extended with its own `worstCase`/
  * `revealSlot` props) plus the whole-range `PortfolioChart` with an
  * opt-in "Watch it happen" replay, for the 1W preset range specifically
- * (issue #105) -- the intraday-daily model's own equivalent of
+ * (issue #105, gated via `replaySupported` -- see that prop's own doc
+ * comment) -- the intraday-daily model's own equivalent of
  * `TradeReplay.tsx`, composing a different hero component for the
  * reason stated in this file's own header comment.
  *
@@ -113,13 +154,14 @@ const buttonClassName =
  * `ResultsPanel.tsx`'s own `wholeRangePoints` memo already returns `[]`
  * whenever the whole-range guess hasn't been submitted -- with
  * `points.length < 2`, `useTradeReplay`'s own `play()` guard already
- * makes the hook permanently inert, and the button row/chart below are
- * rendered only once `guess !== null` (the same value already threaded
- * to `WholeRangeBalance`), so they never even mount pre-reveal. Reading
- * the same `guess` value at two places in this one component isn't a
- * second, independent gate -- it's the identical value `ResultsPanel.tsx`
- * already reads twice today (the `<WholeRangeBalance>` call and the
- * `rangeGuess !== null` block wrapping `BenchmarkStat`/the chart).
+ * makes the hook permanently inert, and the button row/`children`/chart
+ * below are rendered only once `guess !== null` (the same value already
+ * threaded to `WholeRangeBalance`), so they never even mount pre-reveal.
+ * Reading the same `guess` value at two places in this one component
+ * isn't a second, independent gate -- it's the identical value
+ * `ResultsPanel.tsx` already reads twice today (the `<WholeRangeBalance>`
+ * call and the `rangeGuess !== null` block wrapping `BenchmarkStat`/the
+ * chart).
  *
  * **A `DayOverview` day switch never disturbs an in-flight replay**
  * (plan section 3.4) -- `ResultsPanel.tsx`'s `wholeRangePoints` memo's
@@ -153,6 +195,8 @@ export function WholeRangeReplay({
   guess,
   guessStartingCapital,
   onSubmitGuess,
+  replaySupported,
+  children,
   chartKey,
 }: WholeRangeReplayProps) {
   const reducedMotionAtMount = useReducedMotionAtMount();
@@ -166,24 +210,49 @@ export function WholeRangeReplay({
   // the dozens of RAF-driven frames while playing.
   const includeDate = useMemo(() => spansMultipleDays(points), [points]);
   // Gates the *idle*/*done* button only, mirroring TradeReplay.tsx's own
-  // `canReplay` exactly -- "Skip to end" stays available throughout
-  // "rewinding"/"playing" regardless (see the button row below).
-  const canReplay = tradeCount > 0 && !reducedMotionAtMount;
-  const showLive = phase === "idle" || phase === "done";
+  // `canReplay` (via the shared `canReplayFor`, issue #105 code review
+  // finding) plus this range's own `replaySupported` restriction --
+  // "Skip to end" stays available throughout "rewinding"/"playing"
+  // regardless (see the button row below).
+  const canReplay = canReplayFor(tradeCount, reducedMotionAtMount) && replaySupported;
+  const showLive = isReplayLive(phase);
 
   const activeCallout = frame.activeEvent ? calloutText(frame.activeEvent, includeDate) : null;
 
   // Issue #108-style marker pulse/shake/speech-bubble wiring for
-  // PortfolioChart, identical shape to TradeReplay.tsx's own `landing`.
-  const landing: ChartLanding | null = useMemo(() => {
-    if (phase !== "playing" || !frame.activeEvent || !activeCallout) return null;
-    return { event: frame.activeEvent.event, calloutText: activeCallout };
-  }, [phase, frame.activeEvent, activeCallout]);
+  // PortfolioChart -- `chartLandingFor` is shared with TradeReplay.tsx
+  // (issue #105 code review finding).
+  const landing: ChartLanding | null = useMemo(
+    () => chartLandingFor(phase, frame.activeEvent, activeCallout),
+    [phase, frame.activeEvent, activeCallout],
+  );
 
   const announced =
     phase === "done"
       ? `Replay finished. Ending balance ${formatHeroCurrency(finalBalance)}.`
       : (activeCallout ?? "");
+
+  // Memoized (issue #105 code review finding) -- constant for the whole
+  // run, but this component re-renders on every RAF-driven frame while
+  // playing, and `revealSlot` below needs this formatted string every
+  // one of those frames even though its own value never changes across
+  // them. Matches TradeReplay.tsx's own identical
+  // `displayStartingCapitalFormatted` fix.
+  const startingCapitalFormatted = useMemo(
+    () => formatHeroCurrency(startingCapital),
+    [startingCapital],
+  );
+
+  // Memoized (issue #105 code review finding) -- WholeRangeBalance's own
+  // `worstCaseDisplayValue` memo is keyed on this object by reference,
+  // which only actually skips recomputation across RAF-driven re-renders
+  // if this object's own identity stays stable when neither of its two
+  // numeric inputs has changed; a fresh object literal passed inline on
+  // every render would defeat that memo entirely.
+  const worstCase = useMemo(
+    () => ({ startingCapital: worstCaseStartingCapital, endingBalance: worstCaseEndingBalance }),
+    [worstCaseStartingCapital, worstCaseEndingBalance],
+  );
 
   // One overlay design for both "rewinding" and "playing" (unlike
   // TradeReplay.tsx, which needs two: a giant date-only rewind figure,
@@ -207,7 +276,7 @@ export function WholeRangeReplay({
           <span className="text-[var(--text-muted)]">{displayDate}</span>
         </p>
         <p className={wholeRangeValueRowClassName}>
-          <span>{formatHeroCurrency(startingCapital)}</span>
+          <span>{startingCapitalFormatted}</span>
           <span aria-hidden="true" className="text-[var(--text-muted)]">
             →
           </span>
@@ -226,10 +295,7 @@ export function WholeRangeReplay({
         guess={guess}
         guessStartingCapital={guessStartingCapital}
         onSubmitGuess={onSubmitGuess}
-        worstCase={{
-          startingCapital: worstCaseStartingCapital,
-          endingBalance: worstCaseEndingBalance,
-        }}
+        worstCase={worstCase}
         revealSlot={revealSlot}
       />
 
@@ -257,6 +323,8 @@ export function WholeRangeReplay({
               )
             )}
           </div>
+
+          {children}
 
           <PortfolioChart
             key={chartKey}
