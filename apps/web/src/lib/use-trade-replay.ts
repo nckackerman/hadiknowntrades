@@ -187,17 +187,27 @@ const DEFAULT_PACING: ReplayPacing = {
   rewindMs: 700,
 };
 
-// Chunk segment mode's own cap (issue #118) -- at most this many reveal
+// Chunk segment mode's own cap (issue #118) -- an UPPER BOUND on reveal
 // steps regardless of how many real trading days a range spans, per
 // docs/plans/issue-106-plan.md section 3.1: `chunkCount =
-// min(dayGroups.length, NUM_CHUNKS)`, each chunk holding
-// `ceil(dayGroups.length / chunkCount)` consecutive day groups. Tuned by
-// feel (this repo's own established precedent for a pacing-adjacent
-// constant -- see DEFAULT_PACING's own comment): 1M's ~21 trading days
-// stay under this cap (one chunk per day, for free); 3M's ~62 and 1Y's
-// ~250 both exceed it and land on the identical worst-case chunk *count*
-// by construction, not coincidence -- see that plan section for the full
-// "why not a per-range-tuned pause budget instead" reasoning.
+// min(dayGroups.length, NUM_CHUNKS)` is used only to derive `chunkSize =
+// ceil(dayGroups.length / chunkCount)`, and the walk then strides by
+// that fixed `chunkSize` -- so the actual number of chunks produced is
+// `ceil(dayGroups.length / chunkSize)`, which is always <= NUM_CHUNKS
+// but not always exactly NUM_CHUNKS (code review finding, fixed -- an
+// earlier version of this comment claimed 3M and 1Y always land on "the
+// identical worst-case chunk count," which is false: at NUM_CHUNKS = 30,
+// 3M's ~62 days -> chunkSize 3 -> 21 actual chunks; 1Y's ~250 days ->
+// chunkSize 9 -> 28 actual chunks -- neither equals 30, and the two
+// don't equal each other either). 1M's ~21 trading days stay under this
+// cap regardless (one chunk per day, for free, since `chunkCount` then
+// equals `dayGroups.length` itself and `chunkSize` is exactly 1). Tuned
+// by feel (this repo's own established precedent for a pacing-adjacent
+// constant -- see DEFAULT_PACING's own comment) -- see
+// CHUNKED_WHOLE_RANGE_REPLAY_PACING's own comment (WholeRangeReplay.tsx)
+// for the real, live-measured worst-case durations per range (1M/3M/1Y
+// genuinely differ, not identical) and why 1Y's own per-chunk overhead
+// runs higher than 3M's despite sharing the same pacing constants.
 const NUM_CHUNKS = 30;
 
 function initialFrame(points: readonly PortfolioPoint[]): ReplayFrame {
@@ -314,7 +324,18 @@ function buildPointSegments(points: readonly PortfolioPoint[]): WalkSegment[] {
 interface DayGroupTrade {
   closePoint: PortfolioPoint;
   closeEvent: PortfolioEvent;
-  openPrice: number;
+  /**
+   * `null` for a "close" with no matching prior "open" in this walk
+   * (code review finding, fixed) -- mirrors `buildPointSegments`'s own
+   * defensive handling of the identical case (`openPriceForClose` can
+   * be `null` there too) rather than silently dropping the trade
+   * entirely, which is what an earlier version of this function did by
+   * gating the `group.trades.push` call itself on `lastOpenPrice !==
+   * null`. `buildReplayEvent` already treats a `null` openPrice as "no
+   * return computable" (`tradeReturn: null`), the same degraded-but-
+   * present shape point mode's own close-with-no-open case produces.
+   */
+  openPrice: number | null;
 }
 
 interface DayGroup {
@@ -364,7 +385,17 @@ function groupPointsIntoDayGroups(points: readonly PortfolioPoint[]): DayGroup[]
     const event = point.event;
     if (event?.type === "open") {
       lastOpenPrice = event.price;
-    } else if (event?.type === "close" && lastOpenPrice !== null) {
+    } else if (event?.type === "close") {
+      // Every real close still gets recorded here -- including the
+      // defensive "no matching open" case (`lastOpenPrice` still
+      // `null`), mirroring `buildPointSegments`'s own identical
+      // defensive handling (code review finding, fixed: an earlier
+      // version gated this push on `lastOpenPrice !== null`, silently
+      // excluding such a trade from `tradeCount` entirely, and -- if it
+      // were the only event in an otherwise single-day chunk -- from
+      // ever pausing at all, unlike point mode's own walk, which always
+      // still pauses and narrates a close event regardless of whether
+      // its own return is computable).
       group.trades.push({ closePoint: point, closeEvent: event, openPrice: lastOpenPrice });
     }
   }

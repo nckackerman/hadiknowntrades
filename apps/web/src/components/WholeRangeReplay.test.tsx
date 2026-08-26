@@ -258,7 +258,7 @@ describe("WholeRangeReplay (issue #105)", () => {
   });
 
   describe("chunked segment mode (issue #118, 1M/3M/1Y)", () => {
-    // Three days, deliberately far fewer than NUM_CHUNKS (40) so every
+    // Three days, deliberately far fewer than NUM_CHUNKS (30) so every
     // day maps to its own chunk (1M's own common shape): day 1 is a
     // one-day/one-trade degenerate chunk (falls through to the existing
     // single-trade calloutText voice), day 2 has zero trades (advances

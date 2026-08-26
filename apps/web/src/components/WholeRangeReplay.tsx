@@ -176,15 +176,20 @@ export const WHOLE_RANGE_REPLAY_PACING: ReplayPacing = {
 // `eventPauseMs` here are the same shape as the plan's own
 // CHUNK_TRANSITION_MS/CHUNK_PAUSE_MS, reused as a real ReplayPacing
 // object rather than a separate ad hoc constant pair (per that plan
-// section's own explicit instruction). Analytical worst-case total
-// duration is `usedChunks * (transitionMs + eventPauseMs)` where
-// `usedChunks = min(dayCount, NUM_CHUNKS)` (use-trade-replay.ts's own
-// NUM_CHUNKS, currently 30): 1M's ~21 trading days stay under the cap;
-// 3M's ~62 and 1Y's ~250 both exceed it and land on the identical
-// analytical ceiling by construction, not coincidence -- see that plan
-// section for the full derivation of why capping chunk count (not
-// deriving a per-range pause budget) is what makes 3M and 1Y share one
-// number despite their very different day counts.
+// section's own explicit instruction).
+//
+// **The real (not just NUM_CHUNKS-capped) worst-case chunk count per
+// range, worked out precisely (code review finding, fixed -- an earlier
+// version of this comment claimed 3M and 1Y always land on "the
+// identical ceiling," which use-trade-replay.ts's own NUM_CHUNKS
+// comment now explains is false):** `chunkSize =
+// ceil(dayCount / min(dayCount, NUM_CHUNKS))`, and the actual chunk
+// count is `ceil(dayCount / chunkSize)` -- at NUM_CHUNKS = 30, 1M's ~21
+// trading days -> chunkSize 1 -> 21 chunks (one per day, under the cap
+// by construction); 3M's ~62 -> chunkSize 3 -> 21 chunks (coincidentally
+// equal to 1M's own count, not by design); 1Y's ~250 -> chunkSize 9 ->
+// 28 chunks. Analytical worst-case duration is `chunkCount *
+// (transitionMs + eventPauseMs)`.
 //
 // **Both this pacing and NUM_CHUNKS were retuned from the plan's own
 // first-draft numbers (pacing 120/220, NUM_CHUNKS 40) against real
@@ -195,24 +200,30 @@ export const WHOLE_RANGE_REPLAY_PACING: ReplayPacing = {
 // headless-Chromium technique (apps/web/CLAUDE.md's own established
 // workaround) against this issue's own worst-case synthetic fixture
 // (every trading day maxed at `maxTradesPerDay` = 3 trades): the
-// first-draft 120/220 pacing at NUM_CHUNKS=40 measured **~8.95s for 1M**
+// first-draft 120/220 pacing at NUM_CHUNKS=40 (chunk counts of 21/21/28,
+// same math as above but against a 40 cap) measured **~8.95s for 1M**
 // (target 4-7s, ~25% over its own ~7.1s analytical estimate) and
 // **~20.1s for 1Y** (target 7-14s, ~47% over its own ~13.6s analytical
-// estimate) -- both real overages, not just margin erosion. The
-// overhead itself scales with a range's own total point count in a way
-// 1W's own ~50-point worst case never exercised: `PortfolioChart`
-// (`React.memo`'d, but still recomputing `linePath`/`areaPath`/
-// `eventMarkers` over the *revealed* prefix on every landing) does
-// genuinely more work per landing as point count grows into the
-// hundreds/thousands (1Y's own worst case is ~2,500 points, vs. 1W's
-// ~50) -- so tightening `pacing` alone wasn't enough; `NUM_CHUNKS`
-// itself (the number of times that per-landing cost is paid) needed
-// lowering too, from 40 to 30, alongside a tighter pacing (80/160).
-// Re-measured live at 80/160 + NUM_CHUNKS=30, across two separate runs
-// for stability: **1M ~6.4s, 3M ~6.8-6.9s, 1Y ~13.6-13.7s** -- all
-// inside their own stated targets, 1Y with a real but modest ~350ms
-// margin under its 14s ceiling (a similar tightness to 1W's own
-// live-measured ~14.4s against its own ~15s ceiling, see
+// estimate) -- both real overages, not just margin erosion, and 1Y's own
+// overhead percentage running well past 1M's own. The overhead itself
+// scales with a range's own total point count in a way 1W's own
+// ~50-point worst case never exercised: `PortfolioChart` (`React.memo`'d,
+// but still recomputing `linePath`/`areaPath`/`eventMarkers` over the
+// *revealed* prefix on every landing) does genuinely more work per
+// landing as point count grows into the hundreds/thousands (1Y's own
+// worst case is ~2,500 points, vs. 1W's ~50) -- so tightening `pacing`
+// alone wasn't enough; `NUM_CHUNKS` itself (how many times that
+// per-landing cost gets paid) needed lowering too, from 40 to 30,
+// alongside a tighter pacing (80/160). Re-measured live at 80/160 +
+// NUM_CHUNKS=30 (chunk counts of 21/21/28), across two separate runs for
+// stability: **1M ~6.4s, 3M ~6.8-6.9s, 1Y ~13.6-13.7s** -- all inside
+// their own stated targets. 1M and 3M share nearly the same chunk count
+// (21) yet 3M still measures slightly higher (more total points behind
+// each of those 21 landings); 1Y's own real ~2x-of-3M total reflects
+// both a higher chunk count (28 vs. 21) and a higher per-chunk cost
+// compounding together, not one single mechanism. 1Y's own margin under
+// its 14s ceiling is real but modest (~350ms) -- a similar tightness to
+// 1W's own live-measured ~14.4s against its own ~15s ceiling, see
 // WHOLE_RANGE_REPLAY_PACING's own comment -- this codebase's established
 // tolerance for a close-but-compliant margin, not a red flag).
 export const CHUNKED_WHOLE_RANGE_REPLAY_PACING: ReplayPacing = {

@@ -5305,3 +5305,64 @@ argument across two test files. `ResultsPanel.test.tsx`'s existing
 post-PR independent-review fix) is now a "renders the stat too" test,
 plus a new `it.each` case driving a real chunked pause-to-completion
 cycle on all three ranges through the real component tree.
+
+### Code-review follow-up -- one real bug, two doc-accuracy fixes
+
+A `high` review of the diff above (two independent finder angles, both
+converging on the same real bug) found one genuine correctness gap and
+two doc-comment inaccuracies -- all three fixed before opening the PR.
+
+- **`groupPointsIntoDayGroups` silently dropped a "close" event with no
+  matching prior "open" instead of recording it defensively, unlike
+  `buildPointSegments`/`buildReplayEvent` (point mode), which still
+  surface every close event (with `tradeReturn: null`) regardless of
+  whether a matching open was found.** `deriveWholeRangeIntradaySeries`
+  never actually produces this shape in practice (every real trade's
+  open always precedes its own close) -- but this is exactly the same
+  defensive posture point mode's own walk already has for corrupted/
+  malformed data, and the two builders had silently diverged: chunk
+  mode's version excluded such a trade from `group.trades` entirely
+  (gated by `lastOpenPrice !== null` at the push site), meaning it never
+  counted toward `tradeCount`, and -- if it were the only event in an
+  otherwise single-day chunk -- the chunk never paused at all, making
+  the trade completely invisible in chunk-mode replay. Fixed by always
+  pushing a close event into `group.trades` (dropping the `lastOpenPrice
+!== null` guard at the push site; `DayGroupTrade.openPrice` widened to
+  `number | null` to carry the "no matching open" case through, exactly
+  parallel to `buildPointSegments`'s own `openPriceForClose: number |
+null`) -- `buildReplayEvent` already treats a `null` openPrice as "no
+  return computable" (`tradeReturn: null`), so no downstream change was
+  needed once the trade itself stopped being dropped. Regression-tested
+  in `use-trade-replay.test.ts`: an orphan-close fixture (a close event
+  with no preceding open anywhere in the series) confirms the chunk
+  still pauses and narrates (the one-day/one-trade degenerate voice,
+  `tradeReturn: null`), not silently skipped.
+- **`NUM_CHUNKS`'s own doc comment (and the near-identical claim in
+  `WholeRangeReplay.tsx`'s `CHUNKED_WHOLE_RANGE_REPLAY_PACING` comment)
+  asserted 3M's ~62 days and 1Y's ~250 days both "land on the identical
+  worst-case chunk count by construction, not coincidence" -- false,
+  given `buildChunkSegments`'s actual algorithm.** `chunkCount =
+min(dayGroups.length, NUM_CHUNKS)` is used only to derive `chunkSize =
+ceil(dayGroups.length / chunkCount)`; the walk then strides by that
+  fixed `chunkSize`, so the real chunk count produced is
+  `ceil(dayGroups.length / chunkSize)` -- always `<= NUM_CHUNKS`, but not
+  always equal to it. Hand-computed at `NUM_CHUNKS = 30`: 3M's 62 days ->
+  chunkSize 3 -> 21 actual chunks; 1Y's 250 days -> chunkSize 9 -> 28
+  actual chunks -- 21 != 28, and neither equals 30. The only regression
+  test for the cap deliberately used a day count evenly divisible by 30
+  (see the "Test coverage" paragraph above), so this undercount was
+  untested for any realistic 3M/1Y day count and could have misled a
+  future maintainer reasoning about the pacing from the comment alone.
+  Both comments rewritten to describe the mechanism accurately (an upper
+  bound, not an exact-equality guarantee) and to cite the real
+  live-measured per-range durations instead of a false "identical
+  ceiling" framing.
+- **Two test-file comments still said "NUM_CHUNKS (40)"**, a stale
+  leftover from before the constant was retuned from 40 to 30 (see
+  `CHUNKED_WHOLE_RANGE_REPLAY_PACING`'s own comment above) -- didn't
+  affect test correctness (3 days is fewer than either 30 or 40), but
+  misleading to a future reader trying to understand the current cap
+  from the tests alone. Fixed in both `use-trade-replay.test.ts` and
+  `WholeRangeReplay.test.tsx`.
+- All five routine checks (lint, `next typegen && tsc --noEmit`, `pnpm
+build`, `pnpm test`, `pnpm format:check`) re-ran green after every fix.

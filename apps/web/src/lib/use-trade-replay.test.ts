@@ -791,7 +791,7 @@ describe("useTradeReplay", () => {
   describe("chunk segment mode (issue #118, docs/plans/issue-106-plan.md)", () => {
     // Day 1: one trade (AAPL, 100 -> 150, a real 50% gain). Day 2: no
     // trades. Day 3: one trade (MSFT, 100 -> 120, a real 20% gain).
-    // Fewer days than NUM_CHUNKS (40), so every day maps to its own
+    // Fewer days than NUM_CHUNKS (30), so every day maps to its own
     // chunk (1M's own common shape) -- each single-trade day is a
     // one-day/one-trade degenerate chunk, falling through to the real,
     // shared ReplayEvent shape (not a ChunkSummary).
@@ -913,6 +913,50 @@ describe("useTradeReplay", () => {
         startValue: 20,
         endValue: 21.6,
       });
+    });
+
+    it("a close event with no matching prior open (a defensive, malformed-data case) still pauses and narrates, rather than being silently dropped (code review finding, fixed)", () => {
+      vi.spyOn(performance, "now").mockReturnValue(1000);
+      const raf = createRafPump();
+      const pacing: ReplayPacing = { transitionMs: 100, eventPauseMs: 50, rewindMs: 100 };
+
+      // A single day whose only event is a "close" with no preceding
+      // "open" anywhere in the series -- deriveWholeRangeIntradaySeries
+      // never actually produces this shape (every real trade's open
+      // always precedes its own close), but buildPointSegments' own
+      // defensive path already handles it for point mode (the close
+      // still pauses, with tradeReturn: null) -- chunk mode's own
+      // day-grouping walk must match that, not silently exclude the
+      // trade from `trades`/`tradeCount` and skip the pause entirely.
+      const ORPHAN_CLOSE_POINTS: PortfolioPoint[] = [
+        { date: "2025-01-01T09:30:00", value: 20, event: null },
+        {
+          date: "2025-01-01T10:00:00",
+          value: 20,
+          event: { type: "close", direction: "long", ticker: "ORPHAN", price: 100 },
+        },
+      ];
+
+      const { result } = renderHook(() => useTradeReplay(ORPHAN_CLOSE_POINTS, pacing, "chunk"));
+
+      act(() => {
+        result.current.play();
+      });
+      raf.tick(1100); // completes the 100ms rewind, landing on "playing"
+      raf.tick(1100); // the single chunk's own 100ms transition completes
+
+      // Without the fix, group.trades would never gain this trade at
+      // all (lastOpenPrice stays null for the whole walk), so
+      // buildChunkLanding would see trades.length === 0 and never
+      // pause -- the close event would be completely invisible in
+      // chunk mode. With the fix, it's the one-day/one-trade degenerate
+      // case: the real ReplayEvent shape, tradeReturn null (no open
+      // price to compute a return from), same as point mode's own
+      // identical defensive case would produce.
+      expect(result.current.frame.activeEvent?.event.type).toBe("close");
+      expect(result.current.frame.activeEvent?.event.ticker).toBe("ORPHAN");
+      expect(result.current.frame.activeEvent?.tradeReturn).toBeNull();
+      expect(result.current.frame.activeChunk).toBeNull();
     });
 
     it("caps chunk count at NUM_CHUNKS (30) regardless of how many real trading days the range spans", () => {
