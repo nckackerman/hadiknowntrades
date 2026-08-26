@@ -8,8 +8,10 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { createRafPump } from "@/lib/raf-pump.test-util";
 import { stubMatchMedia } from "@/lib/stub-match-media.test-util";
 import type { ResultsState } from "@/lib/use-results";
+import { CHUNKED_WHOLE_RANGE_REPLAY_PACING } from "@/components/WholeRangeReplay";
 import { ResultsPanel } from "./ResultsPanel";
 
 /**
@@ -926,6 +928,9 @@ describe("ResultsPanel", () => {
   describe("issue #84: chained per-track starting capital", () => {
     afterEach(() => {
       window.localStorage.clear();
+      // The issue #118 chunked-replay tests below stub performance.now()
+      // -- restore it so it doesn't leak into later tests in this file.
+      vi.restoreAllMocks();
     });
 
     /**
@@ -1148,13 +1153,13 @@ describe("ResultsPanel", () => {
         expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
       });
 
-      it("renders the chart (via WholeRangeReplay) but no 'Watch it happen' button or whole-range worst-case stat on 1M -- both are 1W-only (issue #105 code review finding: the button must never appear for 1M/3M/1Y; independent-review follow-up: nor the whole-range worst-case stat, an undisclosed scope expansion beyond this issue's own 1W-only scope -- the per-day WorstCaseStat elsewhere on the page, issue #84, is unrelated and unaffected)", async () => {
+      it("renders WholeRangeReplay's 'Watch it happen' button and its own whole-range worst-case stat on 1M too (issue #118 widened both from 1W-only to every intraday-daily range -- the per-day WorstCaseStat elsewhere on the page, issue #84, is unrelated and unaffected)", async () => {
         const user = userEvent.setup();
         const state: ResultsState = { status: "success", data: fixtureChainedResult() };
         render(<ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />);
         await submitWholeRangeGuess(user);
 
-        expect(screen.queryByRole("button", { name: /watch it happen/i })).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Watch it happen" })).toBeInTheDocument();
         expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
 
         // Scoped to the whole-range headline's own row -- the per-day
@@ -1165,7 +1170,7 @@ describe("ResultsPanel", () => {
           "Whole-range running balance -- carried day to day, start to finish",
         );
         const row = caption.closest(".relative")!.parentElement!;
-        expect(within(row).queryByText("Worst case, same budget")).not.toBeInTheDocument();
+        expect(within(row).getByText("Worst case, same budget")).toBeInTheDocument();
       });
 
       it("computes and rescales the whole-range worst-case figure (issue #105) from the range's own root, mirroring wholeRangeFinalBalance's own pattern -- mode='long' (1W, the only range this stat is gated on)", async () => {
@@ -1215,7 +1220,7 @@ describe("ResultsPanel", () => {
       });
 
       it.each(["1M", "3M", "1Y"] as const)(
-        "renders no worst-case stat on %s even though the underlying data is identical to 1W's (issue #105 independent-review follow-up: worstCase must be 1W-gated, not just the replay button)",
+        "computes and rescales the whole-range worst-case figure on %s too, identically to 1W (issue #118 widened replaySupported from 1W-only to every intraday-daily range, unlocking both the button and this stat together)",
         async (range) => {
           const user = userEvent.setup();
           const state: ResultsState = { status: "success", data: fixtureChainedResult() };
@@ -1229,11 +1234,44 @@ describe("ResultsPanel", () => {
           );
           await submitWholeRangeGuess(user);
 
+          // Same fixture/math as the 1W-scoped test above:
+          // rescaleFromStartingCapital(20, from=20 [root], to=100) = 100.
           const caption = screen.getByText(
             "Whole-range running balance -- carried day to day, start to finish",
           );
           const row = caption.closest(".relative")!.parentElement!;
-          expect(within(row).queryByText("Worst case, same budget")).not.toBeInTheDocument();
+          const worstCase = within(row).getByText("Worst case, same budget").parentElement!;
+          expect(within(worstCase).getByText("$100.00")).toBeInTheDocument();
+        },
+      );
+
+      it.each(["1M", "3M", "1Y"] as const)(
+        "chunked replay (issue #118) plays a real mid-playback pause through to a genuine completion on %s, using this fixture's own two single-trade days (each its own one-day/one-trade degenerate chunk)",
+        async (range) => {
+          vi.spyOn(performance, "now").mockReturnValue(1000);
+          const raf = createRafPump();
+          const user = userEvent.setup();
+          const state: ResultsState = { status: "success", data: fixtureChainedResult() };
+          render(<ResultsPanel range={range} state={state} selectedDay="2026-08-21" />);
+          await submitWholeRangeGuess(user);
+
+          await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+          // Tick offsets derived from the real, imported chunk-mode
+          // pacing constant, not hardcoded -- see WholeRangeReplay.test.tsx's
+          // own identical comment for why.
+          raf.tick(1000 + CHUNKED_WHOLE_RANGE_REPLAY_PACING.rewindMs); // completes the rewind, landing on "playing"
+          raf.tick(1000 + CHUNKED_WHOLE_RANGE_REPLAY_PACING.transitionMs); // chunk 1's own transition completes -- pauses on day 1's single trade (AAPL)
+
+          // The degenerate single-trade chunk landing narrates the
+          // trade's own close (via the shared buildReplayEvent helper,
+          // use-trade-replay.ts), not its open -- the same real
+          // ReplayEvent shape point mode's own close pause uses.
+          expect(
+            screen.getByRole("status", { name: "Whole-range replay status" }),
+          ).toHaveTextContent("Sold AAPL");
+
+          await user.click(screen.getByRole("button", { name: "Skip to end" }));
+          expect(screen.getByRole("button", { name: "Replay" })).toBeInTheDocument();
         },
       );
     });

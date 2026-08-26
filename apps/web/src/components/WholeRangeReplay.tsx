@@ -1,15 +1,18 @@
 "use client";
 
-// "Watch it happen" trade replay for the 1W whole-range balance (issue
-// #105) -- extends #96/#97/#107/#108's window-model-only replay feature
-// to the intraday-daily whole-range headline. Per docs/plans/issue-105-
-// plan.md sections 1/5, this reuses use-trade-replay.ts's existing
-// per-point walk machinery entirely unmodified -- no new segment-builder
-// or chunking abstraction, just a tighter `pacing` parameter (that hook
-// itself now supports as an optional argument) and two real, previously-
-// undocumented date-formatting bugs fixed at the hook level (see that
-// file's own doc comments on `toPortfolioTimestamp`/`formatDateTime`
-// usage).
+// "Watch it happen" trade replay for the intraday-daily whole-range
+// balance -- 1W shipped first (issue #105), reusing use-trade-replay.ts's
+// existing per-point walk machinery unmodified (a tighter `pacing`
+// parameter, two date-formatting bug fixes at the hook level). Issue
+// #118 extends this same component to 1M/3M/1Y via that hook's new
+// day/chunk-based `segmentMode` (see use-trade-replay.ts's own doc
+// comment) -- per docs/plans/issue-106-plan.md section 3.3, this is the
+// real, shipped component that build extends, not a second, parallel
+// one: both `pacing` and `segmentMode` are now real props instead of a
+// single hardcoded module constant, threaded per range group by
+// ResultsPanel.tsx (WHOLE_RANGE_REPLAY_PACING/"point" for 1W,
+// CHUNKED_WHOLE_RANGE_REPLAY_PACING/"chunk" for 1M/3M/1Y, both exported
+// below).
 //
 // Composes WholeRangeBalance.tsx (extended with its own `worstCase`/
 // `revealSlot` props) instead of HeroAndWorstCase -- a deliberate
@@ -27,13 +30,14 @@ import { useMemo, type ReactNode } from "react";
 import { formatHeroCurrency } from "@/lib/format-currency";
 import type { PortfolioPoint } from "@/lib/portfolio-series";
 import { spansMultipleDays } from "@/lib/portfolio-series";
-import { calloutText, chartLandingFor } from "@/lib/replay-callout";
+import { calloutText, chartLandingFor, chunkSummaryText } from "@/lib/replay-callout";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
 import {
   canReplayFor,
   isReplayLive,
   useTradeReplay,
   type ReplayPacing,
+  type ReplaySegmentMode,
 } from "@/lib/use-trade-replay";
 import { buttonClassName } from "@/components/TradeReplay";
 import { PortfolioChart, type ChartLanding } from "@/components/PortfolioChart";
@@ -69,37 +73,50 @@ interface WholeRangeReplayProps {
   guessStartingCapital: number | null;
   onSubmitGuess: (guess: number, startingCapital: number) => void;
   /**
-   * Whether this range actually supports replay at all (issue #105 code
-   * review finding, fixed) -- `range === "1W"`, computed by
-   * `ResultsPanel.tsx`. This component itself has no notion of "range"
-   * otherwise (every other prop is range-agnostic), so it can't derive
-   * this on its own; the caller must say so explicitly. **Load-bearing,
-   * not cosmetic**: `WHOLE_RANGE_REPLAY_PACING` below is tuned and
-   * live-verified only against 1W's own worst case (15 trades/50 points).
-   * 1M/3M/1Y's own whole-range series can run into the hundreds of
-   * points (see `ResultsPanel.tsx`'s own `wholeRangePoints` doc comment),
-   * for which this pacing has no duration ceiling at all -- issue #105's
-   * own scope, and issue #106's sibling plan, both explicitly defer
-   * those three ranges to their own future build. ANDed with
-   * `canReplayFor`'s own tradeCount/reduced-motion gate below, so the
-   * "Watch it happen" button never renders for an unsupported range
-   * regardless of trade count or motion preference. Does **not** gate
-   * `WholeRangeBalance`/the chart/`children` themselves -- 1M/3M/1Y keep
-   * rendering their own whole-range headline and (non-animated) chart
-   * exactly as they did before this issue, only without a replay button.
+   * Whether this range actually supports replay at all -- computed by
+   * `ResultsPanel.tsx`, since this component has no other notion of
+   * "range" to derive it from on its own (every other prop is
+   * range-agnostic). Every intraday-daily range (1W/1M/3M/1Y) now
+   * supports it (issue #118 widened this from 1W-only, per issue #105's
+   * own scope) -- kept as an explicit prop rather than assumed `true`
+   * unconditionally so a future intraday-daily range that genuinely
+   * isn't ready yet (untested pacing at a new scale, say) has somewhere
+   * to say so without this component needing to know about ranges at
+   * all. ANDed with `canReplayFor`'s own tradeCount/reduced-motion gate
+   * below, so the "Watch it happen" button never renders regardless of
+   * trade count or motion preference when this is `false`. Does **not**
+   * gate `WholeRangeBalance`/the chart/`children` themselves -- an
+   * unsupported range would still render its own whole-range headline
+   * and (non-animated) chart, only without a replay button.
    *
-   * **Also gates the `worstCase` object forwarded to `WholeRangeBalance`
-   * (independent-review finding, post-PR)** -- `WholeRangeBalance` grew
-   * its own "Worst case, same budget" stat as part of this issue, and
-   * that stat is real, well-computed data for every intraday-daily range
-   * (issue #84 already ships per-day worst-case everywhere), so it would
-   * have been easy to let it render unconditionally. Issue #105's own
-   * scope is explicit that only 1W gets new replay-related surface,
-   * though, so 1M/3M/1Y's whole-range headline must render exactly as it
-   * did before this issue -- no new stat -- until issue #106's own future
-   * plan decides that question for the larger ranges on purpose.
+   * **Also gates the `worstCase` object forwarded to `WholeRangeBalance`**
+   * (an independent-review finding on issue #105's own PR, preserved
+   * here) -- the same prop that gates the button also gates the "Worst
+   * case, same budget" stat, so the two can never drift apart (a
+   * `replaySupported: true` range always gets both, `false` gets
+   * neither).
    */
   replaySupported: boolean;
+  /**
+   * How fast the RAF loops move -- required, no default (the same
+   * "no silent fallback by omission" convention `trade-math.ts`'s own
+   * `direction` parameter established): `WHOLE_RANGE_REPLAY_PACING`
+   * (1W, point segment mode) or `CHUNKED_WHOLE_RANGE_REPLAY_PACING`
+   * (1M/3M/1Y, chunk segment mode), both exported below, chosen by
+   * `ResultsPanel.tsx` per range group. See `use-trade-replay.ts`'s own
+   * `pacing` parameter doc comment for the stable-identity requirement.
+   */
+  pacing: ReplayPacing;
+  /**
+   * Which of `useTradeReplay`'s two segment-builders to walk with --
+   * required, same "no silent default" reasoning as `pacing` above (a
+   * caller must decide deliberately, not fall back to "point" by
+   * omission for a range whose trade count that mode was never tuned
+   * for). `"point"` for 1W (per-point walk, unchanged since issue #105);
+   * `"chunk"` for 1M/3M/1Y (issue #118's day/chunk-based reveal -- see
+   * `use-trade-replay.ts`'s own `ReplaySegmentMode` doc comment).
+   */
+  segmentMode: ReplaySegmentMode;
   /**
    * Rendered between the button row and the chart, inside the same
    * `guess !== null` gate -- e.g. the methodology paragraph +
@@ -130,43 +147,111 @@ interface WholeRangeReplayProps {
   chartKey: string;
 }
 
-// Tuned specifically for 1W's own worst case (docs/plans/issue-105-plan.md
-// section 2): up to 15 trades across 5 trading days -> 50 points / 49
-// segments / 30 event-pauses, against deriveWholeRangeIntradaySeries's
-// own point shape (one leading boundary point *per trading day*, no
-// trailing boundary point at all -- a genuinely different layout than
-// derivePortfolioSeries, the window model's own shape use-trade-replay.ts's
-// default pacing was tuned against). Unmodified window-model pacing would
-// run this worst case in ~32.7s; these tightened constants bring it to
-// ~13.0s -- real but not generous margin under the issue's own 10-15s
-// ceiling, deliberately: `eventPauseMs` is the one constant whose job is
-// "stay on screen long enough to read a callout sentence," and this
-// pacing runs up to 30 of those pauses in a single run (5x the window
-// model's own worst case), so tightening it further than this to buy
-// back more margin trades real readability for a number on paper -- see
-// the plan's own section 2.3 for the full worked tradeoff. A module-level
-// constant, not an inline object literal -- its identity must stay
-// stable across renders (this component's own call to useTradeReplay
-// depends on it -- see that hook's own `pacing` parameter doc comment),
-// or its RAF effects would restart on every WholeRangeReplay render.
-//
-// **This pacing is only ever exercised for 1W** -- see `replaySupported`
-// above; a caller not gating on `range === "1W"` would let this untested-
-// at-scale pacing loose on 1M/3M/1Y's own much larger point series.
-const WHOLE_RANGE_REPLAY_PACING: ReplayPacing = {
+// 1W's own pacing (issue #105, docs/plans/issue-105-plan.md section 2):
+// tuned for 1W's own worst case -- up to 15 trades across 5 trading days
+// -> 50 points / 49 segments / 30 event-pauses, against
+// deriveWholeRangeIntradaySeries's own point shape (one leading boundary
+// point *per trading day*, no trailing boundary point at all -- a
+// genuinely different layout than derivePortfolioSeries, the window
+// model's own shape use-trade-replay.ts's default pacing was tuned
+// against). Unmodified window-model pacing would run this worst case in
+// ~32.7s; these tightened constants bring it to ~13.0s -- real but not
+// generous margin under the issue's own 10-15s ceiling, deliberately:
+// `eventPauseMs` is the one constant whose job is "stay on screen long
+// enough to read a callout sentence," and this pacing runs up to 30 of
+// those pauses in a single run (5x the window model's own worst case),
+// so tightening it further than this to buy back more margin trades
+// real readability for a number on paper -- see the plan's own section
+// 2.3 for the full worked tradeoff. Paired with segmentMode "point" only
+// (see WholeRangeReplayProps' own `pacing`/`segmentMode` doc comments) --
+// exported so ResultsPanel.tsx can pass it explicitly for 1W.
+export const WHOLE_RANGE_REPLAY_PACING: ReplayPacing = {
   transitionMs: 130,
   eventPauseMs: 220,
+  rewindMs: 700,
+};
+
+// 1M/3M/1Y's own pacing (issue #118, docs/plans/issue-106-plan.md
+// section 3.1) -- paired with segmentMode "chunk" only. `transitionMs`/
+// `eventPauseMs` here are the same shape as the plan's own
+// CHUNK_TRANSITION_MS/CHUNK_PAUSE_MS, reused as a real ReplayPacing
+// object rather than a separate ad hoc constant pair (per that plan
+// section's own explicit instruction).
+//
+// **The real (not just NUM_CHUNKS-capped) worst-case chunk count per
+// range, worked out precisely (code review finding, fixed -- an earlier
+// version of this comment claimed 3M and 1Y always land on "the
+// identical ceiling," which use-trade-replay.ts's own NUM_CHUNKS
+// comment now explains is false):** `chunkSize =
+// ceil(dayCount / min(dayCount, NUM_CHUNKS))`, and the actual chunk
+// count is `ceil(dayCount / chunkSize)` -- at NUM_CHUNKS = 30, 1M's ~21
+// trading days -> chunkSize 1 -> 21 chunks (one per day, under the cap
+// by construction); 3M's ~62 -> chunkSize 3 -> 21 chunks (coincidentally
+// equal to 1M's own count, not by design); 1Y's ~250 -> chunkSize 9 ->
+// 28 chunks. Analytical worst-case duration is `chunkCount *
+// (transitionMs + eventPauseMs)`.
+//
+// **Both this pacing and NUM_CHUNKS were retuned from the plan's own
+// first-draft numbers (pacing 120/220, NUM_CHUNKS 40) against real
+// live-browser measurement, not just the analytical formula above --
+// the plan's own section 6 flagged both as an implementer/reviewer call
+// to finalize live, and the first-draft numbers genuinely missed their
+// own targets once measured for real.** The old NUM_CHUNKS=40 baseline's
+// own real chunk counts (code review finding, fixed -- an earlier
+// version of this comment reused the *new*, NUM_CHUNKS=30 chunk counts
+// [21/21/28] and mislabeled them as the 40-cap numbers, and separately
+// cited a "~13.6s" 1Y analytical estimate that was actually just
+// `NUM_CHUNKS * pacing` [40 * 340ms], i.e. NUM_CHUNKS treated as if it
+// were the real chunk count -- exactly the "identical ceiling" mistake
+// this comment block is otherwise correcting): at NUM_CHUNKS = 40, 1M's
+// ~21 days -> chunkSize 1 -> 21 chunks (unchanged from the 30-cap case,
+// since 21 is already under either cap); 3M's ~62 -> chunkSize
+// `ceil(62/40)` = 2 -> 31 chunks; 1Y's ~250 -> chunkSize `ceil(250/40)`
+// = 7 -> 36 chunks. Confirmed via the no-root-headless-Chromium
+// technique (apps/web/CLAUDE.md's own established workaround) against
+// this issue's own worst-case synthetic fixture (every trading day
+// maxed at `maxTradesPerDay` = 3 trades): the first-draft 120/220 pacing
+// at NUM_CHUNKS=40 measured **~8.95s for 1M** (target 4-7s, ~25% over
+// its own correct 21-chunk, ~7.1s analytical estimate) and **~20.1s for
+// 1Y** (target 7-14s, ~64% over its own correct 36-chunk, ~12.2s
+// analytical estimate) -- both real overages, not just margin erosion,
+// and 1Y's own overhead percentage running well past 1M's own. The
+// overhead itself scales with a range's own total point count in a way
+// 1W's own ~50-point worst case never exercised: `PortfolioChart`
+// (`React.memo`'d, but still recomputing `linePath`/`areaPath`/
+// `eventMarkers` over the *revealed* prefix on every landing) does
+// genuinely more work per landing as point count grows into the
+// hundreds/thousands (1Y's own worst case is ~2,500 points, vs. 1W's
+// ~50) -- so tightening `pacing` alone wasn't enough; `NUM_CHUNKS`
+// itself (how many times that per-landing cost gets paid) needed
+// lowering too, from 40 to 30, alongside a tighter pacing (80/160).
+// Re-measured live at 80/160 + NUM_CHUNKS=30 (chunk counts of 21/21/28,
+// the section above's own math), across two separate runs for
+// stability: **1M ~6.4s, 3M ~6.8-6.9s, 1Y ~13.6-13.7s** -- all inside
+// their own stated targets. 1M and 3M share nearly the same chunk count
+// (21) yet 3M still measures slightly higher (more total points behind
+// each of those 21 landings); 1Y's own real ~2x-of-3M total reflects
+// both a higher chunk count (28 vs. 21) and a higher per-chunk cost
+// compounding together, not one single mechanism. 1Y's own margin under
+// its 14s ceiling is real but modest (~350ms) -- a similar tightness to
+// 1W's own live-measured ~14.4s against its own ~15s ceiling, see
+// WHOLE_RANGE_REPLAY_PACING's own comment -- this codebase's established
+// tolerance for a close-but-compliant margin, not a red flag).
+export const CHUNKED_WHOLE_RANGE_REPLAY_PACING: ReplayPacing = {
+  transitionMs: 80,
+  eventPauseMs: 160,
   rewindMs: 700,
 };
 
 /**
  * Wraps `WholeRangeBalance` (extended with its own `worstCase`/
  * `revealSlot` props) plus the whole-range `PortfolioChart` with an
- * opt-in "Watch it happen" replay, for the 1W preset range specifically
- * (issue #105, gated via `replaySupported` -- see that prop's own doc
- * comment) -- the intraday-daily model's own equivalent of
- * `TradeReplay.tsx`, composing a different hero component for the
- * reason stated in this file's own header comment.
+ * opt-in "Watch it happen" replay -- the intraday-daily model's own
+ * equivalent of `TradeReplay.tsx`, composing a different hero component
+ * for the reason stated in this file's own header comment. Shared by
+ * every intraday-daily range (1W/1M/3M/1Y); `pacing`/`segmentMode`
+ * (both required props, see their own doc comments) are what actually
+ * differ per range group, chosen by `ResultsPanel.tsx`.
  *
  * **Guess-then-reveal sequencing is gated by construction, not by a
  * second check (docs/plans/issue-105-plan.md section 3.4).**
@@ -202,6 +287,20 @@ const WHOLE_RANGE_REPLAY_PACING: ReplayPacing = {
  * simply returns to the same static, unanimated headline the guess
  * reveal itself already showed -- see this repo's PR history for the
  * explicit sign-off this tradeoff was flagged for.
+ *
+ * **Chunk-mode callout has two voices (issue #118), point mode always
+ * has one.** `frame.activeEvent`/`frame.activeChunk` are mutually
+ * exclusive (see `ReplayFrame`'s own doc comment in
+ * use-trade-replay.ts) -- `activeEvent` (a single real trade) reuses the
+ * exact same `calloutText`/chart-anchored marker-bubble treatment 1W
+ * already has, including for chunk mode's own one-day/one-trade
+ * degenerate case; `activeChunk` (a genuine multi-trade chunk summary)
+ * has no single marker to anchor a speech bubble to (a chunk can span
+ * several days, and its own terminal point doesn't necessarily carry a
+ * trade event -- see use-trade-replay.ts's own `buildChunkLanding` doc
+ * comment), so it renders as a plain visible callout line below the
+ * button row instead, alongside the identical sentence already reaching
+ * the sr-only status region.
  */
 export function WholeRangeReplay({
   rangeLabel,
@@ -215,13 +314,16 @@ export function WholeRangeReplay({
   guessStartingCapital,
   onSubmitGuess,
   replaySupported,
+  pacing,
+  segmentMode,
   children,
   chartKey,
 }: WholeRangeReplayProps) {
   const reducedMotionAtMount = useReducedMotionAtMount();
   const { phase, frame, displayDate, play, skipToEnd } = useTradeReplay(
     points,
-    WHOLE_RANGE_REPLAY_PACING,
+    pacing,
+    segmentMode,
   );
 
   // Memoized (matching TradeReplay.tsx's own identical fix) -- constant
@@ -236,11 +338,22 @@ export function WholeRangeReplay({
   const canReplay = canReplayFor(tradeCount, reducedMotionAtMount) && replaySupported;
   const showLive = isReplayLive(phase);
 
-  const activeCallout = frame.activeEvent ? calloutText(frame.activeEvent, includeDate) : null;
+  // Two mutually-exclusive callout voices (issue #118) -- see this
+  // component's own doc comment for the full "why two" reasoning.
+  // `frame.activeEvent`/`frame.activeChunk` never both hold a value at
+  // once (use-trade-replay.ts's own ReplayFrame doc comment).
+  const activeCallout = frame.activeEvent
+    ? calloutText(frame.activeEvent, includeDate)
+    : frame.activeChunk
+      ? chunkSummaryText(frame.activeChunk)
+      : null;
 
   // Issue #108-style marker pulse/shake/speech-bubble wiring for
   // PortfolioChart -- `chartLandingFor` is shared with TradeReplay.tsx
-  // (issue #105 code review finding).
+  // (issue #105 code review finding). Only ever non-null when
+  // `frame.activeEvent` is set (chartLandingFor's own gate), so a
+  // genuine multi-trade chunk summary never tries to anchor a bubble to
+  // a marker that may not exist -- see this component's own doc comment.
   const landing: ChartLanding | null = useMemo(
     () => chartLandingFor(phase, frame.activeEvent, activeCallout),
     [phase, frame.activeEvent, activeCallout],
@@ -269,15 +382,8 @@ export function WholeRangeReplay({
   // numeric inputs has changed; a fresh object literal passed inline on
   // every render would defeat that memo entirely.
   //
-  // Gated by `replaySupported` (independent-review finding, post-PR):
-  // `WholeRangeBalance` renders a `WorstCaseStat` sibling whenever
-  // `worstCase` is non-`undefined` and revealed, with no range awareness
-  // of its own -- passing a real object unconditionally here would have
-  // given 1M/3M/1Y a brand-new "Worst case, same budget" stat they never
-  // had before this issue, an undisclosed scope expansion beyond issue
-  // #105's own explicit scope ("1W specifically, not 1M/3M/1Y"). Issue
-  // #106's own future plan is where that question gets decided for the
-  // larger ranges, not preempted here.
+  // Gated by `replaySupported` -- see that prop's own doc comment for
+  // why the button and this stat must never drift apart.
   const worstCase = useMemo(
     () =>
       replaySupported
@@ -298,7 +404,10 @@ export function WholeRangeReplay({
   // rediscovering its overflow lesson a second time) and the value row
   // stays byte-for-byte the same three-span shape as the real headline's
   // own markup, just with `frame.currentValue` substituted for
-  // `finalBalance`.
+  // `finalBalance`. Works identically for chunk mode (issue #118):
+  // `displayDate` reads as "the end date of whichever chunk is currently
+  // revealed" (see use-trade-replay.ts's own `displayDate` doc comment),
+  // still a real, meaningful date with no separate handling needed here.
   let revealSlot: ReactNode = undefined;
   if (phase === "rewinding" || phase === "playing") {
     revealSlot = (
@@ -355,6 +464,73 @@ export function WholeRangeReplay({
               )
             )}
           </div>
+
+          {/* A genuine multi-trade chunk summary (issue #118) has no
+              single marker to anchor a chart-side speech bubble to (see
+              this component's own doc comment) -- shown as a plain
+              visible line instead, identical wording to the sr-only
+              status region above. Never rendered for point mode (which
+              never populates activeChunk at all) or once live again --
+              only for the whole `!showLive` (rewinding/playing) stretch
+              of a chunk-mode run.
+
+              **Always mounted for the whole `!showLive` stretch, not
+              conditionally on `frame.activeChunk` alone (independent-
+              review finding, fixed) -- toggled via `invisible`, the
+              same idiom `WholeRangeBalance.tsx`'s own revealSlot pairing
+              already establishes, not a ternary swap.** This is a plain
+              flow element (unlike the chart-anchored bubble, not
+              absolutely positioned), sitting between the button row and
+              `children`/the chart -- and `tick()`'s own logic sets
+              `activeChunk` back to `null` on every intervening tween
+              frame between two chunk landings (see ReplayFrame's own doc
+              comment), so a naive `{frame.activeChunk && <p>...}` mounts
+              and unmounts this element on every single chunk boundary
+              during a real multi-chunk run, visibly shifting the chart/
+              children block down and back up each time (confirmed live,
+              via a real pixel measurement across a genuine multi-trade
+              chunk landing and its clearing, before this fix). Reserving
+              the line's height for the whole run instead means the "make
+              room" shift happens at most once, when playback starts (or
+              never, in the common case where the first landing is
+              already the empty-string frame before any user has had a
+              chance to notice) -- not once per chunk boundary. */}
+          {segmentMode === "chunk" && !showLive && (
+            <p
+              aria-hidden="true"
+              className={`min-h-10 text-sm text-[var(--text-secondary)] ${
+                frame.activeChunk ? "line-clamp-2" : "invisible"
+              }`}
+            >
+              {/* Only ever real text for a genuine chunk summary -- a
+                  plain space placeholder otherwise (including the
+                  one-day/one-trade degenerate case, which already
+                  narrates via the chart-anchored bubble/status region
+                  above; duplicating that same sentence a third time
+                  here, just invisible, would be pointless -- caught by
+                  exactly this scenario in a test regression).
+
+                  `min-h-10` (2 lines' worth at text-sm) + `line-clamp-2`
+                  together give this line a genuinely *fixed* height,
+                  not just a minimum (independent-review finding, fixed
+                  -- a first attempt at this fix used only a plain-space
+                  placeholder with no min-height/clamp at all, which
+                  reserved however many lines *that* render's content
+                  happened to wrap to; a real chunk summary sentence's
+                  own length varies chunk to chunk, so some genuinely
+                  wrap to a second line and some don't, live-verified via
+                  a real chart-position measurement across an entire
+                  worst-case run -- confirmed a real, if smaller, residual
+                  shift between 1-line and 2-line chunk summaries even
+                  after that first fix). `line-clamp-2` caps the rare
+                  chunk whose own summary sentence would need a third
+                  line (a real trade count into the hundreds, on 1Y);
+                  the sr-only status region right above carries the full,
+                  untruncated sentence regardless, so no information is
+                  lost, only this decorative line's own display. */}
+              {frame.activeChunk ? activeCallout : " "}
+            </p>
+          )}
 
           {children}
 

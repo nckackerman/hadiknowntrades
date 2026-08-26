@@ -1,7 +1,7 @@
 import { formatHeroCurrency, formatPercent } from "@/lib/format-currency";
-import { formatDateTime } from "@/lib/format-date";
+import { formatDate, formatDateTime } from "@/lib/format-date";
 import { tradeVerbsPastCapitalized } from "@/lib/trade-math";
-import type { ReplayEvent, ReplayPhase } from "@/lib/use-trade-replay";
+import type { ChunkSummary, ReplayEvent, ReplayPhase } from "@/lib/use-trade-replay";
 import type { ChartLanding } from "@/components/PortfolioChart";
 
 /**
@@ -50,4 +50,31 @@ export function chartLandingFor(
 ): ChartLanding | null {
   if (phase !== "playing" || !activeEvent || !activeCallout) return null;
   return { event: activeEvent.event, calloutText: activeCallout };
+}
+
+/**
+ * Summary narration for a genuine multi-trade day/chunk pause (issue
+ * #118, 1M/3M/1Y's chunked whole-range replay) -- a distinct,
+ * deliberately less granular register than `calloutText`'s own
+ * single-trade voice above: a chunk can span up to `chunkDayCount *
+ * maxTradesPerDay` trades, and narrating each individually inside one
+ * pause would be an unreadable blur, not "watch it happen." The
+ * one-day/one-trade degenerate chunk never reaches this function --
+ * `use-trade-replay.ts`'s own chunk segment-builder falls through to
+ * `calloutText` above for that case instead (see that module's
+ * `buildChunkLanding` doc comment).
+ *
+ * `startDate`/`endDate` are always plain calendar dates ("YYYY-MM-DD",
+ * from `calendarDayOf`), never datetime-labeled -- no `includeDate`
+ * parameter needed the way `calloutText` takes one for its own
+ * point-level date.
+ */
+export function chunkSummaryText(summary: ChunkSummary): string {
+  const { startDate, endDate, tradeCount, startValue, endValue } = summary;
+  const dateRange =
+    startDate === endDate
+      ? formatDate(startDate)
+      : `${formatDate(startDate)} - ${formatDate(endDate)}`;
+  const tradeWord = tradeCount === 1 ? "trade" : "trades";
+  return `${dateRange}: ${tradeCount} ${tradeWord}, ${formatHeroCurrency(startValue)} -> ${formatHeroCurrency(endValue)}.`;
 }
