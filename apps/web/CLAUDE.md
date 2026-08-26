@@ -5510,3 +5510,114 @@ build`, `pnpm test`, `pnpm format:check`) re-ran green after both
   fixes, and the debug route/script/temporary `playwright`
   devDependency were all reverted before committing, per this file's own
   established convention.
+
+## Page structure: this is a single-page app, and new mechanics are sections, not routes (issue #122)
+
+**Standing architectural decision, made once so independent agents
+building The Call Board (#128/#129), Beat the Bench (#131/#132) and The
+Daily Ritual (#133) don't each make an incompatible assumption.** The
+design artifact behind issue #120 renders those mechanics at separate
+illustrative routes (`/predict`, `/bench?range=daily`); **that is a
+mockup convention, not the shipping architecture.** Don't build them as
+routes.
+
+### The current real render order (verified, not assumed)
+
+`apps/web/src/app/` holds exactly one `page.tsx` (18 lines, a `Suspense`
+boundary around `ResultsPage`) plus `layout.tsx`, `error.tsx`,
+`global-error.tsx`, `globals.css`, and three `api/` routes -- there is
+no second page anywhere. Every view axis is a query param on `/`
+(`?range=`, `?anchor=`, `?day=`, `?mode=`), owned by `ResultsPage.tsx`.
+
+`ResultsPage.tsx:124-174` returns one `max-w-3xl` flex column:
+
+1. `<OnboardingIntro />` (`:126`)
+2. `<header>` (`:128-162`): `<h1>`, `<RangeSelector>` (`:130`), and a
+   "More options" `<details>` (`:148-161`) wrapping `CustomRangeSelector`
+   - `ModeToggle`
+3. `<ResultsPanel … />` (`:164-172`)
+
+`ResultsPanel` (`ResultsPanel.tsx:397`) early-returns `<LoadingSkeleton />`
+(`:548`) or the error box (`:553-560`) before any content, then branches
+on `data.model`:
+
+- **`"intraday-daily"`** (`:683-809`), inside `<FadeInWrapper>`:
+  1. `<WholeRangeReplay>` (`:699-726`) -- the whole-range guess/reveal
+     headline, the "Watch it happen" button row, its `children` (the
+     methodology `<p>` at `:715-719` and `<BenchmarkStat>` at `:720-725`),
+     and the whole-range `PortfolioChart` it owns internally
+  2. `<DayOverview>` (`:728-741`)
+  3. the sr-only `role="status"` day/mode announcement (`:755-757`)
+  4. the per-day `<HeroAndWorstCase>` + `<StartingCapitalInput>` row
+     (`:759-792`)
+  5. the "Trades" `<h2>` + `<IntradayTradeList>`/empty box (`:794-803`)
+  6. `<AboutSection>` (`:805-807`)
+- **`"custom-window"`** (`:812-836`) and **`"window"`** (`:849-876`) both
+  render `<WindowResultBody>` (`:266-328`), inside `<FadeInWrapper>`:
+  1. `<TradeReplay>` (`:282-310`) -- hero row, "Watch it happen", its
+     `children` (`<BenchmarkStat>` at `:304-309`), and the chart
+  2. the "Trades" `<h2>` + `<TradeList>`/empty box (`:312-321`)
+  3. `<AboutSection>` (`:323-325`)
+
+### The decision
+
+1. **Sections, not routes.** No new files under `apps/web/src/app/`, no
+   `/predict`, no `/bench`, no `?tab=`. Routing would mean a second
+   `Suspense`/`useSearchParams` shell, a duplicated header/onboarding
+   chrome, and cross-route navigation state -- for zero stated benefit
+   (there are no accounts, no auth, and nothing in #128-#133 asks for a
+   deep link to a mechanic). It would also directly break #133's status
+   rail, which has to show hero-seen + Beat-the-Bench-played +
+   Call-Board-slots-filled together in one view, and the single-scroll
+   "daily ritual" the whole milestone is built around.
+2. **Each mechanic is one self-contained section component** under
+   `apps/web/src/components/` (`CallBoard.tsx`, `BeatTheBench.tsx`),
+   owning its own localStorage-backed state via this file's established
+   two-layer pattern (see "localStorage pattern" above). **Neither takes
+   `PrecomputedResult`, `range`, `mode`, or `selectedDay` props** --
+   neither mechanic is a function of the hindsight result, and keeping
+   them result-independent is what makes the placement below work.
+3. **They mount in `ResultsPage.tsx`, not inside `ResultsPanel.tsx`'s
+   model branches.** Two concrete reasons, both real rather than
+   stylistic: (a) `ResultsPanel` renders nothing but a skeleton or an
+   error box until `/api/results` succeeds (`:548`/`:553`), so anything
+   placed inside it disappears whenever that fetch is slow or 500s --
+   a routinely-hit state locally (see "Local development without AWS
+   credentials" at the top of this file) and a real operational one;
+   the daily ritual shouldn't depend on the hindsight result loading.
+   (b) `ResultsPanel` has three mutually exclusive model branches, so
+   "inside" means duplicating the mount into both `WindowResultBody`
+   (`:280-327`) and the intraday-daily branch (`:683-809`) -- exactly the
+   two-copies-to-keep-in-sync shape this codebase has been bitten by
+   repeatedly (the `HeroAndWorstCase` extraction, the three
+   `effectiveStartingCapital` misses).
+4. **Exact attachment points**, in the order they should be built:
+   - **#129 and #131 (day one, no `ResultsPanel` change at all):** render
+     `<BeatTheBench />` then `<CallBoard />` as direct children of
+     `ResultsPage.tsx`'s `max-w-3xl` column (`:125`), immediately after
+     `<ResultsPanel … />` (`:164-172`). This is shippable on its own and
+     is the default if #133 never lands.
+   - **#133 (the final engagement order -- hero reveal, then Beat the
+     Bench, then The Call Board):** do **not** move the mechanics into
+     `ResultsPanel`'s branches. `ResultsPage` keeps creating and owning
+     both elements; `ResultsPanel` grows **one** optional
+     `afterHero?: ReactNode` prop, rendered at exactly two sites --
+     immediately after `</TradeReplay>` in `WindowResultBody` (between
+     `ResultsPanel.tsx:310` and `:312`) and immediately after
+     `</WholeRangeReplay>` in the intraday-daily branch (between `:726`
+     and `:728`). Only one branch ever renders, so this is still one
+     instance and one state owner, and it is the same `children`-slot
+     idiom `TradeReplay`/`WholeRangeReplay` already use for
+     `BenchmarkStat` (see their own doc comments -- that slot exists
+     precisely so `ResultsPanel` can inject content at a fixed point in
+     the hero block without reordering anything relative to the chart).
+     Net order becomes: hero reveal -> Beat the Bench -> The Call Board
+     -> `DayOverview`/per-day drill-down/trade list -> `AboutSection`.
+   - **Known trade-off of the slot, decide it deliberately in #133:**
+     anything passed through `afterHero` inherits `ResultsPanel`'s fetch
+     gate and is therefore absent during loading/error, unlike the
+     default placement. If a fetch failure must still leave the daily
+     ritual playable, keep #133's status rail (and, if needed, the two
+     mechanics themselves) at the `ResultsPage` level instead. This is a
+     product call, not an architectural one -- the mount point and
+     ownership stay the same either way.
