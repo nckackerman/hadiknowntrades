@@ -5241,9 +5241,17 @@ own "Headless-browser screenshot verification" section, against a
 synthetic worst-case fixture -- every trading day maxed at
 `maxTradesPerDay` = 3 trades), the plan's own first-draft 120/220 pacing
 at `NUM_CHUNKS = 40` played 1M's own worst case in **~8.95s** (target
-4-7s, ~25% over its own ~7.1s analytical estimate) and 1Y's own worst
-case in **~20.1s** (target 7-14s, ~47% over its own ~13.6s analytical
-estimate) -- both real overages a user would actually notice, not just
+4-7s, ~25% over its own correct ~7.1s analytical estimate -- 21 chunks,
+since 1M's own ~21 trading days stay under either a 30 or 40 cap) and
+1Y's own worst case in **~20.1s** (target 7-14s, ~64% over its own
+correct ~12.2s analytical estimate -- 36 chunks at a 40 cap, from
+`chunkSize = ceil(250/40) = 7`, `actualChunks = ceil(250/7) = 36`; a
+code-review finding, fixed, caught an earlier version of this paragraph
+reusing the _new_, NUM_CHUNKS=30 chunk counts [21/21/28] mislabeled as
+the 40-cap numbers, and separately citing a "~13.6s" 1Y estimate that
+was actually just `NUM_CHUNKS * pacing` [40 chunks, not 36] -- exactly
+the "identical ceiling" mistake this whole retuning story is otherwise
+correcting) -- both real overages a user would actually notice, not just
 analytical-estimate margin. The root cause: `PortfolioChart` (already
 `React.memo`'d, issue #96 follow-up round four) still recomputes
 `linePath`/`areaPath`/`eventMarkers` over the _revealed_ prefix on every
@@ -5252,11 +5260,12 @@ landing, and that cost grows with a range's own total point count --
 `pacing` alone wasn't enough; `NUM_CHUNKS` itself (how many times that
 per-landing cost gets paid) needed lowering too. Retuned to
 `NUM_CHUNKS = 30` plus `{ transitionMs: 80, eventPauseMs: 160, rewindMs:
-700 }`, re-measured live (two separate runs, for stability): **1M
-~6.4s, 3M ~6.8-6.9s, 1Y ~13.6-13.7s** -- all inside their own stated
-targets, 1Y with a real but modest ~350ms margin under its 14s ceiling
-(comparable tightness to 1W's own live-measured ~14.4s against its own
-~15s ceiling -- an accepted, established margin profile for this
+700 }` (now 21/21/28 actual chunks for 1M/3M/1Y respectively), re-measured
+live (two separate runs, for stability): **1M ~6.4s, 3M ~6.8-6.9s, 1Y
+~13.6-13.7s** -- all inside their own stated targets, 1Y with a real but
+modest ~350ms margin under its 14s ceiling (comparable tightness to 1W's
+own live-measured ~14.4s against its own ~15s ceiling -- an accepted,
+established margin profile for this
 feature, not a red flag).
 
 **Also live-verified against real pipeline data**
@@ -5366,3 +5375,138 @@ ceil(dayGroups.length / chunkCount)`; the walk then strides by that
   `WholeRangeReplay.test.tsx`.
 - All five routine checks (lint, `next typegen && tsc --noEmit`, `pnpm
 build`, `pnpm test`, `pnpm format:check`) re-ran green after every fix.
+
+### Independent-review follow-up -- one doc-accuracy correction, one real layout-shift bug found and fixed via pixel measurement (not just DOM presence)
+
+A second, independent review round on the already-opened PR (after the
+code-review round above) found two more things -- both fixed before
+merge.
+
+- **The `NUM_CHUNKS = 40` baseline's own real chunk counts, cited in
+  both `CHUNKED_WHOLE_RANGE_REPLAY_PACING`'s comment and this file's own
+  retuning section above, were arithmetically wrong -- confirmed by the
+  reviewer recomputing from this repo's own stated formula.** An earlier
+  version of both comments reused the _new_, `NUM_CHUNKS = 30` chunk
+  counts (21/21/28 for 1M/3M/1Y) and mislabeled them as the old 40-cap
+  numbers, and separately cited a "~13.6s" 1Y analytical estimate that
+  was actually just `NUM_CHUNKS * pacing` (`40 * 340ms`) -- i.e.
+  `NUM_CHUNKS` itself treated as if it were the real chunk count, the
+  exact "identical ceiling" mistake this whole retuning narrative is
+  otherwise correcting (see the code-review section above, which fixed
+  the _general_ version of this mistake but happened to still get the
+  _specific_ 40-cap numbers wrong in the process). Correctly recomputed
+  via this repo's own `chunkSize = ceil(dayCount / min(dayCount,
+NUM_CHUNKS))`, `actualChunks = ceil(dayCount / chunkSize)` formula, at
+  `NUM_CHUNKS = 40`: 1M's 21 days -> chunkSize 1 -> 21 chunks (unchanged
+  from the 30-cap case, since 21 already sits under either cap); 3M's 62
+  days -> chunkSize `ceil(62/40)` = 2 -> 31 chunks; 1Y's 250 days ->
+  chunkSize `ceil(250/40)` = 7 -> 36 chunks. This changes the _stated_
+  analytical estimates and overhead percentages for the old baseline
+  (1Y: ~12.2s analytical, not ~13.6s; ~64% real overhead against the
+  ~20.1s measurement, not ~47%) but **not** any shipped runtime
+  behavior -- the real constants in the code (`NUM_CHUNKS = 30`, `{
+transitionMs: 80, eventPauseMs: 160, rewindMs: 700 }`) and every
+  live-measured duration for the _current_ pacing were already correct;
+  this was purely a doc-accuracy bug in the narrative explaining _why_
+  the retune was needed. Both comments (`CHUNKED_WHOLE_RANGE_REPLAY_PACING`
+  in `WholeRangeReplay.tsx`, and this file's own retuning section above)
+  rewritten with the correct 40-cap numbers, and both now spell out the
+  exact prior error (which numbers got swapped for which) so a future
+  reader can see why the story changed, not just that it did.
+- **The genuine multi-trade chunk-summary line was a plain flow
+  `<p>`, mounted and unmounted on every chunk-summary landing and
+  clearing (`{frame.activeChunk && <p>...}`) -- a real, live-confirmed
+  layout-shift bug, not a hypothetical one.** Unlike the existing
+  chart-anchored speech bubble (absolutely positioned, so its own
+  mount/unmount never affects surrounding flow), this line sits in
+  normal document flow between the button row and `children`/the chart
+  -- and `tick()`'s own logic clears `activeChunk` back to `null` on
+  every intervening tween frame between two chunk landings (see
+  `ReplayFrame`'s own doc comment), so a real multi-chunk run mounts and
+  unmounts this element repeatedly, visibly shifting the chart/children
+  block down and back up on every single chunk boundary. **The original
+  live verification for this feature only asserted DOM presence/absence
+  of the summary text (`getByText`/`queryByText` in
+  `WholeRangeReplay.test.tsx`), never an actual pixel/position
+  measurement** -- exactly the category of gap issue #107's own
+  `heroSlot` overlay-height-matching bug (see that section above) had to
+  be caught the same way, by a real screenshot, not by DOM assertions
+  alone. Fixed in two iterations, both confirmed live via a real
+  `getBoundingClientRect().y` measurement of the chart's own position
+  sampled every 20ms across an entire synthetic worst-case run (a
+  throwaway debug route + the no-root-headless-Chromium technique, per
+  this file's own established convention):
+  1. **First attempt**: always mount the `<p>` for the whole
+     `!showLive` (rewinding/playing) stretch of a chunk-mode run, not
+     conditionally on `frame.activeChunk` alone -- toggled via
+     `invisible`, the same idiom `WholeRangeBalance.tsx`'s own
+     `revealSlot` pairing already establishes. This eliminated the
+     _mount/unmount_ shift (confirmed: the chart's own Y position no
+     longer changed on every chunk boundary) but a real, smaller
+     residual shift remained: a plain-space placeholder (when
+     `activeChunk` is `null`) is always exactly one line tall, but a
+     _real_ chunk-summary sentence's own length varies chunk to chunk
+     (different date ranges, trade counts, dollar figures), and some
+     genuinely wrap to a second line at this page's own content width
+     while others don't -- so the reserved space itself wasn't actually
+     fixed, just less variable than before. Live-measured: the chart's
+     own Y position took on 2 distinct values during a single
+     uninterrupted playback run (not the many distinct values the
+     original bug produced, but still 2, not the expected 1).
+  2. **Second attempt (the one that holds)**: `min-h-10` (2 lines' worth
+     at `text-sm`) plus `line-clamp-2` together, applied whenever a
+     genuine chunk summary is showing. This gives the line a genuinely
+     _fixed_ height regardless of actual content length -- `min-h-10` is
+     the floor (never shrinks below 2 lines, including for the
+     single-line placeholder-space state), `line-clamp-2` is the
+     ceiling (caps the rare chunk whose own summary sentence would need
+     a third line, e.g. a real trade count into the hundreds on 1Y --
+     the sr-only status region right above it still carries the full,
+     untruncated sentence, so no information is lost, only this
+     decorative line's own display). Live re-measured across the same
+     synthetic run (400 samples at 20ms intervals, 163 of them landing
+     on a genuine multi-trade chunk summary with varying real sentence
+     lengths): the chart's own Y position took on exactly 2 distinct
+     values for the _entire_ run -- one constant value for the whole
+     `!showLive` stretch (idle -> rewinding -> playing, regardless of
+     which specific chunk summary was showing or whether it was a
+     1-line or 2-line-worth sentence), and a second, different constant
+     value once back to idle/done (no reservation at all, matching
+     pre-#118 layout for point mode and every other range). That
+     single, one-time "make room" transition when playback starts (or
+     stops) is the deliberate, accepted shift this design has always
+     called for -- not a regression, and not what this finding was
+     about. Screenshotted both the finished state and a real
+     mid-playback multi-trade-chunk landing to confirm the line renders
+     legibly, correctly positioned between the button row and the
+     methodology paragraph, with no visual artifacts.
+  - **A real debugging detour worth remembering for the next
+    per-chunk-landing live measurement in this app**: an earlier version
+    of this same verification script polled state via several
+    Playwright locator calls per sample (a `boundingBox()` on a
+    regex-matched button locator queried against a 60+-button
+    `DayOverview` DOM, plus a separate `allTextContents()` call over the
+    same DOM), and appeared to show the _entire_ worst-case run
+    completing in under 100ms of nominal `waitForTimeout` elapsed time --
+    not a real RAF-speed anomaly (confirmed separately, by hooking
+    `window.requestAnimationFrame` directly and observing normal,
+    real-time-paced frame deltas), but an artifact of the _verification
+    script's own_ per-sample Playwright/CDP overhead: repeatedly
+    resolving a regex-based accessible-name query against dozens of
+    text-heavy elements is itself slow enough in real wall-clock terms
+    that, while the script was still "inside" what it thought was one
+    50ms sample, several real seconds had already elapsed on the actual
+    page -- long enough for the whole chunked run to finish in the
+    background, undisturbed. Fixed by consolidating each sample into one
+    single, cheap `page.evaluate()` call (plain `document.querySelector`/
+    `getBoundingClientRect()` in-page, no per-element Playwright/CDP
+    round-trips) -- worth the same discipline for any future test
+    against a real, large `DayOverview`-heavy fixture: prefer one cheap
+    in-page evaluation per sample over several locator-based queries,
+    especially any that use a regex name matcher against a large,
+    text-heavy DOM.
+- All five routine checks (lint, `next typegen && tsc --noEmit`, `pnpm
+build`, `pnpm test`, `pnpm format:check`) re-ran green after both
+  fixes, and the debug route/script/temporary `playwright`
+  devDependency were all reverted before committing, per this file's own
+  established convention.

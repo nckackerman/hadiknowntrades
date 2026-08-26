@@ -196,26 +196,37 @@ export const WHOLE_RANGE_REPLAY_PACING: ReplayPacing = {
 // live-browser measurement, not just the analytical formula above --
 // the plan's own section 6 flagged both as an implementer/reviewer call
 // to finalize live, and the first-draft numbers genuinely missed their
-// own targets once measured for real.** Confirmed via the no-root-
-// headless-Chromium technique (apps/web/CLAUDE.md's own established
-// workaround) against this issue's own worst-case synthetic fixture
-// (every trading day maxed at `maxTradesPerDay` = 3 trades): the
-// first-draft 120/220 pacing at NUM_CHUNKS=40 (chunk counts of 21/21/28,
-// same math as above but against a 40 cap) measured **~8.95s for 1M**
-// (target 4-7s, ~25% over its own ~7.1s analytical estimate) and
-// **~20.1s for 1Y** (target 7-14s, ~47% over its own ~13.6s analytical
-// estimate) -- both real overages, not just margin erosion, and 1Y's own
-// overhead percentage running well past 1M's own. The overhead itself
-// scales with a range's own total point count in a way 1W's own
-// ~50-point worst case never exercised: `PortfolioChart` (`React.memo`'d,
-// but still recomputing `linePath`/`areaPath`/`eventMarkers` over the
-// *revealed* prefix on every landing) does genuinely more work per
-// landing as point count grows into the hundreds/thousands (1Y's own
-// worst case is ~2,500 points, vs. 1W's ~50) -- so tightening `pacing`
-// alone wasn't enough; `NUM_CHUNKS` itself (how many times that
-// per-landing cost gets paid) needed lowering too, from 40 to 30,
-// alongside a tighter pacing (80/160). Re-measured live at 80/160 +
-// NUM_CHUNKS=30 (chunk counts of 21/21/28), across two separate runs for
+// own targets once measured for real.** The old NUM_CHUNKS=40 baseline's
+// own real chunk counts (code review finding, fixed -- an earlier
+// version of this comment reused the *new*, NUM_CHUNKS=30 chunk counts
+// [21/21/28] and mislabeled them as the 40-cap numbers, and separately
+// cited a "~13.6s" 1Y analytical estimate that was actually just
+// `NUM_CHUNKS * pacing` [40 * 340ms], i.e. NUM_CHUNKS treated as if it
+// were the real chunk count -- exactly the "identical ceiling" mistake
+// this comment block is otherwise correcting): at NUM_CHUNKS = 40, 1M's
+// ~21 days -> chunkSize 1 -> 21 chunks (unchanged from the 30-cap case,
+// since 21 is already under either cap); 3M's ~62 -> chunkSize
+// `ceil(62/40)` = 2 -> 31 chunks; 1Y's ~250 -> chunkSize `ceil(250/40)`
+// = 7 -> 36 chunks. Confirmed via the no-root-headless-Chromium
+// technique (apps/web/CLAUDE.md's own established workaround) against
+// this issue's own worst-case synthetic fixture (every trading day
+// maxed at `maxTradesPerDay` = 3 trades): the first-draft 120/220 pacing
+// at NUM_CHUNKS=40 measured **~8.95s for 1M** (target 4-7s, ~25% over
+// its own correct 21-chunk, ~7.1s analytical estimate) and **~20.1s for
+// 1Y** (target 7-14s, ~64% over its own correct 36-chunk, ~12.2s
+// analytical estimate) -- both real overages, not just margin erosion,
+// and 1Y's own overhead percentage running well past 1M's own. The
+// overhead itself scales with a range's own total point count in a way
+// 1W's own ~50-point worst case never exercised: `PortfolioChart`
+// (`React.memo`'d, but still recomputing `linePath`/`areaPath`/
+// `eventMarkers` over the *revealed* prefix on every landing) does
+// genuinely more work per landing as point count grows into the
+// hundreds/thousands (1Y's own worst case is ~2,500 points, vs. 1W's
+// ~50) -- so tightening `pacing` alone wasn't enough; `NUM_CHUNKS`
+// itself (how many times that per-landing cost gets paid) needed
+// lowering too, from 40 to 30, alongside a tighter pacing (80/160).
+// Re-measured live at 80/160 + NUM_CHUNKS=30 (chunk counts of 21/21/28,
+// the section above's own math), across two separate runs for
 // stability: **1M ~6.4s, 3M ~6.8-6.9s, 1Y ~13.6-13.7s** -- all inside
 // their own stated targets. 1M and 3M share nearly the same chunk count
 // (21) yet 3M still measures slightly higher (more total points behind
@@ -458,13 +469,66 @@ export function WholeRangeReplay({
               single marker to anchor a chart-side speech bubble to (see
               this component's own doc comment) -- shown as a plain
               visible line instead, identical wording to the sr-only
-              status region above. Never rendered for the one-day/one-
-              trade degenerate case or point mode (both use the existing
-              chart-anchored bubble via `landing` instead) or for a
-              no-trade chunk (activeChunk stays null, nothing to show). */}
-          {frame.activeChunk && (
-            <p aria-hidden="true" className="text-sm text-[var(--text-secondary)]">
-              {activeCallout}
+              status region above. Never rendered for point mode (which
+              never populates activeChunk at all) or once live again --
+              only for the whole `!showLive` (rewinding/playing) stretch
+              of a chunk-mode run.
+
+              **Always mounted for the whole `!showLive` stretch, not
+              conditionally on `frame.activeChunk` alone (independent-
+              review finding, fixed) -- toggled via `invisible`, the
+              same idiom `WholeRangeBalance.tsx`'s own revealSlot pairing
+              already establishes, not a ternary swap.** This is a plain
+              flow element (unlike the chart-anchored bubble, not
+              absolutely positioned), sitting between the button row and
+              `children`/the chart -- and `tick()`'s own logic sets
+              `activeChunk` back to `null` on every intervening tween
+              frame between two chunk landings (see ReplayFrame's own doc
+              comment), so a naive `{frame.activeChunk && <p>...}` mounts
+              and unmounts this element on every single chunk boundary
+              during a real multi-chunk run, visibly shifting the chart/
+              children block down and back up each time (confirmed live,
+              via a real pixel measurement across a genuine multi-trade
+              chunk landing and its clearing, before this fix). Reserving
+              the line's height for the whole run instead means the "make
+              room" shift happens at most once, when playback starts (or
+              never, in the common case where the first landing is
+              already the empty-string frame before any user has had a
+              chance to notice) -- not once per chunk boundary. */}
+          {segmentMode === "chunk" && !showLive && (
+            <p
+              aria-hidden="true"
+              className={`min-h-10 text-sm text-[var(--text-secondary)] ${
+                frame.activeChunk ? "line-clamp-2" : "invisible"
+              }`}
+            >
+              {/* Only ever real text for a genuine chunk summary -- a
+                  plain space placeholder otherwise (including the
+                  one-day/one-trade degenerate case, which already
+                  narrates via the chart-anchored bubble/status region
+                  above; duplicating that same sentence a third time
+                  here, just invisible, would be pointless -- caught by
+                  exactly this scenario in a test regression).
+
+                  `min-h-10` (2 lines' worth at text-sm) + `line-clamp-2`
+                  together give this line a genuinely *fixed* height,
+                  not just a minimum (independent-review finding, fixed
+                  -- a first attempt at this fix used only a plain-space
+                  placeholder with no min-height/clamp at all, which
+                  reserved however many lines *that* render's content
+                  happened to wrap to; a real chunk summary sentence's
+                  own length varies chunk to chunk, so some genuinely
+                  wrap to a second line and some don't, live-verified via
+                  a real chart-position measurement across an entire
+                  worst-case run -- confirmed a real, if smaller, residual
+                  shift between 1-line and 2-line chunk summaries even
+                  after that first fix). `line-clamp-2` caps the rare
+                  chunk whose own summary sentence would need a third
+                  line (a real trade count into the hundreds, on 1Y);
+                  the sr-only status region right above carries the full,
+                  untruncated sentence regardless, so no information is
+                  lost, only this decorative line's own display. */}
+              {frame.activeChunk ? activeCallout : " "}
             </p>
           )}
 
