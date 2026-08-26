@@ -5137,3 +5137,171 @@ playwright`, reverted afterward) drove the real page end to end:
   debug scripts and the temporary `playwright` devDependency were both
   reverted before committing, per this file's own established
   convention.
+
+## Chunked "Watch it happen" replay for 1M/3M/1Y (issue #118)
+
+Extends #105's 1W-only whole-range replay to 1M/3M/1Y, per
+`docs/plans/issue-106-plan.md` section 3.1's day/chunk-based reveal
+mechanism -- those three ranges' own worst-case trade counts (up to
+~750 for 1Y) are far too large for #105's per-point walk to stay
+watchable (an unmodified per-trade pacing would run 1Y's own worst case
+in ~26 minutes, see that plan's own section 2).
+
+- **`use-trade-replay.ts` gained a third parameter, `segmentMode:
+"point" | "chunk"` (default `"point"`)** -- selects between the
+  original per-point `buildPointSegments` (unchanged behavior, still
+  what the window model and 1W use) and a new `buildChunkSegments`. Both
+  now build a shared, private `WalkSegment[]` (generalized from the old
+  point-only `Segment` type) so one `tick()` RAF loop drives either walk
+  -- the public `ReplayEvent`/`ReplayFrame.activeEvent` shape point mode
+  already had is untouched; a new `ChunkSummary`/`ReplayFrame.activeChunk`
+  field (mutually exclusive with `activeEvent`) carries chunk mode's own
+  multi-trade pause data.
+- **The chunk mechanism**: `groupPointsIntoDayGroups` walks
+  `wholeRangePoints` once, grouping by `portfolio-series.ts`'s own
+  `calendarDayOf` (no new pipeline field), collecting each day's own
+  completed trades along the way (tracking "the most recently seen open
+  price," the identical trick `buildPointSegments` already uses -- a
+  day's own trades never interleave). `buildChunkSegments` then clusters
+  day groups into at most `NUM_CHUNKS` chunks (`chunkCount =
+min(dayGroups.length, NUM_CHUNKS)`, `chunkSize =
+ceil(dayGroups.length / chunkCount)`) -- 1M's ~21 trading days stay
+  under the cap (one chunk per day, for free); 3M's ~62 and 1Y's ~250
+  both exceed it and group multiple days per chunk. Each chunk becomes
+  one `WalkSegment`: `revealedCount` jumps straight to the chunk's own
+  last point at the _start_ of its tween (unlike point mode, which only
+  reveals a point once its own tween lands) -- only the display balance
+  figure tweens, matching this feature's own "the chart never
+  interpolates a position between two real points" principle. A chunk
+  with zero trades has `buildLanding: null` and advances with no pause
+  at all (the "skippable/fast-forwarded no-trade days" behavior); a
+  chunk with real trades pauses for `pacing.eventPauseMs` (chunk mode's
+  own pacing object reuses this field as the chunk-pause duration --
+  literally the same `ReplayPacing` shape point mode uses, not a
+  separate constant pair).
+- **Two callout voices, chosen per chunk, not per range.** A chunk that
+  happens to contain exactly one day with exactly one trade (`buildChunkLanding`'s
+  own "free degenerate case," per the plan's own section 3.1) falls
+  through to the _existing_, real, shared `ReplayEvent`/`calloutText`
+  voice -- literally the same `buildReplayEvent` helper point mode's own
+  `buildPointSegments` uses, narrating the trade's own **close** event
+  (with its computed return), not its open. This is the common case for
+  1M, where the day cap (30) always exceeds 1M's own ~21 trading days,
+  so every chunk defaults to a single day. A genuine multi-trade chunk
+  (more than one trade, or a single trade spanning more than one day
+  group within the chunk) gets a new voice instead:
+  `lib/replay-callout.ts`'s `chunkSummaryText` (`"{startDate}
+  - {endDate}: N trades, $X -> $Y."`, or a single date when the chunk is
+one day) -- narrating each trade individually inside one pause would
+be an unreadable blur for a chunk that can span up to `chunkDayCount *
+    maxTradesPerDay` trades.
+- **The single-trade voice keeps its existing chart-anchored
+  marker-pulse/shake/speech-bubble treatment (issue #108) for free** --
+  `chartLandingFor` already gates strictly on `frame.activeEvent`, so it
+  correctly returns `null` (no bubble) whenever a genuine multi-trade
+  chunk is showing instead. **The multi-trade summary voice has no
+  single marker to anchor a bubble to** (a chunk can span several days,
+  and its own terminal point doesn't necessarily carry a trade event at
+  all -- the chunk's _last_ day group within it could itself be a
+  no-trade day even though an earlier day in the same chunk had real
+  trades) -- `WholeRangeReplay.tsx` instead renders it as a plain
+  visible `<p aria-hidden="true">` line between the button row and
+  `children`, identical wording to the sr-only status region right
+  above it. A deliberate, considered scoping call (not attempted:
+  forcing every chunk summary to anchor somewhere on the chart, which
+  would need its own new placement logic for a case `bubblePlacement`
+  was never designed around).
+- **`WholeRangeReplay.tsx`'s `WHOLE_RANGE_REPLAY_PACING` module constant
+  is now exported, and a new `CHUNKED_WHOLE_RANGE_REPLAY_PACING` sits
+  alongside it** -- both `pacing: ReplayPacing` and `segmentMode:
+ReplaySegmentMode` became required props on `WholeRangeReplayProps`
+  (no default, matching this codebase's established "no silent fallback
+  by omission" convention -- see `trade-math.ts`'s own `direction`
+  parameter), threaded per range group by `ResultsPanel.tsx`: 1W keeps
+  `WHOLE_RANGE_REPLAY_PACING`/`"point"` unchanged; 1M/3M/1Y get
+  `CHUNKED_WHOLE_RANGE_REPLAY_PACING`/`"chunk"`.
+- **`replaySupported` widened from `range === "1W"` to every
+  intraday-daily range** -- this is what unlocks both the "Watch it
+  happen" button and the whole-range worst-case stat for 1M/3M/1Y (the
+  same prop already gated both together for 1W, per #105's own
+  post-PR independent-review fix) -- no separate gate needed for the
+  stat.
+
+### `NUM_CHUNKS`/pacing retuned from the plan's own first-draft numbers, against real live-browser measurement -- a real, measured overage, not just margin erosion
+
+The plan's own section 6 explicitly flagged both `NUM_CHUNKS` (its own
+suggested value, 40) and the chunk pacing constants (its own suggested
+120/220) as an implementer/reviewer call to finalize live, expecting
+some real-browser-overhead margin the same way 1W's own
+`WHOLE_RANGE_REPLAY_PACING` needed one (~11% over its own analytical
+estimate). **Chunk mode's overhead turned out to scale with a range's
+own total point count, materially worse than 1W's flat ~11%**: measured
+live (the established no-root-headless-Chromium technique, this file's
+own "Headless-browser screenshot verification" section, against a
+synthetic worst-case fixture -- every trading day maxed at
+`maxTradesPerDay` = 3 trades), the plan's own first-draft 120/220 pacing
+at `NUM_CHUNKS = 40` played 1M's own worst case in **~8.95s** (target
+4-7s, ~25% over its own ~7.1s analytical estimate) and 1Y's own worst
+case in **~20.1s** (target 7-14s, ~47% over its own ~13.6s analytical
+estimate) -- both real overages a user would actually notice, not just
+analytical-estimate margin. The root cause: `PortfolioChart` (already
+`React.memo`'d, issue #96 follow-up round four) still recomputes
+`linePath`/`areaPath`/`eventMarkers` over the _revealed_ prefix on every
+landing, and that cost grows with a range's own total point count --
+1Y's own worst case is ~2,500 points, vs. 1W's ~50 -- so tightening
+`pacing` alone wasn't enough; `NUM_CHUNKS` itself (how many times that
+per-landing cost gets paid) needed lowering too. Retuned to
+`NUM_CHUNKS = 30` plus `{ transitionMs: 80, eventPauseMs: 160, rewindMs:
+700 }`, re-measured live (two separate runs, for stability): **1M
+~6.4s, 3M ~6.8-6.9s, 1Y ~13.6-13.7s** -- all inside their own stated
+targets, 1Y with a real but modest ~350ms margin under its 14s ceiling
+(comparable tightness to 1W's own live-measured ~14.4s against its own
+~15s ceiling -- an accepted, established margin profile for this
+feature, not a red flag).
+
+**Also live-verified against real pipeline data**
+(`LOCAL_RESULTS_DIR`/`local-run.ts`, this file's own "Local development
+without AWS credentials" workflow, default 20-ticker sample, no S3
+write): a real 1Y result (251 real trading days, 641 real trades) played
+its full un-skipped worst case in **~13.0-13.7s** (matching the
+synthetic measurement closely), landing cleanly on the real final
+headline ($20.00 -> $324K) with zero console/page errors; a real
+mid-playback pause showed a genuine multi-trade chunk summary built from
+real dates/dollar figures ("Aug 26, 2025 - Sep 8, 2025: 22 trades, $20.00
+-> $26.06.") with no chart-anchored bubble, exactly as designed. A real
+1M result (21 real trading days) played its full worst case in **~6.4s**,
+also with zero errors. Both the "Watch it happen" button and the
+whole-range worst-case stat ("Worst case, same budget") were confirmed
+present on both real 1M/1Y pages, unlocked by the widened
+`replaySupported` gate. The debug route, verification scripts, and the
+temporary `playwright` devDependency were all reverted before
+committing, per this file's own established convention.
+
+**1W itself is unaffected** -- confirmed live, not just by reasoning:
+the same synthetic worst-case-fixture technique above, run against 1W
+with `segmentMode: "point"`/`WHOLE_RANGE_REPLAY_PACING` unchanged,
+measured **~14.4s**, identical to #105's own original live measurement,
+confirming the `use-trade-replay.ts` generalization (a new `segmentMode`
+parameter defaulting to `"point"`, a private `WalkSegment` type replacing
+the old `Segment`) introduced no behavior change for the point-mode path
+1W and the window model both still use.
+
+**Test coverage**: `use-trade-replay.test.ts` gained a "chunk segment
+mode" describe block -- day-by-day walking (a one-day/one-trade chunk
+landing on the real `ReplayEvent` shape; a no-trade chunk advancing with
+zero pause), a genuine multi-trade chunk producing a `ChunkSummary` (not
+a `ReplayEvent`), and a `NUM_CHUNKS`-capping test (90 days, evenly
+divisible by the cap, landing on exactly 30 pauses rather than 90 --
+deliberately chosen so the day count can't coincidentally produce the
+same chunk count under a different candidate cap value, unlike an
+arbitrary day count whose own rounded `chunkSize` might not actually
+distinguish the cap being tested). `WholeRangeReplay.test.tsx` gained a
+"chunked segment mode" describe block mirroring the same three cases
+one level up, with tick offsets derived from the real, imported
+`CHUNKED_WHOLE_RANGE_REPLAY_PACING` constant (not hardcoded numbers) so
+a future retuning pass doesn't also require hand-recomputing every tick
+argument across two test files. `ResultsPanel.test.tsx`'s existing
+`it.each(["1M", "3M", "1Y"])` "no worst-case stat" test (from #105's own
+post-PR independent-review fix) is now a "renders the stat too" test,
+plus a new `it.each` case driving a real chunked pause-to-completion
+cycle on all three ranges through the real component tree.
