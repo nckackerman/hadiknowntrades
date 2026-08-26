@@ -19,11 +19,24 @@
 import { PRESET_RANGES, type PresetRange } from "./preset-ranges";
 import type { Trade } from "./optimizer";
 import type { IntradayDayResult, IntradayLongShortResult } from "./intraday-optimizer";
+import type { DailyClose } from "./yahoo-client";
 import { isValidPrice } from "./is-valid-price";
 import { anchorDateToDate, type AnchorDate } from "./custom-range-anchors";
 
-/** Bumped whenever the shape of PrecomputedResult changes in a way a reader needs to know about. */
-export const RESULTS_SCHEMA_VERSION = 7;
+/**
+ * Bumped whenever the shape of PrecomputedResult changes in a way a reader needs to know about.
+ *
+ * **Bumped 7 -> 8 for issue #126** (`benchmarkSeries`): every
+ * PrecomputedResult gains a trailing window of raw SPY daily closes
+ * alongside the existing whole-window `benchmark` summary. This clears
+ * the constant's own stated bar ("a shape change a reader needs to know
+ * about") rather than the additive-field exemption `barIntervalMinutes`
+ * took (see packages/core/CLAUDE.md's "Mixed-granularity 1M/3M assembly"
+ * section): issue #128's Call Board engine reads this field directly,
+ * so a reader deployed against the new shape must not silently accept a
+ * stale pre-#126 object that simply doesn't have it.
+ */
+export const RESULTS_SCHEMA_VERSION = 8;
 
 /**
  * The S3 key a precomputed result is stored/read under for a given range.
@@ -90,6 +103,69 @@ interface PrecomputedResultBase {
    * not a degraded/missing one; see BenchmarkResult.truncated.
    */
   benchmark: BenchmarkResult | null;
+  /**
+   * A trailing window of raw SPY daily closes (issue #126) -- the data
+   * foundation issue #128's Call Board engine needs to score a rolling
+   * daily up/down prediction game, which the whole-window `benchmark`
+   * summary above can't provide (it collapses the entire window to a
+   * single start/end pair).
+   *
+   * Null under exactly the same conditions `benchmark` is null: the SPY
+   * fetch failed outright this run, or produced no bars inside the
+   * trailing window. That fetch is deliberately non-fatal to the
+   * pipeline run (see apps/pipeline's fetchBenchmarkHistory), so a
+   * reader MUST render sanely with this field absent -- the same
+   * contract `benchmark: null` already carries.
+   *
+   * Deliberately NOT on CustomWindowResult, unlike `benchmark` -- see
+   * BenchmarkSeries' own doc comment for why.
+   */
+  benchmarkSeries: BenchmarkSeries | null;
+}
+
+/**
+ * A trailing window of raw SPY daily closes (issue #126), carried on
+ * every PrecomputedResult alongside the whole-window `benchmark`
+ * summary -- see apps/pipeline's computeBenchmarkSeries for how it's
+ * sliced, and BENCHMARK_SERIES_TRAILING_DAYS there for the window size.
+ *
+ * **Range-independent on purpose**: the identical series is stamped onto
+ * all 6 preset ranges' results, not sliced to each range's own window.
+ * Its consumer (issue #128's Call Board) is a rolling daily game about
+ * recent trading days, not about whichever range the viewer happens to
+ * have selected -- scoping it per range would make the same game show
+ * different history depending on an unrelated control, and would leave
+ * the 1W range with too few days to score anything at all.
+ *
+ * **Deliberately not added to CustomWindowResult**, unlike `benchmark`:
+ * a custom anchor's result is one of hundreds written per run (see
+ * custom-range-anchors.ts), and stamping the same range-independent
+ * series onto every one of them would multiply a few KB into megabytes
+ * of byte-identical duplication for a field no custom-anchor reader
+ * wants. The 6 preset results are where a reader already goes for it.
+ */
+export interface BenchmarkSeries {
+  /** Hardcoded to "SPY", same as BenchmarkResult.ticker -- a real field rather than an assumption baked into every reader, in case that ever changes. */
+  ticker: string;
+  /**
+   * The trailing window size, in calendar days, this series was sliced
+   * to (apps/pipeline's BENCHMARK_SERIES_TRAILING_DAYS). Self-describing
+   * so a reader can tell how much history it actually got without
+   * hardcoding the pipeline's own constant a second time -- and so a
+   * later change to that constant is visible in the stored JSON itself.
+   */
+  trailingDays: number;
+  /**
+   * SPY's real daily closes inside that trailing window, ascending by
+   * date, one entry per real trading day (weekends/holidays simply
+   * aren't present). Never empty -- an empty window yields a null
+   * `benchmarkSeries` instead, so a reader never has to distinguish
+   * "no data" from "an empty array." Reuses DailyClose (yahoo-client.ts)
+   * as-is rather than re-declaring the identical `{date, close}` shape,
+   * the same reasoning IntradayResult.days already applies to
+   * IntradayDayResult.
+   */
+  closes: DailyClose[];
 }
 
 /**
@@ -850,6 +926,77 @@ function validateBenchmark(value: unknown, problems: string[]): void {
 }
 
 /**
+ * Validates one `benchmarkSeries` field (issue #126) -- the exact same
+ * null-vs-undefined discipline validateBenchmark above documents at
+ * length: `null` is the valid "the SPY fetch failed (or covered no days
+ * in the trailing window) this run" state, while an entirely-missing
+ * field (a stale pre-#126 stored object, or a future refactor bug that
+ * forgets to set it) falls into the `typeof value !== "object"` branch
+ * and is correctly flagged.
+ *
+ * `closes` is required to be non-empty, matching BenchmarkSeries' own
+ * documented contract: computeBenchmarkSeries returns null rather than
+ * an empty series, so a reader never has to distinguish the two, and an
+ * empty array reaching here means something upstream is broken.
+ *
+ * Deliberately called from validateBase (which only covers
+ * PrecomputedResult) rather than validateSharedResultFields (shared with
+ * validateCustomWindowResult) -- CustomWindowResult intentionally has no
+ * such field; see BenchmarkSeries' own doc comment.
+ */
+function validateBenchmarkSeries(value: unknown, problems: string[]): void {
+  if (value === null) return; // valid: no benchmark series data was available this run
+  if (typeof value !== "object") {
+    problems.push(`benchmarkSeries must be null or an object, got ${describe(value)}`);
+    return;
+  }
+  const s = value as Record<string, unknown>;
+  if (!isNonEmptyString(s.ticker)) {
+    problems.push(`benchmarkSeries.ticker must be a non-empty string, got ${describe(s.ticker)}`);
+  }
+  if (!isNonNegativeInteger(s.trailingDays) || s.trailingDays === 0) {
+    problems.push(
+      `benchmarkSeries.trailingDays must be a positive integer, got ${describe(s.trailingDays)}`,
+    );
+  }
+  if (!Array.isArray(s.closes)) {
+    problems.push(`benchmarkSeries.closes must be an array, got ${describe(s.closes)}`);
+    return;
+  }
+  if (s.closes.length === 0) {
+    problems.push(
+      "benchmarkSeries.closes must be non-empty (an empty window is represented as benchmarkSeries: null)",
+    );
+  }
+  let previousDate: string | null = null;
+  s.closes.forEach((close, i) => {
+    const path = `benchmarkSeries.closes[${i}]`;
+    if (close === null || typeof close !== "object") {
+      problems.push(`${path} must be an object, got ${describe(close)}`);
+      return;
+    }
+    const c = close as Record<string, unknown>;
+    if (!isNonEmptyString(c.date)) {
+      problems.push(`${path}.date must be a non-empty string, got ${describe(c.date)}`);
+    } else {
+      // Ascending, strictly -- BenchmarkSeries documents this ordering
+      // as part of its contract, and a duplicate date would silently
+      // double-count one trading day for a consumer scoring day-over-day
+      // moves (issue #128).
+      if (previousDate !== null && c.date <= previousDate) {
+        problems.push(
+          `${path}.date must be strictly after the previous entry's date (${previousDate}), got ${describe(c.date)}`,
+        );
+      }
+      previousDate = c.date;
+    }
+    if (!isPositiveFiniteNumber(c.close)) {
+      problems.push(`${path}.close must be a positive finite number, got ${describe(c.close)}`);
+    }
+  });
+}
+
+/**
  * Validates the fields shared by *every* whole-result shape this file
  * validates, regardless of whether it's identified by `range`
  * (PrecomputedResult) or `anchorDate` (CustomWindowResult, issue #11) --
@@ -969,9 +1116,10 @@ function validateWindowLikeFields(r: Record<string, unknown>, problems: string[]
   );
 }
 
-/** Validates the fields every PrecomputedResult shares, regardless of `model`: everything validateSharedResultFields covers, plus `range` (the one field CustomWindowResult doesn't have -- it has `anchorDate` instead, validated separately by validateCustomWindowResult). */
+/** Validates the fields every PrecomputedResult shares, regardless of `model`: everything validateSharedResultFields covers, plus `range` and `benchmarkSeries` (the two fields CustomWindowResult doesn't have -- it has `anchorDate` instead of `range`, validated separately by validateCustomWindowResult, and deliberately no benchmarkSeries at all, see that interface's own doc comment). */
 function validateBase(result: Record<string, unknown>, problems: string[]): void {
   validateSharedResultFields(result, problems);
+  validateBenchmarkSeries(result.benchmarkSeries, problems);
   if (!(PRESET_RANGES as readonly string[]).includes(result.range as string)) {
     problems.push(
       `range must be one of ${PRESET_RANGES.join(", ")}, got ${describe(result.range)}`,

@@ -34,6 +34,7 @@ function fixtureResult(range: (typeof PRESET_RANGES)[number]): PrecomputedResult
     universeSize: 500,
     skippedTickers: [],
     benchmark: null,
+    benchmarkSeries: null,
   };
 }
 

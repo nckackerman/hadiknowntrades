@@ -1282,6 +1282,143 @@ describe("runPipeline", () => {
     });
   });
 
+  describe("benchmarkSeries (issue #126)", () => {
+    // Same "just enough other data to keep both paths writing real
+    // results" fixture the benchmark block above uses, for the same
+    // reason -- see its own comment.
+    const aaplDaily = new Map<string, DailyClose[]>([
+      ["AAPL", [daily(daysBack(2000), 1), daily(daysBack(200), 8), daily(daysBack(10), 50)]],
+    ]);
+    const aaplIntraday = new Map<string, IntradayBar[]>([
+      ["AAPL", [bar(daysBack(5), "09:30:00", 10), bar(daysBack(5), "10:30:00", 20)]],
+    ]);
+
+    it("persists exactly the trailing 90 calendar days of SPY closes, ascending, identically on every range", async () => {
+      // Deliberately supplied out of chronological order, and spanning
+      // the trailing window's exact boundary: 91 days back is outside,
+      // 90 days back is the oldest still inside (the slice is
+      // inclusive at both ends).
+      const dailyFixture = new Map<string, DailyClose[]>([
+        ...aaplDaily,
+        [
+          "SPY",
+          [
+            daily(daysBack(45), 555.12),
+            daily(daysBack(120), 500.25),
+            daily(daysBack(3), 542.86),
+            daily(daysBack(90), 511.4),
+            daily(daysBack(91), 509.03),
+          ],
+        ],
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
+        fetchIntradayBars: async (symbol) => aaplIntraday.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
+        store,
+        asOf,
+      });
+
+      // ASOF is 2024-06-15, so the window is 2024-03-17 .. 2024-06-15.
+      const expected = [
+        { date: "2024-03-17", close: 511.4 }, // exactly 90 days back -- the boundary, included
+        { date: "2024-05-01", close: 555.12 },
+        { date: "2024-06-12", close: 542.86 },
+      ];
+      expect(toDateString(daysBack(90)(asOf))).toBe("2024-03-17");
+
+      for (const range of PRESET_RANGES) {
+        const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
+        expect(parsed.benchmarkSeries).toEqual({
+          ticker: "SPY",
+          trailingDays: 90,
+          closes: expected,
+        });
+      }
+    });
+
+    it("is range-independent -- 1W and MAX carry the identical series despite wildly different range windows", async () => {
+      const dailyFixture = new Map<string, DailyClose[]>([
+        ...aaplDaily,
+        ["SPY", [daily(daysBack(60), 520.5), daily(daysBack(2), 543.01)]],
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
+        fetchIntradayBars: async (symbol) => aaplIntraday.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
+        store,
+        asOf,
+      });
+
+      const oneWeek = JSON.parse(store.objects.get("results/1W.json")!);
+      const max = JSON.parse(store.objects.get("results/MAX.json")!);
+      // 60 days back is far outside 1W's own 7-day window, yet still
+      // present -- the series tracks the trailing 90 days, not the
+      // selected range (see BenchmarkSeries' own doc comment).
+      expect(oneWeek.benchmarkSeries.closes).toHaveLength(2);
+      expect(oneWeek.benchmarkSeries).toEqual(max.benchmarkSeries);
+    });
+
+    it("a benchmark fetch failure (SPY throws) is non-fatal for the series too -- the run still succeeds and writes benchmarkSeries: null for every range", async () => {
+      const store = memoryStore();
+
+      const summary = await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: async (symbol) => {
+          if (symbol === "SPY") throw new Error("simulated SPY fetch failure");
+          return aaplDaily.get(symbol) ?? [];
+        },
+        fetchIntradayBars: async (symbol) => aaplIntraday.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
+        store,
+        asOf,
+      });
+
+      expect(summary.results).toHaveLength(6);
+      for (const range of PRESET_RANGES) {
+        const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
+        expect(parsed.benchmarkSeries).toBeNull();
+      }
+    });
+
+    it("writes benchmarkSeries: null (not an empty series) when SPY's data all predates the trailing window, even though benchmark itself is still non-null", async () => {
+      const dailyFixture = new Map<string, DailyClose[]>([
+        ...aaplDaily,
+        ["SPY", [daily(daysBack(2500), 100), daily(daysBack(400), 250)]],
+      ]);
+      const store = memoryStore();
+
+      await runPipeline({
+        tickers: ["AAPL"],
+        fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
+        fetchIntradayBars: async (symbol) => aaplIntraday.get(symbol) ?? [],
+        fetchFiveMinuteBars: noIntradayData,
+        fetchIntraday1mBars: noIntradayData,
+        store,
+        asOf,
+      });
+
+      const max = JSON.parse(store.objects.get("results/MAX.json")!);
+      // The whole-window summary still has real data to work with...
+      expect(max.benchmark).toMatchObject({ ticker: "SPY", startPrice: 100, endPrice: 250 });
+      // ...but nothing lands in the trailing 90-day window, so the
+      // series degrades to null rather than an empty `closes` array.
+      for (const range of PRESET_RANGES) {
+        const parsed = JSON.parse(store.objects.get(`results/${range}.json`)!);
+        expect(parsed.benchmarkSeries).toBeNull();
+      }
+    });
+  });
+
   it("skips a ticker on TickerNotFoundError and continues, recording it as skipped", async () => {
     const store = memoryStore();
 
