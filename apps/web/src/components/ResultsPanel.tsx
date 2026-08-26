@@ -30,7 +30,11 @@ import { IntradayTradeList } from "@/components/IntradayTradeList";
 import { StartingCapitalInput } from "@/components/StartingCapitalInput";
 import { TradeList } from "@/components/TradeList";
 import { TradeReplay } from "@/components/TradeReplay";
-import { WholeRangeReplay } from "@/components/WholeRangeReplay";
+import {
+  CHUNKED_WHOLE_RANGE_REPLAY_PACING,
+  WHOLE_RANGE_REPLAY_PACING,
+  WholeRangeReplay,
+} from "@/components/WholeRangeReplay";
 
 const RANGE_COPY: Record<PresetRange, string> = {
   "1W": "the past week",
@@ -657,12 +661,24 @@ export function ResultsPanel({
     const wholeRangeTradeCount = dayOverviewRows.reduce((sum, row) => sum + row.tradeCount, 0);
 
     // Whether this range actually supports "Watch it happen" (issue
-    // #105) -- 1W only, per that issue's own scope; 1M/3M/1Y are a
-    // materially different pacing/scale problem tracked separately
-    // (issue #106's sibling plan). See WholeRangeReplay's own
-    // `replaySupported` prop doc comment for why this must be threaded
-    // in explicitly rather than inferred inside that component.
-    const replaySupported = range === "1W";
+    // #105 for 1W; issue #118 widened this to every intraday-daily
+    // range). Every range that reaches this branch is one of these four
+    // (see the invariant check above), so this is always true today --
+    // kept as an explicit, exhaustive list rather than a bare `true`
+    // literal so a future intraday-daily range that genuinely isn't
+    // ready yet has somewhere to say so, matching WholeRangeReplay's own
+    // `replaySupported` prop doc comment's reasoning for why this must
+    // be threaded in explicitly rather than inferred inside that
+    // component.
+    const replaySupported = range === "1W" || range === "1M" || range === "3M" || range === "1Y";
+    // 1W keeps its own point-per-event walk (unchanged since issue
+    // #105); 1M/3M/1Y use issue #118's day/chunk-based reveal instead --
+    // both `pacing` and `segmentMode` are chosen together per range
+    // group, never independently (see WholeRangeReplay's own doc comment
+    // on why the two are paired).
+    const replayPacing =
+      range === "1W" ? WHOLE_RANGE_REPLAY_PACING : CHUNKED_WHOLE_RANGE_REPLAY_PACING;
+    const replaySegmentMode = range === "1W" ? "point" : "chunk";
 
     return (
       <FadeInWrapper>
@@ -671,15 +687,15 @@ export function ResultsPanel({
             for why per-day guessing was removed entirely. Revealing it
             is also what unlocks BenchmarkStat and the whole-range chart
             below -- both would otherwise spoil the same answer. Since
-            issue #105, this range's own opt-in "Watch it happen" replay
-            (1W specifically -- see WholeRangeReplay's own doc comment)
-            sequences with this exact same gate, not a second one. The
-            methodology paragraph and BenchmarkStat are passed as
-            `children`, rendered between WholeRangeReplay's own button
-            row and its chart -- exactly where they sat before this
-            issue, mirroring TradeReplay.tsx's own identical `children`
-            slot for the window model (see that component's own doc
-            comment) rather than reordering them relative to the chart. */}
+            issue #105 (1W) and #118 (1M/3M/1Y), this range's own opt-in
+            "Watch it happen" replay sequences with this exact same gate,
+            not a second one. The methodology paragraph and BenchmarkStat
+            are passed as `children`, rendered between WholeRangeReplay's
+            own button row and its chart -- exactly where they sat before
+            issue #105, mirroring TradeReplay.tsx's own identical
+            `children` slot for the window model (see that component's
+            own doc comment) rather than reordering them relative to the
+            chart. */}
         <WholeRangeReplay
           rangeLabel={RANGE_COPY[range]}
           startingCapital={effectiveStartingCapital}
@@ -692,6 +708,8 @@ export function ResultsPanel({
           guessStartingCapital={rangeGuessStartingCapital}
           onSubmitGuess={submitRangeGuess}
           replaySupported={replaySupported}
+          pacing={replayPacing}
+          segmentMode={replaySegmentMode}
           chartKey={`${range}-${data.dataAsOf}-${mode}`}
         >
           <p className="text-sm text-[var(--text-secondary)]">

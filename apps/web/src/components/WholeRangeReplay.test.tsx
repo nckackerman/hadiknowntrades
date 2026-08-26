@@ -5,7 +5,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PortfolioPoint } from "@/lib/portfolio-series";
 import { createRafPump } from "@/lib/raf-pump.test-util";
 import { stubPrefersReducedMotion } from "@/lib/stub-prefers-reduced-motion.test-util";
-import { WholeRangeReplay } from "./WholeRangeReplay";
+import {
+  CHUNKED_WHOLE_RANGE_REPLAY_PACING,
+  WHOLE_RANGE_REPLAY_PACING,
+  WholeRangeReplay,
+} from "./WholeRangeReplay";
 
 // A two-day, one-trade chained-intraday fixture -- mirrors
 // deriveWholeRangeIntradaySeries's own point shape (one leading boundary
@@ -40,6 +44,8 @@ const BASE_PROPS = {
   guessStartingCapital: 20,
   onSubmitGuess: vi.fn(),
   replaySupported: true,
+  pacing: WHOLE_RANGE_REPLAY_PACING,
+  segmentMode: "point" as const,
   chartKey: "1W-2025-08-21-long",
 };
 
@@ -249,5 +255,130 @@ describe("WholeRangeReplay (issue #105)", () => {
 
     // rescaleFromStartingCapital(15, 20, 40) === 30.
     expect(screen.getByText("$30.00")).toBeInTheDocument();
+  });
+
+  describe("chunked segment mode (issue #118, 1M/3M/1Y)", () => {
+    // Three days, deliberately far fewer than NUM_CHUNKS (40) so every
+    // day maps to its own chunk (1M's own common shape): day 1 is a
+    // one-day/one-trade degenerate chunk (falls through to the existing
+    // single-trade calloutText voice), day 2 has zero trades (advances
+    // with no pause), day 3 has two trades (a genuine multi-trade chunk
+    // needing the new summary voice).
+    const CHUNK_POINTS: PortfolioPoint[] = [
+      // Day 1 (2025-08-18): AAPL 100 -> 150, a 50% gain ($20 -> $30).
+      { date: "2025-08-18T09:30:00", value: 20, event: null },
+      {
+        date: "2025-08-18T09:30:00",
+        value: 20,
+        event: { type: "open", direction: "long", ticker: "AAPL", price: 100 },
+      },
+      { date: "2025-08-18T10:30:00", value: 20, event: null },
+      {
+        date: "2025-08-18T10:30:00",
+        value: 30,
+        event: { type: "close", direction: "long", ticker: "AAPL", price: 150 },
+      },
+      // Day 2 (2025-08-19): no trades -- a single flat point.
+      { date: "2025-08-19T12:00:00", value: 30, event: null },
+      // Day 3 (2025-08-20): MSFT then GOOG.
+      { date: "2025-08-20T09:30:00", value: 30, event: null },
+      {
+        date: "2025-08-20T09:30:00",
+        value: 30,
+        event: { type: "open", direction: "long", ticker: "MSFT", price: 100 },
+      },
+      { date: "2025-08-20T10:00:00", value: 30, event: null },
+      {
+        date: "2025-08-20T10:00:00",
+        value: 36,
+        event: { type: "close", direction: "long", ticker: "MSFT", price: 120 },
+      },
+      {
+        date: "2025-08-20T10:15:00",
+        value: 36,
+        event: { type: "open", direction: "long", ticker: "GOOG", price: 200 },
+      },
+      { date: "2025-08-20T10:45:00", value: 36, event: null },
+      {
+        date: "2025-08-20T10:45:00",
+        value: 32.4,
+        event: { type: "close", direction: "long", ticker: "GOOG", price: 180 },
+      },
+    ];
+
+    const CHUNK_PROPS = {
+      ...BASE_PROPS,
+      points: CHUNK_POINTS,
+      tradeCount: 3,
+      pacing: CHUNKED_WHOLE_RANGE_REPLAY_PACING,
+      segmentMode: "chunk" as const,
+    };
+
+    it("a one-day/one-trade chunk falls through to the existing single-trade chart-anchored callout voice, a no-trade chunk advances with no pause, and a genuine multi-trade chunk shows the new summary voice as a plain (non-chart-anchored) line", async () => {
+      vi.spyOn(performance, "now").mockReturnValue(1000);
+      const raf = createRafPump();
+      const user = userEvent.setup();
+      render(<WholeRangeReplay {...CHUNK_PROPS} />);
+
+      // Tick offsets derived from the real, imported pacing constant
+      // (not hardcoded) so a future retuning of
+      // CHUNKED_WHOLE_RANGE_REPLAY_PACING's own values doesn't also
+      // require hand-recomputing every tick argument in this test.
+      const { transitionMs, eventPauseMs, rewindMs } = CHUNKED_WHOLE_RANGE_REPLAY_PACING;
+      let now = 1000;
+
+      await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+      now += rewindMs;
+      raf.tick(now); // completes the rewind, landing on "playing" (phaseStart resets to 1000)
+      now = 1000 + transitionMs;
+      raf.tick(now); // chunk 1's own transition completes -- pauses on the degenerate single-trade chunk
+
+      const closeCallout = "Sold AAPL on Aug 18, 10:30 AM at $150.00 (+50.0%).";
+      const closeMatches = screen.getAllByText(closeCallout);
+      expect(closeMatches).toHaveLength(2); // the sr-only status region + the chart-anchored bubble
+      expect(closeMatches.some((el) => el.classList.contains("marker-landing-bubble"))).toBe(true);
+      // No genuine chunk-summary line yet -- this is the single-trade voice.
+      expect(screen.queryByText(/2 trades/)).not.toBeInTheDocument();
+
+      now += eventPauseMs;
+      raf.tick(now); // the pause elapses -- advances toward chunk 2 (the no-trade day)
+      now += transitionMs;
+      raf.tick(now); // chunk 2's own transition completes -- no landing, falls straight through to chunk 3's own tween in the same tick
+      expect(screen.queryByText(closeCallout)).not.toBeInTheDocument();
+
+      now += transitionMs;
+      raf.tick(now); // chunk 3's own transition completes -- pauses on the genuine multi-trade chunk
+
+      const summaryCallout = "Aug 20, 2025: 2 trades, $30.00 -> $32.40.";
+      expect(screen.getByRole("status", { name: "Whole-range replay status" })).toHaveTextContent(
+        summaryCallout,
+      );
+      const summaryLine = screen.getByText(summaryCallout, { selector: "p[aria-hidden]" });
+      expect(summaryLine).toBeInTheDocument();
+      // Unlike the single-trade voice above, a multi-trade chunk summary
+      // has no single marker to anchor a chart-side speech bubble to --
+      // no `.marker-landing-bubble` should exist while it's showing.
+      expect(document.querySelector(".marker-landing-bubble")).toBeNull();
+    });
+
+    it("Skip to end works during chunk-mode playback, landing on the exact same final state as a non-animated load", async () => {
+      createRafPump();
+      const user = userEvent.setup();
+      render(<WholeRangeReplay {...CHUNK_PROPS} />);
+
+      await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+      await user.click(screen.getByRole("button", { name: "Skip to end" }));
+
+      expect(screen.getByRole("button", { name: "Replay" })).toBeInTheDocument();
+      // finalBalance from BASE_PROPS is $40.00 (unrelated to CHUNK_POINTS'
+      // own $32.40 -- ResultsPanel.tsx always passes the real chained
+      // wholeRangeFinalBalance separately from `points`, so this
+      // component never derives the announced figure from `points`
+      // itself; see WholeRangeReplayProps' own `finalBalance` doc
+      // comment).
+      expect(screen.getByRole("status", { name: "Whole-range replay status" })).toHaveTextContent(
+        "Replay finished. Ending balance $40.00.",
+      );
+    });
   });
 });

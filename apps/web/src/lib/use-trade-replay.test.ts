@@ -787,4 +787,212 @@ describe("useTradeReplay", () => {
       expect(raf.hasQueuedFrame()).toBe(true);
     });
   });
+
+  describe("chunk segment mode (issue #118, docs/plans/issue-106-plan.md)", () => {
+    // Day 1: one trade (AAPL, 100 -> 150, a real 50% gain). Day 2: no
+    // trades. Day 3: one trade (MSFT, 100 -> 120, a real 20% gain).
+    // Fewer days than NUM_CHUNKS (40), so every day maps to its own
+    // chunk (1M's own common shape) -- each single-trade day is a
+    // one-day/one-trade degenerate chunk, falling through to the real,
+    // shared ReplayEvent shape (not a ChunkSummary).
+    const CHUNK_POINTS: PortfolioPoint[] = [
+      { date: "2025-01-01T09:30:00", value: 20, event: null },
+      {
+        date: "2025-01-01T09:30:00",
+        value: 20,
+        event: { type: "open", direction: "long", ticker: "AAPL", price: 100 },
+      },
+      { date: "2025-01-01T10:30:00", value: 20, event: null },
+      {
+        date: "2025-01-01T10:30:00",
+        value: 30,
+        event: { type: "close", direction: "long", ticker: "AAPL", price: 150 },
+      },
+      { date: "2025-01-02T12:00:00", value: 30, event: null },
+      { date: "2025-01-03T09:30:00", value: 30, event: null },
+      {
+        date: "2025-01-03T09:30:00",
+        value: 30,
+        event: { type: "open", direction: "long", ticker: "MSFT", price: 100 },
+      },
+      { date: "2025-01-03T10:00:00", value: 30, event: null },
+      {
+        date: "2025-01-03T10:00:00",
+        value: 36,
+        event: { type: "close", direction: "long", ticker: "MSFT", price: 120 },
+      },
+    ];
+
+    it("walks day by day: a one-day/one-trade chunk lands on the real ReplayEvent (not a ChunkSummary), a no-trade chunk advances with zero pause", () => {
+      vi.spyOn(performance, "now").mockReturnValue(1000);
+      const raf = createRafPump();
+      const pacing: ReplayPacing = { transitionMs: 100, eventPauseMs: 50, rewindMs: 200 };
+
+      const { result } = renderHook(() => useTradeReplay(CHUNK_POINTS, pacing, "chunk"));
+
+      act(() => {
+        result.current.play();
+      });
+      raf.tick(1200); // completes the 200ms rewind, landing on "playing"
+
+      // Chunk 1 (day 1, one trade): 100ms transition lands on the AAPL
+      // close -- the real ReplayEvent shape, exactly like point mode.
+      raf.tick(1100);
+      expect(result.current.frame.revealedCount).toBe(4); // points[0..3], day 1's own last point
+      expect(result.current.frame.activeEvent?.event.ticker).toBe("AAPL");
+      expect(result.current.frame.activeEvent?.tradeReturn?.returnFraction).toBeCloseTo(0.5);
+      expect(result.current.frame.activeChunk).toBeNull();
+
+      raf.tick(1150); // the 50ms pause elapses -- advances toward chunk 2 (day 2, no trade)
+      raf.tick(1250); // chunk 2's own 100ms transition completes -- no landing, so no pause: falls straight through, starting chunk 3's own tween in the same tick
+      expect(result.current.frame.revealedCount).toBe(5); // points[0..4], day 2's own (only) point -- landed with no pause
+      expect(result.current.frame.activeEvent).toBeNull();
+      expect(result.current.frame.activeChunk).toBeNull();
+
+      raf.tick(1350); // chunk 3's own 100ms transition completes -- lands on the MSFT close
+      expect(result.current.frame.revealedCount).toBe(9); // every point revealed
+      expect(result.current.frame.currentValue).toBe(36);
+      expect(result.current.frame.activeEvent?.event.ticker).toBe("MSFT");
+      expect(result.current.frame.activeChunk).toBeNull();
+      expect(result.current.phase).toBe("playing");
+
+      raf.tick(1400); // the 50ms pause elapses -- no more chunks, natural completion
+      expect(result.current.phase).toBe("done");
+      expect(result.current.frame.activeEvent).toBeNull();
+      expect(raf.hasQueuedFrame()).toBe(false);
+    });
+
+    it("a genuine multi-trade chunk (more than one trade in one day) produces a ChunkSummary, not a ReplayEvent", () => {
+      vi.spyOn(performance, "now").mockReturnValue(1000);
+      const raf = createRafPump();
+      const pacing: ReplayPacing = { transitionMs: 100, eventPauseMs: 50, rewindMs: 100 };
+
+      // One day, two trades -- dayGroups.length === 1 but trades.length
+      // === 2, so this does *not* qualify for the one-day/one-trade
+      // degenerate case.
+      const TWO_TRADE_DAY: PortfolioPoint[] = [
+        { date: "2025-02-01T09:30:00", value: 20, event: null },
+        {
+          date: "2025-02-01T09:30:00",
+          value: 20,
+          event: { type: "open", direction: "long", ticker: "AAPL", price: 100 },
+        },
+        { date: "2025-02-01T10:00:00", value: 20, event: null },
+        {
+          date: "2025-02-01T10:00:00",
+          value: 24,
+          event: { type: "close", direction: "long", ticker: "AAPL", price: 120 },
+        },
+        {
+          date: "2025-02-01T10:15:00",
+          value: 24,
+          event: { type: "open", direction: "long", ticker: "MSFT", price: 200 },
+        },
+        { date: "2025-02-01T10:45:00", value: 24, event: null },
+        {
+          date: "2025-02-01T10:45:00",
+          value: 21.6,
+          event: { type: "close", direction: "long", ticker: "MSFT", price: 180 },
+        },
+      ];
+
+      const { result } = renderHook(() => useTradeReplay(TWO_TRADE_DAY, pacing, "chunk"));
+
+      act(() => {
+        result.current.play();
+      });
+      raf.tick(1100); // completes the 100ms rewind, landing on "playing"
+      raf.tick(1100); // the single chunk's own 100ms transition completes -- lands on the two-trade day
+
+      expect(result.current.frame.revealedCount).toBe(TWO_TRADE_DAY.length);
+      expect(result.current.frame.activeEvent).toBeNull();
+      expect(result.current.frame.activeChunk).toEqual({
+        startDate: "2025-02-01",
+        endDate: "2025-02-01",
+        tradeCount: 2,
+        startValue: 20,
+        endValue: 21.6,
+      });
+    });
+
+    it("caps chunk count at NUM_CHUNKS (30) regardless of how many real trading days the range spans", () => {
+      vi.spyOn(performance, "now").mockReturnValue(1000);
+      const raf = createRafPump();
+      const pacing: ReplayPacing = { transitionMs: 10, eventPauseMs: 10, rewindMs: 10 };
+
+      // 90 days, each with exactly one trade -- every chunk lands (no
+      // ambiguity from a no-trade chunk's own "same tick, two
+      // transitions" fast-forward, see buildChunkSegments' own doc
+      // comment), so counting distinct landings directly measures how
+      // many chunks the walk actually produced. 90 divides evenly by
+      // NUM_CHUNKS (30) -- chunkSize = ceil(90/30) = 3 exactly, so this
+      // produces exactly 30 chunks, not a value that happens to coincide
+      // with a different cap too (unlike a day count whose own
+      // chunkSize rounds up to the same value under more than one
+      // candidate cap).
+      const points: PortfolioPoint[] = [];
+      let value = 20;
+      for (let day = 0; day < 90; day++) {
+        const iso = new Date(Date.UTC(2025, 0, 1) + day * 86_400_000).toISOString().slice(0, 10);
+        points.push({ date: `${iso}T09:30:00`, value, event: null });
+        points.push({
+          date: `${iso}T09:30:00`,
+          value,
+          event: { type: "open", direction: "long", ticker: "T", price: 100 },
+        });
+        points.push({ date: `${iso}T10:00:00`, value, event: null });
+        value = value * 1.01;
+        points.push({
+          date: `${iso}T10:00:00`,
+          value,
+          event: { type: "close", direction: "long", ticker: "T", price: 101 },
+        });
+      }
+
+      const { result } = renderHook(() => useTradeReplay(points, pacing, "chunk"));
+
+      act(() => {
+        result.current.play();
+      });
+      raf.tick(1010); // completes the 10ms rewind, landing on "playing"
+
+      let pauses = 0;
+      // Every chunk in this fixture lands (each day has its own trade),
+      // so `activeEvent`/`activeChunk` stay non-null across consecutive
+      // landings with no intervening null frame to detect a rising edge
+      // from -- tracked by object *identity* instead (`tick()` builds a
+      // fresh landing object every time, see use-trade-replay.ts's own
+      // `SegmentLanding` union), so a genuinely new landing is "this
+      // field is non-null and isn't the same object as last observed."
+      let lastEvent: unknown = null;
+      let lastChunk: unknown = null;
+      let now = 1000;
+      // Walk forward in fixed 10ms increments (matching both
+      // transitionMs and eventPauseMs) until playback naturally
+      // completes, counting each distinct landing -- a generous
+      // iteration cap guards against an infinite loop if this ever
+      // regresses.
+      for (let i = 0; i < 500 && result.current.phase === "playing"; i++) {
+        now += 10;
+        raf.tick(now);
+        const { activeEvent, activeChunk } = result.current.frame;
+        if (
+          (activeEvent !== null && activeEvent !== lastEvent) ||
+          (activeChunk !== null && activeChunk !== lastChunk)
+        ) {
+          pauses += 1;
+        }
+        lastEvent = activeEvent;
+        lastChunk = activeChunk;
+      }
+
+      expect(result.current.phase).toBe("done");
+      // 90 day-groups, capped to 30 chunks -> chunkSize = ceil(90/30) =
+      // 3 -> exactly 30 chunks, every one containing >= 1 trade (this
+      // fixture gives every day a trade) -- 30 pauses, not 90, proving
+      // the cap actually reduces the number of reveal steps, not just
+      // the pacing constants.
+      expect(pauses).toBe(30);
+    });
+  });
 });
