@@ -36,6 +36,76 @@
   --status-good: #0ca30c;
 
   /*
+   * Reward accent (issue #121, prerequisite for the "Hindsight Wrapped"
+   * redesign -- issues #123, #125, #129, #131, #133 all cite this block
+   * rather than each inventing their own answer).
+   *
+   * THE CONFLICT THIS RESOLVES. The design artifact behind issue #120
+   * paints one gold (#e8a33d) over two jobs that are not the same job:
+   * "you earned something" (celebration, streaks, win stamps) and "this
+   * control is active" (selected pills, primary CTAs). One token cannot
+   * carry both without the second destroying the first -- the moment the
+   * Call Board (#129) fills three buckets with the active-control color,
+   * a board of three gold slots reads as three achievements when it only
+   * means three picks were made.
+   *
+   * THE DECISION: two tokens, split by job, NOT unified.
+   *
+   *   --accent-reward   (new, gold)  earned/outcome state only:
+   *                     CelebrationBurst (#125), streak + best-streak
+   *                     figures and exact-match history cells (#129),
+   *                     the Beat the Bench win stamp (#131), the
+   *                     unlocked shareable-recap capstone (#133).
+   *                     Deliberately scarce -- if it shows up on
+   *                     something the user merely *clicked*, it is being
+   *                     used wrong.
+   *   --accent-selection (new, an alias of the existing --series-1 blue)
+   *                     selected/active/primary-interactive state:
+   *                     RangeSelector's active pill, ModeToggle,
+   *                     CustomRangeSelector's selected day, DayOverview's
+   *                     selected row, the primary buttons in
+   *                     WholeRangeBalance and app/error.tsx.
+   *
+   * RangeSelector's active pill therefore STAYS BLUE. That is an explicit
+   * choice, not inertia: (a) the blue active-pill treatment is already
+   * established across six places in the app, so unifying would be a repo-wide
+   * recolor far outside any of these issues; (b) white-on-gold measures
+   * 2.16:1, so a gold-filled pill could not keep the `text-white` those
+   * components all share, whereas white-on-blue already works; (c) gold
+   * only means "earned" for as long as it stays rare.
+   *
+   * --accent-selection is a semantic alias, not a new color. --series-1
+   * remains the correct name when the thing being colored is literally
+   * the chart's data series (PortfolioChart's line/area fill); use
+   * --accent-selection when the thing being colored is an active control.
+   * Both resolve to the same blue today, on purpose.
+   *
+   * CONTRAST, measured (WCAG 2.1 relative luminance) so downstream issues
+   * do not have to recompute it:
+   *   --accent-reward as *text/glyph* on --background 9.18:1,
+   *   on --surface-1 8.08:1, on --surface-2 7.03:1. All pass AA and AAA.
+   *   --accent-reward as a *fill*: white on it is 2.16:1 and FAILS.
+   *   Use var(--background) for text on a gold fill (9.18:1). Do not copy
+   *   RangeSelector's `text-white` onto a gold-filled control.
+   *
+   * --accent-reward-wash mirrors --series-1-wash's role (a faint tinted
+   * background behind a reward-state row/cell), same 12% alpha, so five
+   * agents do not each pick a different alpha for the same effect.
+   *
+   * Note for issue #123, which rebalances --status-good/--status-critical
+   * toward matching HSL lightness: --accent-reward sits at hsl(36 79% 57%),
+   * between the two. It never encodes gain/loss, so overlap in lightness is
+   * fine, but do not place a gold element and a status-colored element in
+   * the same legend/scale where hue is the only thing telling them apart.
+   *
+   * Not applied to any component here -- that is each downstream issue's
+   * own job (issue #121 is tokens plus this decision record only).
+   */
+  --accent-reward: #e8a33d;
+  --accent-reward-wash: rgb(232 163 61 / 12%);
+  --accent-selection: var(--series-1);
+
+  /*
    * Surface elevation (issue #77): --surface-1/--surface-2 previously
    * had no visual separation from --background beyond their own (barely
    * different) tone plus a 1px --gridline border -- flat against the
@@ -50,17 +120,77 @@
     0 1px 2px rgb(0 0 0 / 45%), 0 8px 24px rgb(0 0 0 / 35%), inset 0 1px 0 rgb(255 255 255 / 4%);
 }
 
+/*
+ * Type roles (issue #121). The design artifact behind issue #120 asks for
+ * a rounded display face for static game numbers and a monospace face for
+ * tabular/ticking data. The decision: DO NOT add a third webfont. Geist
+ * Sans and Geist Mono are already downloaded by layout.tsx's next/font
+ * calls, so the two roles are assignments of faces this app already pays
+ * for, not new ones:
+ *
+ *   --font-display  (Geist Sans) big static figures and headings -- the
+ *                   hero balance, Call Board stat numbers (#129), the
+ *                   Beat the Bench settlement stamp (#131).
+ *   --font-numeric  (Geist Mono) anything tabular or animated digit by
+ *                   digit, where a proportional face makes the number
+ *                   jitter as it changes -- useCountUp's reveal, trade
+ *                   replay's ticking readout, the Beat the Bench ticking
+ *                   price. Pair it with Tailwind's `tabular-nums` where
+ *                   the digits actually change in place.
+ *
+ * A rounded display face was considered and rejected for now: an extra
+ * Google font is an extra request, extra CLS surface, and a look that
+ * would sit apart from everything already shipped. Revisit as its own
+ * issue if the game surfaces genuinely need it -- do not slip one in as
+ * a side effect of a feature issue.
+ *
+ * These are aliases, unapplied on purpose (issue #121 ships tokens and a
+ * decision record, no component changes). Both are declared here in
+ * `@theme inline` rather than in `:root` so Tailwind emits real
+ * `font-display` / `font-numeric` utilities for downstream issues.
+ *
+ * Gotcha, checked live so nobody else has to: because these live in
+ * `@theme inline` and nothing uses them yet, Tailwind tree-shakes the
+ * custom properties themselves out of the emitted `:root`, so reading
+ * `--font-display` off the document returns an empty string today. That
+ * is not a bug and does not mean the token is broken -- `@theme inline`
+ * inlines the value into the utility rather than referencing the
+ * property, so the class works the moment a component uses it (verified:
+ * putting `font-numeric` on the page's `<h1>` computed to
+ * `"Geist Mono", "Geist Mono Fallback"`). Use the utility classes, not
+ * `var(--font-display)`.
+ */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-geist-sans);
+  --font-numeric: var(--font-geist-mono);
 }
 
+/*
+ * No `font-family` here, deliberately (issue #121). This rule used to
+ * carry `font-family: Arial, Helvetica, sans-serif`, a leftover from the
+ * create-next-app template, and it won over everything: verified live
+ * against a real `next dev` page under headless Chromium, the computed
+ * font-family on `<html>` was `Geist, "Geist Fallback"` while `<body>`,
+ * `<h1>` and every control computed to `Arial, Helvetica, sans-serif`,
+ * and Chrome DevTools' own `CSS.getPlatformFontsForNode` reported the
+ * `<h1>` actually painting in DejaVu Sans (this Linux box's Arial
+ * substitute; a real visitor would get Arial or Helvetica). Every Geist
+ * face reported `status: "unloaded"` -- layout.tsx downloaded both
+ * families and nothing on the page ever used a glyph from either.
+ *
+ * Dropping the line lets `<body>` inherit `<html>`, which Tailwind's
+ * preflight already sets from `--default-font-family` -> `--font-sans`
+ * -> `--font-geist-sans` via the `@theme inline` block above. next/font
+ * bakes its own metric-matched `"Geist Fallback"` into that value, so no
+ * hand-written fallback stack is needed here.
+ */
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
 }
 
 /*

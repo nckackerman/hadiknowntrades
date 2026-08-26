@@ -5621,3 +5621,66 @@ on `data.model`:
      mechanics themselves) at the `ResultsPage` level instead. This is a
      product call, not an architectural one -- the mount point and
      ownership stay the same either way.
+
+## Design tokens: the reward accent, and the real body font (issue #121)
+
+Prerequisite decisions for the "Hindsight Wrapped" redesign (issue #120's
+design review; issues #123, #125, #129, #131 and #133 all build on this).
+**The decision record itself lives in `src/app/globals.css`'s own comment
+blocks -- read those before adding any color or type token for one of
+those issues.** This section is the pointer, not a second copy that can
+drift from it.
+
+The short version:
+
+- **Two accent tokens, split by job, deliberately not unified.**
+  `--accent-reward` (gold `#e8a33d`, plus `--accent-reward-wash` for a
+  faint tinted background, mirroring `--series-1-wash`) is for _earned_
+  state only: the celebration burst, streaks, win stamps, an unlocked
+  recap. `--accent-selection` is a semantic alias of the existing
+  `--series-1` blue, for _selected/active control_ state. The design
+  artifact used one gold for both jobs; one token cannot carry both,
+  because the moment an active control is gold, gold stops meaning "you
+  earned this."
+- **`RangeSelector`'s active pill stays blue.** Explicit, not inertia --
+  the blue active-pill treatment is already shared by six places in the
+  app, and white-on-gold measures 2.16:1, so a gold-filled pill could not
+  keep the white label those controls share. Text on a gold _fill_ must be
+  `var(--background)` (9.18:1). Gold as a foreground glyph/figure passes
+  comfortably on every surface (9.18 / 8.08 / 7.03:1 against
+  `--background` / `--surface-1` / `--surface-2`).
+- **Keep using `--series-1` for the chart's data series**, and
+  `--accent-selection` for active controls. Same blue today, different
+  reasons to change later.
+- **Type roles: no third webfont.** `--font-display` (Geist Sans, static
+  figures and headings) and `--font-numeric` (Geist Mono, tabular or
+  digit-by-digit animated data) are declared in `@theme inline`, so they
+  exist as Tailwind utility classes rather than as custom properties you
+  read with `var()` -- Tailwind tree-shakes the properties themselves out
+  of `:root` while nothing uses them, so reading them off the document
+  returns an empty string. That is expected; the utility classes work
+  (verified live). The artifact's rounded display face was considered and
+  rejected for now -- an extra request and extra CLS surface, for a look
+  unlike anything already shipped. Revisit as its own issue, don't slip
+  one in as a side effect.
+- **The app's real body font changed here, and it is a genuine visual
+  change.** `globals.css`'s `body` rule carried
+  `font-family: Arial, Helvetica, sans-serif`, a create-next-app template
+  leftover, and it beat the Geist variables `layout.tsx` sets on `<html>`.
+  Verified live against a real `next dev` page under headless Chromium
+  before touching anything: `<html>` computed `Geist, "Geist Fallback"`
+  while `<body>`, `<h1>` and every control computed
+  `Arial, Helvetica, sans-serif`; Chrome DevTools'
+  `CSS.getPlatformFontsForNode` reported the `<h1>` actually painting in
+  **DejaVu Sans** (this Linux box's Arial substitute -- a real visitor got
+  Arial or Helvetica), and every Geist face reported
+  `status: "unloaded"`. In other words the app downloaded two Geist
+  families and never rendered a single glyph from either. Removing that
+  one line lets `<body>` inherit `<html>`, which Tailwind preflight
+  already drives from `--font-sans` -> `--font-geist-sans`; re-verified
+  after, the `<h1>` now paints in real Geist. **So any pre-#121 screenshot
+  in this file shows the app in Arial/DejaVu, not Geist** -- worth knowing
+  before treating an old screenshot as a typography baseline.
+- Nothing was applied to any component here on purpose: this issue ships
+  tokens and the decision record, and each downstream issue does its own
+  application.
