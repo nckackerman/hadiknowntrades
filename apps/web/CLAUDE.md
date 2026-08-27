@@ -8027,3 +8027,120 @@ way, via`formatHeroCurrency(dailyChallengeStartingCapitalFor(date))`.
   the local sample data happened to lack a trade. Covered instead by
   `daily-challenge.test.ts`/`DailyHero.test.tsx`'s own existing
   component-level tests against hand-built fixtures.
+
+## The Call Board's compact card becomes a bold NYT-Games-style tile (issue #177)
+
+First build issue in a third design pass (`docs/design/gamified-hero-2026-08/`,
+distinct from both the "Hindsight Wrapped" and "UI simplification" passes
+above). Issue #164 built the collapsed "Think you know the future?" card
+as a subdued `surface-card` with a thin blue left-border accent -- this
+issue restyles that same collapsed card into a solid-fill blue-gradient
+tile with a large icon, matching the mockup's `.game-tile.callboard`
+(right-hand tile in `mockup-gamified-hero.html`'s two-tile row) at that
+folder's own stated "99% fidelity, not pixel-perfect" bar. **Purely
+visual**: `lib/call-board-scoring.ts` / `call-board-storage.ts` /
+`market-calendar.ts` / `use-call-board.ts` are all untouched, the
+`<details>`/`<summary>` expand mechanism is untouched, and the expanded
+board itself (picker/stats/history) is untouched -- confirmed via `git
+diff --stat` that this PR touches only `CallBoard.tsx` and its own test
+file (plus an unrelated pre-existing `mockup-gamified-hero.html`
+Prettier-formatting fix, its own separate commit, the same
+already-established pattern issue #161's own section documents for the
+identical class of gap).
+
+- **`CARD_CLASSNAME` moved from the `<details>` to the `<summary>`,
+  a deliberate departure from the issue's own literal wording** ("applied
+  to both the real `<details>` and the placeholder `<div>`"), which
+  explicitly allowed for "or add a new tile-specific class alongside it."
+  Putting the new bold gradient fill on the outer `<details>` (as the
+  pre-#177 `CARD_CLASSNAME` did, shared across summary + expanded body
+  alike, back when both states shared one subdued look) would have
+  painted the _expanded_ board -- the picker, stats, and history strip --
+  blue too, once opened. That's a real regression against this issue's
+  own acceptance criterion ("clicking it still expands to the exact same
+  full Call Board experience as before this issue"), not just an
+  aesthetic nit. Moving the gradient onto `<summary>` alone produces the
+  identical visual result while the `<details>` is closed (a closed
+  `<details>`'s box is exactly its `<summary>`'s own box) with zero risk
+  of the parent's blue background leaking around the expanded body's
+  edges once open -- simpler and more robust than trying to keep a body
+  wrapper's opaque background perfectly congruent with its parent's box.
+  The expanded body gets its own new, ordinary dark `surface-card`
+  wrapper instead (`border border-[var(--gridline)] bg-[var(--surface-1)]`,
+  the same chrome the whole pre-#177 `<details>` used to carry), so the
+  board still reads as a card once opened -- just no longer blue.
+  **`CARD_CLASSNAME` itself stays the one shared constant** between the
+  real interactive `<summary>` and the pre-hydration placeholder `<div>`,
+  preserving the file's own established hydration-safety invariant (the
+  two can never drift in size) -- only _which_ element it's attached to
+  changed, not the sharing itself.
+- **`CallBoardSummaryRow` restructured from a horizontal row into a tile
+  layout**: a large icon (`text-3xl`, up from the pre-#177 row's
+  `text-xl`) stacked above the title/subtitle, with a status pill
+  anchored at the bottom next to a small "▸" expand affordance (the same
+  chevron this app's other `<details>` disclosures already use --
+  "Explore other windows," "More options" -- just relocated next to the
+  status pill rather than at the row's trailing edge, since a column
+  layout leaves no room there). `text-white`/`text-white/…` throughout,
+  not this app's usual `var(--text-primary)`/`var(--text-secondary)`
+  tokens -- the fixed blue-gradient fill isn't part of the dark-surface
+  token system the rest of the app paints against, the same way
+  `OgCard.tsx`'s share-card palette is its own standalone thing (see
+  "Dark mode only" above).
+- **`min-h-28` (7rem/112px) on `CARD_CLASSNAME` is a defensive floor, not
+  a measured value** -- the tile's real content is already comfortably
+  taller than the 44px touch-target floor on its own, but this guarantees
+  it regardless of future copy edits. Live-measured (see below) at
+  704x161px on desktop and 342x177px at a 375-ish mobile width, both
+  comfortably clearing 44px in both dimensions.
+- **Text contrast: every gradient stop independently clears 4.5:1 against
+  white, measured, not just asserted.** The mockup's own literal hex
+  stops (`#5c9cf0`/`#3987e5`/`#2b6fc4`) measured (WCAG relative-luminance
+  formula) at 2.81:1 / 3.64:1 / 5.03:1 against white -- only the darkest
+  stop cleared full AA 4.5:1, and the lightest (sitting right under the
+  icon/title, given the mockup's own icon-top layout and 155deg angle)
+  fell well short of even this app's own loosest existing precedent
+  (`RangeSelector`'s white-on-`--series-1` active pill, ~3.6:1). Rather
+  than ship that and flag it as a deferred gap, the three stops were
+  replaced with `#4374cf`/`#3568c2`/`#2a58ab` -- same 155deg angle, same
+  "lighter to darker blue" sweep, still clearly the same hue family as
+  this app's real `--accent-selection`/`--series-1` (#3987e5) -- each
+  independently verified at >= 4.5:1 against white (4.53:1 / 5.37:1 /
+  6.81:1). This is a deliberate, documented deviation from the mockup's
+  own literal hex values (not from its gradient _shape_): the mockup
+  folder's own README already states 99% visual fidelity is the bar, not
+  100%, and a real WCAG AA shortfall on legible body/title text is
+  exactly the kind of thing this repo's own working agreements say to
+  fix rather than route around, even mid-review. Re-verified live (see
+  below) via real pixel sampling on the rendered tile (a Playwright
+  screenshot decoded onto an in-page `<canvas>`, not just the gradient's
+  own literal stop values) at several points, including the icon/title
+  corner specifically (the previous worst case) -- every sampled point
+  now clears 4.5:1.
+- **Live-verified against a real local pipeline run** (`local-run.ts`,
+  the default 20-ticker sample, real Yahoo network calls) plus `next
+build`/`next start` (not `next dev` -- see issue #123's own note above
+  on why headless Chromium can't hydrate a dev-mode page in this
+  sandbox) and the documented no-root headless-Chromium workaround:
+  confirmed a real `background-image: linear-gradient(...)` computed
+  style on the `<summary>`, white computed text color, the large icon
+  and both title/subtitle strings visible; the expanded board's own new
+  wrapper carries no gradient (`getComputedStyle(...).backgroundImage
+=== "none"`); a real click-through-pick-reload cycle (expand, pick "Up"
+  on the first open slot, confirm the status line updates live to "1 of
+  3 called this week," reload, confirm the card is collapsed again by
+  default with the pick's status line surviving the fresh mount); no
+  horizontal overflow at 390px; and a hydration-safety pass with the
+  client's clock faked to a Wednesday before 9:30 ET (so server and
+  client can genuinely disagree about which trading day is "now," the
+  same technique issue #164's own verification already established)
+  logged **zero console errors and zero page errors**. Screenshotted at
+  1440px and 390px, both collapsed and expanded. The contrast fix above
+  was re-verified in this same pass with real pixel sampling at six
+  points on the rendered tile (four corners inset past the rounded
+  clip, plus the top-mid/left-mid edges) -- every sampled point cleared
+  4.5:1 against white, including the icon/title corner (the gradient's
+  own lightest region, and the point that previously measured ~2.88:1).
+  The temporary `playwright` devDependency and every scratch
+  verification script were reverted/deleted before committing, per this
+  file's own established convention.

@@ -269,6 +269,71 @@ describe("CallBoard: compact card (issue #164)", () => {
   });
 });
 
+describe("CallBoard: bold blue-gradient tile (issue #177)", () => {
+  it("renders the collapsed card as a solid blue-gradient tile with a large icon, and applies the identical tile chrome to the pre-hydration placeholder", async () => {
+    freezeClock(WEDNESDAY_BEFORE_OPEN);
+
+    // The pre-hydration placeholder (a separate render/unmount, mirroring
+    // the "hydration safety" describe block above) and the real hydrated
+    // <summary> must share the exact same gradient-fill/rounded-corner
+    // chrome -- that's the whole point of CARD_CLASSNAME being one shared
+    // constant (see its own doc comment): swapping the placeholder for
+    // the real thing must cause no visible or size change.
+    const { container: unhydrated, unmount } = render(<CallBoard />);
+    const placeholder = unhydrated.querySelector('[aria-hidden="true"]');
+    expect(placeholder).not.toBeNull();
+    const placeholderClassName = placeholder!.className;
+    unmount();
+
+    await renderBoard();
+    const summary = screen.getByTestId("call-board-summary");
+
+    // Both carry the same 155deg gradient angle/sweep -- a solid fill,
+    // not the pre-#177 thin left-border accent. The stop colors are the
+    // contrast-safe values (see CARD_CLASSNAME's own doc comment), not
+    // the mockup's literal hex values, which measured below this app's
+    // own contrast bar on their lightest stop.
+    for (const element of [placeholderClassName, summary.className]) {
+      expect(element).toContain("linear-gradient(155deg,#4374cf_0%,#3568c2_55%,#2a58ab_100%)");
+      expect(element).toContain("rounded-2xl");
+      expect(element).toContain("text-white");
+      expect(element).not.toContain("border-l-[3px]");
+    }
+    // The large icon renders at a bigger size than the pre-#177 row did.
+    expect(summary.className).not.toContain("items-start");
+
+    // A defensive >= 44px touch-target floor on the tile itself, the same
+    // min-h-N assertion convention the bucket-button test above uses --
+    // real pixels were separately measured live at a 375px viewport (see
+    // this issue's PR description).
+    const minHeight = /(?:^|\s)min-h-(\d+)(?:\s|$)/.exec(summary.className);
+    expect(minHeight, "no min-h utility on the tile").not.toBeNull();
+    expect(Number(minHeight![1]) * 4).toBeGreaterThanOrEqual(44);
+  });
+
+  it("keeps the exact same <details>/<summary> expand mechanism -- clicking the tile still reveals the real board, unrestyled", async () => {
+    freezeClock(WEDNESDAY_BEFORE_OPEN);
+    const user = await renderBoard();
+
+    const details = document.querySelector("details")!;
+    // The blue gradient chrome lives on the <summary> only, not the
+    // <details> -- so the expanded board's own wrapper stays the app's
+    // ordinary dark surface-card style, not blue (see CARD_CLASSNAME's
+    // own doc comment for why).
+    expect(details.className).toBe("");
+
+    await user.click(screen.getByTestId("call-board-summary"));
+    expect(details).toHaveAttribute("open");
+    expect(screen.getAllByRole("group", { name: /^Your call for/ })).toHaveLength(3);
+
+    const board = screen
+      .getByRole("group", { name: "Your call for Aug 26, 2026" })
+      .closest("div.surface-card");
+    expect(board).not.toBeNull();
+    expect(board!.className).not.toContain("linear-gradient");
+  });
+});
+
 describe("CallBoard: first-visit empty state", () => {
   it("shows three unset slots, zeroed stats and an explanatory empty history", async () => {
     freezeClock(WEDNESDAY_BEFORE_OPEN);
