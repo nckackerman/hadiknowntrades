@@ -98,19 +98,41 @@
    * THE DECISION: two tokens, split by job, NOT unified.
    *
    *   --accent-reward   (new, gold)  earned/outcome state only:
-   *                     CelebrationBurst (#125), streak + best-streak
-   *                     figures and exact-match history cells (#129),
-   *                     the Beat the Bench win stamp (#131), the
-   *                     unlocked shareable-recap capstone (#133).
+   *                     streak + best-streak figures and exact-match
+   *                     history cells (#129), the Beat the Bench win
+   *                     headline (#131), the Daily Ritual's completed
+   *                     rail steps and its "Copied" stamp (#133).
    *                     Deliberately scarce -- if it shows up on
    *                     something the user merely *clicked*, it is being
    *                     used wrong.
+   *                     NOT CelebrationBurst, despite this list having
+   *                     named it until issue #135's cross-feature QA
+   *                     pass measured the real page: that component
+   *                     keeps its own hardcoded festive palette, whose
+   *                     gold (#f5b301) is a genuinely different gold
+   *                     from this token, live on screen at the same
+   *                     moment as #129's gold history cells. Issue #125
+   *                     considered recoloring it and deferred it as its
+   *                     own diff (see apps/web/CLAUDE.md's "Celebration
+   *                     burst scaled to the result's magnitude"); this
+   *                     list simply never caught up. Don't read the
+   *                     confetti as already using this token.
    *   --accent-selection (new, an alias of the existing --series-1 blue)
    *                     selected/active/primary-interactive state:
    *                     RangeSelector's active pill, ModeToggle,
    *                     CustomRangeSelector's selected day, DayOverview's
    *                     selected row, the primary buttons in
-   *                     WholeRangeBalance and app/error.tsx.
+   *                     WholeRangeBalance and app/error.tsx, plus the
+   *                     later mechanics' own active controls (#129's
+   *                     bucket buttons, #131's speed pills and "Buy back
+   *                     in", #133's "Copy recap").
+   *                     Every one of those call sites now genuinely says
+   *                     --accent-selection: #123 migrated RangeSelector,
+   *                     and issue #135's cross-feature QA pass finished
+   *                     the remaining five, which had been left saying
+   *                     --series-1 directly. Same pixels either way (the
+   *                     alias), so this list is now the whole truth
+   *                     rather than an aspiration -- keep it that way.
    *
    * RangeSelector's active pill therefore STAYS BLUE. That is an explicit
    * choice, not inertia: (a) the blue active-pill treatment is already

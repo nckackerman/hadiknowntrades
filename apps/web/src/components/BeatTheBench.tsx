@@ -219,7 +219,17 @@ function BeatTheBenchFrame({ headingId, children }: { headingId: string; childre
       className="surface-card flex flex-col gap-4 rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-4"
     >
       <div className="flex flex-col gap-2">
-        <h2 id={headingId} className="text-lg font-semibold text-[var(--text-primary)]">
+        {/* font-display, matching CallBoard's and DailyRitual's own
+            section headings (and this file's own settlement headline
+            below) -- issue #121's type roles put headings on
+            --font-display. It resolves to the same Geist Sans the body
+            already inherits today, so this is a same-pixels consistency
+            fix, not a visual change; it stops being a no-op the moment
+            --font-display is ever pointed at a real display face. */}
+        <h2
+          id={headingId}
+          className="font-display text-lg font-semibold text-[var(--text-primary)]"
+        >
           Beat the Bench
         </h2>
         <p className="text-sm text-[var(--text-secondary)]">

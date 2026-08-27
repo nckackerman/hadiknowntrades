@@ -267,7 +267,7 @@ export function WholeRangeBalance({
               <button
                 type="submit"
                 disabled={!isValid}
-                className="rounded-md bg-[var(--series-1)] px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-md bg-[var(--accent-selection)] px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Reveal the answer
               </button>

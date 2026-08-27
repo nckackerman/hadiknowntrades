@@ -132,7 +132,7 @@ export function DayOverview({ rows, selected, onSelect, maxTradesPerDay }: DayOv
                 onClick={() => onSelect(row.date)}
                 className={`grid w-full grid-cols-[1fr_auto_auto] items-center gap-x-3 rounded-md px-3 py-2 text-left text-sm transition-colors ${
                   isSelected
-                    ? "bg-[var(--series-1)]/15 text-[var(--text-primary)]"
+                    ? "bg-[var(--accent-selection)]/15 text-[var(--text-primary)]"
                     : "text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)]"
                 }`}
               >

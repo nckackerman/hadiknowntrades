@@ -30,7 +30,7 @@ export function ModeToggle({ selected, onSelect }: ModeToggleProps) {
             onClick={() => onSelect(mode)}
             className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
               isSelected
-                ? "bg-[var(--series-1)] text-white"
+                ? "bg-[var(--accent-selection)] text-white"
                 : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
             }`}
           >

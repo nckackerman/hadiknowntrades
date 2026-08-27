@@ -331,7 +331,7 @@ export function CustomRangeSelector({
                   aria-current={isSelected ? "date" : undefined}
                   className={`rounded-md py-1 text-sm transition-colors ${
                     isSelected
-                      ? "bg-[var(--series-1)] text-white"
+                      ? "bg-[var(--accent-selection)] text-white"
                       : isSelectable
                         ? "text-[var(--text-primary)] hover:bg-[var(--surface-2)]"
                         : "text-[var(--text-muted)] opacity-40"
