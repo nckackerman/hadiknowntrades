@@ -3,12 +3,23 @@
 import { useMemo } from "react";
 import type { CSSProperties } from "react";
 
+import { FULL_CELEBRATION_INTENSITY, type CelebrationIntensity } from "@/lib/celebration-magnitude";
+
 interface CelebrationBurstProps {
   /** Whether to render the burst. See shouldCelebrate -- gain + settled + not reduced-motion is already decided by the time this is `true`. */
   active: boolean;
+  /**
+   * How much confetti to throw (issue #125) -- defaults to the original
+   * fixed 24-piece, full-width burst, so a caller that doesn't care
+   * about magnitude renders exactly what it did before this prop
+   * existed. A `pieceCount` of `0` renders nothing at all.
+   *
+   * Purely an intensity dial: it never overrides `active`, which is
+   * still the only thing that decides whether a burst is allowed at all
+   * (see `lib/should-celebrate.ts`).
+   */
+  intensity?: CelebrationIntensity;
 }
-
-const PIECE_COUNT = 24;
 
 // A small, deliberately festive palette -- distinct from the muted
 // dataviz tokens in globals.css (this isn't a chart, it's a one-shot
@@ -26,10 +37,13 @@ interface ConfettiPiece {
   delayMs: number;
 }
 
-function randomPiece(id: number): ConfettiPiece {
+function randomPiece(id: number, spreadPercent: number): ConfettiPiece {
   return {
     id,
-    leftPercent: Math.random() * 100,
+    // Centered on the hero figure, spanning `spreadPercent` of the row's
+    // width -- at the default 100 this is exactly the original
+    // `Math.random() * 100` full-width distribution, byte-for-byte.
+    leftPercent: 50 + (Math.random() - 0.5) * spreadPercent,
     color: CONFETTI_COLORS[id % CONFETTI_COLORS.length]!,
     // Signed rotation so pieces spin in both directions, not uniformly clockwise.
     rotationDeg: (Math.random() < 0.5 ? -1 : 1) * (360 + Math.random() * 360),
@@ -54,17 +68,33 @@ function randomPiece(id: number): ConfettiPiece {
  * Decorative only: the whole thing is `aria-hidden` and
  * `pointer-events-none`, so it's invisible to assistive tech and never
  * intercepts a click or tap on the page underneath it.
+ *
+ * How *much* confetti is a separate axis from whether any renders at all
+ * (issue #125): `intensity` scales the piece count and horizontal spread
+ * to the size of the win, and can suppress the burst entirely for a
+ * marginal one, but it is only ever consulted once `active` has already
+ * said yes -- see `lib/celebration-magnitude.ts` for the tier table and
+ * `lib/should-celebrate.ts` for the gate itself.
  */
-export function CelebrationBurst({ active }: CelebrationBurstProps) {
+export function CelebrationBurst({
+  active,
+  intensity = FULL_CELEBRATION_INTENSITY,
+}: CelebrationBurstProps) {
+  const { pieceCount, spreadPercent } = intensity;
   // Generated once, only once `active` actually turns true -- no point
   // paying for Math.random() calls (or holding onto stale piece state)
   // for a burst that may never fire.
   const pieces = useMemo(
-    () => (active ? Array.from({ length: PIECE_COUNT }, (_, id) => randomPiece(id)) : []),
-    [active],
+    () =>
+      active ? Array.from({ length: pieceCount }, (_, id) => randomPiece(id, spreadPercent)) : [],
+    [active, pieceCount, spreadPercent],
   );
 
-  if (!active) {
+  // `pieceCount === 0` is the suppressed tier (a marginal win), not a
+  // degenerate input -- rendering the empty overlay div for it would
+  // leave a stray, testable "a burst happened" marker in the DOM for a
+  // result that deliberately isn't celebrating.
+  if (!active || pieces.length === 0) {
     return null;
   }
 

@@ -79,6 +79,16 @@ export interface HeroAndWorstCaseProps {
    * doesn't give it that control; a CSS-hidden overlay does.
    */
   heroSlot?: ReactNode;
+  /**
+   * Passed straight through as `HeroStat`'s own
+   * `scaleCelebrationToMagnitude` (issue #125) -- defaults to `false`,
+   * the pre-#125 fixed burst. Only `TradeReplay.tsx` (the window and
+   * custom-window models, the scope issue #125 defines) passes `true`;
+   * `ResultsPanel.tsx`'s intraday-daily per-day call site deliberately
+   * leaves it off. See that prop's own doc comment for the full
+   * reasoning.
+   */
+  scaleCelebrationToMagnitude?: boolean;
 }
 
 /**
@@ -137,6 +147,7 @@ export function HeroAndWorstCase({
   worstCaseStartingCapital,
   displayStartingCapital,
   heroSlot,
+  scaleCelebrationToMagnitude = false,
 }: HeroAndWorstCaseProps) {
   // Memoized (code-review finding, issue #96): a caller like
   // TradeReplay.tsx re-renders this component on every one of the
@@ -181,6 +192,7 @@ export function HeroAndWorstCase({
             startingCapital={startingCapital}
             endingBalance={endingBalance}
             displayStartingCapital={displayStartingCapital}
+            scaleCelebrationToMagnitude={scaleCelebrationToMagnitude}
           />
         </div>
         {heroSlot}

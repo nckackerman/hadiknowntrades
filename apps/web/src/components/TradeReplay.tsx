@@ -424,6 +424,13 @@ export function TradeReplay({
             worstCaseStartingCapital={worstCaseStartingCapital}
             displayStartingCapital={displayStartingCapital}
             heroSlot={heroSlot}
+            // Issue #125: this component only ever renders a window or
+            // custom-window result (see its own doc comment), which is
+            // exactly that issue's scope -- so this is the one call site
+            // that opts the hero figure's celebration burst into
+            // magnitude scaling. ResultsPanel.tsx's intraday-daily
+            // per-day HeroAndWorstCase deliberately doesn't.
+            scaleCelebrationToMagnitude={true}
           />
           {startingCapitalInput}
         </div>
