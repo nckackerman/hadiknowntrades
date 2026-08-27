@@ -1087,3 +1087,90 @@ doc comment, updated to say so explicitly).
   chained trading days. See `apps/pipeline/CLAUDE.md`'s own "Chained
   per-day starting capital" section for the pipeline-side implementation
   and the same verification's full numbers.
+
+## Beat the Bench sessions and the mystery-day mechanism (issue #127)
+
+Beat the Bench (issues #131/#132) plays through one real SPY trading day
+bar by bar. Issue #127 is the data half of that: `intraday-sessions.ts`
+turns an `IntradayBar[]` into discrete sessions, and `results-schema.ts`
+declares the four stored object shapes `apps/pipeline` writes (see that
+package's own CLAUDE.md for the fetch/build/write side).
+
+- **`buildIntradaySessions(bars)` (`src/intraday-sessions.ts`)** groups
+  one ticker's bars by exchange-local calendar date and converts each bar
+  to a `SessionBar` (`{ time, close }`, "HH:MM:SS", **no date part**).
+  The real date is carried once, on the returned `IntradaySession`
+  envelope -- that separation _is_ the mystery-day mechanism, not a
+  presentation detail: a mystery payload publishes the bars and withholds
+  the envelope's date, and there is no per-bar date left to leak.
+  Reuses `intraday-optimizer.ts`'s `splitLocalDateTime` (now exported at
+  module level, deliberately **not** from `index.ts`) rather than a
+  second `.split("T")`.
+- **Incomplete sessions are dropped, via a span test, not a time-of-day
+  threshold** (`MIN_CLOSED_SESSION_SPAN_MINUTES = 180`). Two real cases
+  it rejects, both observed live rather than imagined: a run that happens
+  mid-session, and -- verified 2026-08-26 -- **Yahoo appending a single
+  bar for the _current_ moment even to a request whose `period2` is
+  months in the past** (a `60m` request for 2025-11-25..2025-11-28 came
+  back with a trailing `2026-08-26T15:00` bar). The test is a span
+  because `meta.gmtoffset` is the request-time offset applied uniformly
+  (see "60-minute intraday bars" above), so absolute labels shift by an
+  hour across a DST transition inside the window -- a fixed "last bar
+  > = 15:55" rule would reject a batch of genuinely complete sessions
+  > every November and March, while a _difference_ between two labels
+  > cancels that offset exactly. Known, accepted gap: a manual run after
+  > ~12:30 ET during a regular session clears the 180-minute bar; the real
+  > nightly run (06:00 UTC) can't hit it.
+- **No bar-count assumption exists anywhere in this path**, which is the
+  point: a regular 5-minute session has ~78 bars and a real
+  holiday-shortened one ~39, and both are valid.
+  `src/test-fixtures/spy-thanksgiving-2025.ts` holds real, recorded SPY
+  bars for **2025-11-28 -- the Friday after Thanksgiving 2025, a real
+  1:00pm-ET NYSE early close** -- as the test case for this.
+- **Why that fixture is 60-minute bars, not the 5-minute bars the feature
+  actually uses**: real 5-minute data for a real half day is not
+  obtainable. `interval=5m` retention is a hard 60-day wall, and the
+  current window was checked live (2026-08-26) rather than assumed --
+  **all 42 trading days from 2026-06-29 to 2026-08-26 had exactly 78
+  five-minute bars, with no shortened session anywhere in the window.**
+  The nearest real early closes (2025-11-28, 2025-12-24 behind;
+  2026-11-27, 2026-12-24 ahead) all sit far outside it. `interval=60m`'s
+  730-day retention does reach them, so the fixture is a real half day's
+  real prices at the coarsest granularity that can still see it. It also
+  preserves two real artifacts on purpose: a `null` close at 12:30 (so
+  the half day yields 4 usable bars, not 5, against a regular day's 7)
+  and the trailing current-moment stub bar described above.
+- **The four stored shapes** (`results-schema.ts`, all reusing
+  `RESULTS_SCHEMA_VERSION` -- **no bump**, since these are brand-new
+  objects at brand-new keys rather than a shape change any existing
+  reader parses, exactly that constant's own stated criterion):
+  `TodaysCloseSession` (`results/beat-the-bench/today.json`, carries its
+  real `date`), `MysterySession`
+  (`results/beat-the-bench/pool/{id}.json`, no date field at all),
+  `MysteryPoolManifest` (`results/beat-the-bench/pool/index.json`, ids
+  only), and `MysteryIndex` (`results/mystery-index.json`, the id ->
+  real-date lookup issue #132's client fetches **only at Final
+  Settlement**).
+- **`validateMysterySession` enforces the contract mechanically, not by
+  field allowlist**: it scans the _serialized_ payload for any
+  `\d{4}-\d{2}-\d{2}` substring and fails the write if one appears. That
+  holds for fields that don't exist yet -- a future refactor that adds a
+  `date`, or that starts writing `IntradayBar.date`'s full datetime into
+  `bars[].time`, fails the run loudly instead of silently publishing the
+  answer. **This is why `MysterySession` has no `generatedAt`** (unlike
+  every other stored object here): an ISO run timestamp contains a date
+  substring, and keeping one would weaken an unconditional scan into
+  "no date except that one field." `MysteryPoolManifest` does keep
+  `generatedAt`, and that is the single documented exemption -- it's the
+  _run_ timestamp, identical across the whole pool, and it earns its
+  place by letting issue #132 detect pool rotation between picking an id
+  and resolving it.
+- **Accepted, explicitly out-of-scope limitation** (issue #127's own
+  wording): a sophisticated user can correlate a session's published
+  prices against public SPY history and identify the day. Nothing short
+  of not publishing real prices defends against that. Two narrower
+  variants of the same class, named rather than pretended away: a
+  holiday-shortened session's distinctive bar count/end time narrows the
+  candidate set on its own, and a session from the far side of a DST
+  transition carries hour-shifted labels that visibly separate it from
+  the rest of the pool.
