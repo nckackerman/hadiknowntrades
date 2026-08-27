@@ -6,6 +6,10 @@
 import {
   anchorDateToDate,
   CUSTOM_ANCHORS_MANIFEST_KEY,
+  MYSTERY_INDEX_KEY,
+  MYSTERY_POOL_MANIFEST_KEY,
+  MYSTERY_SESSION_IDS,
+  mysterySessionKey,
   PRESET_RANGES,
   resultKey,
   customResultKey,
@@ -14,6 +18,8 @@ import {
   type AnchorDate,
   type CustomAnchorsManifest,
   type CustomWindowResult,
+  type MysteryIndexEntry,
+  type MysterySession,
   type PrecomputedResult,
   type PresetRange,
   type TodaysCloseSession,
@@ -40,6 +46,7 @@ export interface ResultReader {
 export type ApiErrorCode =
   | "invalid_range"
   | "invalid_anchor"
+  | "invalid_session_id"
   | "server_misconfigured"
   | "upstream_error"
   | "not_found"
@@ -485,4 +492,197 @@ export async function getTodaysCloseSessionResponse(
   return Response.json(session as unknown as TodaysCloseSession, {
     headers: { "Cache-Control": CACHE_CONTROL },
   });
+}
+
+// --- Beat the Bench: Mystery Day (issue #132) -------------------------
+//
+// Two routes, and the split between them is the whole mechanism (see
+// packages/core's results-schema.ts for issue #127's design, which this
+// is the client-facing half of):
+//
+//   - `getMysterySessionResponse` picks one pooled session at random and
+//     serves its bars. That payload contains **no date anywhere** -- the
+//     pipeline's own `validateMysterySession` scans the serialized object
+//     for any four-two-two digit date substring and refuses to publish
+//     one that has any, so this route has nothing to redact.
+//   - `getMysteryRevealResponse` resolves one id to its real date, and is
+//     the only thing on the server that can. `BeatTheBench.tsx` must not
+//     call it until a session has actually settled -- that discipline is
+//     enforced client-side by the reveal hook's URL being `null` until
+//     then (see use-mystery-session.ts), and asserted for real against a
+//     rendered DOM and a recorded network log rather than by inspection.
+//
+// The reveal route deliberately answers for **one id only** rather than
+// serving the whole MysteryIndex: a client that has settled one session
+// has earned exactly one date, and handing it the full id -> date map
+// would let a single settlement de-anonymise the entire pool.
+
+/** The pool session `GET /api/beat-the-bench/mystery` serves, plus the pool stamp needed to detect rotation at settlement. */
+export interface MysterySessionResponse {
+  session: MysterySession;
+  /**
+   * The publishing run's timestamp, copied from MysteryPoolManifest.
+   *
+   * Slots are re-permuted on every pipeline run, so an id picked from one
+   * run's pool resolves to a *different* real date against a later run's
+   * index. The client keeps this and compares it against the reveal
+   * response's own `generatedAt` at settlement, so a session that was
+   * rotated out mid-play is reported as unresolvable rather than
+   * confidently revealed as the wrong day. This is the one place a
+   * date-shaped substring legitimately appears before settlement -- it is
+   * the *run* timestamp, identical for every session in the pool, and
+   * therefore says nothing about which day any individual id is.
+   */
+  poolGeneratedAt: string;
+}
+
+/** What `GET /api/beat-the-bench/mystery/reveal?id=...` answers with: one id, one real date, and the index's own run stamp. */
+export interface MysteryRevealResponse {
+  sessionId: string;
+  /** The real exchange-local trading date this session came from, YYYY-MM-DD. */
+  date: string;
+  /** The index's own publishing run timestamp -- compared against MysterySessionResponse.poolGeneratedAt to detect pool rotation. */
+  generatedAt: string;
+}
+
+/**
+ * Exact-membership check against the fixed slot list, deliberately not a
+ * regex on the id's shape: `mysterySessionKey` interpolates this straight
+ * into an S3 key, and an allowlist of the 48 real slots is the version of
+ * this check that cannot be talked into reading some other object.
+ */
+export function isMysterySessionId(raw: string | null): raw is string {
+  return raw !== null && MYSTERY_SESSION_IDS.includes(raw);
+}
+
+/**
+ * Handles GET /api/beat-the-bench/mystery -- reads the pool manifest,
+ * picks one published id **at random**, and serves that session's bars.
+ *
+ * The pick happens here rather than in the client for one reason worth
+ * stating: doing it client-side would mean shipping the browser the
+ * manifest first, and while the manifest is genuinely safe to hand out
+ * (ids only, in an order uncorrelated with date -- see
+ * MysteryPoolManifest), a single round trip that never puts the pool's
+ * full membership in front of the player is simply the smaller surface.
+ *
+ * `random` is a parameter rather than a bare `Math.random()` call so the
+ * pick is pinnable in tests -- the same reasoning apps/pipeline's own
+ * `RunPipelineOptions.random` records for the slot permutation this pool
+ * is built by.
+ */
+export async function getMysterySessionResponse(
+  reader: ResultReader | null,
+  random: () => number = Math.random,
+): Promise<Response> {
+  const manifestOutcome = await readCurrentSchemaObject(
+    MYSTERY_POOL_MANIFEST_KEY,
+    reader,
+    "the mystery pool manifest",
+    "No mystery sessions are available yet -- the pool hasn't been published by a pipeline run.",
+  );
+  if (!manifestOutcome.ok) return manifestOutcome.response;
+  const manifest = manifestOutcome.value;
+
+  const sessionIds = manifest.sessionIds;
+  if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
+    console.error("[api/beat-the-bench] stored mystery pool manifest has no session ids");
+    return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
+  }
+  if (typeof manifest.generatedAt !== "string") {
+    console.error("[api/beat-the-bench] stored mystery pool manifest has no generatedAt stamp");
+    return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
+  }
+
+  const pickedRaw: unknown = sessionIds[Math.floor(random() * sessionIds.length)];
+  const picked = typeof pickedRaw === "string" ? pickedRaw : null;
+  if (!isMysterySessionId(picked)) {
+    console.error(
+      `[api/beat-the-bench] mystery pool manifest names unknown slot ${String(picked)}`,
+    );
+    return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
+  }
+
+  const sessionOutcome = await readCurrentSchemaObject(
+    mysterySessionKey(picked),
+    reader,
+    `the mystery session ${picked}`,
+    "That mystery session isn't published right now -- the pool may have just rotated.",
+  );
+  if (!sessionOutcome.ok) return sessionOutcome.response;
+  const session = sessionOutcome.value;
+
+  if (!Array.isArray(session.bars) || session.bars.length === 0) {
+    console.error(`[api/beat-the-bench] stored mystery session ${picked} has no usable bars`);
+    return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
+  }
+
+  const body: MysterySessionResponse = {
+    session: session as unknown as MysterySession,
+    poolGeneratedAt: manifest.generatedAt,
+  };
+  // no-store, unlike every other route here: the response is a *random*
+  // pick, so letting a shared cache hand the same session to everyone
+  // (or back to the same player on their next go) would quietly undo the
+  // mode.
+  return Response.json(body, { headers: { "Cache-Control": "no-store" } });
+}
+
+/**
+ * Handles GET /api/beat-the-bench/mystery/reveal?id=... -- the one place
+ * a mystery session's real date can be obtained, answered one id at a
+ * time.
+ *
+ * `no-store` here is not just cache hygiene: this response *is* the
+ * answer to the game, and it should not sit in a shared cache where a
+ * player who hasn't settled yet could be handed it.
+ */
+export async function getMysteryRevealResponse(
+  reader: ResultReader | null,
+  rawSessionId: string | null,
+): Promise<Response> {
+  if (!isMysterySessionId(rawSessionId)) {
+    return errorResponse(
+      400,
+      "invalid_session_id",
+      `Unknown mystery session ${JSON.stringify(rawSessionId)}.`,
+    );
+  }
+
+  const outcome = await readCurrentSchemaObject(
+    MYSTERY_INDEX_KEY,
+    reader,
+    "the mystery index",
+    "The mystery day can't be resolved right now -- the index hasn't been published by a pipeline run.",
+  );
+  if (!outcome.ok) return outcome.response;
+  const index = outcome.value;
+
+  if (!Array.isArray(index.entries) || typeof index.generatedAt !== "string") {
+    console.error("[api/beat-the-bench] stored mystery index is not in the expected shape");
+    return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
+  }
+
+  const entry = (index.entries as unknown[]).find(
+    (candidate): candidate is MysteryIndexEntry =>
+      typeof candidate === "object" &&
+      candidate !== null &&
+      (candidate as Record<string, unknown>).sessionId === rawSessionId &&
+      typeof (candidate as Record<string, unknown>).date === "string",
+  );
+
+  if (!entry) {
+    return errorResponse(
+      404,
+      "not_found",
+      "That mystery session isn't in the current index -- the pool may have rotated since it was picked.",
+    );
+  }
+
+  const body: MysteryRevealResponse = {
+    sessionId: entry.sessionId,
+    date: entry.date,
+    generatedAt: index.generatedAt,
+  };
+  return Response.json(body, { headers: { "Cache-Control": "no-store" } });
 }

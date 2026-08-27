@@ -6485,6 +6485,179 @@ settlement. Zero console or page errors across all five runs. The
 temporary `playwright` devDependency and the verification script were
 reverted before committing, per this file's own convention.
 
+## Beat the Bench: Mystery Day + Final Settlement analytics (issue #132)
+
+The second mode, and the settlement narrative #131 deliberately deferred.
+The engine (`lib/beat-the-bench.ts`) is **unchanged except for one type
+widening** -- Mystery Day is a different payload, not a different
+mechanic, so `balanceAtBar`/`settleSession`/the whole toggle model play a
+pooled session exactly as they play Today's Close.
+
+| file                               | owns                                                                       |
+| ---------------------------------- | -------------------------------------------------------------------------- |
+| `lib/beat-the-bench-moves.ts`      | the session's best runs, whether the player was on them, the dollar figure |
+| `lib/beat-the-bench-percentile.ts` | the seeded Monte Carlo field of random togglers                            |
+| `lib/use-mystery-session.ts`       | both client fetches -- and the "not until settlement" rule, mechanically   |
+| `app/api/beat-the-bench/mystery/`  | the pick route, and its `reveal/` sibling                                  |
+
+### The date-secrecy rule is a request that doesn't happen, not a hidden prop
+
+Issue #127 put the pool's real dates in exactly one object
+(`results/mystery-index.json`) so that "don't read this yet" is **one**
+rule rather than several. This issue's whole job on that front is to
+honour it, and the enforcement is deliberately structural rather than
+presentational:
+
+- `useMysteryReveal(sessionId)` is a `useFetchResultsState` instantiation,
+  and `SessionGame` passes `settled ? session.sessionId : null`. A `null`
+  URL makes that hook issue **no request at all** -- it does not fetch and
+  hide, or fetch and discard. So before settlement there is no date in the
+  DOM, in component state, in a fetch cache, or in the network log.
+- `/api/beat-the-bench/mystery/reveal?id=` answers for **one id**, never
+  the whole `MysteryIndex`. One settlement earns one date; serving the map
+  would let a single finished game de-anonymise the other 40 sessions.
+  There is a test asserting no other pooled date appears in the response.
+- `isMysterySessionId` is an **exact-membership check against
+  `MYSTERY_SESSION_IDS`**, not a regex on the id's shape -- the value is
+  interpolated straight into an S3 key by `mysterySessionKey`.
+- The pick happens server-side (`getMysterySessionResponse`, with an
+  injectable `random` so it's pinnable in tests, mirroring apps/pipeline's
+  own `RunPipelineOptions.random`). Client-side picking would have meant
+  shipping the browser the manifest first; safe in principle, but a round
+  trip that never puts the pool's membership in front of the player is
+  simply less surface.
+- Both mystery routes send `Cache-Control: no-store`, unlike every other
+  route in `results-api.ts`. The pick is _random_ (a shared cache would
+  hand everyone the same "mystery" day) and the reveal _is the answer_.
+
+**Pool rotation is handled, not hoped away.** Slots are re-permuted every
+pipeline run, so an id picked before a run resolves to a different day
+after it. `MysterySessionResponse.poolGeneratedAt` is compared against the
+reveal's own `generatedAt`; on a mismatch the settlement says the day can
+no longer be looked up rather than confidently naming the wrong one, and
+writes no stored record.
+
+**A mystery session's record is keyed by the revealed _real_ date**
+(`hikt:beat-the-bench:{date}:mystery`), written when the reveal lands
+rather than at settlement -- so issue #133's rail reads one key shape for
+both modes. Keying by the slot id would mean a key that silently means a
+different day after the next nightly run.
+
+### The chooser really did just gain a card
+
+Issue #131 built its single-card chooser as a _list_ of mode cards
+specifically so this issue would add a card rather than a layout. That
+held. What did change: mode selection moved up to `BeatTheBench` itself,
+so `SessionGame` now takes a mode-agnostic `PlayableSession`
+(`date: string | null` is the entire difference between the two modes) and
+**auto-starts on mount** -- picking a mode _is_ the start click, so #131's
+separate "press play" step would have become a second one.
+
+One consequence worth knowing: `SessionGame` reads `reducedMotion` in a
+`useState` initializer, which #131's version could not. It's safe here
+only because this component now mounts in response to a click, long after
+the parent's own post-mount preference read has landed.
+
+`isPlayableSession` takes a structural `PlayableSessionPayload`
+(`{ bars }`) instead of `TodaysCloseSession` -- the two payloads differ
+only in whether they carry a date, which is exactly the field a
+playability check has no business reading.
+
+### The percentile: a real simulation, seeded, never `Math.random()`
+
+`comparePercentile` runs `SIMULATION_TRIALS` (500) synthetic traders
+through the **same real bars**, each toggling with `TOGGLE_PROBABILITY`
+(0.05 per bar, ~4 moves across a regular session), and ranks the player
+against them. Every trader is settled by `balanceAtBar` -- the same call
+that settles the player and the bench -- so a zero-move player's rank is
+genuinely buy-and-hold's rank, no special case anywhere. Ties count as
+half (`percentileRank`), which matters rather than being pedantry: a
+trader whose random moves cancel out finishes _exactly_ level with
+buy-and-hold, so a do-nothing player really does tie a slice of the field.
+
+- **The RNG is a required parameter, not a defaulted one.** There is no
+  code path here that reaches `Math.random()`; a bare one would make every
+  assertion on the resulting percentile flaky by construction. The
+  component seeds `mulberry32(seedFromBars(bars))` -- from the price path,
+  never the clock and never a date (Mystery Day has none on the client,
+  and must not). That also means the number a player is reading can't
+  shift under them on a re-render.
+- **`test-fixtures/spy-trending-session-bars.ts`** exists because the
+  directional claim can't be tested against one flat fixture: two real
+  pooled sessions, **2026-08-04 (+1.238%)** and **2026-07-29 (-1.418%)**,
+  pulled verbatim from a real local pipeline run's own mystery pool.
+  Measured do-nothing percentiles across seeds 1-5: **88.5 / 89.1 / 90.5 /
+  89.7 / 89.4%** on the up day against **21.9 / 22.9 / 26.1 / 25.7 /
+  26.6%** on the down day. The two ranges don't overlap, which is what the
+  test asserts (min-up > max-down, gap > 0.5) rather than a hardcoded
+  threshold. `spy-session-bars.ts` (the +0.053% quiet day) stays the
+  fixture for the mechanic's own invariants -- exactly wrong for this,
+  exactly right for that.
+
+### The dollar figure is an approximation, and the comment says exactly which one
+
+`benchmarkDollarsFor`'s methodology, stated once there and mirrored in the
+UI copy: **`balanceAtBar(bars, [], capital, fromIndex) * returnFraction`**
+-- what a buy-and-hold position was worth when the run started, times the
+run's own price return. In words: _if you had been holding the bench's
+position when this run happened, it would have added this many dollars to
+it._
+
+It is **not** what the run would have added to _the player's_ balance, and
+**not** a re-simulation of their session with one decision changed (that
+needs replaying everything downstream of the change, since every later
+move compounds off a different balance). The per-run figures are
+**deliberately not summed** into a "what your mistakes cost you" total for
+the same reason -- they would each have compounded into the next. The
+rendered copy hedges to match ("about", "to a buy-and-hold position of
+this size"), and `missedMoveSentence` says "you weren't in the market for
+all of the run", not "you were in cash from X to Y" -- `heldThroughout`
+counts a player who stepped out _mid_-run as having missed it, and the
+sentence has to stay true for them.
+
+**`MAX_MOVE_SPAN_FRACTION` (1/3) is load-bearing, not cosmetic.** Measured
+against the real +1.24% fixture: uncapped, the single best move is bar 0
+to bar 74 (09:30 to 15:40) and it overlaps everything else, so the list
+comes back with one entry that is buy-and-hold restated. Capped, the same
+session yields three real intraday runs.
+
+### Live verification (real pooled data, real browser, real network log)
+
+Real `local-run.ts` pass (6 tickers, real Yahoo calls) into a
+`LOCAL_RESULTS_DIR` -- 41 pooled sessions plus manifest and index, and a
+direct scan confirmed **0 of 41 pooled payloads contain a date-shaped
+substring**. Then `next build` + `next start` (not `next dev` -- see issue
+#123's note on hydration failing here) and the documented no-root
+headless-Chromium workaround. 19 of 19 checks passed:
+
+- Mid-session (bar 17 of 78), against the section's real `innerHTML`, not
+  its render tree: **no date-shaped text of any kind** (`YYYY-MM-DD` or
+  "Mon D, YYYY"), the picked slot's real date absent both raw and
+  formatted, and absent from `document`, `localStorage` and
+  `sessionStorage`.
+- **Zero requests** matching `mystery/reveal` or `mystery-index` out of 17
+  total, mid-session. Exactly one afterwards. The full recorded log for a
+  session-plus-a-second-pick run is: `mystery?pick=0`,
+  `mystery/reveal?id=s01`, `mystery?pick=1` -- and no reveal for the
+  second, unfinished session.
+- At settlement the real day appears, **no other pooled session's date
+  does** (all 40 checked), and the record is stored under
+  `hikt:beat-the-bench:2026-07-08:mystery`.
+- The biggest-runs panel, its approximation caveat, and the percentile
+  line ("You finished ahead of 69% of 500 traders who moved at random
+  through the same session.") all render. 375px shows no horizontal
+  overflow. Zero console errors/warnings and zero page errors.
+
+**One real bug the browser found that reading the code did not**: before
+this, "Pick a different mode" only rendered _after_ a session settled, so
+a player who started a 78-bar session by mistake had no way out short of
+reloading. Caught because Playwright sat waiting 23 seconds for a control
+that simply wasn't there yet. `PlaybackControls` now carries it too, with
+a regression test.
+
+The temporary `playwright` devDependency and both verification scripts
+were reverted before committing, per this file's own convention.
+
 ## The hero count-up no longer moves the page (issue #147)
 
 The fix for the jitter issue #124's spike measured. The hero's 1.2s

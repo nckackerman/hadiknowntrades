@@ -1,7 +1,7 @@
 "use client";
 
-// Beat the Bench (issue #131): a playable, real-time ticking-chart
-// buy/sell game against this app's own SPY benchmark, Today's Close mode.
+// Beat the Bench (issues #131, #132): a playable, real-time ticking-chart
+// buy/sell game against this app's own SPY benchmark.
 //
 // **Placement and ownership follow issue #122's standing decision** (see
 // apps/web/CLAUDE.md's "Page structure"): this is a self-contained
@@ -19,14 +19,23 @@
 // `outcomeHeadline`/`outcomeDetail` in lib/beat-the-bench.ts for the
 // settlement copy and the reasoning behind "along for the ride".
 //
-// Out of scope here, by the issue: Mystery Day and the best-moves/
-// percentile settlement narrative (both issue #132), and weekly/monthly
-// modes (backlog). The chooser is deliberately built as a list of mode
-// cards with one card in it, so #132 adds a card rather than a layout.
+// Two modes, and they are the *same* game (issue #132):
+//
+//   - **Today's Close** replays the most recently closed session, and
+//     says which day it is up front.
+//   - **Mystery Day** replays a random session from the published pool
+//     and does not. Its real date exists in exactly one place on the
+//     server (issue #127's `results/mystery-index.json`) and reaches the
+//     client only through a request this component does not make until
+//     the session has genuinely settled -- see `SessionGame`'s own note.
+//
+// Both play through the identical `beat-the-bench.ts` engine, unchanged:
+// the mystery half is a different *payload*, not a different mechanic.
+// Weekly/monthly modes remain backlog.
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 
-import type { TodaysCloseSession } from "@hadiknowntrades/core";
+import type { SessionBar } from "@hadiknowntrades/core";
 
 import {
   balanceAtBar,
@@ -45,63 +54,165 @@ import {
   type PlaybackSpeed,
   type Settlement as SessionSettlement,
 } from "@/lib/beat-the-bench";
+import { biggestMissedMove, missedMoveSentence, topUpMoves } from "@/lib/beat-the-bench-moves";
+import {
+  comparePercentile,
+  mulberry32,
+  percentilePhrase,
+  seedFromBars,
+} from "@/lib/beat-the-bench-percentile";
 import {
   readPlayedSession,
   savePlayedSession,
+  type BeatTheBenchMode,
   type PlayedSession,
 } from "@/lib/beat-the-bench-storage";
 import { formatDate, formatTime } from "@/lib/format-date";
 import { formatHeroCurrency, formatSessionPercent } from "@/lib/format-currency";
 import { useReducedMotionAfterMount } from "@/lib/use-reduced-motion-after-mount";
+import { useMysteryReveal, useMysterySession } from "@/lib/use-mystery-session";
 import { useTodaysCloseSession } from "@/lib/use-todays-close-session";
 import { BeatTheBenchChart } from "@/components/BeatTheBenchChart";
-
-const MODE = "todays-close" as const;
 
 /** Every control in the playback row shares this: >= 44px in both directions at any width (`min-h-11`/`min-w-11` are 44px), per issue #131's touch-target criterion. The row wraps rather than shrinking these. */
 const CONTROL_CLASS =
   "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md border border-[var(--gridline)] px-3 text-sm font-medium";
 
-export function BeatTheBench() {
-  const state = useTodaysCloseSession();
-  const headingId = useId();
+/**
+ * One session the game can actually be played on, whichever mode
+ * produced it -- the shape `SessionGame` works from, so the mechanic
+ * itself has no idea which mode it is running.
+ *
+ * `date` is the whole difference between the two modes. Today's Close
+ * carries its real date; Mystery Day carries `null` and an opaque
+ * `sessionId` instead, and there is nothing in its `bars` to reconstruct
+ * a date from either (issue #127's payloads are labelled by time of day
+ * only, enforced at write time by a scan of the serialized object).
+ */
+interface PlayableSession {
+  mode: BeatTheBenchMode;
+  ticker: string;
+  barIntervalMinutes: number;
+  bars: readonly SessionBar[];
+  /** The real trading date, when the mode publishes it up front. `null` for Mystery Day, until settlement. */
+  date: string | null;
+  /** The opaque pool slot this session came from -- Mystery Day only. What the reveal is asked for, at settlement and not before. */
+  sessionId: string | null;
+  /** The pool manifest's run stamp at the moment this session was picked -- Mystery Day only. Compared against the reveal's own stamp to catch a pool rotation mid-play. */
+  poolGeneratedAt: string | null;
+}
 
-  if (state === null || state.status === "loading") {
+type ChosenMode = BeatTheBenchMode | null;
+
+export function BeatTheBench() {
+  const headingId = useId();
+  const reducedMotion = useReducedMotionAfterMount();
+
+  const [mode, setMode] = useState<ChosenMode>(null);
+  // Bumped to ask for *another* random day. It rides in the mystery
+  // fetch's URL (see useMysterySession) because the shared fetch state
+  // machine refetches on URL change and nothing else.
+  const [pick, setPick] = useState(0);
+
+  const todaysCloseState = useTodaysCloseSession();
+  const mysteryState = useMysterySession(mode === "mystery" ? pick : null);
+
+  if (mode === null) {
     return (
       <BeatTheBenchFrame headingId={headingId}>
-        <p className="text-sm text-[var(--text-muted)]">Looking up the latest session…</p>
+        <ModeChooser
+          todaysClose={
+            todaysCloseState !== null &&
+            todaysCloseState.status === "success" &&
+            isPlayableSession(todaysCloseState.data)
+              ? todaysCloseState.data
+              : null
+          }
+          todaysCloseLoading={todaysCloseState === null || todaysCloseState.status === "loading"}
+          reducedMotion={reducedMotion}
+          onChoose={setMode}
+        />
       </BeatTheBenchFrame>
     );
   }
 
-  if (state.status === "error" || !isPlayableSession(state.data)) {
+  if (mode === "todays-close") {
+    const session =
+      todaysCloseState !== null &&
+      todaysCloseState.status === "success" &&
+      isPlayableSession(todaysCloseState.data)
+        ? todaysCloseState.data
+        : null;
+    if (session === null) return <BeatTheBenchFrame headingId={headingId} />;
+    return (
+      <BeatTheBenchFrame headingId={headingId}>
+        {/* Keyed on the session's own date so a fresh trading day starts a
+            genuinely fresh game (state, stored-record read and all) rather
+            than carrying yesterday's bar index into today's bars. */}
+        <SessionGame
+          key={`todays-close-${session.date}`}
+          session={{
+            mode: "todays-close",
+            ticker: session.ticker,
+            barIntervalMinutes: session.barIntervalMinutes,
+            bars: session.bars,
+            date: session.date,
+            sessionId: null,
+            poolGeneratedAt: null,
+          }}
+          reducedMotion={reducedMotion}
+          onBack={() => setMode(null)}
+        />
+      </BeatTheBenchFrame>
+    );
+  }
+
+  if (mysteryState === null || mysteryState.status === "loading") {
+    return (
+      <BeatTheBenchFrame headingId={headingId}>
+        <p className="text-sm text-[var(--text-muted)]">Picking a day out of the hat…</p>
+      </BeatTheBenchFrame>
+    );
+  }
+
+  if (mysteryState.status === "error" || !isPlayableSession(mysteryState.data.session)) {
     return (
       <BeatTheBenchFrame headingId={headingId}>
         <p className="text-sm text-[var(--text-secondary)]">
-          There&apos;s no session to play right now. A day&apos;s bars are published by the nightly
+          There&apos;s no mystery session to play right now. The pool is published by the nightly
           run, shortly after the close.
         </p>
+        <BackToModesButton onBack={() => setMode(null)} />
       </BeatTheBenchFrame>
     );
   }
 
+  const mystery = mysteryState.data;
   return (
     <BeatTheBenchFrame headingId={headingId}>
-      {/* Keyed on the session's own date so a fresh trading day starts a
-          genuinely fresh game (state, stored-record read and all) rather
-          than carrying yesterday's bar index into today's bars. */}
-      <SessionGame key={state.data.date} session={state.data} />
+      <SessionGame
+        // Keyed on the pick counter as well as the slot id, so "play
+        // another" always starts a genuinely fresh game -- including in
+        // the case where the server happens to re-pick the same slot.
+        key={`mystery-${pick}-${mystery.session.sessionId}`}
+        session={{
+          mode: "mystery",
+          ticker: mystery.session.ticker,
+          barIntervalMinutes: mystery.session.barIntervalMinutes,
+          bars: mystery.session.bars,
+          date: null,
+          sessionId: mystery.session.sessionId,
+          poolGeneratedAt: mystery.poolGeneratedAt,
+        }}
+        reducedMotion={reducedMotion}
+        onBack={() => setMode(null)}
+        onAnother={() => setPick((current) => current + 1)}
+      />
     </BeatTheBenchFrame>
   );
 }
 
-function BeatTheBenchFrame({
-  headingId,
-  children,
-}: {
-  headingId: string;
-  children: React.ReactNode;
-}) {
+function BeatTheBenchFrame({ headingId, children }: { headingId: string; children?: ReactNode }) {
   return (
     <section
       aria-labelledby={headingId}
@@ -123,98 +234,255 @@ function BeatTheBenchFrame({
   );
 }
 
-function SessionGame({ session }: { session: TodaysCloseSession }) {
+/**
+ * The two mode cards.
+ *
+ * Issue #131 deliberately built its single-card chooser as a *list* of
+ * mode cards so that this issue would add a card rather than a layout;
+ * that held, and this is the same list with a second entry.
+ *
+ * **The Mystery Day card names no date, and cannot.** Nothing is fetched
+ * for that mode until it is chosen (see `useMysterySession`), so at this
+ * point the client has no pool data at all -- there is no date here to
+ * accidentally render, not merely one that is being withheld.
+ */
+function ModeChooser({
+  todaysClose,
+  todaysCloseLoading,
+  reducedMotion,
+  onChoose,
+}: {
+  todaysClose: { ticker: string; date: string; bars: readonly SessionBar[] } | null;
+  todaysCloseLoading: boolean;
+  reducedMotion: boolean;
+  onChoose: (mode: BeatTheBenchMode) => void;
+}) {
+  const [playedRecord, setPlayedRecord] = useState<PlayedSession | null>(null);
+  const todaysCloseDate = todaysClose?.date ?? null;
+
+  // Read after mount, never during render: this component renders on the
+  // server (issue #122 mounts this section at the ResultsPage level), so
+  // a synchronous storage read here would make the hydration render
+  // disagree with the server's. Same deferred-correction shape
+  // use-hydrated-local-storage-state.ts uses.
+  useEffect(() => {
+    if (todaysCloseDate === null) return;
+    queueMicrotask(() => setPlayedRecord(readPlayedSession(todaysCloseDate, "todays-close")));
+  }, [todaysCloseDate]);
+
+  return (
+    <div className="flex flex-col gap-3">
+      {playedRecord !== null && (
+        <p className="text-sm text-[var(--text-secondary)]">
+          You&apos;ve played today&apos;s close:{" "}
+          <span
+            className={
+              playedRecord.outcome === "win"
+                ? "font-semibold text-[var(--accent-reward)]"
+                : "font-semibold text-[var(--text-primary)]"
+            }
+          >
+            {outcomeHeadline(settlementFromRecord(playedRecord))}
+          </span>
+          , finishing at {formatHeroCurrency(playedRecord.playerBalance)} against the bench&apos;s{" "}
+          {formatHeroCurrency(playedRecord.benchmarkBalance)}.
+        </p>
+      )}
+
+      <ul className="flex flex-col gap-3">
+        <li>
+          {todaysClose === null ? (
+            <p className="text-sm text-[var(--text-muted)]">
+              {todaysCloseLoading
+                ? "Looking up the latest session…"
+                : "There's no session to play right now. A day's bars are published by the nightly run, shortly after the close."}
+            </p>
+          ) : (
+            <ModeCard
+              title={playedRecord === null ? "Play today's close" : "Play today's close again"}
+              detail={`${todaysClose.ticker} · ${formatDate(todaysClose.date)} · ${todaysClose.bars.length} bars · about ${Math.round(sessionDurationMs(todaysClose.bars.length, 1) / 1000)} seconds at normal speed`}
+              onClick={() => onChoose("todays-close")}
+            />
+          )}
+        </li>
+        <li>
+          <ModeCard
+            title="Play a mystery day"
+            detail="A real session from the last couple of months -- you won't be told which one until you've finished it."
+            onClick={() => onChoose("mystery")}
+          />
+        </li>
+      </ul>
+
+      {reducedMotion && (
+        <p className="text-sm text-[var(--text-muted)]">
+          You prefer reduced motion, so the session will start paused. Step through it a bar at a
+          time, or press play whenever you&apos;d like.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ModeCard({
+  title,
+  detail,
+  onClick,
+}: {
+  title: string;
+  detail: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex min-h-11 w-full flex-col items-start gap-1 rounded-md border border-[var(--gridline)] bg-[var(--surface-2)] px-4 py-3 text-left"
+    >
+      <span className="text-base font-semibold text-[var(--text-primary)]">{title}</span>
+      <span className="text-sm text-[var(--text-muted)]">{detail}</span>
+    </button>
+  );
+}
+
+/** Rebuilds the `Settlement` shape from a stored record, so the chooser's recap can reuse `outcomeHeadline` rather than storing a second copy of the copy. */
+function settlementFromRecord(record: PlayedSession): SessionSettlement {
+  return {
+    startingCapital: STARTING_CAPITAL,
+    playerBalance: record.playerBalance,
+    benchmarkBalance: record.benchmarkBalance,
+    playerReturnFraction: record.playerBalance / STARTING_CAPITAL - 1,
+    benchmarkReturnFraction: record.benchmarkBalance / STARTING_CAPITAL - 1,
+    moves: record.moves,
+    outcome: record.outcome,
+  };
+}
+
+function BackToModesButton({ onBack }: { onBack: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onBack}
+      className={`${CONTROL_CLASS} self-start bg-[var(--surface-1)] text-[var(--text-primary)]`}
+    >
+      Pick a different mode
+    </button>
+  );
+}
+
+/**
+ * The game itself -- identical for both modes.
+ *
+ * **The one place mode matters is the reveal, and it is a request that
+ * does not happen** (issue #132's central rule). `useMysteryReveal` is
+ * handed `null` for as long as the session is unsettled, and the shared
+ * fetch state machine makes no request at all for a `null` URL -- so
+ * before settlement there is no date in the DOM, no date in this
+ * component's state, no date in a fetch cache, and no request for one in
+ * the network log. Not "hidden": absent.
+ */
+function SessionGame({
+  session,
+  reducedMotion,
+  onBack,
+  onAnother,
+}: {
+  session: PlayableSession;
+  reducedMotion: boolean;
+  onBack: () => void;
+  onAnother?: () => void;
+}) {
   const bars = session.bars;
   const lastIndex = bars.length - 1;
-  const reducedMotion = useReducedMotionAfterMount();
 
-  const [playing, setPlaying] = useState(false);
   const [barIndex, setBarIndex] = useState(0);
   const [moves, setMoves] = useState<number[]>([]);
   const [speed, setSpeed] = useState<PlaybackSpeed>(DEFAULT_SPEED);
-  const [paused, setPaused] = useState(false);
-  const [playedRecord, setPlayedRecord] = useState<PlayedSession | null>(null);
+  // Reduced motion doesn't remove the mechanic here -- it changes how it
+  // starts. Playback begins paused so nothing moves until the viewer asks
+  // it to, and "Step forward one bar" (always present, for everyone) is a
+  // complete way to play the session start to finish. Safe to read from
+  // the prop in a `useState` initializer, unlike issue #131's version:
+  // this component now mounts in response to the viewer picking a mode,
+  // long after the parent's own post-mount preference read has landed.
+  const [paused, setPaused] = useState(reducedMotion);
 
   // Whether the session has finished is *derived*, not a third phase to
   // keep in sync: playback simply runs out of bars. Nothing has to
   // transition anything, so there's no window in which the bar index and
   // the phase disagree.
-  const settled = playing && barIndex >= lastIndex;
+  const settled = barIndex >= lastIndex;
   const settlement = settleSession(bars, moves, STARTING_CAPITAL);
   const position = positionAfterBar(moves, barIndex);
 
-  // Read after mount, never during render: this component renders on the
-  // server (issue #122 mounts it at the ResultsPage level), so a
-  // synchronous storage read here would make the hydration render
-  // disagree with the server's. Same deferred-correction shape
-  // use-hydrated-local-storage-state.ts uses.
-  useEffect(() => {
-    queueMicrotask(() => setPlayedRecord(readPlayedSession(session.date, MODE)));
-  }, [session.date]);
+  // THE rule (issue #132): `null` until the session has actually settled,
+  // which means no request for the id -> date index until then.
+  const revealState = useMysteryReveal(settled ? session.sessionId : null);
+  const reveal = revealState !== null && revealState.status === "success" ? revealState.data : null;
+  // Slots are re-permuted every pipeline run, so an id picked before a
+  // rotation resolves to a different day afterwards. Comparing the two
+  // run stamps is what turns that into "we can't say which day this was"
+  // instead of a confident reveal of the wrong one.
+  const poolRotated =
+    reveal !== null &&
+    session.poolGeneratedAt !== null &&
+    reveal.generatedAt !== session.poolGeneratedAt;
+  const revealedDate = reveal !== null && !poolRotated ? reveal.date : null;
 
-  // Advance one bar per tick. `atEnd` (not `barIndex`) is in the dep
-  // array on purpose: depending on the index itself would tear down and
-  // rebuild the interval on every single tick, so each tick's real
-  // spacing would drift by however long the render took.
-  const atEnd = barIndex >= lastIndex;
-  useEffect(() => {
-    if (!playing || paused || atEnd) return;
-    const id = window.setInterval(() => {
-      setBarIndex((current) => Math.min(current + 1, lastIndex));
-    }, tickIntervalMs(speed));
-    return () => {
-      window.clearInterval(id);
-    };
-  }, [playing, paused, atEnd, speed, lastIndex]);
+  // The date this session's stored record is keyed by. Today's Close has
+  // it from the start; Mystery Day only once the reveal lands, so its
+  // record is written at that moment rather than at settlement -- keyed
+  // by the *real* date, so issue #133's status rail reads one consistent
+  // `hikt:beat-the-bench:{date}:{mode}` shape for both modes rather than
+  // one keyed by an opaque slot id that means something different after
+  // the next pipeline run.
+  const recordDate = session.date ?? revealedDate;
 
-  // Persist "played this session, and how it came out" the moment it
-  // settles -- the `hikt:beat-the-bench:{date}:{mode}` entry issue #133's
-  // status rail reads. Writing fails silently if storage is unavailable
-  // (see local-storage.ts); the game itself is unaffected either way.
   useEffect(() => {
-    if (!settled) return;
-    const record: PlayedSession = {
+    if (!settled || recordDate === null) return;
+    savePlayedSession(recordDate, session.mode, {
       played: true,
       outcome: settlement.outcome,
       playerBalance: settlement.playerBalance,
       benchmarkBalance: settlement.benchmarkBalance,
       moves: settlement.moves,
-    };
-    savePlayedSession(session.date, MODE, record);
-    queueMicrotask(() => setPlayedRecord(record));
-    // Keyed on the primitives that define this settlement, not on the
-    // freshly-built `settlement`/`record` objects (a new identity every
-    // render, which would rewrite storage on every one).
+    });
+    // Keyed on the primitives that define this settlement, not on a
+    // freshly-built object (a new identity every render, which would
+    // rewrite storage on every one).
   }, [
     settled,
-    session.date,
+    recordDate,
+    session.mode,
     settlement.outcome,
     settlement.playerBalance,
     settlement.benchmarkBalance,
     settlement.moves,
   ]);
 
-  function startSession() {
+  // Advance one bar per tick. `atEnd` (not `barIndex`) is in the dep
+  // array on purpose: depending on the index itself would tear down and
+  // rebuild the interval on every single tick, so each tick's real
+  // spacing would drift by however long the render took.
+  const atEnd = settled;
+  useEffect(() => {
+    if (paused || atEnd) return;
+    const id = window.setInterval(() => {
+      setBarIndex((current) => Math.min(current + 1, lastIndex));
+    }, tickIntervalMs(speed));
+    return () => {
+      window.clearInterval(id);
+    };
+  }, [paused, atEnd, speed, lastIndex]);
+
+  // Replays this same session from its opening bar. Not a mount-time
+  // concern: choosing a mode is what starts a session, so this component
+  // only ever exists mid-game.
+  function replaySession() {
     setBarIndex(0);
     setMoves([]);
     setSpeed(DEFAULT_SPEED);
-    // Reduced motion doesn't remove the mechanic here -- it changes how
-    // it starts. Playback begins paused so nothing moves until the
-    // viewer asks it to, and "Step forward one bar" (always present, for
-    // everyone) is a complete way to play the session start to finish.
     setPaused(reducedMotion);
-    setPlaying(true);
-  }
-
-  if (!playing) {
-    return (
-      <SessionChooser
-        session={session}
-        playedRecord={playedRecord}
-        onStart={startSession}
-        reducedMotion={reducedMotion}
-      />
-    );
   }
 
   const currentBar = bars[barIndex]!;
@@ -225,7 +493,11 @@ function SessionGame({ session }: { session: TodaysCloseSession }) {
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <p className="text-sm text-[var(--text-secondary)]">
-          {session.ticker}, {formatDate(session.date)}
+          {/* Mystery Day names the ticker and nothing else -- there is no
+              date on the client to name at this point. */}
+          {session.date === null
+            ? `${session.ticker}, a mystery session`
+            : `${session.ticker}, ${formatDate(session.date)}`}
         </p>
         {/* The chart itself draws no time labels -- see
             BeatTheBenchChart's own note on why. This is the session's
@@ -280,7 +552,17 @@ function SessionGame({ session }: { session: TodaysCloseSession }) {
       )}
 
       {settled ? (
-        <FinalSettlement session={session} settlement={settlement} onPlayAgain={startSession} />
+        <FinalSettlement
+          session={session}
+          settlement={settlement}
+          moveBarIndexes={moves}
+          revealPending={revealState === null ? false : revealState.status === "loading"}
+          revealedDate={revealedDate}
+          poolRotated={poolRotated}
+          onPlayAgain={replaySession}
+          onAnother={onAnother}
+          onBack={onBack}
+        />
       ) : (
         <PlaybackControls
           paused={paused}
@@ -292,6 +574,7 @@ function SessionGame({ session }: { session: TodaysCloseSession }) {
             setBarIndex((current) => Math.min(current + 1, lastIndex));
           }}
           onSpeed={setSpeed}
+          onBack={onBack}
         />
       )}
 
@@ -309,67 +592,15 @@ function SessionGame({ session }: { session: TodaysCloseSession }) {
   );
 }
 
-function SessionChooser({
-  session,
-  playedRecord,
-  onStart,
-  reducedMotion,
-}: {
-  session: TodaysCloseSession;
-  playedRecord: PlayedSession | null;
-  onStart: () => void;
-  reducedMotion: boolean;
-}) {
-  const seconds = Math.round(sessionDurationMs(session.bars.length, 1) / 1000);
-  return (
-    <div className="flex flex-col gap-3">
-      {playedRecord !== null && (
-        <p className="text-sm text-[var(--text-secondary)]">
-          You&apos;ve played this one:{" "}
-          <span
-            className={
-              playedRecord.outcome === "win"
-                ? "font-semibold text-[var(--accent-reward)]"
-                : "font-semibold text-[var(--text-primary)]"
-            }
-          >
-            {outcomeHeadline({
-              startingCapital: STARTING_CAPITAL,
-              playerBalance: playedRecord.playerBalance,
-              benchmarkBalance: playedRecord.benchmarkBalance,
-              playerReturnFraction: playedRecord.playerBalance / STARTING_CAPITAL - 1,
-              benchmarkReturnFraction: playedRecord.benchmarkBalance / STARTING_CAPITAL - 1,
-              moves: playedRecord.moves,
-              outcome: playedRecord.outcome,
-            })}
-          </span>
-          , finishing at {formatHeroCurrency(playedRecord.playerBalance)} against the bench&apos;s{" "}
-          {formatHeroCurrency(playedRecord.benchmarkBalance)}.
-        </p>
-      )}
-      <button
-        type="button"
-        onClick={onStart}
-        className="flex min-h-11 flex-col items-start gap-1 rounded-md border border-[var(--gridline)] bg-[var(--surface-2)] px-4 py-3 text-left"
-      >
-        <span className="text-base font-semibold text-[var(--text-primary)]">
-          {playedRecord === null ? "Play today's close" : "Play it again"}
-        </span>
-        <span className="font-numeric text-sm tabular-nums text-[var(--text-muted)]">
-          {session.ticker} · {formatDate(session.date)} · {session.bars.length} bars · about{" "}
-          {seconds} seconds at normal speed
-        </span>
-      </button>
-      {reducedMotion && (
-        <p className="text-sm text-[var(--text-muted)]">
-          You prefer reduced motion, so the session will start paused. Step through it a bar at a
-          time, or press play whenever you&apos;d like.
-        </p>
-      )}
-    </div>
-  );
-}
-
+/**
+ * The playback row -- and the way back out of a session in progress.
+ *
+ * That last part is not decoration: before it existed, "Pick a different
+ * mode" only appeared once a session had settled, so a player who started
+ * a 78-bar session by mistake had no way out short of reloading the page.
+ * Found by a real browser walking the UI, not by reading it (Playwright
+ * sat waiting 23 seconds for a control that simply wasn't rendered yet).
+ */
 function PlaybackControls({
   paused,
   speed,
@@ -377,6 +608,7 @@ function PlaybackControls({
   onTogglePause,
   onStep,
   onSpeed,
+  onBack,
 }: {
   paused: boolean;
   speed: PlaybackSpeed;
@@ -384,6 +616,7 @@ function PlaybackControls({
   onTogglePause: () => void;
   onStep: () => void;
   onSpeed: (next: PlaybackSpeed) => void;
+  onBack: () => void;
 }) {
   const speedGroupId = useId();
   return (
@@ -434,13 +667,18 @@ function PlaybackControls({
           way to the close.
         </p>
       )}
+      <BackToModesButton onBack={onBack} />
     </div>
   );
 }
 
 /**
- * Final Settlement: the win/loss/tie stamp against the bench, and both
- * sides' final dollars and percent.
+ * Final Settlement: the win/loss/tie stamp against the bench, both sides'
+ * final dollars and percent, and (issue #132) the two pieces of analysis
+ * that only make sense once the whole session is known -- what the day's
+ * biggest moves actually were and whether the player was in the market
+ * for them, and where they landed against a field of randomly-timed
+ * traders.
  *
  * The *gap* gets its own sentence because a single session moves a
  * fraction of a percent -- both balances routinely round to the same
@@ -455,12 +693,45 @@ function PlaybackControls({
 function FinalSettlement({
   session,
   settlement,
+  moveBarIndexes,
+  revealPending,
+  revealedDate,
+  poolRotated,
   onPlayAgain,
+  onAnother,
+  onBack,
 }: {
-  session: TodaysCloseSession;
+  session: PlayableSession;
   settlement: SessionSettlement;
+  moveBarIndexes: readonly number[];
+  revealPending: boolean;
+  revealedDate: string | null;
+  poolRotated: boolean;
   onPlayAgain: () => void;
+  onAnother?: () => void;
+  onBack: () => void;
 }) {
+  const bars = session.bars;
+
+  const topMoves = useMemo(
+    () => topUpMoves(bars, moveBarIndexes, STARTING_CAPITAL),
+    [bars, moveBarIndexes],
+  );
+  const missed = biggestMissedMove(topMoves);
+
+  // Seeded from the session's own price path, never from the clock or
+  // `Math.random()` -- so the number a player is reading can't move under
+  // them on a re-render, and so the whole simulation is reproducible.
+  // (Seeding from a *date* would also be wrong here: Mystery Day doesn't
+  // have one on the client at this point, and mustn't.)
+  const percentile = useMemo(
+    () =>
+      comparePercentile(bars, moveBarIndexes, STARTING_CAPITAL, {
+        random: mulberry32(seedFromBars(bars)),
+      }),
+    [bars, moveBarIndexes],
+  );
+
   return (
     <div className="flex flex-col gap-3 rounded-md border border-[var(--gridline)] bg-[var(--surface-2)] px-4 py-4">
       <p
@@ -487,18 +758,140 @@ function FinalSettlement({
         />
       </div>
       <p className="text-sm text-[var(--text-secondary)]">{outcomeDetail(settlement)}</p>
+
+      <BestMovesPanel topMoves={topMoves} missedSentence={missedMoveSentence(missed)} />
+
+      <div className="flex flex-col gap-1">
+        <p className="text-sm text-[var(--text-secondary)]">{percentilePhrase(percentile)}</p>
+        <p className="text-sm text-[var(--text-muted)]">
+          That field is {percentile.trials} simulated traders who flipped in and out of this exact
+          session at random moments -- a control group for timing, not a model of how anyone really
+          trades. Their middling result was {formatHeroCurrency(percentile.medianBalance)}.
+        </p>
+      </div>
+
       <p className="text-sm text-[var(--text-muted)]">
-        {session.ticker}&apos;s real {session.barIntervalMinutes}-minute closes from{" "}
-        {formatDate(session.date)}. No fees, no slippage -- every move settles at the price on
-        screen.
+        <SessionProvenance
+          session={session}
+          revealPending={revealPending}
+          revealedDate={revealedDate}
+          poolRotated={poolRotated}
+        />{" "}
+        No fees, no slippage -- every move settles at the price on screen.
       </p>
-      <button
-        type="button"
-        onClick={onPlayAgain}
-        className={`${CONTROL_CLASS} self-start bg-[var(--surface-1)] text-[var(--text-primary)]`}
-      >
-        Play it again
-      </button>
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={onPlayAgain}
+          className={`${CONTROL_CLASS} bg-[var(--surface-1)] text-[var(--text-primary)]`}
+        >
+          Play it again
+        </button>
+        {onAnother && (
+          <button
+            type="button"
+            onClick={onAnother}
+            className={`${CONTROL_CLASS} bg-[var(--surface-1)] text-[var(--text-primary)]`}
+          >
+            Another mystery day
+          </button>
+        )}
+        <BackToModesButton onBack={onBack} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Which real session this was.
+ *
+ * For Mystery Day this is the *only* place a date ever appears, and only
+ * after the reveal request has come back -- a request `SessionGame` does
+ * not make until the session has settled. The pool-rotation branch is not
+ * hypothetical politeness: slots are re-permuted on every pipeline run,
+ * so a player who left a settled session open across a nightly run would
+ * otherwise be shown a confidently wrong day.
+ */
+function SessionProvenance({
+  session,
+  revealPending,
+  revealedDate,
+  poolRotated,
+}: {
+  session: PlayableSession;
+  revealPending: boolean;
+  revealedDate: string | null;
+  poolRotated: boolean;
+}) {
+  const source = `${session.ticker}'s real ${session.barIntervalMinutes}-minute closes`;
+  if (session.date !== null) return <>{`${source} from ${formatDate(session.date)}.`}</>;
+  if (revealedDate !== null) return <>{`That was ${source} from ${formatDate(revealedDate)}.`}</>;
+  if (revealPending) return <>{`${source}. Looking up which day that was…`}</>;
+  if (poolRotated) {
+    return (
+      <>{`${source}. The pool rotated while you were playing, so which day this was can no longer be looked up.`}</>
+    );
+  }
+  return <>{`${source}. Which day that was couldn't be looked up just now.`}</>;
+}
+
+/**
+ * The session's biggest moves, and whether the player was on them.
+ *
+ * **The dollar figures are an approximation and the copy says so
+ * outright.** Each one is what that move would have added to a
+ * buy-and-hold position of this size -- see `benchmarkDollarsFor`'s own
+ * methodology comment (`beat-the-bench-moves.ts`) for exactly what is
+ * computed. It is deliberately *not* a re-simulation of this player's
+ * own session with one decision changed, and the figures are deliberately
+ * not summed into a single "what your mistakes cost you" total, because
+ * they would each have compounded into each other.
+ */
+function BestMovesPanel({
+  topMoves,
+  missedSentence,
+}: {
+  topMoves: ReturnType<typeof topUpMoves>;
+  missedSentence: string;
+}) {
+  if (topMoves.length === 0) {
+    return (
+      <p className="text-sm text-[var(--text-secondary)]">
+        The session never put together a run worth catching -- it only ever went down.
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-sm font-medium text-[var(--text-primary)]">
+        The session&apos;s biggest runs
+      </p>
+      <ul className="flex flex-col gap-1">
+        {topMoves.map((move) => (
+          <li
+            key={`${move.fromIndex}-${move.toIndex}`}
+            className="font-numeric text-sm tabular-nums text-[var(--text-secondary)]"
+          >
+            {formatTime(move.fromTime)} → {formatTime(move.toTime)},{" "}
+            {formatSessionPercent(move.returnFraction)} ({formatHeroCurrency(move.benchmarkDollars)}
+            ){" · "}
+            <span
+              className={move.playerHeld ? "text-[var(--status-good)]" : "text-[var(--text-muted)]"}
+            >
+              {move.playerHeld ? "you were in" : "you were in cash"}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="text-sm text-[var(--text-secondary)]">{missedSentence}</p>
+      <p className="text-sm text-[var(--text-muted)]">
+        Those dollar figures are an approximation: each is roughly what that run would have added to
+        a buy-and-hold position of this size, not a replay of your own session with one decision
+        changed. They don&apos;t add up into a single total, because each one would have compounded
+        into the next.
+      </p>
     </div>
   );
 }

@@ -18,7 +18,7 @@
 //     all* (see `balanceAtBar`), which is why the tie is exact rather
 //     than merely close.
 
-import { isValidPrice, type SessionBar, type TodaysCloseSession } from "@hadiknowntrades/core";
+import { isValidPrice, type SessionBar } from "@hadiknowntrades/core";
 
 /**
  * The stake, in dollars. Deliberately the same $20 the rest of this app
@@ -283,6 +283,18 @@ export function gapPhrase(settlement: Settlement): string {
 }
 
 /**
+ * The part of a fetched session payload this check actually looks at.
+ *
+ * Structural rather than `TodaysCloseSession`, because issue #132 plays
+ * `MysterySession` payloads through this same engine unchanged -- the two
+ * differ only in whether they carry a real date, which is exactly the
+ * field a playability check has no business reading.
+ */
+export interface PlayableSessionPayload {
+  bars: readonly SessionBar[];
+}
+
+/**
  * Whether a fetched session is actually playable: at least two bars (one
  * to start at and one to move to) and a real price on every one of them.
  *
@@ -294,7 +306,7 @@ export function gapPhrase(settlement: Settlement): string {
  * empty-barred payload; this is the client's own last guard before
  * dividing by a price.
  */
-export function isPlayableSession(session: TodaysCloseSession): boolean {
+export function isPlayableSession(session: PlayableSessionPayload): boolean {
   return (
     Array.isArray(session.bars) &&
     session.bars.length >= 2 &&

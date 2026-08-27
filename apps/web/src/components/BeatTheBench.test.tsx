@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { beatTheBenchKey } from "@/lib/beat-the-bench-storage";
 import { stubPrefersReducedMotion } from "@/lib/stub-prefers-reduced-motion.test-util";
 import { SPY_SESSION_BARS } from "@/test-fixtures/spy-session-bars";
+import { SPY_DOWN_SESSION_BARS } from "@/test-fixtures/spy-trending-session-bars";
 import { BeatTheBench } from "./BeatTheBench";
 
 // The real 2026-08-26 SPY session, in the exact envelope
@@ -77,6 +78,98 @@ function advance(ms: number): void {
 
 function barReadout(): string {
   return screen.getByText(/bar \d+ of 79/).textContent ?? "";
+}
+
+// --- Mystery Day (issue #132) ----------------------------------------
+
+/** The real 2026-07-29 SPY session, in the envelope /api/beat-the-bench/mystery serves -- note it carries a slot id and no date, exactly as MysterySession is published. */
+const MYSTERY_SESSION_ID = "s37";
+const MYSTERY_REAL_DATE = "2026-07-29";
+const POOL_GENERATED_AT = "2026-08-27T01:50:37.927Z";
+const MYSTERY_BODY = {
+  session: {
+    schemaVersion: RESULTS_SCHEMA_VERSION,
+    ticker: "SPY",
+    barIntervalMinutes: 5,
+    sessionId: MYSTERY_SESSION_ID,
+    bars: SPY_DOWN_SESSION_BARS,
+  },
+  poolGeneratedAt: POOL_GENERATED_AT,
+};
+
+/**
+ * Any date, in either shape this app renders one: the stored
+ * `YYYY-MM-DD` and `formatDate`'s own "Mon D, YYYY". Used to assert the
+ * *absence* of a date anywhere in the document, which is a stronger claim
+ * than "the one date we happen to know about is absent".
+ */
+const DATE_SHAPED =
+  /\d{4}-\d{2}-\d{2}|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}\b/;
+
+function expectNoDateAnywhere(): void {
+  // innerHTML, not textContent: an attribute-serialized value (a key, a
+  // data-* prop, an aria-label) would leak just as effectively as visible
+  // text, and only this catches it.
+  expect(document.body.innerHTML).not.toMatch(DATE_SHAPED);
+}
+
+/**
+ * A fetch stub that routes by URL and records every request made, so a
+ * test can assert on what was *not* requested -- the whole point of this
+ * mode's discipline.
+ */
+function stubRoutedFetch(options: { revealGeneratedAt?: string; revealStatus?: number } = {}) {
+  const calls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: unknown) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.startsWith("/api/beat-the-bench/mystery/reveal")) {
+        const status = options.revealStatus ?? 200;
+        const body =
+          status === 200
+            ? {
+                sessionId: MYSTERY_SESSION_ID,
+                date: MYSTERY_REAL_DATE,
+                generatedAt: options.revealGeneratedAt ?? POOL_GENERATED_AT,
+              }
+            : { error: "upstream_error", message: "nope" };
+        return Promise.resolve(new Response(JSON.stringify(body), { status }));
+      }
+      if (url.startsWith("/api/beat-the-bench/mystery")) {
+        return Promise.resolve(new Response(JSON.stringify(MYSTERY_BODY), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify(SESSION), { status: 200 }));
+    }),
+  );
+  return calls;
+}
+
+/** Renders, picks Mystery Day, and waits for its (paused, under reduced motion) session to be on screen. */
+async function enterMysterySession(): Promise<void> {
+  render(<BeatTheBench />);
+  await screen.findByText(/You prefer reduced motion/);
+  click(/play a mystery day/i);
+  await screen.findByText(/bar 1 of 78/);
+}
+
+/**
+ * Steps a paused session all the way to its close, then lets the reveal
+ * request settle. Driven by the button's own presence rather than a bar
+ * count, so a caller that already stepped part-way (to assert something
+ * mid-session) doesn't have to do its own arithmetic.
+ */
+async function stepToClose(): Promise<void> {
+  for (let i = 0; i < SPY_DOWN_SESSION_BARS.length; i += 1) {
+    const step = screen.queryByRole("button", { name: "Step forward one bar" });
+    if (step === null) break;
+    fireEvent.click(step);
+  }
+  expect(screen.queryByRole("button", { name: "Step forward one bar" })).toBeNull();
+  await act(async () => {
+    await Promise.resolve();
+  });
 }
 
 describe("BeatTheBench", () => {
@@ -235,7 +328,7 @@ describe("BeatTheBench", () => {
     // defensive path.
     vi.useRealTimers();
     render(<BeatTheBench />);
-    expect(await screen.findAllByText(/You've played this one/)).not.toHaveLength(0);
+    expect(await screen.findAllByText(/You've played today's close/)).not.toHaveLength(0);
   });
 
   it("still plays through when browser storage is unavailable", async () => {
@@ -303,6 +396,132 @@ describe("BeatTheBench", () => {
 
       advance(300);
       expect(barReadout()).toMatch(/bar 2 of 79/);
+    });
+  });
+
+  // Issue #132. The acceptance criterion this block exists for is not
+  // "the date isn't displayed" but "the date is not *in the client*", so
+  // every assertion below is against the real rendered document
+  // (innerHTML, so an attribute-serialized leak counts too) and against
+  // the real recorded network log -- never against "no obviously-named
+  // prop exists".
+  describe("Mystery Day", () => {
+    beforeEach(() => {
+      // Playback starts paused under reduced motion, which makes stepping
+      // the deterministic way to walk a session without racing a real
+      // 300ms interval. The mode's own behaviour is identical either way.
+      stubPrefersReducedMotion(true);
+    });
+
+    it("never asks for the id -> date index, and shows no date at all, until the session settles", async () => {
+      const calls = stubRoutedFetch();
+      await enterMysterySession();
+
+      // Mid-session: not just "the real date is absent" but "no date in
+      // any shape is present anywhere in the rendered document."
+      click("Step forward one bar");
+      click("Step forward one bar");
+      expectNoDateAnywhere();
+      expect(document.body.innerHTML).not.toContain(MYSTERY_REAL_DATE);
+      expect(document.body.innerHTML).not.toContain("Jul 29, 2026");
+      expect(calls.filter((url) => url.includes("reveal"))).toHaveLength(0);
+
+      await stepToClose();
+
+      // Only now does the one request that can resolve a date happen.
+      expect(calls.filter((url) => url.includes("reveal"))).toHaveLength(1);
+      expect(await screen.findByText(/Jul 29, 2026/)).toBeInTheDocument();
+    });
+
+    it("plays through the same engine and settles the same way as Today's Close", async () => {
+      stubRoutedFetch();
+      await enterMysterySession();
+      await stepToClose();
+
+      expect(screen.getByText("Along for the ride")).toBeInTheDocument();
+      expect(screen.getByText("Level with the bench, exactly.")).toBeInTheDocument();
+    });
+
+    it("records the played session under its real date once revealed, not under the opaque slot id", async () => {
+      stubRoutedFetch();
+      await enterMysterySession();
+      await stepToClose();
+      await screen.findByText(/Jul 29, 2026/);
+
+      const stored = window.localStorage.getItem(beatTheBenchKey(MYSTERY_REAL_DATE, "mystery"));
+      expect(stored).not.toBeNull();
+      expect(JSON.parse(stored!).played).toBe(true);
+      // The slot id means a different day after the next pipeline run, so
+      // it must never become a storage key.
+      expect(
+        window.localStorage.getItem(beatTheBenchKey(MYSTERY_SESSION_ID, "mystery")),
+      ).toBeNull();
+    });
+
+    // Slots are re-permuted every pipeline run, so an id picked before a
+    // rotation resolves to a *different* day afterwards. Saying so beats
+    // confidently naming the wrong day.
+    it("declines to name a day when the pool rotated mid-play, rather than naming the wrong one", async () => {
+      stubRoutedFetch({ revealGeneratedAt: "2026-08-28T01:50:37.927Z" });
+      await enterMysterySession();
+      await stepToClose();
+
+      expect(await screen.findByText(/pool rotated while you were playing/)).toBeInTheDocument();
+      expectNoDateAnywhere();
+      expect(window.localStorage.getItem(beatTheBenchKey(MYSTERY_REAL_DATE, "mystery"))).toBeNull();
+    });
+
+    it("settles normally when the reveal can't be looked up at all", async () => {
+      stubRoutedFetch({ revealStatus: 502 });
+      await enterMysterySession();
+      await stepToClose();
+
+      expect(await screen.findByText(/couldn't be looked up just now/)).toBeInTheDocument();
+      expect(screen.getByText("Along for the ride")).toBeInTheDocument();
+      expectNoDateAnywhere();
+    });
+
+    it("reports the session's biggest runs and where the player was standing, with the approximation stated", async () => {
+      stubRoutedFetch();
+      await enterMysterySession();
+      await stepToClose();
+
+      expect(screen.getByText("The session's biggest runs")).toBeInTheDocument();
+      // A zero-move player rode every one of them.
+      expect(
+        screen.getByText(/in the market for every one of the session's biggest runs/),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/Those dollar figures are an approximation/)).toBeInTheDocument();
+      expect(
+        screen.getByText(/not a replay of your own session with one decision changed/),
+      ).toBeInTheDocument();
+    });
+
+    // Found live rather than by reading the code: before this, the only
+    // way back to the chooser appeared *after* a 78-bar session settled,
+    // so starting one by mistake meant reloading the page.
+    it("lets a player leave a session in progress without finishing it", async () => {
+      stubRoutedFetch();
+      await enterMysterySession();
+      click("Step forward one bar");
+
+      click("Pick a different mode");
+
+      expect(
+        await screen.findByRole("button", { name: /play a mystery day/i }),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/bar \d+ of 78/)).not.toBeInTheDocument();
+    });
+
+    it("ranks the player against a simulated field of random togglers", async () => {
+      stubRoutedFetch();
+      await enterMysterySession();
+      await stepToClose();
+
+      expect(
+        screen.getByText(/traders who moved at random through the same session/),
+      ).toBeVisible();
+      expect(screen.getByText(/a control group for timing, not a model/)).toBeInTheDocument();
     });
   });
 
