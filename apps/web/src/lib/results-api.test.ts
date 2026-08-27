@@ -1,4 +1,7 @@
 import {
+  MYSTERY_INDEX_KEY,
+  MYSTERY_POOL_MANIFEST_KEY,
+  mysterySessionKey,
   PRESET_RANGES,
   RESULTS_SCHEMA_VERSION,
   TODAYS_CLOSE_SESSION_KEY,
@@ -10,9 +13,12 @@ import { describe, expect, it, vi } from "vitest";
 import {
   getCustomAnchorsResponse,
   getCustomResultsResponse,
+  getMysteryRevealResponse,
+  getMysterySessionResponse,
   getResultsResponse,
   getTodaysCloseSessionResponse,
   isCanonicalRange,
+  isMysterySessionId,
   parseAnchorDate,
   parseRange,
   type ResultReader,
@@ -600,5 +606,214 @@ describe("getTodaysCloseSessionResponse", () => {
     for (const response of responses) {
       expect(response.headers.get("Cache-Control")).toBe("no-store");
     }
+  });
+});
+
+// Mystery Day's two routes (issue #132). The pool half is safe to hand
+// out; the reveal half is the answer to the game and is deliberately the
+// only thing that can produce a date.
+describe("Mystery Day routes", () => {
+  const POOL_GENERATED_AT = "2026-08-27T01:50:37.927Z";
+  const IDS = ["s01", "s02", "s03"];
+  const manifest = {
+    schemaVersion: RESULTS_SCHEMA_VERSION,
+    generatedAt: POOL_GENERATED_AT,
+    sessionIds: IDS,
+  };
+  const index = {
+    schemaVersion: RESULTS_SCHEMA_VERSION,
+    generatedAt: POOL_GENERATED_AT,
+    entries: [
+      { sessionId: "s01", date: "2026-07-20" },
+      { sessionId: "s02", date: "2026-07-29" },
+      { sessionId: "s03", date: "2026-08-04" },
+    ],
+  };
+  function mysterySession(sessionId: string) {
+    return {
+      schemaVersion: RESULTS_SCHEMA_VERSION,
+      ticker: "SPY",
+      barIntervalMinutes: 5,
+      sessionId,
+      bars: [
+        { time: "09:30:00", close: 740.03 },
+        { time: "09:35:00", close: 740.5 },
+      ],
+    };
+  }
+  function pooledObjects(): Map<string, string> {
+    const objects = new Map([
+      [MYSTERY_POOL_MANIFEST_KEY, JSON.stringify(manifest)],
+      [MYSTERY_INDEX_KEY, JSON.stringify(index)],
+    ]);
+    for (const id of IDS) objects.set(mysterySessionKey(id), JSON.stringify(mysterySession(id)));
+    return objects;
+  }
+
+  describe("isMysterySessionId", () => {
+    // An allowlist, not a shape check: this value is interpolated
+    // straight into an S3 key.
+    it("accepts only real slot ids", () => {
+      expect(isMysterySessionId("s01")).toBe(true);
+      expect(isMysterySessionId("s48")).toBe(true);
+      expect(isMysterySessionId("s49")).toBe(false);
+      expect(isMysterySessionId("s1")).toBe(false);
+      expect(isMysterySessionId("../../mystery-index")).toBe(false);
+      expect(isMysterySessionId(null)).toBe(false);
+    });
+  });
+
+  describe("getMysterySessionResponse", () => {
+    it("serves the picked session's bars and the pool's own run stamp -- and no date at all", async () => {
+      // A pinned random pick, not a bare Math.random(): the same
+      // reasoning apps/pipeline's own injectable `random` records.
+      const response = await getMysterySessionResponse(memoryReader(pooledObjects()), () => 0.5);
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.session.sessionId).toBe("s02");
+      expect(body.poolGeneratedAt).toBe(POOL_GENERATED_AT);
+      // The payload-level guarantee is issue #127's (the pipeline refuses
+      // to publish a session with a date-shaped substring in it), but the
+      // route must not add one back either -- the only date-shaped text
+      // in this response is the pool's own run timestamp.
+      expect(JSON.stringify(body.session)).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    });
+
+    it("picks across the whole published pool", async () => {
+      const objects = pooledObjects();
+      const picked = await Promise.all(
+        [0, 0.4, 0.9].map(async (roll) => {
+          const response = await getMysterySessionResponse(memoryReader(objects), () => roll);
+          return (await response.json()).session.sessionId;
+        }),
+      );
+      expect(picked).toEqual(["s01", "s02", "s03"]);
+    });
+
+    it("never lets a random pick be cached and reused for the next player", async () => {
+      const response = await getMysterySessionResponse(memoryReader(pooledObjects()), () => 0);
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+    });
+
+    it("returns a 404 before any pipeline run has published a pool", async () => {
+      const response = await getMysterySessionResponse(memoryReader(new Map()), () => 0);
+
+      expect(response.status).toBe(404);
+      expect((await response.json()).error).toBe("not_found");
+    });
+
+    it("returns a 500 when no reader is configured", async () => {
+      const response = await getMysterySessionResponse(null, () => 0);
+      expect(response.status).toBe(500);
+      expect((await response.json()).error).toBe("server_misconfigured");
+    });
+
+    it("rejects a manifest with no usable ids rather than reading a garbage key", async () => {
+      for (const sessionIds of [[], "s01", undefined]) {
+        const objects = new Map([
+          [MYSTERY_POOL_MANIFEST_KEY, JSON.stringify({ ...manifest, sessionIds })],
+        ]);
+        const response = await getMysterySessionResponse(memoryReader(objects), () => 0);
+
+        expect(response.status).toBe(502);
+        expect((await response.json()).error).toBe("schema_mismatch");
+      }
+    });
+
+    it("rejects a manifest naming a slot outside the published set", async () => {
+      const objects = new Map([
+        [MYSTERY_POOL_MANIFEST_KEY, JSON.stringify({ ...manifest, sessionIds: ["../secrets"] })],
+      ]);
+      const response = await getMysterySessionResponse(memoryReader(objects), () => 0);
+
+      expect(response.status).toBe(502);
+      expect((await response.json()).error).toBe("schema_mismatch");
+    });
+
+    it("returns a 404 when the picked slot's own object has gone (a rotation mid-request)", async () => {
+      const objects = pooledObjects();
+      objects.delete(mysterySessionKey("s01"));
+      const response = await getMysterySessionResponse(memoryReader(objects), () => 0);
+
+      expect(response.status).toBe(404);
+      expect((await response.json()).error).toBe("not_found");
+    });
+
+    it("returns a 502 for a picked session with no bars", async () => {
+      const objects = pooledObjects();
+      objects.set(mysterySessionKey("s01"), JSON.stringify({ ...mysterySession("s01"), bars: [] }));
+      const response = await getMysterySessionResponse(memoryReader(objects), () => 0);
+
+      expect(response.status).toBe(502);
+      expect((await response.json()).error).toBe("schema_mismatch");
+    });
+  });
+
+  describe("getMysteryRevealResponse", () => {
+    it("resolves exactly one id, and answers with that id alone", async () => {
+      const response = await getMysteryRevealResponse(memoryReader(pooledObjects()), "s02");
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toEqual({
+        sessionId: "s02",
+        date: "2026-07-29",
+        generatedAt: POOL_GENERATED_AT,
+      });
+      // One settlement earns one date -- never the whole id -> date map,
+      // which would de-anonymise the rest of the pool in one request.
+      expect(JSON.stringify(body)).not.toContain("2026-08-04");
+      expect(JSON.stringify(body)).not.toContain("2026-07-20");
+    });
+
+    it("is never cached -- this response is the answer to the game", async () => {
+      const response = await getMysteryRevealResponse(memoryReader(pooledObjects()), "s02");
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+    });
+
+    it("rejects an id that isn't a real slot, before reading anything", async () => {
+      const reader: ResultReader = { getObject: vi.fn() };
+      const response = await getMysteryRevealResponse(reader, "../../mystery-index");
+
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toBe("invalid_session_id");
+      expect(reader.getObject).not.toHaveBeenCalled();
+    });
+
+    it("rejects a missing id", async () => {
+      const response = await getMysteryRevealResponse(memoryReader(pooledObjects()), null);
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toBe("invalid_session_id");
+    });
+
+    it("returns a 404 for a real slot the current index doesn't cover", async () => {
+      const response = await getMysteryRevealResponse(memoryReader(pooledObjects()), "s09");
+
+      expect(response.status).toBe(404);
+      expect((await response.json()).error).toBe("not_found");
+    });
+
+    it("returns a 404 before any pipeline run has published an index", async () => {
+      const response = await getMysteryRevealResponse(memoryReader(new Map()), "s01");
+      expect(response.status).toBe(404);
+      expect((await response.json()).error).toBe("not_found");
+    });
+
+    it("returns a 502 for a malformed index rather than a half-answer", async () => {
+      for (const broken of [{ entries: "nope" }, { entries: [], generatedAt: 7 }]) {
+        const objects = new Map([[MYSTERY_INDEX_KEY, JSON.stringify({ ...index, ...broken })]]);
+        const response = await getMysteryRevealResponse(memoryReader(objects), "s01");
+
+        expect(response.status).toBe(502);
+        expect((await response.json()).error).toBe("schema_mismatch");
+      }
+    });
+
+    it("returns a 500 when no reader is configured", async () => {
+      const response = await getMysteryRevealResponse(null, "s01");
+      expect(response.status).toBe(500);
+      expect((await response.json()).error).toBe("server_misconfigured");
+    });
   });
 });
