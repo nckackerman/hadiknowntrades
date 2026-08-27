@@ -8144,3 +8144,182 @@ build`/`next start` (not `next dev` -- see issue #123's own note above
   The temporary `playwright` devDependency and every scratch
   verification script were reverted/deleted before committing, per this
   file's own established convention.
+## Daily hero: fixed-height "showcase" box, one-time entrance, ticker chips fold in each trade's return (issue #175)
+
+Restructures `DailyHero.tsx`'s main render into a fixed-height,
+cinematic "showcase" box with a one-time entrance animation, matching
+`docs/design/gamified-hero-2026-08/mockup-gamified-hero.html` (99%
+fidelity, not pixel-perfect -- read that folder's own README first).
+Depends on issue #174 (already merged): the box's own fixed height has
+to account for the $1-$10,000 range of possible starting-capital figure
+widths issue #174 introduced, not be retrofitted after the fact.
+
+- **The component now returns exactly one `<section>`, not a Fragment of
+  two sibling blocks.** Deleting `TradeNarrationList`, the "Yesterday's
+  trades" heading/section, and the "See the trades ↓" link (all three,
+  per this issue's own Scope item 4) left nothing for the old Fragment's
+  second sibling to be -- the doc comment that used to explain why a
+  Fragment (not one wrapping div) was needed for two logical blocks no
+  longer applies and has been removed rather than left stale.
+- **Fixed CSS `height` (not `min-height`), shared by all three top-level
+  renders** -- `SHOWCASE_HEIGHT_CLASSNAME` (`h-[40rem]`, a single
+  non-responsive value) is applied identically to the loading skeleton,
+  the zero-trade fallback, and the real 1-3-trade result (chart hidden
+  or revealed). **Live-measured, not just asserted in a unit test**: a
+  real `next build`/`next start` page reported the section's own
+  `getBoundingClientRect().height` as exactly `640px` (40rem) across
+  every one of six real states -- a real 3-trade day (chart hidden and
+  revealed), a synthetic 1-trade day (chart hidden and revealed, via
+  Playwright's `page.route()` intercepting `/api/results?range=1W`), and
+  a synthetic 0-trade day -- at both 1280px and 390px viewports, with
+  zero horizontal overflow at either width.
+  - **Content is centered (`justify-center`) inside the fixed box, not
+    stretched to fill it** -- a deliberate trade-off, not an oversight.
+    A shorter state (a 0-trade day, or the button-only default before
+    the chart is revealed) simply centers with more surrounding
+    whitespace than a taller one (the chart revealed); the alternative
+    (growing/shrinking sub-sections to visually "fill" a fixed box) would
+    need per-state layout logic this issue's own scope didn't ask for.
+    Confirmed live this reads as a deliberate "cinematic" showcase, not
+    as visibly broken/empty, via the screenshots below.
+  - **A single non-responsive height, not a mobile/desktop pair** (unlike
+    the mockup's own `22rem`/`25.5rem` split) -- deliberate, not an
+    oversight. The mockup's mobile height is _taller_ specifically
+    because its tiny decorative `<svg>` (fixed CSS height regardless of
+    width) leaves the real growth entirely to text wrapping. This
+    component reuses the real `PortfolioChart.tsx` instead (see the next
+    bullet), whose natural rendered height _shrinks_ at a narrower
+    viewport (its intrinsic aspect ratio scales with its own CSS width)
+    -- roughly offsetting the extra text-wrapping height mobile needs,
+    which is exactly what the live measurement above confirms: `640px`
+    at both 1280px and 390px, with no visible clipping or excess
+    whitespace at either width in the screenshots.
+- **The chart slot (`CHART_SLOT_HEIGHT_CLASSNAME`, `h-[24rem]`) is
+  deliberately far taller than the mockup's own `4.75rem`** -- per this
+  issue's own Scope item 5 and Out of scope ("no change to
+  `PortfolioChart.tsx` or its reveal mechanics"), this reuses the real,
+  full component (axis labels, hover tooltip, the `ChartDataTable`
+  disclosure) rather than the mockup's tiny inline `<svg>` with
+  `preserveAspectRatio="none"`. The real chart's axis text is sized in
+  SVG viewBox units, so squeezing it into a mockup-sized box would render
+  illegibly small -- sizing the slot to comfortably fit the real chart's
+  natural size, tuned against the live measurement above, was the
+  correct fix, not shrinking the chart to fit a smaller box.
+  `overflow-y-auto` (not `overflow-hidden`) on the slot is a defensive
+  fallback so a viewer who expands the chart's own nested "View chart
+  data as a table" disclosure can still scroll to see it.
+- **Each ticker chip's visible label is `{ticker} {sign}{percent}%`, via
+  `trade-math.ts`'s `computeTradeReturn(openPrice, closePrice,
+direction)` directly, per this issue's own Scope item 3** -- not routed
+  through `narrate-trades.ts`'s `NarratableTrade`/`narrateTrades` (which
+  this component no longer imports at all), since only the single return
+  number was ever needed, not a full narrated sentence. Colored via the
+  same `isGain = returnFraction >= 0` convention `TradeRow.tsx`
+  established (the percent span only; the ticker itself stays plain
+  `--text-primary`, matching `TradeRow.tsx`'s own "ticker plain, return
+  colored" split, not the mockup's own literal all-amber ticker + green
+  percent styling -- see the next bullet for why).
+  - **Judgment call: the chip's pill background is a plain
+    `--surface-2`/`--gridline` pill, not the mockup's own
+    `--accent-reward`-tinted amber pill.** `globals.css`'s own token
+    decision record (issue #121) reserves `--accent-reward` for
+    genuinely _earned_ state (a streak, a win stamp, an unlocked recap) --
+    a computed hindsight statistic the viewer took no action to produce
+    isn't earned state, the identical reasoning issue #161's own section
+    above already gives for why this component's eyebrow is `--text-muted`
+    rather than the mockup's own gold `.day-eyebrow`. Kept consistent
+    with that established precedent rather than reintroducing gold here.
+  - **Accessible name/text content, verified with a screen-reader-shaped
+    test, per this issue's own Scope item 3**: each chip is a plain
+    `<span>` with real text-node children (no `aria-hidden` portion
+    inside it) -- `DailyHero.test.tsx`'s own test asserts a chip's full
+    `textContent` equals `"{TICKER} {sign}{percent}%"` directly (e.g.
+    `"AVGO +1.6%"`), for both a gain and a loss leg, confirming the
+    ticker and its return are conveyed together as one accessible unit
+    with no extra ARIA needed for a plain `<span>` with real text.
+- **One-time entrance animation (Scope item 2), respecting
+  `prefers-reduced-motion`**: the eyebrow/statement, the figures row, the
+  chart slot's "Watch it happen" button, and each ticker chip (staggered,
+  100ms apart per chip) fade/pop in once on mount via three new
+  `globals.css` keyframe pairs (`daily-hero-fade-up`, `daily-hero-pop`,
+  `daily-hero-chip`) -- see that file's own comment block for the full
+  "base class already renders the settled state; `-animate` only adds a
+  keyframe on top, via `animation: ... both`" mechanics, the same
+  technique `.hero-figure-accent`/`.hero-figure-accent-animate` already
+  establish.
+  - **`useReducedMotionAfterMount`, not `useReducedMotionAtMount`'s
+    `useState`-lazy-initializer shortcut** -- per this issue's own
+    Background section, which explicitly names which existing hook shape
+    to follow and which not to: this component mounts unconditionally at
+    the `ResultsPage` level (`use-hydrated-local-storage-state.ts`'s
+    "can render during SSR" precondition, not `use-daily-guess.ts`'s
+    "only ever mounted from a client-only success branch" one), so the
+    lazy-initializer shortcut (only safe from a component that never
+    renders during SSR, per that hook's own doc comment) would risk a
+    hydration mismatch. `useReducedMotionAfterMount` (extracted for
+    `BeatTheBench.tsx`'s `SessionGame`, issue #131) already has exactly
+    the right SSR-safe, deferred-correction shape -- reused as-is, no new
+    hook needed.
+  - **Live-verified, not just jsdom-asserted, per this issue's own step
+    5**: a real `next build`/`next start` page under Playwright's
+    `reducedMotion: "reduce"` context confirmed **zero** elements
+    anywhere in the section carrying any `daily-hero-*-animate` class at
+    150ms after the section first appears -- the settled state (real
+    text, real figures, the button) is visible immediately, confirmed by
+    screenshot. A separate real-motion pass sampled a rendered element's
+    `getComputedStyle(...).opacity` at 2.5s and again at 4.5s after
+    load (well after the ~2.05s staggered sequence's own last chip
+    finishes) and got `1` both times -- confirming the animation plays
+    once and holds, not a loop. `DailyHero.test.tsx`'s own jsdom tests
+    cover the same two properties structurally (the `-animate` classes
+    present by default, absent under a stubbed reduced-motion
+    preference, and unchanged across a re-render triggered by an
+    unrelated click) -- jsdom can prove the code branch was taken; only
+    the live pass above proves nothing visibly animates under reduced
+    motion, the same distinction this file's own established convention
+    elsewhere already draws.
+- **Accessibility tradeoff, deliberate and checked, per this issue's own
+  Scope item 4's explicit instruction to confirm before deleting**:
+  removing `TradeNarrationList`/"Yesterday's trades"/"See the trades ↓"
+  does not remove the exact buy/sell prices and times from reach. Once
+  "Watch it happen" is clicked, `PortfolioChart`'s own already-existing
+  accessible data table (`ChartDataTable`) exposes every point's real
+  date/time/price -- confirmed directly against the live chart render
+  above (its "View chart data as a table" disclosure is present and,
+  when expanded, lists each trade's open/close date, time, and price).
+  Nothing is silently lost; it just moves from an always-visible prose
+  section to one click (+ one more to expand the table) away. Stated
+  here explicitly as this section's own version of the same tradeoff
+  issue #175's Background section asked to be checked and disclosed, not
+  discovered as an oversight later.
+- **`DailyHero.test.tsx` needed real updates, not just new assertions**,
+  per this issue's own acceptance criteria: every test that used to scope
+  queries to a `heroSection` (to disambiguate a ticker appearing twice,
+  once in the hero card and once in the deleted narration section) no
+  longer needs that scoping, since a ticker now only ever appears once;
+  the "See the trades ↓"/"Yesterday's trades" tests were replaced with a
+  single test asserting neither exists anywhere in the DOM; and a new
+  "folds each trade's own return into its ticker chip" test replaces the
+  old narration-sentence assertions with the chip's own accessible-name
+  check described above.
+- **Live-verified against a real local pipeline run**
+  (`local-run.ts`, the default 20-ticker sample, real Yahoo network
+  calls, no S3 write) plus `next build`/`next start` and the documented
+  no-root headless-Chromium workaround (`next dev` cannot hydrate in this
+  sandbox -- see issue #123's own note above). The real 1W result's most
+  recent day (2026-08-27, 3 real trades: ALGN, A, ALB) rendered the full
+  showcase correctly -- eyebrow, statement, `$6.5K -> $7K (1.1x)`
+  figures, three ticker chips each showing their own signed return
+  (`ALGN +2.0%`, `A +2.4%`, `ALB +3.1%`), the "Watch it happen" button,
+  and (after clicking) the real chart in the same unchanged-height slot
+  -- at both 1280px and 390px, zero console errors, zero `pageerror`
+  events, zero horizontal overflow. The synthetic 0-trade/1-trade/
+  reduced-motion passes above used Playwright's `page.route()` to
+  intercept `/api/results?range=1W` with hand-built fixtures rather than
+  a throwaway debug route, since this component fetches through the real
+  API route already served by the running app -- no `RESULTS_BUCKET`/AWS
+  credentials needed either way, per this file's own "Local development
+  without AWS credentials" section. The temporary `playwright`
+  devDependency was reverted before committing, per this file's own
+  established convention; confirmed via `git status`/`git diff --stat`
+  on `package.json`/`pnpm-lock.yaml` showing no trace afterward.

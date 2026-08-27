@@ -1,11 +1,12 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { IntradayDayResult, IntradayTrade } from "@hadiknowntrades/core";
 
 import { dailyChallengeStartingCapitalFor } from "@/lib/daily-challenge";
-import { formatHeroCurrency } from "@/lib/format-currency";
+import { formatHeroCurrency, formatPercent } from "@/lib/format-currency";
+import { stubPrefersReducedMotion } from "@/lib/stub-prefers-reduced-motion.test-util";
 
 import { DailyHero } from "./DailyHero";
 
@@ -62,11 +63,13 @@ afterEach(() => {
 });
 
 describe("DailyHero", () => {
-  it("renders a loading placeholder before the fetch resolves", () => {
+  it("renders a loading placeholder before the fetch resolves, in the same fixed-height showcase box", () => {
     stubResultsFetch({ model: "intraday-daily", days: [day()] });
     const { container } = render(<DailyHero mode="long" />);
 
-    expect(container.querySelector('[aria-hidden="true"].animate-pulse')).not.toBeNull();
+    const placeholder = container.querySelector('[aria-hidden="true"].animate-pulse');
+    expect(placeholder).not.toBeNull();
+    expect(placeholder).toHaveClass("h-[40rem]");
     expect(screen.queryByText(/Yesterday/)).toBeNull();
   });
 
@@ -80,12 +83,12 @@ describe("DailyHero", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("shows the real date, statement, figures and ticker sequence for the most recent day (issue #161's own Acceptance criteria)", async () => {
+  it("shows the real date, statement, and figures for the most recent day, in the fixed-height showcase box", async () => {
     stubResultsFetch({
       model: "intraday-daily",
       days: [day({ date: "2026-08-24" }), day({ date: "2026-08-25" })],
     });
-    render(<DailyHero mode="long" />);
+    const { container } = render(<DailyHero mode="long" />);
 
     // The eyebrow names the *most recent* day (2026-08-25, a Tuesday),
     // not the first day in the array.
@@ -102,15 +105,9 @@ describe("DailyHero", () => {
     expect(screen.queryByText("$34.50")).toBeNull();
     expect(screen.queryByText("$28.12")).toBeNull();
 
-    // Scoped to the hero card itself -- "AVGO"/"PLTR" also legitimately
-    // appear a second time each, below, in the trades-narration section
-    // (see the next test), so an unscoped query would find two matches.
-    const heroSection = screen.getByText(/Yesterday · /).closest("section")!;
-    expect(within(heroSection).getByText("AVGO")).toBeInTheDocument();
-    expect(within(heroSection).getByText("PLTR")).toBeInTheDocument();
-
-    const scrollCue = screen.getByRole("link", { name: "See the trades ↓" });
-    expect(scrollCue).toHaveAttribute("href", "#daily-hero-trades");
+    const section = screen.getByLabelText("Yesterday's result");
+    expect(section).toHaveClass("h-[40rem]");
+    expect(container.children).toHaveLength(1);
   });
 
   it('hides the chart until "Watch it happen" is clicked (issue #162)', async () => {
@@ -131,43 +128,72 @@ describe("DailyHero", () => {
     expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
   });
 
-  it('does not render a "Watch it happen" button or chart for a zero-trade day', async () => {
+  it('does not render a "Watch it happen" button or chart for a zero-trade day, in the same fixed-height box', async () => {
     stubResultsFetch({ model: "intraday-daily", days: [day({ trades: [] })] });
     const { container } = render(<DailyHero mode="long" />);
 
-    await screen.findByText(/No trade would have beaten holding cash on/);
+    const section = await screen.findByText(/No trade would have beaten holding cash on/);
     expect(screen.queryByRole("button", { name: "Watch it happen" })).toBeNull();
     expect(container.querySelector("svg")).toBeNull();
+    expect(section.closest("section")).toHaveClass("h-[40rem]");
   });
 
-  it('renders a "Yesterday\'s trades" section narrating each trade in past tense, by time of day', async () => {
+  it('no longer renders TradeNarrationList/"Yesterday\'s trades"/"See the trades ↓" anywhere (issue #175)', async () => {
     stubResultsFetch({ model: "intraday-daily", days: [day()] });
     render(<DailyHero mode="long" />);
 
-    const heading = await screen.findByRole("heading", { name: "Yesterday's trades" });
-    // The scroll cue's own href targets this exact section (see the
-    // test above).
-    const section = document.getElementById("daily-hero-trades");
-    expect(section).not.toBeNull();
-    expect(section).toContainElement(heading);
-
-    const items = screen.getAllByRole("listitem");
-    expect(items).toHaveLength(2);
-    expect(items[0]!.textContent).toContain("Had you known, you'd have bought");
-    expect(items[0]!.textContent).toContain("at 9:35 AM at $170.10");
-    expect(items[0]!.textContent).toContain("at 10:40 AM at $172.80");
-    expect(items[1]!.textContent).toContain("Finally, you'd have bought");
+    await screen.findByText(/Yesterday · /);
+    expect(screen.queryByRole("heading", { name: "Yesterday's trades" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "See the trades ↓" })).toBeNull();
+    expect(screen.queryByRole("list")).toBeNull();
   });
 
-  it("shows an empty-day fallback and no trades section for a day with no trades", async () => {
+  it("folds each trade's own return into its ticker chip, colored for a gain and a loss (issue #175)", async () => {
+    stubResultsFetch({
+      model: "intraday-daily",
+      days: [
+        day({
+          trades: [
+            trade({ ticker: "AVGO", openPrice: 170.1, closePrice: 172.8 }), // gain
+            trade({
+              ticker: "LOSER",
+              openTime: "11:02:00",
+              openPrice: 100,
+              closeTime: "13:15:00",
+              closePrice: 90,
+            }), // loss
+          ],
+        }),
+      ],
+    });
+    render(<DailyHero mode="long" />);
+
+    await screen.findByText(/Yesterday · /);
+
+    const gainReturn = 172.8 / 170.1 - 1;
+    const lossReturn = 90 / 100 - 1;
+
+    const gainPercent = screen.getByText(formatPercent(gainReturn));
+    expect(gainPercent).toHaveStyle({ color: "var(--status-good)" });
+    // Screen-reader-shaped check: the chip's own accessible text content
+    // conveys both the ticker and its return together, not just the
+    // visual layout -- see issue #175's own Scope item 3.
+    const gainChip = gainPercent.closest("span")!.parentElement!;
+    expect(gainChip.textContent).toBe(`AVGO ${formatPercent(gainReturn)}`);
+
+    const lossPercent = screen.getByText(formatPercent(lossReturn));
+    expect(lossPercent).toHaveStyle({ color: "var(--status-critical)" });
+    const lossChip = lossPercent.closest("span")!.parentElement!;
+    expect(lossChip.textContent).toBe(`LOSER ${formatPercent(lossReturn)}`);
+  });
+
+  it("shows an empty-day fallback for a day with no trades", async () => {
     stubResultsFetch({ model: "intraday-daily", days: [day({ trades: [] })] });
     render(<DailyHero mode="long" />);
 
     expect(
       await screen.findByText(/No trade would have beaten holding cash on/),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Yesterday's trades" })).toBeNull();
-    expect(screen.queryByRole("link", { name: "See the trades ↓" })).toBeNull();
   });
 
   it("switches to the day's long+short trades under long-short mode (issue #13)", async () => {
@@ -175,10 +201,43 @@ describe("DailyHero", () => {
     render(<DailyHero mode="long-short" />);
 
     expect(await screen.findByText("1 trade")).toBeInTheDocument();
-    // Scoped to the hero card -- "SHORTED" legitimately appears a second
-    // time below, in the trades-narration section.
-    const heroSection = screen.getByText(/Yesterday · /).closest("section")!;
-    expect(within(heroSection).getByText("SHORTED")).toBeInTheDocument();
+    expect(screen.getByText("SHORTED")).toBeInTheDocument();
     expect(screen.queryByText("AVGO")).toBeNull();
+  });
+
+  describe("one-time entrance animation (issue #175)", () => {
+    it("plays the entrance animation by default, and a re-render doesn't replay it", async () => {
+      const user = userEvent.setup();
+      stubResultsFetch({ model: "intraday-daily", days: [day()] });
+      render(<DailyHero mode="long" />);
+
+      const eyebrow = await screen.findByText(/Yesterday · /);
+      expect(eyebrow).toHaveClass("daily-hero-fade-up-animate");
+      const watchButton = screen.getByRole("button", { name: "Watch it happen" });
+      expect(watchButton).toHaveClass("daily-hero-pop-animate");
+
+      // An unrelated state change within the same mounted instance (the
+      // click itself) doesn't remove or re-add the eyebrow's own
+      // already-settled animate class -- it's a plain, unconditional
+      // string, never touched again once this instance mounted.
+      await user.click(watchButton);
+      expect(eyebrow).toHaveClass("daily-hero-fade-up-animate");
+    });
+
+    it("skips the animation entirely under prefers-reduced-motion, rendering the settled state immediately", async () => {
+      stubPrefersReducedMotion(true);
+      stubResultsFetch({ model: "intraday-daily", days: [day()] });
+      render(<DailyHero mode="long" />);
+
+      const eyebrow = await screen.findByText(/Yesterday · /);
+      // Settled values (real text) are visible immediately regardless --
+      // only the animate classes themselves are gated.
+      await waitFor(() => {
+        expect(eyebrow).not.toHaveClass("daily-hero-fade-up-animate");
+      });
+      expect(screen.getByRole("button", { name: "Watch it happen" })).not.toHaveClass(
+        "daily-hero-pop-animate",
+      );
+    });
   });
 });

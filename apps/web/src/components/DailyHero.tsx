@@ -1,53 +1,117 @@
 "use client";
 
-// The daily hero (issue #161): the previous market day's own result,
-// leading with a direct statement ("Had you known, you'd have made 3
-// trades and turned $X.XX into $Y.YY") instead of the 1W range view's
-// guess-then-reveal gate -- the app's new top-of-page content, matching
-// the "daily game" framing this UI-simplification pass is working
-// toward. See docs/design/ui-simplification-2026-08/ for the mockup
-// this matches (its own README: 99% visual fidelity is the bar, not
-// pixel-perfect) -- this component uses this app's own real design
-// tokens/components (HeroStat's exported classes, format-currency.ts,
-// narrate-trades.ts), not the mockup's own literal inline CSS.
+// The daily hero (issue #161), restructured into a fixed-height,
+// cinematic "showcase" box with a one-time entrance animation, and the
+// per-trade narrative folded directly into each ticker chip (issue
+// #175) -- superseding the previous version's separate
+// TradeNarrationList component/"Yesterday's trades" section and "See
+// the trades ↓" link, both deleted outright by this issue. See
+// docs/design/gamified-hero-2026-08/ (read its own README first) for
+// the visual target -- 99% fidelity, not pixel-perfect; this component
+// uses this app's own real design tokens/components (HeroStat's
+// exported classes, PortfolioChart, TradeReplay's buttonClassName,
+// trade-math.ts's computeTradeReturn), not the mockup's own literal
+// inline CSS/JS.
 //
 // Mounted directly in ResultsPage.tsx, above the existing header/range
-// explorer. It fetches its own data (useDailyChallenge, the same fixed
-// `/api/results?range=1W` `use-call-board.ts` already fetches) rather
-// than taking a PrecomputedResult prop -- ResultsPanel renders nothing
-// until /api/results succeeds, and this section is meant to be the very
-// first thing a visitor sees regardless of how that fetch goes.
+// explorer -- unchanged from issue #161. Still fetches its own data
+// (useDailyChallenge, the same fixed `/api/results?range=1W`
+// use-call-board.ts already fetches) rather than taking a
+// PrecomputedResult prop.
 //
-// **No guess-then-reveal gate here**, unlike `WholeRangeBalance.tsx`'s
-// whole-range headline (issue #91) -- this is a direct statement, per
-// this issue's own Goal. That mechanic (and the whole 1W range view it
-// lives in) is completely untouched by this issue; it just becomes a
-// secondary, demoted view in a later issue.
+// **No guess-then-reveal gate here** (unchanged from issue #161) --
+// this is a direct statement, not gated behind WholeRangeBalance's own
+// mechanic. That mechanic (and the whole 1W range view it lives in) is
+// completely untouched by this issue; it's a secondary, demoted view
+// (issue #165).
 //
-// **Deliberately not animated** -- unlike `HeroStat.tsx`'s count-up
-// reveal, this figure renders its final value immediately. Reusing
-// `HeroStat`'s exported typography classes (`heroValueRowClassName`,
-// `heroMultiplierClassName`/`heroMultiplierColor`) gives this section
-// the same hero-scale look without pulling in `useCountUp`/
-// `CelebrationBurst`/the reveal-accent glow, none of which this issue's
-// own Scope asks for -- consistent with this app's other static figures
-// (`WorstCaseStat`, `BenchmarkStat`, the trade narration below), which
-// stay unanimated for the same reason.
+// **Deliberately not animated at the *value* level** -- unlike
+// HeroStat.tsx's count-up reveal, the dollar figures render their final
+// value immediately, no useCountUp/CelebrationBurst/reveal-accent glow.
+// What issue #175 *does* animate is the showcase's own one-time entrance
+// (see below) -- a different axis (does the box fade/pop into view once)
+// from whether any number tweens. Reusing HeroStat's exported typography
+// classes (heroValueRowClassName, heroMultiplierClassName/
+// heroMultiplierColor) still gives this section the same hero-scale look
+// and the same gain/loss coloring convention with zero new CSS.
 //
-// **Issue #162 adds the chart, hidden until "Watch it happen" is
-// clicked** -- issue #161 shipped this component with no chart at all
-// (see its own Scope), so the click-to-reveal behavior is built in from
-// the start rather than retrofitted onto an already-visible one. A
-// plain local `chartRevealed` boolean, not `use-trade-replay.ts`'s
-// idle/rewinding/playing/done state machine -- there is no playback
-// animation here at all (see the "deliberately not animated" note
-// above), just a single click that mounts the chart. Reuses
-// `PortfolioChart.tsx` (the same component the rest of the app uses),
-// fed by `deriveWholeRangeIntradaySeries` -- that function already
-// builds exactly this shape (one leading boundary point, then each
-// trade's open/flat/close steps, datetime-labeled) for any list of
-// `{ date, trades }` days; a single-day array is a natural, un-special-
-// cased use of it, not a second series-builder.
+// **Fixed height, not min-height (issue #175)**: SHOWCASE_HEIGHT_CLASSNAME
+// is a real CSS `height`, applied identically to all three possible
+// top-level renders (the loading skeleton, the zero-trade fallback, and
+// the real result) so the box never visibly resizes switching between
+// them -- the same "reserve the worst case, don't shrink to the common
+// case" principle apps/web/CLAUDE.md's issue #147 section documents for
+// the hero count-up. `overflow-hidden` on the outer box is a defensive
+// safety net, not the primary mechanism: every state's own content is
+// centered (`justify-center`) inside the fixed box rather than expected
+// to exactly fill it, so a shorter state (loading, a 0-trade day, chart
+// hidden) simply centers with more surrounding space than a taller one
+// (chart revealed) -- deliberately not tuned to look identically "full"
+// in every state, the same trade-off this file's own CLAUDE.md section
+// documents explicitly.
+//
+// **The chart slot (CHART_SLOT_HEIGHT_CLASSNAME) is deliberately much
+// taller than the mockup's own 4.75rem** -- the mockup's chart is a tiny
+// decorative inline <svg> with `preserveAspectRatio="none"`, stretched
+// to whatever box it's given; this reuses the real PortfolioChart.tsx
+// (per this issue's own Out of scope: no changes to that file or its
+// reveal mechanics), whose axis text is sized in SVG viewBox units and
+// would render illegibly small if squeezed into a mockup-sized box. The
+// slot is sized generously enough to comfortably fit that real chart's
+// natural aspect-ratio height at this card's own real content width
+// (tuned against a live `next build`/`next start` render, see this
+// file's own CLAUDE.md section), with `overflow-y-auto` as a defensive
+// fallback -- not `overflow-hidden` -- so a viewer who expands the
+// chart's own nested "View chart data as a table" disclosure can still
+// scroll to see it rather than having it silently clipped.
+//
+// **Entrance animation plays once and holds, respecting
+// prefers-reduced-motion (issue #175)**: `useReducedMotionAfterMount`
+// (not `useReducedMotionAtMount`'s `useState`-lazy-initializer shortcut
+// -- that hook's own doc comment says it's only safe from a component
+// that never renders during SSR, and this one, mounted unconditionally
+// at the ResultsPage level, can) starts `false` on every server render
+// and the client's first (hydration) render, correcting to `true` after
+// mount only if the viewer genuinely prefers reduced motion -- the same
+// deferred-correction shape `BeatTheBench.tsx`'s `SessionGame` already
+// established this hook for (see that hook's own doc comment for the
+// full SSR-safety argument). `playEntranceAnimation` only ever goes
+// true -> false, never back -- safe even given the brief window where a
+// fast reduced-motion correction could interrupt a just-started
+// animation, because every "-animate" class's own resting sibling class
+// (always applied alongside it) already renders the exact settled
+// values the animation itself ends on (`animation: ... both` in
+// globals.css) -- removing the "-animate" class mid-flight just snaps
+// to those same values instead of stranding the element mid-fade. See
+// globals.css's own `daily-hero-fade-up`/`daily-hero-pop`/
+// `daily-hero-chip` comment block for the full reasoning.
+//
+// A re-render that doesn't remount this section's content subtree (e.g.
+// an unrelated ResultsPage-level state change) never replays the
+// animation -- the "-animate" classNames are unconditional strings
+// computed from `playEntranceAnimation` alone, not re-added via a key or
+// an effect, so React never touches the className attribute unless that
+// boolean itself changes. The animation only plays again if this
+// section's own content subtree is torn down and freshly mounted (e.g.
+// the loading -> real-result transition), never merely because content
+// changed within an already-mounted instance.
+//
+// **Issue #162's chart-hide mechanism is reused exactly as it was,
+// unchanged (per this issue's own Out of scope for PortfolioChart.tsx
+// and its reveal mechanics)** -- a plain local `chartRevealed` boolean,
+// no playback animation of its own; clicking "Watch it happen" simply
+// mounts <PortfolioChart>, still fed by `deriveWholeRangeIntradaySeries`.
+//
+// **Accessibility tradeoff, deliberate and checked (issue #175's own
+// Background section): deleting TradeNarrationList/"Yesterday's
+// trades"/"See the trades ↓" does not remove the exact buy/sell prices
+// and times from reach.** Once "Watch it happen" is clicked,
+// PortfolioChart's own already-existing accessible data table
+// (ChartDataTable, see apps/web/CLAUDE.md's chart-accessibility notes)
+// exposes every point's date/time/price -- nothing is silently lost, it
+// just moves behind the existing chart reveal, one click away instead of
+// an always-visible prose section. See apps/web/CLAUDE.md's own daily
+// hero (issue #175) section for the full writeup.
 
 import { useMemo, useState } from "react";
 
@@ -59,24 +123,49 @@ import {
 import { PortfolioChart } from "@/components/PortfolioChart";
 import { buttonClassName } from "@/components/TradeReplay";
 import { formatHeroCurrency, formatMultiplier, formatPercent } from "@/lib/format-currency";
-import { formatDateWithWeekday, formatTime } from "@/lib/format-date";
+import { formatDateWithWeekday } from "@/lib/format-date";
 import type { Mode } from "@/lib/mode";
-import { narrateTrades, type TradeNarration } from "@/lib/narrate-trades";
 import { deriveWholeRangeIntradaySeries, type PortfolioPoint } from "@/lib/portfolio-series";
+import { computeTradeReturn } from "@/lib/trade-math";
 import { useDailyChallenge } from "@/lib/use-daily-challenge";
+import { useReducedMotionAfterMount } from "@/lib/use-reduced-motion-after-mount";
 
 interface DailyHeroProps {
   mode: Mode;
 }
 
-/** Anchor target for the "See the trades ↓" scroll cue below. */
-const TRADES_SECTION_ID = "daily-hero-trades";
+/**
+ * Fixed CSS `height` (not `min-height`) shared by every top-level render
+ * this section can produce -- loading, a 0-trade day, and a real
+ * 1-3-trade day (chart hidden or revealed) -- so the box never visibly
+ * resizes switching between them. See this file's own header comment.
+ */
+const SHOWCASE_HEIGHT_CLASSNAME = "h-[40rem]";
+/**
+ * Fixed height of the slot holding either the "Watch it happen" button
+ * or the revealed, real PortfolioChart -- see this file's own header
+ * comment on why this is much taller than the mockup's own tiny
+ * decorative chart.
+ */
+const CHART_SLOT_HEIGHT_CLASSNAME = "h-[24rem]";
+
+const SHOWCASE_CLASSNAME =
+  "surface-card relative flex flex-col items-center justify-center gap-3 overflow-hidden rounded-xl border border-[var(--gridline)] bg-[var(--surface-1)] px-6 py-8 text-center";
+
+const EYEBROW_CLASSNAME =
+  "font-numeric text-xs font-semibold tracking-wide text-[var(--text-muted)] uppercase";
+const STATEMENT_CLASSNAME = "min-h-[2.6em] max-w-md text-sm text-[var(--text-secondary)]";
+
+/** `base` plus `animateClass` when `play` is true -- every entrance element's own resting (base) class already renders the settled, fully-visible final state, so this never needs a third "reduced motion" variant of its own; see globals.css's own comment on `daily-hero-fade-up`/`daily-hero-pop`/`daily-hero-chip` for why. */
+function entranceClassName(base: string, animateClass: string, play: boolean): string {
+  return play ? `${base} ${animateClass}` : base;
+}
 
 function LoadingCard() {
   return (
     <div
       aria-hidden="true"
-      className="flex animate-pulse flex-col gap-3 rounded-xl border border-[var(--gridline)] bg-[var(--surface-1)] px-6 py-6"
+      className={`${SHOWCASE_CLASSNAME} ${SHOWCASE_HEIGHT_CLASSNAME} animate-pulse`}
     >
       <div className="h-3 w-48 rounded bg-[var(--surface-2)]" />
       <div className="h-12 w-72 rounded bg-[var(--surface-2)]" />
@@ -86,70 +175,27 @@ function LoadingCard() {
 }
 
 /**
- * "Yesterday's trades" narration, in the same past-tense prose style
- * `lib/narrate-trades.ts`/`TradeList.tsx` already use for the window
- * model (issue #32) -- reuses `narrateTrades` directly rather than a
- * second narration function, per this issue's own Scope. The JSX here
- * mirrors `TradeList.tsx`'s own sentence-building closely, differing in
- * exactly one place: "at {time}" instead of "on {date}" for each
- * trade's open/close labels (the day itself is already named by this
- * section's own eyebrow above, so it isn't repeated per trade) --
- * matching `IntradayTradeList`/`TradeRow.tsx`'s own established "at" for
- * a time-of-day label, vs. `TradeList.tsx`'s "on" for a calendar date.
- */
-function TradeNarrationList({ narrations }: { narrations: TradeNarration[] }) {
-  return (
-    <ol className="surface-card rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-3 text-sm leading-relaxed text-[var(--text-primary)]">
-      {narrations.map((narration, index) => {
-        const startPhrase =
-          index === 0 ? `your ${formatHeroCurrency(narration.startBalance)}` : "that";
-        const before = `${index > 0 ? " " : ""}${narration.leadIn} ${narration.openVerb} `;
-        const middle =
-          ` at ${narration.buyLabel} at ${formatHeroCurrency(narration.buyPrice)} and ${narration.closeVerb} at ` +
-          `${narration.sellLabel} at ${formatHeroCurrency(narration.sellPrice)}, turning ` +
-          `${startPhrase} into ${formatHeroCurrency(narration.endBalance)} `;
-
-        return (
-          <li key={narration.key} className="trade-narration-item">
-            {before}
-            <span className="font-semibold">{narration.ticker}</span>
-            {middle}
-            <span
-              className="font-semibold"
-              style={{
-                color: narration.isGain ? "var(--status-good)" : "var(--status-critical)",
-              }}
-            >
-              ({formatPercent(narration.returnFraction)})
-            </span>
-            {"."}
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
-
-/**
- * The daily hero section itself: an eyebrow date label, the "had you
- * known" statement + $X -> $Y figures (a fresh, date-seeded starting
- * capital, issue #174 -- not a fixed $20) + multiplier badge, the ticker
- * sequence, a scroll cue, and (as a following sibling section, per this
- * issue's own Scope item 4) the "Yesterday's trades" prose narration.
- * Returns a Fragment of two sibling sections -- like `TradeReplay.tsx`'s
- * own doc comment explains for the identical shape, a component
- * returning more than one logical block for a parent's `flex flex-col
- * gap-*` column must return real siblings, not one wrapping div, or the
- * parent's own gap collapses to whatever gap a new wrapper happens to
- * use instead.
+ * The daily hero showcase: a fixed-height, one-time-animated box holding
+ * the eyebrow date label, the "had you known" statement, the
+ * $X -> $Y figures + multiplier badge, a fixed-height slot holding
+ * either the "Watch it happen" button or the revealed chart (issue
+ * #162's mechanic, unchanged), and the ticker chips -- each folding in
+ * its own trade's signed return (issue #175's own Scope item 3), via
+ * `trade-math.ts`'s `computeTradeReturn` directly rather than routing
+ * through `narrate-trades.ts` for a sentence this component no longer
+ * needs. See this file's own header comment for the full design
+ * reasoning (fixed height, entrance animation, the accessibility
+ * tradeoff of removing the old always-visible trade narration).
  */
 export function DailyHero({ mode }: DailyHeroProps) {
   const { dailyChallenge, loading } = useDailyChallenge(mode);
   // Called unconditionally, before the early returns below, per the
   // Rules of Hooks -- `dailyChallenge` can be `null` (still loading, or
-  // nothing to show) on plenty of renders, so this can't wait until
+  // nothing to show) on plenty of renders, so these can't wait until
   // after those checks.
   const [chartRevealed, setChartRevealed] = useState(false);
+  const reducedMotionAfterMount = useReducedMotionAfterMount();
+  const playEntranceAnimation = !reducedMotionAfterMount;
   const points: PortfolioPoint[] = useMemo(() => {
     if (dailyChallenge === null || dailyChallenge.trades.length === 0) {
       return [];
@@ -180,11 +226,9 @@ export function DailyHero({ mode }: DailyHeroProps) {
     return (
       <section
         aria-label="Yesterday's result"
-        className="surface-card flex flex-col gap-3 rounded-xl border border-[var(--gridline)] bg-[var(--surface-1)] px-6 py-6"
+        className={`${SHOWCASE_CLASSNAME} ${SHOWCASE_HEIGHT_CLASSNAME}`}
       >
-        <p className="font-numeric text-xs font-semibold tracking-wide text-[var(--text-muted)] uppercase">
-          Yesterday · {eyebrowDate}
-        </p>
+        <p className={EYEBROW_CLASSNAME}>Yesterday · {eyebrowDate}</p>
         <p className="text-sm text-[var(--text-secondary)]">
           No trade would have beaten holding cash on {eyebrowDate}.
         </p>
@@ -193,81 +237,114 @@ export function DailyHero({ mode }: DailyHeroProps) {
   }
 
   const multiplier = dailyChallenge.endingBalance / dailyChallenge.startingCapital;
-  const narrations = narrateTrades(
-    dailyChallenge.trades.map((trade) => ({
-      ticker: trade.ticker,
-      direction: trade.direction,
-      buyLabel: formatTime(trade.openTime),
-      buyPrice: trade.openPrice,
-      sellLabel: formatTime(trade.closeTime),
-      sellPrice: trade.closePrice,
-    })),
-    dailyChallenge.startingCapital,
-  );
 
   return (
-    <>
-      <section
-        aria-label="Yesterday's result"
-        className="surface-card flex flex-col gap-3 rounded-xl border border-[var(--gridline)] bg-[var(--surface-1)] px-6 py-6"
+    <section
+      aria-label="Yesterday's result"
+      className={`${SHOWCASE_CLASSNAME} ${SHOWCASE_HEIGHT_CLASSNAME}`}
+    >
+      <p
+        className={entranceClassName(
+          EYEBROW_CLASSNAME,
+          "daily-hero-fade-up-animate",
+          playEntranceAnimation,
+        )}
+        style={{ animationDelay: "100ms" }}
       >
-        <p className="font-numeric text-xs font-semibold tracking-wide text-[var(--text-muted)] uppercase">
-          Yesterday · {eyebrowDate}
-        </p>
-        <p className="text-sm text-[var(--text-secondary)]">
-          Had you known, you&apos;d have made{" "}
-          <strong className="font-semibold text-[var(--text-primary)]">
-            {tradeCount} {tradeCount === 1 ? "trade" : "trades"}
-          </strong>{" "}
-          and turned
-        </p>
-        <p className={heroValueRowClassName}>
-          <span>{formatHeroCurrency(dailyChallenge.startingCapital)}</span>
-          <span aria-hidden="true" className="text-[var(--text-muted)]">
-            →
-          </span>
-          <span style={{ color: heroMultiplierColor(multiplier) }}>
-            {formatHeroCurrency(dailyChallenge.endingBalance)}
-          </span>
-          <span
-            className={heroMultiplierClassName}
-            style={{ color: heroMultiplierColor(multiplier) }}
+        Yesterday · {eyebrowDate}
+      </p>
+      <p
+        className={entranceClassName(
+          STATEMENT_CLASSNAME,
+          "daily-hero-fade-up-animate",
+          playEntranceAnimation,
+        )}
+        style={{ animationDelay: "300ms" }}
+      >
+        Had you known, you&apos;d have made{" "}
+        <strong className="font-semibold text-[var(--text-primary)]">
+          {tradeCount} {tradeCount === 1 ? "trade" : "trades"}
+        </strong>{" "}
+        and turned
+      </p>
+      <p
+        className={entranceClassName(
+          `${heroValueRowClassName} justify-center`,
+          "daily-hero-pop-animate",
+          playEntranceAnimation,
+        )}
+        style={{ animationDelay: "650ms" }}
+      >
+        <span>{formatHeroCurrency(dailyChallenge.startingCapital)}</span>
+        <span aria-hidden="true" className="text-[var(--text-muted)]">
+          →
+        </span>
+        <span style={{ color: heroMultiplierColor(multiplier) }}>
+          {formatHeroCurrency(dailyChallenge.endingBalance)}
+        </span>
+        <span
+          className={heroMultiplierClassName}
+          style={{ color: heroMultiplierColor(multiplier) }}
+        >
+          ({formatMultiplier(multiplier)})
+        </span>
+      </p>
+
+      <div
+        className={`flex w-full flex-col items-center justify-center gap-2 overflow-y-auto ${CHART_SLOT_HEIGHT_CLASSNAME}`}
+      >
+        {chartRevealed ? (
+          <PortfolioChart points={points} />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setChartRevealed(true)}
+            className={entranceClassName(
+              buttonClassName,
+              "daily-hero-pop-animate",
+              playEntranceAnimation,
+            )}
+            style={{ animationDelay: "950ms" }}
           >
-            ({formatMultiplier(multiplier)})
-          </span>
-        </p>
-        <p className="flex flex-wrap items-center gap-1.5 font-numeric text-sm font-semibold text-[var(--text-secondary)]">
-          {tickers.map((ticker, index) => (
-            <span key={`${ticker}-${index}`} className="flex items-center gap-1.5">
+            Watch it happen
+          </button>
+        )}
+      </div>
+
+      <p className="flex min-h-[1.9rem] flex-wrap items-center justify-center gap-1.5 font-numeric text-sm font-semibold text-[var(--text-secondary)]">
+        {dailyChallenge.trades.map((trade, index) => {
+          const { returnFraction, isGain } = computeTradeReturn(
+            trade.openPrice,
+            trade.closePrice,
+            trade.direction,
+          );
+          return (
+            <span key={`${trade.ticker}-${index}`} className="flex items-center gap-1.5">
               {index > 0 && (
                 <span aria-hidden="true" className="font-normal text-[var(--text-muted)]">
                   →
                 </span>
               )}
-              {ticker}
+              <span
+                className={entranceClassName(
+                  "inline-flex items-baseline gap-1 rounded-full border border-[var(--gridline)] bg-[var(--surface-2)] px-2.5 py-1",
+                  "daily-hero-chip-animate",
+                  playEntranceAnimation,
+                )}
+                style={{ animationDelay: `${1150 + index * 200}ms` }}
+              >
+                <span className="font-semibold text-[var(--text-primary)]">{trade.ticker}</span>{" "}
+                <span
+                  className="font-semibold"
+                  style={{ color: isGain ? "var(--status-good)" : "var(--status-critical)" }}
+                >
+                  {formatPercent(returnFraction)}
+                </span>
+              </span>
             </span>
-          ))}
-        </p>
-        <div className="flex flex-col items-start gap-3">
-          <button type="button" onClick={() => setChartRevealed(true)} className={buttonClassName}>
-            Watch it happen
-          </button>
-          {chartRevealed && <PortfolioChart points={points} />}
-        </div>
-        <a
-          href={`#${TRADES_SECTION_ID}`}
-          className="text-sm text-[var(--text-secondary)] underline underline-offset-2"
-        >
-          See the trades ↓
-        </a>
-      </section>
-
-      <div id={TRADES_SECTION_ID} className="flex flex-col gap-3">
-        <h2 className="text-lg font-semibold text-[var(--text-primary)]">
-          Yesterday&apos;s trades
-        </h2>
-        <TradeNarrationList narrations={narrations} />
-      </div>
-    </>
+          );
+        })}
+      </p>
+    </section>
   );
 }
