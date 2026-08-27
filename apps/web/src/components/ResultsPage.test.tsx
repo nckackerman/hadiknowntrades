@@ -423,17 +423,21 @@ describe("ResultsPage", () => {
       expect(await screen.findAllByRole("group", { name: /^Your call for/ })).toHaveLength(3);
     });
 
-    it("mounts exactly one board, as a sibling after ResultsPanel rather than inside it", () => {
+    it("mounts exactly one board, as a sibling of (not nested inside) ResultsPanel", () => {
       render(<ResultsPage />);
 
       const board = screen.getByRole("heading", { name: "The Call Board" }).closest("section");
       const skeleton = screen.getByText("Loading results…");
       expect(board).not.toBeNull();
       expect(board).not.toContainElement(skeleton);
+      // Issue #165 demoted ResultsPanel (still stuck in its loading
+      // skeleton throughout this describe block) into the collapsed
+      // "Explore other windows" section at the very bottom of the page --
+      // so the skeleton now *follows* the board in document order, the
+      // reverse of the pre-#165 layout, while the "not nested inside"
+      // half of this test's own name still holds unchanged.
       expect(
-        // Node.DOCUMENT_POSITION_PRECEDING: the skeleton comes before the
-        // board in document order.
-        board!.compareDocumentPosition(skeleton) & Node.DOCUMENT_POSITION_PRECEDING,
+        board!.compareDocumentPosition(skeleton) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
     });
   });
@@ -574,24 +578,23 @@ describe("ResultsPage", () => {
       return Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
     }
 
-    it("renders Beat the Bench, then the hero reveal, then The Call Board, then the ritual", async () => {
+    it("renders Beat the Bench, then The Call Board, then the ritual, then the demoted range explorer's own hero reveal", async () => {
       search = "range=5Y";
       render(<ResultsPage />);
 
-      // The window model's hero reveal -- HeroStat's own "Starting from"
-      // row, the first thing ResultsPanel renders on success.
-      const hero = await screen.findByText("Starting from");
       const bench = benchSection();
       const board = sectionFor("The Call Board");
       const ritual = sectionFor("Today, so far");
+      // The window model's hero reveal -- HeroStat's own "Starting from"
+      // row -- now lives inside the demoted "Explore other windows"
+      // section (issue #165), which sits at the very bottom of the page,
+      // below the ritual. It's still the first thing ResultsPanel renders
+      // on success, just relocated along with the whole range explorer.
+      const hero = await screen.findByText("Starting from");
 
-      // Issue #163 moved Beat the Bench ahead of the header/range
-      // explorer/ResultsPanel entirely (directly after DailyHero), so it
-      // now precedes the hero reveal rather than following it -- the
-      // rest of the order (hero -> Call Board -> ritual) is unchanged.
-      expect(follows(bench, hero)).toBe(true);
-      expect(follows(hero, board)).toBe(true);
+      expect(follows(bench, board)).toBe(true);
       expect(follows(board, ritual)).toBe(true);
+      expect(follows(ritual, hero)).toBe(true);
     });
 
     it("reflects a really-played session and really-made calls, not three independent toggles", async () => {
@@ -664,6 +667,46 @@ describe("ResultsPage", () => {
       await waitFor(() =>
         expect(recap.textContent).toContain("The Call Board: 2 of 3 upcoming sessions called"),
       );
+    });
+  });
+
+  describe('demoted "Explore other windows" section (issue #165)', () => {
+    it("collapses RangeSelector, the More options disclosure, and the results panel behind one closed-by-default disclosure", () => {
+      render(<ResultsPage />);
+
+      const summary = screen.getByText("Explore other windows");
+      const explorer = summary.closest("details");
+      expect(explorer).not.toBeNull();
+      // Closed by default -- unlike jsdom's own indifference to CSS
+      // visibility (see the "single More options disclosure" describe
+      // block's own comment above), a native <details>'s `open` property
+      // is a real, directly-assertable DOM property.
+      expect(explorer).toHaveProperty("open", false);
+      // The mockup's own "1W · 1M · 3M · 1Y · 5Y · Max" summary copy,
+      // derived from PRESET_RANGES rather than asserted against a
+      // hardcoded string here too.
+      expect(explorer).toHaveTextContent("1W");
+      expect(explorer).toHaveTextContent("Max");
+
+      // Everything the pre-#165 header/ResultsPanel used to render
+      // top-level now lives inside this one disclosure, unchanged.
+      expect(explorer).toContainElement(screen.getByRole("group", { name: "Preset date range" }));
+      expect(explorer).toContainElement(screen.getByTestId("controls-more"));
+      expect(explorer).toContainElement(screen.getByText("Loading results…"));
+    });
+  });
+
+  describe("micro-header caption replaces the standalone onboarding banner (issue #165)", () => {
+    it("folds the onboarding sentence into the header caption, with no separate dismissible banner", () => {
+      render(<ResultsPage />);
+
+      expect(screen.getByRole("heading", { name: "Had I Known Trades" })).toBeInTheDocument();
+      expect(screen.getByText(/This is a hindsight toy: starting from \$20/)).toBeInTheDocument();
+      // OnboardingIntro.tsx (issue #64) is deleted outright, not just
+      // hidden -- its own role="note" wrapper and dismiss button no
+      // longer exist anywhere on the page.
+      expect(screen.queryByRole("note")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Dismiss intro" })).not.toBeInTheDocument();
     });
   });
 });

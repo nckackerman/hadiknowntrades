@@ -2,7 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 
-import type { AnchorDate, PresetRange } from "@hadiknowntrades/core";
+import { PRESET_RANGES, type AnchorDate, type PresetRange } from "@hadiknowntrades/core";
 
 import { useResults } from "@/lib/use-results";
 import { useCustomResults } from "@/lib/use-custom-results";
@@ -17,11 +17,22 @@ import { DailyHero } from "@/components/DailyHero";
 import { DailyRitual } from "@/components/DailyRitual";
 import { CustomRangeSelector } from "@/components/CustomRangeSelector";
 import { ModeToggle } from "@/components/ModeToggle";
-import { OnboardingIntro } from "@/components/OnboardingIntro";
 import { RangeSelector } from "@/components/RangeSelector";
 import { ResultsPanel } from "@/components/ResultsPanel";
 
 const DEFAULT_RANGE: PresetRange = "1W";
+
+/**
+ * "1W · 1M · 3M · 1Y · 5Y · Max" -- the demoted "Explore other windows"
+ * section's own closed-summary subtitle (issue #165, matching the
+ * mockup's `<span class="explorer-sub">` copy). Derived from
+ * PRESET_RANGES rather than a second hardcoded list of range labels, so
+ * this can't silently drift from the pills RangeSelector itself renders
+ * inside that same section.
+ */
+const EXPLORER_RANGE_SUMMARY = PRESET_RANGES.map((preset) =>
+  preset === "MAX" ? "Max" : preset,
+).join(" · ");
 
 /**
  * Owns the selected range (?range=1Y, case-insensitive on read) or
@@ -138,112 +149,146 @@ export function ResultsPage() {
 
   return (
     <div className="flex w-full max-w-3xl flex-col gap-8 px-6 py-16 sm:px-8">
-      <OnboardingIntro />
+      {/* Micro-header (issue #165): one wordmark, one caption line -- no
+          RangeSelector/"More options" here any more, both demoted into
+          "Explore other windows" below. The caption folds in
+          OnboardingIntro's former one-sentence banner (issue #64) rather
+          than keeping that as a second, separate always-visible/
+          dismissible element above the header; OnboardingIntro.tsx and
+          its own storage module (lib/onboarding-storage.ts,
+          lib/use-onboarding-dismissed.ts) are deleted outright, not left
+          in place unused -- nothing else in the app referenced any of
+          the three beyond their own doc comments/tests, confirmed via a
+          repo-wide grep before deleting. */}
+      <header className="flex flex-col gap-2">
+        <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Had I Known Trades</h1>
+        <p className="text-sm text-[var(--text-secondary)]">
+          This is a hindsight toy: starting from $20, it finds the best possible outcome from at
+          most 3 trades across the whole S&amp;P 500, using only closed daily prices -- not a
+          predictor of what happens next.
+        </p>
+      </header>
 
       {/* The daily hero (issue #161): the previous market day's own
           "had you known" result, leading with a direct statement rather
           than the 1W range view's guess-then-reveal gate -- the page's
-          new top-of-page content, per this issue's own Scope item 5.
-          Mounted above the header/range explorer (not inside it, and
-          not inside ResultsPanel) so it renders regardless of how the
-          range explorer's own /api/results?range=1W fetch goes -- the
-          same "a section, not a branch inside ResultsPanel" reasoning
-          issue #122 already established for BeatTheBench/CallBoard
-          below. Deliberately not removing or restructuring the header/
-          RangeSelector/ResultsPanel that follow -- see this issue's own
-          Out of scope: demoting the range explorer is a separate,
-          follow-up issue. */}
+          top-of-page content. Mounted above the range explorer (not
+          inside it, and not inside ResultsPanel) so it renders
+          regardless of how the range explorer's own /api/results?range=1W
+          fetch goes -- the same "a section, not a branch inside
+          ResultsPanel" reasoning issue #122 already established for
+          BeatTheBench/CallBoard below. */}
       <DailyHero mode={mode} />
 
       {/* Beat the Bench (issue #131; collapsed-by-default "Can you do
           better?" card since issue #163) sits directly after the daily
-          hero and before the header/range explorer/ResultsPanel -- an
-          immediate call-to-action right under the "had you known"
-          statement, not a full always-rendered game further down the
-          page. Repositioned here from its previous spot as a direct
-          sibling of ResultsPanel (still per issue #122's standing
-          "section, not a route/branch inside ResultsPanel" decision --
-          only where it renders changed, not who owns it or that it takes
-          no PrecomputedResult/range/mode/selectedDay props): it renders
+          hero -- an immediate call-to-action right under the "had you
+          known" statement, not a full always-rendered game further down
+          the page. Still per issue #122's standing "section, not a
+          route/branch inside ResultsPanel" decision -- it takes no
+          PrecomputedResult/range/mode/selectedDay props and renders
           regardless of how /api/results goes, same reasoning DailyHero
           above and CallBoard below already rely on. */}
       <BeatTheBench />
 
-      <header className="flex flex-col gap-4">
-        <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Had I Known Trades</h1>
-        <RangeSelector selected={range} onSelect={selectRange} />
-        {/* CustomRangeSelector and ModeToggle collapse behind this one
-            "More options" disclosure at every viewport width (issue
-            #103), not just below 640px -- so the only always-visible
-            control in the header, at any screen size, is RangeSelector
-            itself. This used to be two real rendered instances (one
-            `hidden sm:flex` div always visible at desktop widths, one
-            inside a `sm:hidden` <details> for narrow viewports -- see
-            git history / apps/web/CLAUDE.md's "Mobile layout pass"
-            section for the full issue #63 story, including a real,
-            live-verified Chromium bug that ruled out a single instance
-            forced open via CSS at desktop widths back then). That
-            forced-open trick is no longer needed at all: neither
-            breakpoint wants an always-expanded state any more, both want
-            the same native closed-by-default/opens-on-click behavior, so
-            there's nothing left to force open via CSS and no reason to
-            keep two copies in sync -- one plain, always-rendered
-            <details> collapses this group identically at every width. */}
-        <details>
-          <summary className="cursor-pointer text-sm text-[var(--text-secondary)]">
-            More options
-          </summary>
-          <div data-testid="controls-more" className="mt-3 flex flex-wrap items-center gap-3">
-            <span className="text-sm text-[var(--text-muted)]">or</span>
-            <CustomRangeSelector
-              selected={anchor}
-              onSelect={selectAnchor}
-              anchorsState={anchorsState}
-            />
-            <ModeToggle selected={mode} onSelect={selectMode} />
-          </div>
-        </details>
-      </header>
-
-      <ResultsPanel
-        range={range}
-        state={state}
-        selectedDay={selectedDay}
-        onSelectDay={selectDay}
-        mode={mode}
-        startingCapital={startingCapital}
-        onStartingCapitalChange={setStartingCapital}
-      />
-
-      {/* The Call Board (issue #129), a *section* mounted here as a direct
-          sibling of ResultsPanel rather than inside one of its model
-          branches -- issue #122's standing decision, see apps/web/
-          CLAUDE.md's "Page structure" section. ResultsPanel renders
-          nothing but a skeleton or an error box until /api/results
-          succeeds, and the daily ritual shouldn't disappear when that
-          fetch is slow or failing; and "inside" would mean duplicating
-          the mount into both WindowResultBody and the intraday-daily
-          branch, i.e. two state owners to keep in sync. Takes no props
-          at all -- not a function of the hindsight result. (Beat the
-          Bench, previously this section's own sibling here, moved
-          directly after DailyHero as of issue #163 -- see that mount
-          point's own comment above.) Issue #133 may later move this into
-          ResultsPanel's `afterHero` slot; that changes where it renders,
-          not who owns it. */}
+      {/* The Call Board (issue #129/#164), the second CTA card, a direct
+          sibling of BeatTheBench per issue #122's standing decision --
+          see apps/web/CLAUDE.md's "Page structure" section. Takes no
+          props at all -- not a function of the hindsight result. */}
       <CallBoard />
 
       {/* The Daily Ritual (issue #133): the "today, so far" rail plus the
-          shareable recap, the capstone on the two mechanics directly above
-          it -- so the locked copy's "Play Beat the Bench above" is
-          literally true, and the recap sits at the end of the day's run
-          rather than interrupting it. Mounted at this level for exactly the
-          reasons the two mechanics are (issue #122): it reads state those
-          two own, and it must not vanish when /api/results is slow or
-          failing. It takes the headline figure the page is already
-          rendering rather than a result to re-derive one from -- see
-          lib/headline-figure.ts, which ResultsPanel computes its own
-          whole-range figure through too. */}
+          shareable recap, the capstone on the daily hero + two mechanics
+          directly above it -- so the locked copy's "Play Beat the Bench
+          above" is literally true, and the recap sits at the end of the
+          day's run rather than interrupting it. Repositioned here, ahead
+          of the demoted range explorer below, by issue #165 -- a
+          mount-order change only, no functional change to DailyRitual.tsx
+          itself (that issue's own Background section is explicit about
+          this). Mounted at this level for exactly the reasons the two
+          mechanics are (issue #122): it reads state those two own, and it
+          must not vanish when /api/results is slow or failing. It takes
+          the headline figure the page is already rendering rather than a
+          result to re-derive one from -- see lib/headline-figure.ts,
+          which ResultsPanel computes its own whole-range figure through
+          too. */}
       <DailyRitual range={range} mode={mode} headline={headline} />
+
+      {/* "Explore other windows" (issue #165): the entire pre-existing
+          1W/1M/3M/1Y/5Y/Max range-explorer experience -- RangeSelector,
+          the "More options" disclosure (CustomRangeSelector/ModeToggle),
+          and ResultsPanel itself (including its own nested AboutSection
+          disclaimer/methodology disclosure, per result view) -- demoted
+          into one collapsed <details> at the bottom of the page, below
+          DailyRitual. Everything inside moves unchanged (this issue's own
+          Out of scope: no change to ResultsPanel's internal model
+          branching, WholeRangeReplay/TradeReplay, DayOverview,
+          CustomRangeSelector, ModeToggle, or BenchmarkStat) -- same
+          range/anchor/mode/day URL state, same guess-then-reveal gate,
+          same window-model chart. This <details> only changes whether
+          that whole experience shares the landing screen with the daily
+          game, not anything about how it behaves once expanded. */}
+      <details className="surface-card rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)]">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-4">
+          <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            <span className="font-display text-base font-semibold text-[var(--text-primary)]">
+              Explore other windows
+            </span>
+            <span className="text-sm text-[var(--text-muted)]">{EXPLORER_RANGE_SUMMARY}</span>
+          </span>
+          <span aria-hidden="true" className="shrink-0 text-xs text-[var(--text-muted)]">
+            ▸ expand
+          </span>
+        </summary>
+
+        <div className="flex flex-col gap-6 px-4 pb-5">
+          <div className="flex flex-col gap-4">
+            <RangeSelector selected={range} onSelect={selectRange} />
+            {/* CustomRangeSelector and ModeToggle collapse behind this one
+                "More options" disclosure at every viewport width (issue
+                #103), not just below 640px -- so the only always-visible
+                control here is RangeSelector itself. This used to be two
+                real rendered instances (one `hidden sm:flex` div always
+                visible at desktop widths, one inside a `sm:hidden`
+                <details> for narrow viewports -- see git history /
+                apps/web/CLAUDE.md's "Mobile layout pass" section for the
+                full issue #63 story, including a real, live-verified
+                Chromium bug that ruled out a single instance forced open
+                via CSS at desktop widths back then). That forced-open
+                trick is no longer needed at all: neither breakpoint wants
+                an always-expanded state any more, both want the same
+                native closed-by-default/opens-on-click behavior, so
+                there's nothing left to force open via CSS and no reason
+                to keep two copies in sync -- one plain, always-rendered
+                <details> collapses this group identically at every
+                width. */}
+            <details>
+              <summary className="cursor-pointer text-sm text-[var(--text-secondary)]">
+                More options
+              </summary>
+              <div data-testid="controls-more" className="mt-3 flex flex-wrap items-center gap-3">
+                <span className="text-sm text-[var(--text-muted)]">or</span>
+                <CustomRangeSelector
+                  selected={anchor}
+                  onSelect={selectAnchor}
+                  anchorsState={anchorsState}
+                />
+                <ModeToggle selected={mode} onSelect={selectMode} />
+              </div>
+            </details>
+          </div>
+
+          <ResultsPanel
+            range={range}
+            state={state}
+            selectedDay={selectedDay}
+            onSelectDay={selectDay}
+            mode={mode}
+            startingCapital={startingCapital}
+            onStartingCapitalChange={setStartingCapital}
+          />
+        </div>
+      </details>
     </div>
   );
 }
