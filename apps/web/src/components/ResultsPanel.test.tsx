@@ -614,7 +614,9 @@ describe("ResultsPanel", () => {
 
       // Day 1 (2026-08-20): endingBalance 25.
       expect(
-        screen.getByText("$25.00", { selector: "span[aria-hidden]:not(.sr-only)" }),
+        screen.getByText("$25.00", {
+          selector: "span[aria-hidden] > span:not(.figure-width-probe)",
+        }),
       ).toBeInTheDocument();
 
       rerender(<ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />);
@@ -622,10 +624,14 @@ describe("ResultsPanel", () => {
       // Day 2 (2026-08-21): endingBalance 40 -- the visible figure must
       // update to match, not stay frozen at day 1's $25.00.
       expect(
-        screen.getByText("$40.00", { selector: "span[aria-hidden]:not(.sr-only)" }),
+        screen.getByText("$40.00", {
+          selector: "span[aria-hidden] > span:not(.figure-width-probe)",
+        }),
       ).toBeInTheDocument();
       expect(
-        screen.queryByText("$25.00", { selector: "span[aria-hidden]:not(.sr-only)" }),
+        screen.queryByText("$25.00", {
+          selector: "span[aria-hidden] > span:not(.figure-width-probe)",
+        }),
       ).not.toBeInTheDocument();
 
       vi.restoreAllMocks();

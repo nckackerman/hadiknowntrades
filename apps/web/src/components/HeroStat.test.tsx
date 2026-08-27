@@ -13,10 +13,12 @@ describe("HeroStat", () => {
   it("renders the starting capital plainly, unaffected by the count-up", () => {
     render(<HeroStat startingCapital={20} endingBalance={6876.86} />);
 
-    // Scoped to the non-hidden span: at mount the count-up's own figure
-    // also happens to read "$20.00" (it starts there), so a plain
-    // getByText would match two elements.
-    expect(screen.getByText("$20.00", { selector: "span:not([aria-hidden])" })).toBeInTheDocument();
+    // Scoped to the row's own direct child span: at mount the count-up's
+    // own figure also happens to read "$20.00" (it starts there), so a
+    // plain getByText would match two elements. `p > span` is what
+    // distinguishes them -- the animated figure's value lives one level
+    // deeper, inside AnimatedFigure's reserved-width grid (issue #147).
+    expect(screen.getByText("$20.00", { selector: "p > span" })).toBeInTheDocument();
   });
 
   it("starts the visible ending-balance figure at the starting capital, not the final value", () => {
@@ -74,9 +76,7 @@ describe("HeroStat", () => {
       // The dollar figures are still there too -- this is additive, not
       // a replacement (see the earlier "renders the starting capital
       // plainly" test for the fuller assertion on those).
-      expect(
-        screen.getByText("$20.00", { selector: "span:not([aria-hidden])" }),
-      ).toBeInTheDocument();
+      expect(screen.getByText("$20.00", { selector: "p > span" })).toBeInTheDocument();
     });
 
     it("shows the final multiplier immediately, not tied to the count-up animation", () => {

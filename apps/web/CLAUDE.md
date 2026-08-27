@@ -6484,3 +6484,111 @@ context with `localStorage` throwing on every access still played to
 settlement. Zero console or page errors across all five runs. The
 temporary `playwright` devDependency and the verification script were
 reverted before committing, per this file's own convention.
+
+## The hero count-up no longer moves the page (issue #147)
+
+The fix for the jitter issue #124's spike measured. The hero's 1.2s
+`useCountUp` reveal used to change the animated span's bounding box on
+essentially every frame, and because that span sits in a
+`flex flex-wrap` row whose wrap threshold falls inside the swept range,
+the row re-wrapped mid-animation and moved the chart, the "Trades"
+heading and the document's own `scrollHeight` while the number counted.
+Two independent causes, and **fixing only one leaves the defect**:
+
+1. **Glyph metrics, on every result.** Geist Sans' figures are
+   proportional; at 64px/600 its "1" is 25.4px against its "0"'s 42.4px,
+   so identical-length strings differ by up to 81px.
+2. **`formatHeroCurrency`'s compact-unit ladder, on results that cross a
+   unit boundary.** "$994.72" -> "$1K" is a 128px drop in one frame, and
+   no choice of typeface helps: seven characters are wider than three.
+
+### What shipped
+
+- **`font-numeric tabular-nums` on the two shared value-row class
+  strings** -- `HeroStat.tsx`'s `heroValueRowClassName` and
+  `WholeRangeBalance.tsx`'s `wholeRangeValueRowClassName`. Geist Mono,
+  the face issue #121 declared for exactly this ("anything tabular or
+  animated digit by digit ... useCountUp's reveal"). On the _row_, not
+  the animated span, on purpose: the `heroSlot`/`revealSlot` overlays
+  are sized by the invisible real figure behind them, so a metric change
+  reaching one side and not the other is precisely how issue #107 broke
+  twice -- anything on these strings reaches both sides at once.
+- **`components/AnimatedFigure.tsx`** reserves the box. For each ladder
+  tier the tween crosses it renders one invisible width probe
+  (`lib/format-currency.ts`'s `heroCurrencyWidthProbes`), all stacked
+  into a single CSS grid cell with the real value, and lets the browser
+  size the column to the widest. All four figures that need it render
+  this same component from the same two endpoint values -- `HeroStat`
+  and `TradeReplay`'s playing overlay, `WholeRangeBalance` and
+  `WholeRangeReplay`'s overlay -- so the reservation is impossible to
+  apply to one side of an overlay only.
+- **`HeroStat.tsx`'s "proportional (not tabular)" doc comment is
+  rewritten, not left contradicting the code.** The dataviz spec's line
+  is written for a _static_ hero number; this one animates, and a figure
+  that shoves the page around as it reveals is worse than one whose
+  digits aren't optically spaced. Static figures elsewhere
+  (`WorstCaseStat`, `BenchmarkStat`, the trade narration) are untouched.
+
+### Three things worth not re-deriving
+
+- **Geist Sans' own `tabular-nums` is NOT sufficient, measured, not
+  assumed -- don't "simplify" the mono face away.** Issue #124 reported
+  every tabular digit at 38.406px, but sampled only 0/1/2/9. Measured
+  across all ten digits in a real browser on this app's own hero row
+  (64px/600, letter-spacing zeroed): eight digits advance 40.0px, **"4"
+  advances 41.0px and "7" advances 39.0px** -- Geist's `tnum` table is
+  not actually uniform. `$999.99` measures 256px against `$444.44`'s
+  261px, and the plain `$20.00 -> $21.43` day still swept three distinct
+  widths under `tabular-nums` alone (a "4" appearing and disappearing as
+  the number counts). Geist Mono measures exactly 38.0px for every digit
+  _and_ for "$", ".", "K" and "M" -- that uniformity is what makes
+  "longest probe" and "widest probe" the same question.
+- **The probes paint from a `data-figure-probe` attribute via
+  `globals.css`'s `.figure-width-probe::after`, not from real text
+  nodes.** Generated content occupies layout but stays out of
+  `textContent`. As real children they'd join the figure's own text --
+  the whole-range headline would read `$99.99$999.99$9.9K$1.1K` to
+  `getByText`, to any DOM walk, and to every future debug script. (It
+  did, in the first draft; three existing tests failed on it.)
+- **Sampling an interval's endpoints does not bound it.** `$1,000 ->
+$2,000` formats as "$1K"/"$2K" at both ends but "$1.5K" in between, so
+  `heroCurrencyWidthProbes` works from the ladder's own tier table
+  instead. It lives in `format-currency.ts`, next to the ladder it
+  mirrors, and `format-currency.test.ts` brute-forces the two against
+  each other (dense linear _and_ geometric sweeps) so a future ladder
+  change fails a test rather than silently under-reserving.
+
+### Measured, before and after
+
+Re-ran #124's method on the real app (`LOCAL_RESULTS_DIR` + `next dev`,
+headless Chromium, `getBoundingClientRect()` on the animated span every
+animation frame across the full tween), at 1280px and 390px:
+
+| result     | animated span width                | hero-row height transitions | "Trades" `<h2>` / `scrollHeight` movement |
+| ---------- | ---------------------------------- | --------------------------- | ----------------------------------------- |
+| 1W @ 1280  | 61px / 24 widths -> **0px / 1**    | 1 -> **0**                  | 32px -> **0px**                           |
+| 1Y @ 1280  | 43px / 21 widths -> **0px / 1**    | 11 -> **0**                 | 32px -> **0px**                           |
+| 5Y @ 1280  | 150.6px / 27 widths -> **0px / 1** | 9 (3 heights) -> **0**      | 76px -> **0px**                           |
+| MAX @ 1280 | 63.8px / 34 widths -> **0px / 1**  | 2 -> **0**                  | 32px -> **0px**                           |
+| 1W @ 390   | 27px / 20 widths -> **0px / 1**    | 0 -> **0**                  | 0px -> **0px**                            |
+| 1Y @ 390   | 18px / 14 widths -> **0px / 1**    | 0 -> **0**                  | 0px -> **0px**                            |
+| 5Y @ 390   | 93px / 25 widths -> **0px / 1**    | 12 (3 heights) -> **0**     | 52px -> **0px**                           |
+| MAX @ 390  | 27px / 22 widths -> **0px / 1**    | 0 -> **0**                  | 0px -> **0px**                            |
+
+Zero console/page errors on every run. **Overlay parity re-verified live
+too, not just in jsdom** (which computes no text metrics at all -- the
+exact gap #107's version of this bug shipped through): across 35+
+playing-phase samples per case, `TradeReplay`'s `heroSlot` overlay and
+the invisible `HeroStat` behind it reported byte-identical value-row
+widths (525.41/525.41 on 5Y at 1280, 342/342 at 390) and identical
+per-row heights, with zero overflow past the overlay's box, and the same
+for `WholeRangeReplay`'s `revealSlot` against `WholeRangeBalance`
+(440/440 at 1280, 308/308 at 390).
+
+**One accepted layout consequence, deliberate.** A reserved box is by
+definition as wide as the widest string the tween can reach, so a result
+whose _final_ string is short but which crosses a boundary on the way
+(5Y, `$20 -> $1.1K`) now settles with its "(Nx)" badge on the row's
+second line where it used to fit on one. That is the price of the row
+not moving during the reveal; the badge already wrapped for most of the
+old tween anyway.
