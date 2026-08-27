@@ -5876,3 +5876,181 @@ count and horizontal spread by tier.
   render in green). Zero console errors or page errors on any of them.
   The verification scripts and the temporary `playwright` devDependency
   were reverted before committing, per this file's own convention.
+## The Call Board engine: storage, scoring, resolution (issue #128)
+
+The pure logic layer behind the rolling 3-day prediction game -- **no UI
+at all** (that's issue #129, which should be able to build against this
+section alone rather than re-deriving any of it). Three new modules in
+`src/lib/`, all unit-testable without mounting anything:
+
+| module                  | owns                                                                                                                              |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `market-calendar.ts`    | forward trading-day calendar (weekends + scheduled US market holidays), and the "has this day's market opened yet?" approximation |
+| `call-board-scoring.ts` | the four buckets, the +/-0.5% threshold, per-day scoring, resolution against real closes, stats                                   |
+| `call-board-storage.ts` | the date-keyed localStorage layer, plus `syncCallBoard`, the single entry point #129 needs                                        |
+
+**This is purely additive.** It does not touch, reference, gate or
+replace `WholeRangeBalance.tsx`, `WholeRangeReplay.tsx`,
+`use-range-guess.ts` or `range-guess-storage.ts` -- the whole-range
+guess-then-reveal gate (issue #91) is a different mechanic and stays
+exactly as it was. An earlier draft of issue #128 proposed deleting some
+of those and also claimed it replaced an existing "N-day check-in
+heat-grid"; both claims were withdrawn (there has never been such a
+component in this app).
+
+### The mechanic
+
+- **Four buckets** (`CallBucket`): `up-strong` / `up` / `down` /
+  `down-strong`, split at `STRONG_MOVE_THRESHOLD = 0.005` (+/-0.5% of
+  close-to-close move). **That threshold is a first-pass, undertuned
+  value -- it is NOT derived from SPY's real volatility distribution**,
+  and its own doc comment says so; don't present it in UI copy as if it
+  were calibrated. A dead-flat day (exactly 0.0%) is bucketed `up`, an
+  arbitrary but fixed tie-break so there's never a fifth "unchanged"
+  outcome to render.
+- **Scoring** (`scoreCall`): exact bucket match = 2, right direction at
+  the wrong confidence = 1, wrong direction = 0. A call is a **win** at
+  `>= 1` (i.e. the direction was right).
+- **Stats** (`computeCallBoardStats`): `resolvedCalls`, `wins`,
+  `winRate` (wins / resolvedCalls, `null` when nothing has resolved),
+  `totalPoints`, `currentStreak`, `bestStreak`. **`winRate` is
+  deliberately the only percentage this engine computes** -- a
+  points-based rate would be a second, different number for the same
+  history and the two would visibly disagree. `totalPoints` is exposed
+  as a raw count only; don't turn it into a competing percentage in the
+  UI.
+- **Rolling lookahead** (`upcomingCallDays`): at most `MAX_OPEN_CALLS`
+  (3) trading days whose sessions haven't started, ascending. Today is
+  included until its own 9:30, then drops off the front. Derived from
+  the clock on every read -- there is no stored cursor and nothing to
+  advance on a schedule.
+- **Resolution** (`resolveCalls`): a picked day settles once the close
+  series holds both its close and the previous trading day's. The very
+  first entry in a window never resolves (nothing to measure it
+  against), which is correct rather than lossy -- see the persistence
+  note below.
+
+### The data source
+
+Real SPY daily closes come from a `PrecomputedResult`'s
+`benchmarkSeries.closes` (issue #126, `packages/core`'s
+`BenchmarkSeries`) -- a trailing 90-calendar-day window, range-independent
+by design, so the board shows the same history whichever range the
+viewer has selected. `resolveCalls` takes a plain `DailyClose[]`, not a
+`PrecomputedResult`, so nothing in this engine depends on the results
+schema beyond that one field's element type. (`packages/core`'s
+`index.ts` gained one new export for this: `isValidPrice`, so
+`resolveCalls`' own "is this a real price" guard delegates to the
+existing single source of truth instead of re-deriving
+`Number.isFinite(v) && v > 0` a fourth time -- the exact drift
+`packages/core/CLAUDE.md` records catching once already.) Per issue #122, the
+`CallBoard` component itself must not take `PrecomputedResult`/`range`/
+`mode`/`selectedDay` props -- so #129's own hook is where the series is
+obtained, not here.
+
+### Storage keys
+
+- `hikt:call-board:pick:{YYYY-MM-DD}` -> `{"bucket":"up"}` -- one entry
+  per called day. **Date-keying is the point of this mechanic and is not
+  a reversal of issue #91's decision for `range-guess-storage.ts`**:
+  that one has no date dimension because there is exactly one guess per
+  (range, mode); this one has several independent calls open at once,
+  each locking and resolving on its own schedule, so the day _is_ the
+  identity. An object (not a bare bucket string) so a later added field
+  is a value change, not a stored-format migration.
+- `hikt:call-board:history` -> `{"resolved":[ResolvedCall, ...]}`,
+  ascending by date, trimmed to the most recent
+  `MAX_STORED_RESOLVED_CALLS` (400, ~18 months).
+- **Stats are never stored.** They're derived from the history on every
+  read. Issue #128's brief lists them alongside picks and history, but a
+  stale or hand-edited stored `bestStreak` could disagree with the calls
+  it claims to summarise, and `computeCallBoardStats` is a cheap walk.
+- Both readers treat anything malformed as "nothing stored" (a corrupt
+  history drops only its bad entries, not the whole record), per this
+  file's own localStorage-pattern section.
+- Everything goes through `local-storage.ts`'s defensive helpers -- no
+  direct `window.localStorage` access anywhere in these modules.
+
+### The lock lives in the storage layer, not the UI
+
+`saveCallBoardPick(date, bucket, now)` writes only while
+`isPickEditable(date, now)` -- a real trading day whose approximate
+market open hasn't passed. Before that boundary a pick may be changed
+any number of times; after it, the call **returns `false` and writes
+nothing** rather than silently overwriting a locked call. It's enforced
+here and not only in #129's UI because a pick that reached storage after
+its day opened would be indistinguishable from an honest one, and this
+is the one place every write passes through. (A `false` return also
+covers a genuine storage failure; ask `isPickEditable` first if the
+difference matters -- nothing in the shipped UI should need to.)
+
+### The market-open approximation, stated plainly
+
+`hasMarketOpened(date, now)` asks one question: **is the client's own
+clock, rendered in `America/New_York`, at or past 9:30 AM on `date`?**
+No live market data, no server check. A device with a wrong clock can
+lock a pick early or leave one editable late; the worst case is a viewer
+cheating themselves, which is the right trade for a stakes-free toy.
+
+It uses `Intl.DateTimeFormat` with an explicit `timeZone` rather than a
+fixed UTC offset -- unlike `packages/core`'s `unixToLocalDateString`,
+whose fixed-offset approximation is fine for price bars. A fixed offset
+would be genuinely wrong here: 9:30 ET is a wall-clock time, so it moves
+a real hour in UTC terms twice a year (there's a direct DST test for
+this in `market-calendar.test.ts`).
+
+Half days (the day after Thanksgiving, Christmas Eve) close early but
+still _open_ at 9:30, so the boundary needs no half-day awareness.
+
+### The holiday model, and the one thing it can't know
+
+`isMarketHoliday` models the ten scheduled US market holidays, including
+observed-date shifting (Saturday -> preceding Friday, Sunday -> following
+Monday) and the one real NYSE exception: **New Year's Day falling on a
+Saturday is not observed at all**, because the preceding Friday is the
+last trading day of the year (2021-12-31 was a full session; there's a
+test for it). Good Friday needs a Gregorian Easter computation -- it's
+the only one of the ten with neither a fixed date nor an
+nth-weekday-of-month rule.
+
+It cannot know about **unscheduled** closures. Live-verified once
+against every real SPY session in the three years ending 2026-08-26 (752
+sessions): the model agreed on every calendar day except **2025-01-09**,
+the National Day of Mourning for President Carter -- exactly that
+category, not a rules bug. `market-calendar.test.ts` keeps a
+committed-fixture version of that same cross-check against
+`src/test-fixtures/spy-daily-closes.ts` (63 real closes, the same
+90-day shape a real `benchmarkSeries` carries).
+
+### `syncCallBoard` is the one call #129 needs
+
+`syncCallBoard(closes, now)` resolves every stored pick the series now
+covers, folds them into the persisted history (an already-settled date
+keeps its original entry -- `mergeResolvedCalls` is last-write-_loses_,
+so a date reappearing in a differently-sliced window can never quietly
+change score), writes back only when something new actually settled, and
+returns `{ openCalls, resolved, stats }`. History is persisted rather
+than re-derived precisely because it outlives its own 90-day source
+window -- a streak that ran across that boundary would silently reset if
+this were derived state.
+
+It is safe to call during a server render (every storage read degrades to
+"nothing stored" without a `window`), but **#129 still owes it this
+file's usual hydration discipline**: `CallBoard` mounts at the
+`ResultsPage` level per issue #122, which _does_ render on the server, so
+follow `use-hydrated-local-storage-state.ts`'s deferred-correction shape,
+not `use-daily-guess.ts`'s synchronous-read shortcut (that shortcut is
+only safe from `ResultsPanel`'s client-only success branch).
+
+### Real-data backtest (the acceptance criterion)
+
+`call-board-scoring.test.ts` runs a blind "always call `up`" strategy
+against the real fixture and asserts hand-worked numbers, with the
+per-day table written out in a comment above the test: over the real
+22-trading-day span **2026-07-27 .. 2026-08-25**, it scores **12 wins of
+22 calls (54.5%), 18 points, best streak 4, current streak 1** -- 6
+exact matches at 2 points plus 6 right-side-only at 1. Over the
+fixture's full 62-call window: 32 wins, 48 points, best streak 4. (Issue
+#128 cites 12/22, ~55%, best streak 4 from the original design process
+against a different window -- recomputed here against the data this repo
+actually ships, and landing in the same place.)
