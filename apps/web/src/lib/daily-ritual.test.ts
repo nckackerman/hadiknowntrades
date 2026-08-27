@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { PlayedSession } from "./beat-the-bench-storage";
 import {
   RECAP_LOCKED_HEADLINE,
+  RECAP_UNLOCKED_HEADLINE,
+  STEP_STYLES,
   benchGapClause,
   benchRecapClause,
   buildRecapText,
@@ -10,7 +12,6 @@ import {
   callsState,
   headlineRecapClause,
   isRecapUnlocked,
-  stepsDone,
   type DailyRitualSnapshot,
 } from "./daily-ritual";
 import type { HeadlineFigure } from "./headline-figure";
@@ -57,22 +58,6 @@ describe("isRecapUnlocked", () => {
         }),
       ),
     ).toBe(true);
-  });
-});
-
-describe("stepsDone", () => {
-  // The reveal is endowed progress, not a step anyone has to earn -- see
-  // DailyRitualSnapshot.heroSeen. A brand-new visitor is at 1 of 3, never 0.
-  it("counts the reveal as done for a viewer who has done nothing else", () => {
-    expect(stepsDone(snapshot({ bench: null, calls: { filled: 0, total: 3 } }))).toBe(1);
-  });
-
-  it("counts a played session but not a partially-filled board", () => {
-    expect(stepsDone(snapshot({ calls: { filled: 2, total: 3 } }))).toBe(2);
-  });
-
-  it("reaches 3 only once every slot is called", () => {
-    expect(stepsDone(snapshot({ calls: { filled: 3, total: 3 } }))).toBe(3);
   });
 });
 
@@ -209,8 +194,32 @@ describe("buildRecapText", () => {
   });
 });
 
-describe("locked copy", () => {
-  it("ships the real sentence, in this app's second-person register", () => {
-    expect(RECAP_LOCKED_HEADLINE).toBe("Play Beat the Bench above, and the day has a recap.");
+describe("recap disclosure summary copy", () => {
+  it("ships the design reference's own locked summary line", () => {
+    expect(RECAP_LOCKED_HEADLINE).toBe("Today's recap unlocks after you play Beat the Bench");
+  });
+
+  it("ships the design reference's own unlocked summary line", () => {
+    expect(RECAP_UNLOCKED_HEADLINE).toBe("Today's recap is ready -- Copy");
+  });
+});
+
+describe("STEP_STYLES", () => {
+  // WCAG 1.4.1: every non-"todo" state must carry a real glyph, not just a
+  // colour -- both game cards' own corner badges (issue #186) depend on
+  // this being true, since colour alone can't tell "done" apart from
+  // "partial" for a colourblind viewer.
+  it("gives done and partial each a real glyph or an explicit override point", () => {
+    expect(STEP_STYLES.done.glyph).toBe("✓");
+    expect(STEP_STYLES.done.colorClassName).not.toBe("");
+    // "partial" has no glyph of its own -- CallBoard.tsx's own badge
+    // supplies the filled count instead, per that component's own doc
+    // comment -- but its colour still has to be real.
+    expect(STEP_STYLES.partial.colorClassName).not.toBe("");
+  });
+
+  it("renders nothing at all for todo -- callers must skip it, not render an empty circle", () => {
+    expect(STEP_STYLES.todo.glyph).toBe("");
+    expect(STEP_STYLES.todo.colorClassName).toBe("");
   });
 });

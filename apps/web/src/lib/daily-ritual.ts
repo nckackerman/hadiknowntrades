@@ -1,10 +1,14 @@
-// The Daily Ritual (issue #133): what "today, so far" actually says, and
-// the plain-text recap a finished day can be shared as.
+// The Daily Ritual (issue #133, condensed by issue #186): the shared
+// done/partial/todo status vocabulary (`STEP_STYLES`) both game cards'
+// own corner badges now render, and the plain-text recap a finished day
+// can be shared as. The always-visible "Today, so far" rail this file's
+// snapshot used to drive is gone -- see DailyRitual.tsx's own doc
+// comment for what replaced it.
 //
 // Pure -- no React, no storage, no clipboard. Everything here is a function
 // of one `DailyRitualSnapshot`, so the copy can be unit-tested against real
-// shapes without mounting anything, and so the rail and the recap can never
-// disagree about the same day.
+// shapes without mounting anything, and so the two cards' badges and the
+// recap can never disagree about the same day.
 //
 // **The recap is Wordle-shaped, not a data dump.** Two rules decide what
 // goes in it, and both are deliberate:
@@ -31,6 +35,49 @@ import type { PlayedSession } from "./beat-the-bench-storage";
 
 /** How many of the rail's three steps are considered done. */
 export type RitualStepState = "done" | "partial" | "todo";
+
+/**
+ * Glyph + colour for each of a step's three states -- promoted here
+ * (issue #186) from `DailyRitual.tsx`'s own private constant, since
+ * `BeatTheBench.tsx` and `CallBoard.tsx` now render this exact
+ * done/partial/todo vocabulary too, as a small at-a-glance corner badge
+ * on their own compact tile (see `STATUS_BADGE_CLASSNAME` below), not
+ * just the rail item DailyRitual.tsx itself no longer renders.
+ *
+ * WCAG 1.4.1: a state must be tellable apart without relying on hue
+ * alone -- "done"/"partial" each carry a real glyph, not colour only.
+ * "todo" renders nothing at all, matching `docs/design/daily-hub-
+ * condensed-2026-08`'s own `.status-badge.todo { display: none; }` --
+ * there is no glyph to define for it, and a caller should skip
+ * rendering the badge entirely for that state rather than rendering an
+ * empty circle.
+ */
+export const STEP_STYLES: Record<RitualStepState, { glyph: string; colorClassName: string }> = {
+  // Gold is --accent-reward's documented job (globals.css, issue #121):
+  // earned state only. A finished step of the day's ritual is exactly
+  // that -- a filled gold circle, not the outlined glyph this vocabulary
+  // used back when it drove a rail item instead of a corner badge.
+  done: { glyph: "✓", colorClassName: "bg-[var(--accent-reward)] text-[#241a08]" },
+  // No glyph of its own: CallBoard.tsx's "partial" badge shows the
+  // filled call count instead (matching the design reference), which
+  // only that caller can compute -- there's nothing generic to put here.
+  partial: { glyph: "", colorClassName: "bg-[var(--surface-2)] text-[var(--text-primary)]" },
+  todo: { glyph: "", colorClassName: "" },
+};
+
+/**
+ * Shared shape for the small at-a-glance corner badge both game cards
+ * render (`BeatTheBench.tsx`'s `CompactCard`, `CallBoard.tsx`'s
+ * `CallBoardSummaryRow`) -- absolutely positioned in the tile's own
+ * top-right corner, per `docs/design/daily-hub-condensed-2026-08`'s own
+ * `.status-badge`. A caller combines this with `STEP_STYLES[state]`'s
+ * own `colorClassName` (and, for "done", its `glyph`) on an element
+ * whose nearest positioned ancestor is the tile itself -- see each
+ * caller's own doc comment for why. Nothing renders for `"todo"` (see
+ * `STEP_STYLES`'s own doc comment above).
+ */
+export const STATUS_BADGE_CLASSNAME =
+  "absolute -top-2 -right-2 flex h-7 w-7 items-center justify-center rounded-full border-2 border-[var(--background)] text-sm font-bold";
 
 /** One day's Beat the Bench record, plus the session date it belongs to. */
 export interface RitualBench {
@@ -70,34 +117,40 @@ export function isRecapUnlocked(snapshot: DailyRitualSnapshot): boolean {
   return snapshot.bench !== null;
 }
 
-/** How many of the three steps are complete -- the rail's own "N of 3" readout. */
-export function stepsDone(snapshot: DailyRitualSnapshot): number {
-  return (
-    1 + (snapshot.bench === null ? 0 : 1) + (snapshot.calls.filled >= snapshot.calls.total ? 1 : 0)
-  );
-}
-
-/** The Call Board step's state: every slot called, some called, none called. */
+/**
+ * The Call Board step's state: every slot called, some called, none
+ * called. Originally the rail's own item state; now also what
+ * `CallBoard.tsx`'s compact card computes its own corner status badge
+ * from (issue #186) -- the same three-way split, just consumed by a
+ * different caller.
+ */
 export function callsState(calls: { filled: number; total: number }): RitualStepState {
   if (calls.total > 0 && calls.filled >= calls.total) return "done";
   return calls.filled > 0 ? "partial" : "todo";
 }
 
 /**
- * The locked-state copy, before Beat the Bench has been played today.
+ * The recap disclosure's own locked summary line (issue #186) -- shown
+ * collapsed, before Beat the Bench has been played today.
  *
- * The design artifact's own line was "Play Beat the Bench above to unlock a
- * shareable recap" -- accurate but transactional, in the register of a
- * product telling you to complete a task. This app's voice (see
- * `narrate-trades.ts`, and issue #131's own tone correction for the same
- * mechanic) is second person, earnest and a little wistful: it tells you
- * what would have been, it doesn't instruct you. So the instruction stays
- * (it genuinely has to say what to do) but the reason comes with it, and
- * the sentence is about the day rather than about the button.
+ * Deliberately the design reference's own literal wording
+ * (`docs/design/daily-hub-condensed-2026-08`), not this constant's
+ * earlier "second person, earnest" rewrite of the same idea (see git
+ * history): a one-line disclosure summary has no room for a full
+ * sentence explaining *why*, so that explanation moved into the
+ * expanded body instead (`RECAP_LOCKED_DETAIL`, unchanged, still in this
+ * app's own voice) and the summary itself just states the fact plainly.
  */
-export const RECAP_LOCKED_HEADLINE = "Play Beat the Bench above, and the day has a recap.";
+export const RECAP_LOCKED_HEADLINE = "Today's recap unlocks after you play Beat the Bench";
 
-/** The quieter second line under `RECAP_LOCKED_HEADLINE`. */
+/**
+ * The recap disclosure's own unlocked summary line (issue #186),
+ * matching the design reference verbatim -- shown collapsed, once
+ * Beat the Bench has been played today.
+ */
+export const RECAP_UNLOCKED_HEADLINE = "Today's recap is ready -- Copy";
+
+/** The disclosure body's own explanatory paragraph while locked -- unchanged in substance since before issue #186 moved this from an always-visible panel into a single-line disclosure. */
 export const RECAP_LOCKED_DETAIL =
   "It gathers what hindsight would have made, how your session came out, and the calls you've " +
   "made so far -- short enough to paste anywhere.";

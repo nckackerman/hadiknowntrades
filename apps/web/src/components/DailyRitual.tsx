@@ -1,16 +1,28 @@
 "use client";
 
-// The Daily Ritual (issue #133): a "today, so far" status rail over the
-// day's three beats, and the plain-text recap a finished day can be copied
-// out as.
+// The Daily Ritual (issue #133, condensed by issue #186): a single-line
+// shareable-recap disclosure -- locked until Beat the Bench has been
+// played today, unlocked to the same recap content this file always
+// rendered once it has.
+//
+// **The always-visible "Today, so far" status rail is gone** (the
+// header, the "N of 3 done" counter, and the <ol> of rail items). It
+// mostly repeated information the two game cards already render
+// themselves -- BeatTheBench.tsx's CompactCard already says "Not played
+// yet today"; CallBoard.tsx's CallBoardSummaryRow already says "N of 3
+// called this week" -- so that status now lives as a small corner badge
+// on each card instead, built from lib/daily-ritual.ts's own
+// `STEP_STYLES`, promoted there for exactly this reuse. See
+// docs/design/daily-hub-condensed-2026-08 for the design reference this
+// issue implements.
 //
 // **Placement follows issue #122's standing decision**, like the two
 // mechanics it summarises: a self-contained section mounted as a direct
-// child of ResultsPage's column, above ResultsPanel's own fetch gate, so a
-// slow or failing /api/results leaves the ritual intact. It takes only the
-// already-computed headline figure (plus the range/mode that figure belongs
-// to) -- never a `PrecomputedResult` -- so there is nothing here to
-// recompute and nothing to drift from the page's own number.
+// child of ResultsPage's column, above ResultsPanel's own fetch gate, so
+// a slow or failing /api/results leaves the ritual intact. It takes only
+// the already-computed headline figure (plus the range/mode that figure
+// belongs to) -- never a `PrecomputedResult` -- so there is nothing here
+// to recompute and nothing to drift from the page's own number.
 //
 // All state is read, never mirrored: see lib/use-daily-ritual.ts.
 
@@ -21,34 +33,15 @@ import type { PresetRange } from "@hadiknowntrades/core";
 import {
   RECAP_LOCKED_DETAIL,
   RECAP_LOCKED_HEADLINE,
-  benchRecapClause,
+  RECAP_UNLOCKED_HEADLINE,
+  STEP_STYLES,
   buildRecapText,
-  callsState,
   isRecapUnlocked,
-  stepsDone,
-  type RitualStepState,
 } from "@/lib/daily-ritual";
 import { copyText } from "@/lib/copy-text";
 import type { HeadlineFigure } from "@/lib/headline-figure";
 import type { Mode } from "@/lib/mode";
 import { useDailyRitual } from "@/lib/use-daily-ritual";
-
-/**
- * The rail's three states, each with a **glyph as well as a colour**.
- *
- * WCAG 1.4.1: done/partial/not-yet must be tellable apart without relying
- * on hue, and a border colour alone doesn't do it (the same rule issue
- * #129's history strip already follows for its four outcomes -- see
- * `OUTCOME_STYLES` there). Every rail item therefore carries the glyph, a
- * word for its state, and the colour, not just the last of those.
- */
-const STEP_STYLES: Record<RitualStepState, { glyph: string; colorClassName: string }> = {
-  // Gold is --accent-reward's documented job (globals.css, issue #121):
-  // earned state only. A finished step of the day's ritual is exactly that.
-  done: { glyph: "✓", colorClassName: "text-[var(--accent-reward)]" },
-  partial: { glyph: "◐", colorClassName: "text-[var(--text-secondary)]" },
-  todo: { glyph: "○", colorClassName: "text-[var(--text-muted)]" },
-};
 
 interface DailyRitualProps {
   /** The active preset range, or `null` in custom start-date anchor mode. */
@@ -60,95 +53,71 @@ interface DailyRitualProps {
 
 export function DailyRitual({ range, mode, headline }: DailyRitualProps) {
   const headingId = useId();
-  const { snapshot, hydrated } = useDailyRitual({ range, mode, headline });
+  const { snapshot } = useDailyRitual({ range, mode, headline });
 
   const recap = useMemo(() => buildRecapText(snapshot), [snapshot]);
   const unlocked = isRecapUnlocked(snapshot);
 
-  const callsStepState = callsState(snapshot.calls);
-  const benchStepState: RitualStepState = snapshot.bench === null ? "todo" : "done";
-
   return (
-    <section
-      aria-labelledby={headingId}
-      className="surface-card flex flex-col gap-5 rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-5"
-    >
-      <header className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2
-          id={headingId}
-          className="font-display text-lg font-semibold text-[var(--text-primary)]"
-        >
-          Today, so far
-        </h2>
-        {/* The count is deliberately never "0 of 3": the reveal is already
-            behind you the moment you arrive (see DailyRitualSnapshot's
-            heroSeen doc comment for why that's the point, not a bug). */}
-        <p className="font-numeric text-sm tabular-nums text-[var(--text-muted)]">
-          {hydrated ? `${stepsDone(snapshot)} of 3 done` : " "}
-        </p>
-      </header>
+    <section aria-labelledby={headingId}>
+      {/* A stable, sr-only landmark heading -- mirroring CallBoard.tsx's
+          own `<h2 id="call-board-heading">` (issue #164): this section's
+          identity/testability shouldn't depend on which of the two
+          summary lines below happens to be showing. Deliberately new
+          text, not "Today, so far" relocated to sr-only -- that string
+          no longer exists anywhere in this component's rendered output,
+          per this issue's own acceptance criteria. */}
+      <h2 id={headingId} className="sr-only">
+        Today&apos;s ritual
+      </h2>
 
-      <ol className="flex flex-col gap-2">
-        <RailItem
-          state="done"
-          label="The reveal"
-          detail="You've seen what hindsight would have made."
-        />
-        <RailItem
-          state={benchStepState}
-          label="Beat the Bench"
-          detail={
-            snapshot.bench === null
-              ? "Not played yet today."
-              : `Played -- ${benchRecapClause(snapshot.bench.session)}.`
-          }
-        />
-        <RailItem
-          state={callsStepState}
-          label="The Call Board"
-          detail={`${snapshot.calls.filled} of ${snapshot.calls.total} upcoming sessions called.`}
-        />
-      </ol>
+      <details className="surface-card rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)]">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
+          <span className="flex items-center gap-2">
+            {/* Reuses STEP_STYLES.done for the unlocked glyph -- the
+                identical filled-gold-circle treatment the two game
+                cards' own corner badges use for exactly the same
+                "earned" state, per globals.css's --accent-reward
+                decision record (issue #121). The locked glyph has no
+                equivalent in STEP_STYLES (that vocabulary has nothing
+                to say about "not started yet" beyond "render nothing",
+                which doesn't fit a summary line that always needs
+                *something* to show), so it's a small outlined circle
+                defined here instead. */}
+            <span
+              aria-hidden="true"
+              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs ${
+                unlocked
+                  ? STEP_STYLES.done.colorClassName
+                  : "border border-[var(--gridline)] text-[var(--text-muted)]"
+              }`}
+            >
+              {unlocked ? STEP_STYLES.done.glyph : "🔒"}
+            </span>
+            <span
+              className={`text-sm ${
+                unlocked
+                  ? "font-semibold text-[var(--text-primary)]"
+                  : "font-medium text-[var(--text-muted)]"
+              }`}
+            >
+              {unlocked ? RECAP_UNLOCKED_HEADLINE : RECAP_LOCKED_HEADLINE}
+            </span>
+          </span>
+          <span aria-hidden="true" className="shrink-0 text-xs text-[var(--text-muted)]">
+            ▸
+          </span>
+        </summary>
 
-      {unlocked && recap !== null ? (
-        <RecapPanel recap={recap} />
-      ) : (
-        <div className="flex flex-col gap-1 rounded-md border border-dashed border-[var(--gridline)] bg-[var(--surface-2)] px-4 py-4">
-          <p className="text-sm font-medium text-[var(--text-primary)]">{RECAP_LOCKED_HEADLINE}</p>
-          <p className="text-sm text-[var(--text-muted)]">{RECAP_LOCKED_DETAIL}</p>
+        <div className="flex flex-col gap-3 px-4 pb-4">
+          {unlocked && recap !== null ? (
+            <RecapPanel recap={recap} />
+          ) : (
+            <p className="text-sm text-[var(--text-muted)]">{RECAP_LOCKED_DETAIL}</p>
+          )}
         </div>
-      )}
+      </details>
     </section>
-  );
-}
-
-function RailItem({
-  state,
-  label,
-  detail,
-}: {
-  state: RitualStepState;
-  label: string;
-  detail: string;
-}) {
-  const style = STEP_STYLES[state];
-  return (
-    <li className="flex items-start gap-3">
-      {/* aria-hidden because the visible text below already carries the
-          whole meaning -- the glyph is the *sighted* reader's non-colour
-          cue, not a second thing to announce. */}
-      <span
-        aria-hidden="true"
-        data-step-state={state}
-        className={`flex min-h-6 min-w-6 items-center justify-center rounded-full border border-current text-xs leading-none ${style.colorClassName}`}
-      >
-        {style.glyph}
-      </span>
-      <span className="flex flex-col gap-0.5">
-        <span className="text-sm font-medium text-[var(--text-primary)]">{label}</span>
-        <span className="text-sm text-[var(--text-secondary)]">{detail}</span>
-      </span>
-    </li>
   );
 }
 

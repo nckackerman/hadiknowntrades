@@ -76,13 +76,20 @@ function clickCopy(): void {
   fireEvent.click(screen.getByRole("button", { name: "Copy recap" }));
 }
 
-function recapText(): string {
-  return screen.getByTestId("daily-recap-text").textContent ?? "";
+/**
+ * Opens the recap `<details>` -- required before any of its own content
+ * (including "Copy recap") is genuinely visible in a real browser
+ * (`jest-dom`'s own `toBeVisible` special-cases a closed `<details>`,
+ * unlike a plain `getByText`/`getByRole` query, which finds hidden
+ * content just fine -- see `apps/web/CLAUDE.md`'s own note on this
+ * distinction for a different `<details>` in this app).
+ */
+function openRecap(): void {
+  fireEvent.click(document.querySelector("details > summary")!);
 }
 
-/** The rail row for `label`, as its whole `<li>`. */
-function railItem(label: string): HTMLElement {
-  return screen.getByText(label).closest("li")!;
+function recapText(): string {
+  return screen.getByTestId("daily-recap-text").textContent ?? "";
 }
 
 function renderRitual(headline: HeadlineFigure | null = WINDOW_HEADLINE) {
@@ -101,60 +108,12 @@ describe("DailyRitual", () => {
     vi.unstubAllGlobals();
   });
 
-  describe("the status rail", () => {
-    it("starts the day at 1 of 3, with the reveal already behind you", async () => {
-      renderRitual();
-
-      // Endowed progress, on purpose (see DailyRitualSnapshot.heroSeen) --
-      // this must never read "0 of 3".
-      expect(await screen.findByText("1 of 3 done")).toBeInTheDocument();
-      expect(railItem("The reveal").querySelector("[data-step-state]")).toHaveAttribute(
-        "data-step-state",
-        "done",
-      );
-    });
-
-    it("reports a played session and its result, read from the real stored record", async () => {
-      savePlayedSession(SESSION_DATE, "todays-close", PLAYED);
-      renderRitual();
-
-      const bench = await waitFor(() => railItem("Beat the Bench"));
-      await waitFor(() => expect(bench).toHaveTextContent(/you beat the bench by 0\.10%/));
-      expect(bench.querySelector("[data-step-state]")).toHaveAttribute("data-step-state", "done");
-    });
-
-    it("counts the board's real filled slots, and marks the step partial until they're all called", async () => {
-      const [first] = upcomingCallDays(new Date());
-      saveCallBoardPick(first!, "up", new Date());
-      renderRitual();
-
-      const calls = await waitFor(() => railItem("The Call Board"));
-      await waitFor(() => expect(calls).toHaveTextContent(/1 of 3 upcoming sessions called/));
-      expect(calls.querySelector("[data-step-state]")).toHaveAttribute(
-        "data-step-state",
-        "partial",
-      );
-    });
-
-    it("gives every state a glyph as well as a colour", async () => {
-      savePlayedSession(SESSION_DATE, "todays-close", PLAYED);
-      renderRitual();
-
-      await waitFor(() =>
-        expect(railItem("Beat the Bench").querySelector("[data-step-state]")).toHaveTextContent(
-          "✓",
-        ),
-      );
-      expect(railItem("The Call Board").querySelector("[data-step-state]")).toHaveTextContent("○");
-    });
-  });
-
-  describe("the recap's lock", () => {
-    it("ships the real locked copy until Beat the Bench has been played", async () => {
+  describe("the recap disclosure", () => {
+    it("shows the locked summary line, and no recap, until Beat the Bench has been played", async () => {
       renderRitual();
 
       expect(
-        await screen.findByText("Play Beat the Bench above, and the day has a recap."),
+        await screen.findByText("Today's recap unlocks after you play Beat the Bench"),
       ).toBeInTheDocument();
       expect(screen.queryByTestId("daily-recap-text")).not.toBeInTheDocument();
     });
@@ -163,10 +122,23 @@ describe("DailyRitual", () => {
       savePlayedSession(SESSION_DATE, "todays-close", PLAYED);
       renderRitual();
 
-      expect(await screen.findByTestId("daily-recap-text")).toBeInTheDocument();
+      expect(await screen.findByText("Today's recap is ready -- Copy")).toBeInTheDocument();
       expect(
-        screen.queryByText("Play Beat the Bench above, and the day has a recap."),
+        screen.queryByText("Today's recap unlocks after you play Beat the Bench"),
       ).not.toBeInTheDocument();
+      expect(screen.getByTestId("daily-recap-text")).toBeInTheDocument();
+    });
+
+    it("is collapsed by default, in both the locked and unlocked states", async () => {
+      const { unmount } = renderRitual();
+      await screen.findByText("Today's recap unlocks after you play Beat the Bench");
+      expect(document.querySelector("details")).not.toHaveAttribute("open");
+      unmount();
+
+      savePlayedSession(SESSION_DATE, "todays-close", PLAYED);
+      renderRitual();
+      await screen.findByText("Today's recap is ready -- Copy");
+      expect(document.querySelector("details")).not.toHaveAttribute("open");
     });
   });
 
@@ -220,6 +192,7 @@ describe("DailyRitual", () => {
       renderRitual();
 
       await screen.findByTestId("daily-recap-text");
+      openRecap();
       const expected = recapText();
       clickCopy();
 
@@ -234,6 +207,7 @@ describe("DailyRitual", () => {
       renderRitual();
 
       await screen.findByTestId("daily-recap-text");
+      openRecap();
       clickCopy();
 
       expect(await screen.findByText(/select the text above and copy it yourself/)).toBeVisible();
@@ -249,6 +223,7 @@ describe("DailyRitual", () => {
       renderRitual();
 
       await screen.findByTestId("daily-recap-text");
+      openRecap();
       clickCopy();
       await screen.findByText("Copied to your clipboard.");
 
