@@ -33,22 +33,36 @@
 // the mystery half is a different *payload*, not a different mechanic.
 // Weekly/monthly modes remain backlog.
 //
-// **Collapsed by default (issue #163).** This section used to render the
-// mode chooser (and, once a mode was picked, the game itself) the moment
-// it mounted -- a full, always-rendered game rather than an immediate
-// call-to-action. It now renders a compact "Can you do better?" card
-// (`CompactCard`, an icon, the exact mockup copy, and a status line built
-// from `beat-the-bench-storage.ts`'s existing read) until that card is
+// **Collapsed by default (issue #163), and collapsible again (a later
+// design pass).** This section used to render the mode chooser (and,
+// once a mode was picked, the game itself) the moment it mounted -- a
+// full, always-rendered game rather than an immediate call-to-action. It
+// now renders a compact "Can you do better?" card (`CompactCard`, an
+// icon, the exact mockup copy, and a status line built from
+// `beat-the-bench-storage.ts`'s existing read) until that card is
 // clicked, at which point it expands *in place* to the exact same
 // chooser/playback/settlement experience this file always rendered --
-// unchanged in substance, per that issue's own scope. This is purely a
-// presentational/mounting change: `useTodaysCloseSession` is still called
-// unconditionally at the top of this component regardless of collapsed
-// state (so the fetch-on-mount behaviour this file's own Judgment-calls
-// section already documents is untouched), and the Mystery Day
-// zero-request-before-settlement rule above is completely orthogonal to
-// whether the card is collapsed or expanded -- it depends only on
-// `settled`, never on this new `expanded` flag.
+// unchanged in substance, per issue #163's own scope. A "Collapse" control
+// in `BeatTheBenchFrame`'s own header (present at every expanded state --
+// the mode chooser, mid-game, settlement) flips it back, mirroring how
+// The Call Board's own `<details>`/`<summary>` stays clickable and
+// collapsible after opening. Unlike The Call Board, this stays a plain
+// `useState` toggle rather than a native `<details>`: the content behind
+// it is a stateful game (fetches, a running playback interval), and
+// collapsing deliberately *unmounts* it -- via the same `expanded ===
+// false` branch that renders `CompactCard` -- rather than merely hiding
+// it the way a closed `<details>` would (which keeps its children
+// mounted, `display: none`'d, with any interval still silently ticking
+// underneath). Collapsing also resets `mode` back to `null`, so
+// re-expanding always starts from the mode chooser rather than resuming
+// stale mid-game state. This is purely a presentational/mounting change:
+// `useTodaysCloseSession` is still called unconditionally at the top of
+// this component regardless of collapsed state (so the fetch-on-mount
+// behaviour this file's own Judgment-calls section already documents is
+// untouched), and the Mystery Day zero-request-before-settlement rule
+// above is completely orthogonal to whether the card is collapsed or
+// expanded -- it depends only on `settled`, never on this `expanded`
+// flag.
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 
@@ -151,6 +165,18 @@ export function BeatTheBench() {
   const mysteryState = useMysterySession(mode === "mystery" ? pick : null);
   const todaysClose = playableTodaysClose(todaysCloseState);
 
+  // Collapses the whole section back to the compact card -- see this
+  // file's own top-of-file note on why this unmounts (via the `expanded
+  // === false` branch below) rather than merely hiding, unlike The Call
+  // Board's own collapse. Resetting `mode` here (rather than leaving it
+  // set for a future re-expand) keeps re-expanding always land on the
+  // mode chooser, never resumed mid-game state a viewer might not
+  // recognize.
+  function handleCollapse() {
+    setExpanded(false);
+    setMode(null);
+  }
+
   if (!expanded) {
     return (
       <CompactCard
@@ -163,7 +189,7 @@ export function BeatTheBench() {
 
   if (mode === null) {
     return (
-      <BeatTheBenchFrame headingId={headingId}>
+      <BeatTheBenchFrame headingId={headingId} onCollapse={handleCollapse}>
         <ModeChooser
           todaysClose={todaysClose}
           todaysCloseLoading={todaysCloseState === null || todaysCloseState.status === "loading"}
@@ -176,9 +202,11 @@ export function BeatTheBench() {
 
   if (mode === "todays-close") {
     const session = todaysClose;
-    if (session === null) return <BeatTheBenchFrame headingId={headingId} />;
+    if (session === null) {
+      return <BeatTheBenchFrame headingId={headingId} onCollapse={handleCollapse} />;
+    }
     return (
-      <BeatTheBenchFrame headingId={headingId}>
+      <BeatTheBenchFrame headingId={headingId} onCollapse={handleCollapse}>
         {/* Keyed on the session's own date so a fresh trading day starts a
             genuinely fresh game (state, stored-record read and all) rather
             than carrying yesterday's bar index into today's bars. */}
@@ -202,7 +230,7 @@ export function BeatTheBench() {
 
   if (mysteryState === null || mysteryState.status === "loading") {
     return (
-      <BeatTheBenchFrame headingId={headingId}>
+      <BeatTheBenchFrame headingId={headingId} onCollapse={handleCollapse}>
         <p className="text-sm text-[var(--text-muted)]">Picking a day out of the hat…</p>
       </BeatTheBenchFrame>
     );
@@ -210,7 +238,7 @@ export function BeatTheBench() {
 
   if (mysteryState.status === "error" || !isPlayableSession(mysteryState.data.session)) {
     return (
-      <BeatTheBenchFrame headingId={headingId}>
+      <BeatTheBenchFrame headingId={headingId} onCollapse={handleCollapse}>
         <p className="text-sm text-[var(--text-secondary)]">
           There&apos;s no mystery session to play right now. The pool is published by the nightly
           run, shortly after the close.
@@ -222,7 +250,7 @@ export function BeatTheBench() {
 
   const mystery = mysteryState.data;
   return (
-    <BeatTheBenchFrame headingId={headingId}>
+    <BeatTheBenchFrame headingId={headingId} onCollapse={handleCollapse}>
       <SessionGame
         // Keyed on the pick counter as well as the slot id, so "play
         // another" always starts a genuinely fresh game -- including in
@@ -245,7 +273,15 @@ export function BeatTheBench() {
   );
 }
 
-function BeatTheBenchFrame({ headingId, children }: { headingId: string; children?: ReactNode }) {
+function BeatTheBenchFrame({
+  headingId,
+  onCollapse,
+  children,
+}: {
+  headingId: string;
+  onCollapse: () => void;
+  children?: ReactNode;
+}) {
   return (
     <section
       aria-labelledby={headingId}
@@ -261,19 +297,36 @@ function BeatTheBenchFrame({ headingId, children }: { headingId: string; childre
       className="surface-card flex flex-col gap-4 rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-4"
     >
       <div className="flex flex-col gap-2">
-        {/* font-display, matching CallBoard's and DailyRitual's own
-            section headings (and this file's own settlement headline
-            below) -- issue #121's type roles put headings on
-            --font-display. It resolves to the same Geist Sans the body
-            already inherits today, so this is a same-pixels consistency
-            fix, not a visual change; it stops being a no-op the moment
-            --font-display is ever pointed at a real display face. */}
-        <h2
-          id={headingId}
-          className="font-display text-lg font-semibold text-[var(--text-primary)]"
-        >
-          Beat the Bench
-        </h2>
+        <div className="flex items-start justify-between gap-2">
+          {/* font-display, matching CallBoard's and DailyRitual's own
+              section headings (and this file's own settlement headline
+              below) -- issue #121's type roles put headings on
+              --font-display. It resolves to the same Geist Sans the body
+              already inherits today, so this is a same-pixels consistency
+              fix, not a visual change; it stops being a no-op the moment
+              --font-display is ever pointed at a real display face. */}
+          <h2
+            id={headingId}
+            className="font-display text-lg font-semibold text-[var(--text-primary)]"
+          >
+            Beat the Bench
+          </h2>
+          {/* Collapses back to the compact card -- present at every
+              expanded state (the mode chooser, mid-game, settlement),
+              mirroring The Call Board's own always-clickable, collapsible
+              `<summary>`. See this file's own top-of-file note on why
+              this is a plain button rather than a native `<details>`.
+              min-h-11/min-w-11 (44px) matches this app's own established
+              touch-target floor (CONTROL_CLASS, below) even though this
+              reads visually smaller than a bordered control. */}
+          <button
+            type="button"
+            onClick={onCollapse}
+            className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md px-2 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+          >
+            ▾ Collapse
+          </button>
+        </div>
         <p className="text-sm text-[var(--text-secondary)]">
           One real trading session, replayed close by close. You start with{" "}
           {formatHeroCurrency(STARTING_CAPITAL)}, already in the market -- exactly where the bench
@@ -301,9 +354,14 @@ function BeatTheBenchFrame({ headingId, children }: { headingId: string; childre
  * app's other expand-in-place disclosures ("More options," "View chart
  * data as a table"), the content behind this click is a stateful game
  * (fetches, playback intervals) this file's own Judgment-calls section
- * already documents as "fetched on mount, always" -- expanding is a
- * one-way mount, with nothing here that needs to also collapse back
- * closed the way a plain content disclosure does.
+ * already documents as "fetched on mount, always". Expanding mounts
+ * `BeatTheBenchFrame`, whose own header carries a "Collapse" control that
+ * unmounts it again, back to this same card -- so the section is
+ * clickable and collapsible either direction, matching The Call Board's
+ * own `<details>`/`<summary>` behavior, just via a plain boolean toggle
+ * instead of a native disclosure element (an unmount, not a `display:
+ * none`, is what actually stops the game's own running interval once
+ * collapsed).
  *
  * **Issue #176's restyle**: a thin-left-border-accent card became a
  * solid-fill amber gradient tile (`linear-gradient(155deg, #f0b658 0%,

@@ -8590,3 +8590,70 @@ All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
 931 passing, `pnpm format:check`) re-ran green after both fixes, on a
 tree confirmed clean of the temporary `playwright` devDependency
 (`git status`/`git diff package.json pnpm-lock.yaml` showing no trace).
+
+## Daily hero grows on reveal instead of reserving full height upfront; Beat the Bench is collapsible again (a later design pass)
+
+Two follow-up tweaks to the gamified-hero pass above, requested directly
+rather than filed as a numbered issue -- small enough in scope that this
+repo's own "small learning project" framing doesn't call for the full
+issue-tracking ceremony.
+
+- **`DailyHero.tsx`'s showcase box now defaults to about half its old
+  (issue #175) height and grows only once "Watch it happen" is
+  clicked**, reversing issue #175's own "reserve the worst case, don't
+  shrink to the common case" fixed-height design for this component
+  specifically (issue #147's identical-sounding principle for the hero
+  _count-up tween_ is untouched and still holds -- that's about several
+  sizes swept through while animating a number, which this component's
+  static figures never do; growing once in response to a real click is a
+  different question). `SHOWCASE_HEIGHT_CLASSNAME` (a fixed `h-[40rem]`)
+  is gone, replaced by `SHOWCASE_MIN_HEIGHT_CLASSNAME` (`min-h-[20rem]`,
+  a floor, not a ceiling) applied to every chart-hidden state (loading, a
+  0-trade day, a real day pre-reveal); the chart's own tall slot
+  (`CHART_SLOT_HEIGHT_CLASSNAME`, unchanged at `h-[24rem]`) is now only
+  applied once `chartRevealed` is true, so the box's real rendered height
+  grows via ordinary content flow the instant the chart mounts -- no
+  second height constant, no JS-measured transition. Live-measured (real
+  `next build`/`next start`, headless Chromium): 320px tall by default at
+  1440px (354px at 375px, where the statement/figures wrap a touch more),
+  growing to ~645px/700px once revealed -- close to the old fixed 640px
+  (40rem), confirming nothing is clipped by the new floor.
+- **`BeatTheBench.tsx`'s expanded view is collapsible again, not a
+  one-way mount.** Issue #163's own original design deliberately chose a
+  plain button over a native `<details>` specifically because "there's
+  nothing here that needs to also collapse back closed" -- that premise
+  changed. `BeatTheBenchFrame`'s header now carries a "Collapse" button
+  (min-h-11/min-w-11, matching `CONTROL_CLASS`'s own 44px touch-target
+  floor -- caught live, not in the first pass: the first version was a
+  bare 24px-tall text link, well under this app's own established
+  floor), present at every expanded state (the mode chooser, mid-game,
+  settlement). Clicking it calls `handleCollapse` (`setExpanded(false)` +
+  `setMode(null)`), returning to `CompactCard` -- mirroring The Call
+  Board's own always-clickable, collapsible `<summary>`, but staying a
+  plain `useState` toggle rather than converting to a native `<details>`:
+  the content behind it is a stateful game with a running `setInterval`
+  (see `SessionGame`), and collapsing needs to genuinely _unmount_ it
+  (stopping that interval via the effect's own cleanup), not merely hide
+  it behind `display: none` the way a closed `<details>` would while
+  leaving its children -- and their timers -- still mounted underneath.
+  Resetting `mode` to `null` on collapse is a deliberate simplicity
+  choice: re-expanding always lands back on the mode chooser, never
+  resumes stale mid-game state a viewer might not recognize.
+- Both changes are purely presentational -- no changes to
+  `beat-the-bench.ts`/`beat-the-bench-storage.ts`/
+  `use-todays-close-session.ts`/`use-mystery-session.ts`, the Mystery Day
+  zero-request-before-settlement rule, `PortfolioChart.tsx`/
+  `deriveWholeRangeIntradaySeries`, or any storage-backed persistence.
+  `DailyHero.test.tsx`/`BeatTheBench.test.tsx` got real updates (not just
+  new assertions) for the renamed height class and the new
+  collapse-then-re-expand behavior; all five routine checks (lint,
+  typecheck, `pnpm build`, `pnpm test` -- 932 passing, `pnpm
+format:check`) are green. Live-verified at 1440px and 375px via a real
+  `next build`/`next start` render against the permanent
+  `LOCAL_RESULTS_DIR` pipeline data (no `RESULTS_BUCKET`/AWS creds
+  needed): the showcase box's real measured height before/after reveal
+  at both widths (above), the collapse button's real 44x44px hit target,
+  no horizontal overflow at 375px, and zero console/`pageerror` events
+  across the whole click-through (expand daily hero chart, expand Beat
+  the Bench, collapse it, confirm the compact card is back) at both
+  widths.
