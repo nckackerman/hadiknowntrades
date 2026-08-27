@@ -10,11 +10,13 @@ import {
   resultKey,
   customResultKey,
   RESULTS_SCHEMA_VERSION,
+  TODAYS_CLOSE_SESSION_KEY,
   type AnchorDate,
   type CustomAnchorsManifest,
   type CustomWindowResult,
   type PrecomputedResult,
   type PresetRange,
+  type TodaysCloseSession,
 } from "@hadiknowntrades/core";
 
 /**
@@ -431,6 +433,56 @@ export async function getCustomAnchorsResponse(reader: ResultReader | null): Pro
   }
 
   return Response.json(manifest as unknown as CustomAnchorsManifest, {
+    headers: { "Cache-Control": CACHE_CONTROL },
+  });
+}
+
+/**
+ * Handles GET /api/beat-the-bench (issue #131) -- reads the nightly
+ * pipeline's Today's Close session (packages/core's TodaysCloseSession,
+ * written to TODAYS_CLOSE_SESSION_KEY by issue #127's
+ * `buildBeatTheBenchSessions`) so `BeatTheBench.tsx` can play a real
+ * SPY session bar by bar.
+ *
+ * **Issue #127 published this object with no way to read it** -- its own
+ * report says so explicitly; building the read path is issue #131's job.
+ * It is deliberately the same shape as `getCustomAnchorsResponse` above
+ * rather than a new storage-reading idiom: one fixed key, no identifier
+ * to parse, so it can't be a `ResultRouteConfig` instantiation of
+ * `getPrecomputedResultResponse` (which is built around parsing an
+ * identifier and building a key from it), but everything genuinely
+ * shared -- the reader-configured check, the getObject try/catch, the
+ * not_found check, the JSON.parse try/catch, the schemaVersion check --
+ * still comes from `readCurrentSchemaObject`.
+ *
+ * Checks only that `bars` is a non-empty array on top of that, the same
+ * light check `getCustomAnchorsResponse` applies to `anchors`: this
+ * object already passed packages/core's own `validateTodaysCloseSession`
+ * immediately before apps/pipeline stored it (issue #47's write-time
+ * discipline). A non-empty array is still worth asserting here, since
+ * the pipeline's writes are documented as non-atomic and a zero-bar
+ * session would otherwise reach the client as a game with nothing to
+ * play. `beat-the-bench.ts`'s own `isPlayableSession` is the client's
+ * last guard beyond this.
+ */
+export async function getTodaysCloseSessionResponse(
+  reader: ResultReader | null,
+): Promise<Response> {
+  const outcome = await readCurrentSchemaObject(
+    TODAYS_CLOSE_SESSION_KEY,
+    reader,
+    "the Today's Close session",
+    "No Beat the Bench session is available yet -- today's close hasn't been published by a pipeline run.",
+  );
+  if (!outcome.ok) return outcome.response;
+  const session = outcome.value;
+
+  if (!Array.isArray(session.bars) || session.bars.length === 0) {
+    console.error("[api/beat-the-bench] stored Today's Close session has no usable bars");
+    return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
+  }
+
+  return Response.json(session as unknown as TodaysCloseSession, {
     headers: { "Cache-Control": CACHE_CONTROL },
   });
 }
