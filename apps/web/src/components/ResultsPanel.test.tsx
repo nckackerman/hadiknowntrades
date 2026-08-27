@@ -708,23 +708,60 @@ describe("ResultsPanel", () => {
 
         // fixtureIntradayResult's two days: 2026-08-20 (1 trade) and
         // 2026-08-21 (the default-selected, most recent day -- 1 trade
-        // too, see its own fixture trades array).
+        // too, see its own fixture trades array). 1M renders the strip
+        // layout (issue #193), whose trade count lives in the chip's own
+        // aria-label -- the regex still matches it there.
         expect(screen.getByRole("button", { name: /Aug 20, 2026.*1 trade/ })).toBeInTheDocument();
         expect(screen.getByRole("button", { name: /Aug 21, 2026.*1 trade/ })).toBeInTheDocument();
       });
 
-      it("shows every day's real dollar ending balance immediately, with no guess required (issue #91)", () => {
+      it("shows every day's real dollar ending balance immediately, with no guess required (issue #91) -- via the strip chip's own aria-label (1M, issue #193)", () => {
         const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
         render(<ResultsPanel range="1M" state={state} />);
 
         // Both days' real ending balances ($25 for 08-20, $40 for 08-21)
-        // are visible without any guess -- issue #91 removed the
-        // per-day "Guess to reveal" gate entirely.
+        // are available without any guess -- issue #91 removed the
+        // per-day "Guess to reveal" gate entirely. 1M is a strip-layout
+        // range (issue #193), so the dollar figure lives in the chip's
+        // own aria-label rather than its visible text.
+        expect(screen.queryByText("Guess to reveal")).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: /Aug 20, 2026.*\$25\.00/ })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: /Aug 21, 2026.*\$40\.00/ })).toBeInTheDocument();
+      });
+
+      it("shows every day's real dollar ending balance as visible row text on 1Y, which stays on the unchanged list layout (issue #193)", () => {
+        const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+        render(<ResultsPanel range="1Y" state={state} />);
+
         expect(screen.queryByText("Guess to reveal")).not.toBeInTheDocument();
         const dayOne = screen.getByRole("button", { name: /Aug 20, 2026/ });
         expect(within(dayOne).getByText("$25.00")).toBeInTheDocument();
         const dayTwo = screen.getByRole("button", { name: /Aug 21, 2026/ });
         expect(within(dayTwo).getByText("$40.00")).toBeInTheDocument();
+      });
+    });
+
+    describe("DayOverview layout (issue #193)", () => {
+      it("renders the strip layout (a horizontally-scrollable row of chips) for 1W/1M/3M", () => {
+        for (const range of ["1W", "1M", "3M"] as const) {
+          const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+          const { unmount, container } = render(<ResultsPanel range={range} state={state} />);
+          // The strip layout's own container is a horizontally-scrolling
+          // <ul> -- distinguishing it from the list layout's vertically-
+          // scrolling one is exactly what its own overflow-x-auto class
+          // encodes.
+          expect(container.querySelector("ul.overflow-x-auto")).not.toBeNull();
+          expect(container.querySelector("ul.overflow-y-auto")).toBeNull();
+          unmount();
+        }
+      });
+
+      it("renders the unchanged vertical list layout for 1Y", () => {
+        const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+        const { container } = render(<ResultsPanel range="1Y" state={state} />);
+
+        expect(container.querySelector("ul.overflow-y-auto")).not.toBeNull();
+        expect(container.querySelector("ul.overflow-x-auto")).toBeNull();
       });
     });
 
@@ -1129,16 +1166,19 @@ describe("ResultsPanel", () => {
         expect(within(worstCase).queryByText("$15.00")).not.toBeInTheDocument();
       });
 
-      it("dayOverviewRows' per-row figure rescales from the long-short track's own startingCapital under mode='long-short', matching HeroStat's own figure for the same day", () => {
+      it("dayOverviewRows' per-row figure rescales from the long-short track's own startingCapital under mode='long-short', matching HeroStat's own figure for the same day (1M's own strip-layout aria-label, issue #193)", () => {
         const state: ResultsState = { status: "success", data: fixtureChainedResult() };
         render(
           <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" mode="long-short" />,
         );
 
-        const revealedRow = screen.getByRole("button", { name: /Aug 21, 2026/ });
         // Same correct figure as HeroStat's own: rescaleFromStartingCapital(300, from=60, to=40) = 200.
-        expect(within(revealedRow).getByText("$200.00")).toBeInTheDocument();
-        expect(within(revealedRow).queryByText("$300.00")).not.toBeInTheDocument();
+        // 1M is a strip-layout range (issue #193) -- the figure lives in
+        // the chip's own aria-label, not visible row text.
+        expect(screen.getByRole("button", { name: /Aug 21, 2026.*\$200\.00/ })).toBeInTheDocument();
+        expect(
+          screen.queryByRole("button", { name: /Aug 21, 2026.*\$300\.00/ }),
+        ).not.toBeInTheDocument();
       });
     });
 

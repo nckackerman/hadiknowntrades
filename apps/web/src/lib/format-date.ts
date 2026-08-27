@@ -50,6 +50,35 @@ export function formatDateWithWeekday(isoDate: string): string {
 }
 
 /**
+ * Formats a plain calendar date ("2025-08-21") as its short weekday
+ * abbreviation ("Thu") -- issue #193's day-strip chip (1W/1M/3M's
+ * DayOverview layout), paired with formatDayOfMonth below on the same
+ * chip. A short form specifically for that narrow (3.5rem) chip width --
+ * formatDateWithWeekday's own long weekday form ("Thursday") doesn't fit
+ * there.
+ */
+export function formatShortWeekday(isoDate: string): string {
+  // Same UTC-parse convention as formatDate above, for the same reason.
+  return new Date(`${isoDate}T00:00:00Z`).toLocaleDateString("en-US", {
+    weekday: "short",
+    timeZone: "UTC",
+  });
+}
+
+/**
+ * Formats a plain calendar date ("2025-08-21") as its bare day-of-month
+ * number ("21") -- issue #193's day-strip chip, paired with
+ * formatShortWeekday above.
+ */
+export function formatDayOfMonth(isoDate: string): string {
+  // Same UTC-parse convention as formatDate above, for the same reason.
+  return new Date(`${isoDate}T00:00:00Z`).toLocaleDateString("en-US", {
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+/**
  * Formats a bare local time-of-day ("14:30:00", no date) as "2:30 PM" --
  * for IntradayTrade's openTime/closeTime (issue #28), which don't carry a
  * date of their own since the day is already known from context (the

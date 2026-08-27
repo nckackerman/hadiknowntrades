@@ -8776,3 +8776,105 @@ mockup-daily-hub-condensed.html`'s own `.showcase.collapsed` rule says
   reverted/deleted before committing, per this file's own established
   convention; confirmed via `git status`/`git diff --stat` on
   `package.json`/`pnpm-lock.yaml` showing no trace afterward.
+
+## Day-strip layout for `DayOverview` on 1W/1M/3M -- 1Y stays a list (issue #193)
+
+`DayOverview.tsx` gained a required `layout: "strip" | "list"` prop,
+computed by `ResultsPanel.tsx` from its own `range` prop
+(`range === "1Y" ? "list" : "strip"`). `layout === "list"` is issue #80's
+own markup, byte-for-byte unchanged (a pure conditional split, not a
+rewrite) -- 1Y's own ~252-day case needs a different design, tracked
+separately as issue #140, and is explicitly out of this issue's scope.
+`layout === "strip"` (1W/1M/3M) replaces the vertical row list with a
+single horizontally-scrollable row of fixed-width (`w-14`) day chips:
+short weekday abbreviation + day-of-month number (two new `format-date.ts`
+exports, `formatShortWeekday`/`formatDayOfMonth` -- nothing existing fit,
+confirmed by reading that file first per the issue's own instruction) on
+top, a small `h-1 w-6 rounded-full` `--status-good`/`--status-critical`
+bar underneath (the same `>= is good` convention `TradeRow.tsx`/
+`HeroStat.tsx` already use).
+
+- **The exact dollar figure and trade count move into the chip's own
+  `aria-label`** (e.g. `"Aug 24, 2026, 2 trades, $20.00 to $26.84"`) --
+  there's no room for them at `w-14`. A real, minor regression, flagged
+  in the issue itself and in this PR's own description rather than
+  silently accepted: the old list showed a day's dollar figure without
+  needing to select it first; the strip needs one extra click (the same
+  day's own `HeroAndWorstCase`/trade-list below still shows every detail
+  unconditionally once selected, per issue #91 -- nothing is gated, only
+  relocated one interaction earlier than before).
+- **`DayOverviewRow` gained a `startingCapital: number` field** -- the
+  color bar needs a gain/loss direction per row, and `endingBalance`
+  alone isn't enough (see `apps/web/CLAUDE.md`'s own
+  "rescaleFromStartingCapital's per-day pattern..." section above:
+  `endingBalance`/`startingCapital`'s _ratio_ survives the per-day
+  display rescale even though the absolute values don't mean "this day's
+  real chained balance"). `ResultsPanel.tsx`'s `dayOverviewRows` memo
+  now stashes its own `effectiveStartingCapital` onto every row (same
+  value for every row today, carried per-row so a row stays a
+  self-contained unit rather than needing a second prop threaded
+  alongside `rows`).
+- **The "carried over from {date}" note (issue #84) becomes an
+  `aria-hidden` `↩` corner glyph** in the strip layout -- no room for the
+  list layout's text line at this chip width. Its full meaning
+  (unchanged) is still available in the drill-down section below once
+  that chip is selected; the glyph itself never reaches the chip's own
+  `aria-label` (verified in `DayOverview.test.tsx`), the identical
+  accessible-name-collision reasoning the list layout's own `aria-hidden`
+  text note already documents.
+- **The `scrollIntoView` effect is the same one call, branching only on
+  which axis to align** -- `{ inline: "nearest", behavior }` for the
+  strip (horizontal), `{ block: "nearest", behavior }` for the list
+  (vertical, unchanged) -- both guarded the same two ways the
+  pre-existing effect already was (a `typeof ... === "function"` check,
+  and `behavior: "auto"` under `prefersReducedMotion()`).
+
+**`DayOverview.test.tsx`/`ResultsPanel.test.tsx` needed real updates,
+not just new assertions layered on the old list-based queries, per the
+issue's own acceptance criteria** -- `ResultsPanel.test.tsx`'s
+DayOverview-related tests that used to assert a row's dollar figure via
+`within(row).getByText("$X.XX")` now query
+`getByRole("button", { name: /Aug 20, 2026.*\$25\.00/ })` instead for
+`range="1M"` (a strip-layout range as of this issue), since the figure
+moved into the chip's own aria-label; a parallel test against
+`range="1Y"` keeps the original `within(...).getByText(...)` assertion,
+confirming the list layout's visible-text contract is still genuinely
+unchanged.
+
+**Live-verified against a real local pipeline run** (`local-run.ts`, the
+default 20-ticker sample, real Yahoo network calls, no S3 write) plus
+`next build`/`next start` and the documented no-root headless-Chromium
+workaround (`next dev` cannot hydrate in this sandbox -- see issue #123's
+own note above). Real screenshots at all four ranges (1W/1M/3M/1Y),
+desktop (1280px) and mobile (390px): 1W/1M/3M render real chips with
+correct weekday/day-of-month text, a real `aria-label` matching the
+`"{date}, {N} trades, ${from} to ${to}"` format, a visible `↩` glyph on
+every chip but each range's own first, and a green/red color bar per
+chip; 1Y renders the pixel-identical old vertical list. Clicking a
+different chip both highlights it (`aria-current`) and updates the
+drill-down `HeroAndWorstCase`/trade-list below, confirmed via the sr-only
+"Selected day status" region's own text changing. No horizontal overflow
+at 390px (`document.documentElement.scrollWidth === clientWidth`,
+checked on 1M). Zero console/`pageerror` events across every range/width
+combination.
+
+- **A real, pre-existing gap found live, not caused by this issue --
+  worth knowing before the next `scrollIntoView`-on-mount feature in this
+  app.** The selected chip/row's on-_mount_ scroll (both layouts) doesn't
+  actually happen in the real, shipped app today: since issue #165
+  nested `ResultsPanel` (and therefore `DayOverview`) inside a closed-by-
+  default "Explore other windows" `<details>`, the component mounts (and
+  its mount-time `useEffect` fires) while still hidden -- `scrollIntoView`
+  on an element with no layout box (a closed `<details>`'s content is
+  `display: none`) is a silent no-op. Confirmed this is not something
+  issue #193 introduced: `range=1Y` (untouched list-layout markup) shows
+  the identical `selectedInView: false` result at initial mount in this
+  same live-verification pass. The **on-selection-change** scroll (the
+  same effect, re-firing when `selected` changes) works correctly once
+  the `<details>` is genuinely open -- confirmed live, clicking a
+  different chip/row always scrolls it into view. Not fixed here (out of
+  this issue's own scope, which explicitly only concerns 1W/1M/3M vs. 1Y
+  layout, not the `<details>` nesting issue #165 introduced) -- worth its
+  own follow-up if the "scrolls to the most recent day on first load"
+  experience is ever considered worth restoring for a visitor who
+  expands the explorer.
