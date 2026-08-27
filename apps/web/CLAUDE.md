@@ -7497,3 +7497,246 @@ isPlayableSession(...)` check `ModeChooser`'s own `todaysClose` prop and
   - The temporary `playwright` devDependency and every verification
     script were reverted before committing, per this file's own
     established convention.
+
+## Demoting the range explorer to the bottom of the page (issue #165)
+
+Last build issue in the second UI-simplification pass (#161-#165). The
+1W/1M/3M/1Y/5Y/Max range explorer (`RangeSelector` + the "More options"
+disclosure + `<ResultsPanel>` itself) moves from the page's top-of-fold
+content into one new collapsed `<details>`/`<summary>` -- "Explore other
+windows" -- at the very bottom of `ResultsPage.tsx`'s column, below
+`DailyRitual`. `OnboardingIntro.tsx`'s former one-sentence banner folds
+into the header's own caption line instead of staying a second, separate
+always-visible element. Depends on #161/#163/#164 (all already merged);
+built last per the issue's own dependency note, since it reorders the
+page around everything those three issues added.
+
+### The final `ResultsPage.tsx` order
+
+`<header>` (wordmark + caption) -> `<DailyHero>` (+ its own trade-detail
+Fragment, issue #161) -> `<BeatTheBench>` -> `<CallBoard>` -> `<DailyRitual>`
+-> the new collapsed "Explore other windows" `<details>`, wrapping
+`RangeSelector`, the nested "More options" `<details>`
+(`CustomRangeSelector`/`ModeToggle`), and `<ResultsPanel>`. This is a
+pure reorder-and-wrap of existing JSX -- no new fetches, no new state,
+and (per this issue's own Out of scope) zero changes to
+`ResultsPanel.tsx`'s internal model branching, `WholeRangeReplay`/
+`TradeReplay`, `DayOverview`, `CustomRangeSelector`, `ModeToggle`, or
+`BenchmarkStat` themselves; they move, unchanged.
+
+- **The collapsed summary derives its own "1W · 1M · 3M · 1Y · 5Y · Max"
+  copy from `PRESET_RANGES`** (`EXPLORER_RANGE_SUMMARY`, a module-level
+  constant in `ResultsPage.tsx`), not a second hardcoded range list --
+  the same "don't let a display string silently drift from the pills it
+  describes" reasoning this file's own `RangeSelector.tsx` doc comment
+  already applies to its duration bar.
+- **The nested "More options" `<details>` (issue #103) is untouched
+  markup, just relocated one level deeper** -- still the same
+  `data-testid="controls-more"`, still the same
+  `CustomRangeSelector`/`ModeToggle` pair, still collapsed independently
+  of the outer "Explore other windows" disclosure (two real, separately
+  toggleable `<details>` elements, one nested inside the other -- the
+  same nesting `CustomRangeSelector.tsx`'s own calendar popover already
+  proved safe inside a `<details>` for issue #75/#11's live verification).
+
+### Judgment call: `AboutSection`'s disclaimer/methodology stays nested inside the explorer, not pulled out as a third top-level sibling
+
+The mockup's own `after-desktop-full.png` screenshot shows a small
+"Disclaimer & methodology" line as its own collapsed row **below** the
+"Explore other windows" bar, at the page's own top level -- and this
+issue's Scope item 2 also lists "the disclaimer/methodology disclosure
+(unchanged)" as a separate item in its top-level ordering prose, after
+"the new collapsed 'Explore other windows' section." Taken completely
+literally, both of those would mean lifting `AboutSection` out from
+inside `ResultsPanel`'s own render branches (`WindowResultBody` and the
+intraday-daily branch, issue #104) into a new `ResultsPage.tsx`-level
+sibling.
+
+**Decided against that, and kept `AboutSection` exactly where it already
+lives -- nested inside `ResultsPanel`, and therefore nested inside the
+new "Explore other windows" `<details>` once it moves there.** Three
+reasons, in order of how much weight each carried:
+
+1. **The issue's own Scope item 1 is the more specific, mechanical
+   instruction, and it doesn't include `AboutSection` in its wrap list**:
+   "wrap `RangeSelector`, the 'More options' `<details>`
+   (`CustomRangeSelector` + `ModeToggle`), and `<ResultsPanel>` itself
+   inside one new collapsed `<details>`/`<summary>` section." `ResultsPanel`
+   moving "wholesale, unchanged" necessarily carries `AboutSection` along
+   with it, since that's where it's rendered from today -- there's no
+   version of "wrap `<ResultsPanel>` unchanged" that also means "except
+   pull one of its own internal children out first."
+2. **The issue's own Out of scope section is explicit**: "Any change to
+   `ResultsPanel.tsx`'s internal model branching... -- they move,
+   unchanged." `AboutSection`'s render call is part of that internal
+   branching (`WindowResultBody` and the intraday-daily branch each build
+   their own `viewDetails` string locally and render `<AboutSection>`
+   themselves, per issue #104's own design) -- extracting it to
+   `ResultsPage.tsx` would mean `ResultsPanel` no longer owning a call it
+   owns today, a real internal-branching change this issue explicitly
+   rules out.
+3. **The mockup itself is the least authoritative signal here**, per its
+   own README ("illustrative only... not real component code... 99%
+   visual fidelity... not 100%") -- and it's demonstrably not a complete
+   guide to this page's real structure regardless: it has no `DailyRitual`
+   section at all (issue #133, built after the mockup was captured), so
+   it was never going to be a literal blueprint for every element's exact
+   position.
+
+**Net effect, verified live (see below)**: expanding "Explore other
+windows" now takes two clicks to reach the disclaimer (expand the
+explorer, then expand "Disclaimer & methodology" inside it) instead of
+the pre-#165 one click -- a real, honest cost of this call, not hidden.
+Weighed against reversing it (which would mean either duplicating
+`AboutSection`'s render logic at the `ResultsPage` level, or restructuring
+`ResultsPanel` to expose its own `viewDetails` string upward -- a real
+"internal model branching" change either way), the explicit Out-of-scope
+directive won. If a future issue wants the disclaimer genuinely
+independent of the range explorer, it should say so explicitly and treat
+it as its own restructuring of `ResultsPanel`, not something implied by
+a screenshot alone.
+
+### `OnboardingIntro.tsx` and its storage module: deleted outright, not left unused
+
+Issue #165's own Scope item 3 explicitly left this as an implementer's
+call ("delete... if nothing else references it, or leave the storage
+module in place but unused if removing it risks breaking something
+you're not certain about"). Confirmed via a repo-wide grep before
+deciding: `OnboardingIntro.tsx`, `lib/onboarding-storage.ts`, and
+`lib/use-onboarding-dismissed.ts` were referenced by exactly one real
+call site each (`ResultsPage.tsx`'s own `<OnboardingIntro />`, and that
+component's own hook/storage chain) plus their own test files and a
+handful of historical doc-comment mentions in unrelated files
+(`use-starting-capital.ts`, `chart-tap-hint-storage.ts`,
+`use-hydrated-local-storage-state.ts` -- all prose, no imports). Nothing
+else in the app imports any of the three. **Deleted all six files**
+(component + test, storage module + test, hook + test) rather than
+leaving dead code behind -- this is a small learning project (per the
+root `CLAUDE.md`'s own framing), and an unused, untested-by-nothing
+module left in place is a worse outcome than a clean deletion with a
+`git log` trail if it's ever needed again.
+
+`lib/use-hydrated-local-storage-state.ts`'s own doc comment (issue #64's
+original extraction target, still used by `use-starting-capital.ts`)
+previously described `useOnboardingDismissed` as one of its "two current
+callers" -- updated to note it was deleted by this issue and that the
+extraction's own reasoning still stands independent of caller count, so
+a future reader isn't misled into thinking `useOnboardingDismissed` still
+exists.
+
+### `ResultsPage.tsx`'s own header caption reuses `OnboardingIntro`'s exact sentence
+
+`This is a hindsight toy: starting from $20, it finds the best possible
+outcome from at most 3 trades across the whole S&P 500, using only
+closed daily prices -- not a predictor of what happens next.` -- the
+identical copy the deleted banner used to show, now a plain `<p>` under
+the `<h1>`, no dismiss button, no localStorage-backed visibility state.
+Deliberately not the mockup's own shorter tagline ("A new hindsight
+trading puzzle every day...") -- the issue's own Scope item 3 says to
+fold in "`OnboardingIntro`'s one sentence," not to write new copy, and
+this app's existing sentence already explains the mechanic precisely
+(the $20, the 3-trade cap, the S&P 500 universe, the EOD-data caveat)
+where the mockup's tagline is a shorter, vaguer restatement.
+
+### `ResultsPage.test.tsx` needed real updates, not just new assertions
+
+Per this issue's own explicit acceptance criterion (and this file's own
+established precedent for the same class of change, e.g. issue #103's
+`desktopControls()` -> `moreOptions()` rename):
+
+- **The Call Board placement test's own ordering assertion inverted.**
+  "mounts exactly one board, as a sibling after ResultsPanel rather than
+  inside it" used to assert the loading skeleton (inside `ResultsPanel`)
+  _precedes_ the board in document order -- true pre-#165, when
+  `ResultsPanel` sat above `CallBoard`. Post-#165, `CallBoard` sits well
+  above the now-demoted `ResultsPanel`, so the skeleton now _follows_ the
+  board -- the test (renamed to drop the now-inaccurate "after
+  ResultsPanel" framing, kept "not nested inside it") now asserts
+  `DOCUMENT_POSITION_FOLLOWING` instead of `_PRECEDING`.
+- **The "renders Beat the Bench, then the hero reveal, then The Call
+  Board, then the ritual" ordering test needed its own order rewritten,
+  not just re-labeled.** The window model's `HeroStat` reveal ("Starting
+  from") used to sit between Beat the Bench and The Call Board in
+  document order; it now lives inside `ResultsPanel`, inside the demoted
+  "Explore other windows" section, at the very bottom of the page --
+  _after_ the ritual, not between Bench and Board. Renamed and
+  reordered to assert `bench -> board -> ritual -> hero`.
+- **Two new describe blocks**: one asserting the new "Explore other
+  windows" `<details>` is closed by default (`explorer.open === false`,
+  a real, directly-assertable DOM property for a native `<details>` --
+  unlike CSS visibility, which this file's own "Mobile layout pass"
+  section already documents jsdom as indifferent to) and genuinely
+  contains `RangeSelector`'s own `role="group"`, the nested
+  `controls-more` testid, and the results panel's loading skeleton; one
+  asserting the header caption text is present and that no `role="note"`/
+  "Dismiss intro" element exists anywhere on the page.
+- Every other existing test in this file needed **no** changes -- range/
+  anchor/mode selection, the custom-anchor calendar, the single "More
+  options" disclosure structural test, the Call Board/Beat the Bench
+  compact-card tests, and the ritual's own rail/recap tests all query by
+  role/text/testid rather than by DOM position, so relocating their
+  common ancestor into a nested `<details>` didn't change what they find.
+
+### Live-verified against a real local pipeline run
+
+`local-run.ts` (default 20-ticker sample, real Yahoo network calls, no
+S3 write -- 6 preset results, 1,254 custom-anchor results, and the Beat
+the Bench today/mystery pool) into a `LOCAL_RESULTS_DIR`, then `next
+build` + `next start` (not `next dev` -- see issue #123's own note above
+on why headless Chromium can't hydrate a dev-mode page in this sandbox)
+plus the documented no-root headless-Chromium workaround:
+
+- **1440x900 landing**: micro-header (wordmark + the reused onboarding
+  sentence as its caption, confirmed present with zero `role="note"`
+  elements anywhere), the daily hero (no chart pre-click, per issue
+  #162), its own "Yesterday's trades" narration, and both CTA cards all
+  render in that order with **zero** console/`pageerror` events. The
+  "Explore other windows" summary reads
+  "Explore other windows 1W · 1M · 3M · 1Y · 5Y · Max ▸ expand" and its
+  own `<details>.open` is `false`.
+- **390x844 mobile**: `document.documentElement.scrollWidth === clientWidth`
+  exactly (390), confirming no horizontal overflow; zero console/page
+  errors.
+- **Known, measured gap against the issue's own literal "zero scrolling"
+  fold wording, not silently glossed over**: at 1440x900 the bottom of
+  the "Think you know the future?" card sits ~20px below the fold
+  (920px vs. a 900px viewport); at 390x844 it sits ~319px below (the two
+  CTA cards stack vertically at that width, inside `BeatTheBench.tsx`/
+  `CallBoard.tsx`'s own pre-existing layout -- both explicitly out of
+  this issue's own scope to touch). Two contributing factors, both
+  outside what this issue can fix without expanding scope: (1)
+  `DailyHero`'s own "Yesterday's trades" narration (issue #161, already
+  shipped) renders as an inseparable Fragment sibling of the hero card
+  itself -- there is no way to mount "the daily hero" without also
+  mounting its trade detail, and this issue's own Scope item 2 literally
+  places "daily hero (+ trade detail, issue #1)" ahead of the two CTAs,
+  which is what was built; (2) the vertical gap between each top-level
+  section is this app's own established `gap-8` (32px), unchanged here,
+  confirmed consistent with every other measurement of it in this file
+  (see issue #135's own "exactly 32px" note). This is a **substantial
+  improvement over the pre-#165 state regardless** -- `CallBoard` used to
+  sit below the entire range explorer (RangeSelector, the chart, the
+  trade list, everything `ResultsPanel` renders), nowhere near the fold
+  at all; now both CTAs sit within ~20-40px of a 900px fold on desktop.
+  Closing the remaining gap would mean touching `BeatTheBench.tsx`/
+  `CallBoard.tsx`'s own padding or `DailyHero.tsx`'s own trade-detail
+  placement, both out of this issue's stated scope -- left for a future,
+  explicitly-scoped visual-polish issue rather than expanded into here.
+- **Expanding "Explore other windows" gives full, unbroken access to
+  every control**: clicking a different preset range (5Y) correctly
+  navigated to `?range=5Y` and rendered the window model's own hero
+  reveal; opening the nested "More options" disclosure revealed a
+  working "Long + short" mode toggle (click wrote `?range=5Y&mode=long-short`
+  to the URL) and a visible custom-date-picker trigger; switching back to
+  1W rendered the whole-range guess form, and submitting a guess revealed
+  "You guessed" text, `WholeRangeBalance`'s figures, `DayOverview`'s
+  per-day rows, and a second "Watch it happen" button (the demoted
+  explorer's own chart, gated by issue #162's click-to-reveal, alongside
+  the daily hero's own separate button) -- clicking it mounted a second
+  `<svg>` (the daily hero's own chart was already mounted from the first
+  click), confirming both replay charts coexist correctly and neither
+  interferes with the other. Zero console/page errors across the whole
+  interaction pass.
+- The temporary `playwright` devDependency and the `apt-get download`/
+  `dpkg-deb -x`-extracted shared libraries were both reverted before
+  committing, per this file's own established convention.

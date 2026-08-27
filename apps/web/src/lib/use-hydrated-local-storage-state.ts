@@ -14,8 +14,12 @@ import { useEffect, useRef, useState } from "react";
 /**
  * Generic version of the hydration-safety trick this app uses everywhere
  * it reads a localStorage-backed value that could affect the very first
- * render: `useStartingCapital` (issue #15) and `useOnboardingDismissed`
- * (issue #64) are both thin wrappers around this.
+ * render: `useStartingCapital` (issue #15) is a thin wrapper around this.
+ * `useOnboardingDismissed` (issue #64), the second caller whose addition
+ * originally prompted extracting this hook out of use-starting-capital.ts,
+ * was deleted by issue #165 (the standalone onboarding banner was folded
+ * into the page's own header caption) -- the extraction and its reasoning
+ * below still stand on their own merits, not just for this one caller.
  *
  * Always starts at `defaultValue` on every render -- including the very
  * first client render during hydration -- and only corrects to whatever
