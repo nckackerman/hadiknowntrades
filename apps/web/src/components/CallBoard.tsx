@@ -29,6 +29,16 @@
 // "View chart data as a table" already use elsewhere in this app). None of
 // the engine calls, the four-outcome history classification, or the
 // after-the-open lock changed at all -- purely presentational.
+//
+// **Issue #177's restyle**: the collapsed card's own look changed again,
+// from a thin-left-border-accent surface card into a bold, solid-fill
+// blue-gradient tile with a large icon, matching
+// docs/design/gamified-hero-2026-08/mockup-gamified-hero.html's own
+// `.game-tile.callboard` (99% visual fidelity, not pixel-perfect, per
+// that folder's own README). Still the exact same `<details>`/`<summary>`
+// mechanism and pre-hydration inert placeholder `<div>` -- this issue's
+// own scope is purely the collapsed tile's colors/layout, not the
+// expand mechanism or anything inside the expanded board.
 
 import { useState } from "react";
 
@@ -197,36 +207,81 @@ const CTA_SUBTITLE = `Call the next ${MAX_OPEN_CALLS} sessions, up or down, befo
  * point of a placeholder is that swapping it for the real thing causes no
  * layout shift, which only holds if both render byte-for-byte the same
  * markup (differing only in `statusLine`'s text).
+ *
+ * A tile layout (issue #177), not the pre-#177 horizontal row: a large
+ * icon up top, the title/subtitle stacked below it, and a status pill
+ * anchored to the bottom, matching the mockup's own `.game-tile`
+ * icon-title-subtitle/status-pill structure. `text-white`/`text-white/…`
+ * throughout (not this app's usual `var(--text-primary)`/
+ * `var(--text-secondary)` tokens) is deliberate -- this tile's own fixed
+ * blue-gradient fill (`CARD_CLASSNAME` below) isn't part of the
+ * dark-surface token system the rest of the app paints against, the same
+ * way `OgCard.tsx`'s share-card palette is its own standalone thing (see
+ * `apps/web/CLAUDE.md`'s "Dark mode only" section).
  */
 function CallBoardSummaryRow({ statusLine }: { statusLine: string }) {
   return (
-    <span className="flex items-start gap-3 p-4">
-      <span aria-hidden="true" className="text-xl leading-none">
-        {CTA_ICON}
-      </span>
-      <span className="flex flex-1 flex-col gap-1">
-        <span className="font-display text-base font-semibold text-[var(--text-primary)]">
-          {CTA_TITLE}
+    <span className="flex flex-col justify-between gap-4 p-5">
+      <span className="flex flex-col gap-2">
+        <span aria-hidden="true" className="text-3xl leading-none">
+          {CTA_ICON}
         </span>
-        <span className="text-sm text-[var(--text-secondary)]">{CTA_SUBTITLE}</span>
-        <span className="text-xs text-[var(--text-muted)]">{statusLine}</span>
+        <span className="flex flex-col gap-1">
+          <span className="font-display text-lg leading-tight font-extrabold tracking-tight">
+            {CTA_TITLE}
+          </span>
+          <span className="text-xs font-medium text-white/85">{CTA_SUBTITLE}</span>
+        </span>
       </span>
-      <span aria-hidden="true" className="self-center text-xs text-[var(--text-muted)]">
-        ▸
+      <span className="flex items-center justify-between gap-2">
+        <span className="font-numeric rounded-full bg-white/20 px-2.5 py-1 text-[0.6875rem] font-bold">
+          {statusLine}
+        </span>
+        {/* A purely visual "this expands" affordance -- the same small
+            chevron "Explore other windows"/other <details> disclosures in
+            this app already use, just relocated to sit next to the status
+            pill instead of at the row's far end (there's no room left at
+            the tile's own trailing edge once the layout became a
+            column). */}
+        <span aria-hidden="true" className="shrink-0 text-xs font-semibold text-white/70">
+          ▸
+        </span>
       </span>
     </span>
   );
 }
 
 /**
- * The card's shared visual chrome -- one border/radius/background so the
- * pre-hydration placeholder and the real `<details>` occupy exactly the
- * same footprint. `border-l-[3px]` in the selection accent mirrors the
- * mockup's own `.cta-card.cta-callboard` treatment (99% fidelity, not
- * pixel-perfect -- see issue #164's own Scope).
+ * The collapsed tile's shared visual chrome (issue #177) -- one
+ * gradient-fill/rounded-corner/shadow treatment applied to both the real,
+ * interactive `<summary>` and the pre-hydration inert placeholder `<div>`,
+ * so the two can never drift in size. The gradient stops/angle match the
+ * mockup's own `.game-tile.callboard` exactly
+ * (docs/design/gamified-hero-2026-08/mockup-gamified-hero.html), at that
+ * folder's own stated "99% fidelity, not pixel-perfect" bar.
+ * `min-h-28` (7rem/112px) is a defensive floor, not a measured value --
+ * the tile's real content (icon + two-line title + subtitle + status
+ * pill) is already comfortably taller than the 44px touch-target floor
+ * on its own, but this guarantees it regardless of how short a future
+ * copy edit makes any of those lines.
+ *
+ * **Deliberately applied to the `<summary>` itself, not the outer
+ * `<details>`** -- unlike the pre-#177 `CARD_CLASSNAME`, which wrapped
+ * the *whole* `<details>` (summary + expanded board) in one shared
+ * style, since both states shared the same subdued surface-card look.
+ * Putting this tile's bold gradient on `<details>` instead would paint
+ * the *expanded* board (the picker/stats/history) blue too, once
+ * opened -- a real regression against this issue's own acceptance
+ * criterion ("clicking it still expands to the exact same full Call
+ * Board experience as before this issue"). The expanded body below gets
+ * its own separate, ordinary dark surface-card wrapper instead (see the
+ * render return below) -- visually identical either way while the
+ * `<details>` is closed (a closed `<details>`'s box is exactly its
+ * `<summary>`'s own box), and this way there's no risk of the parent's
+ * background leaking around the body's edges once open.
  */
 const CARD_CLASSNAME =
-  "surface-card rounded-lg border border-[var(--gridline)] border-l-[3px] border-l-[var(--accent-selection)] bg-[var(--surface-1)]";
+  "min-h-28 rounded-2xl bg-[linear-gradient(155deg,#5c9cf0_0%,#3987e5_55%,#2b6fc4_100%)] text-white shadow-[0_6px_18px_rgba(0,0,0,0.35)]";
 
 /**
  * What renders before `useCallBoard`'s mount-time correction: the same
@@ -324,12 +379,20 @@ export function CallBoard() {
       {!hydrated ? (
         <CallBoardPlaceholder />
       ) : (
-        <details className={CARD_CLASSNAME}>
-          <summary data-testid="call-board-summary" className="cursor-pointer list-none">
+        <details>
+          <summary
+            data-testid="call-board-summary"
+            className={`${CARD_CLASSNAME} cursor-pointer list-none transition-transform duration-150 hover:-translate-y-0.5 hover:scale-[1.015] active:translate-y-0 active:scale-[0.99]`}
+          >
             <CallBoardSummaryRow statusLine={statusLine} />
           </summary>
 
-          <div className="flex flex-col gap-6 px-4 pb-5">
+          {/* The expanded board's own, ordinary dark surface-card wrapper
+              (see CARD_CLASSNAME's own doc comment above for why this
+              isn't blue too) -- the same border/background treatment the
+              collapsed tile used pre-#177, just now scoped to the body
+              alone instead of the whole <details>. */}
+          <div className="surface-card mt-3 flex flex-col gap-6 rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 pt-4 pb-5">
             {/* Always mounted, never conditionally rendered alongside the
                 thing it announces -- the same idiom issue #67 established
                 for the reveal announcement in ResultsPanel.tsx and
