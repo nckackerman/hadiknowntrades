@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { IntradayDayResult, IntradayTrade } from "@hadiknowntrades/core";
 
+import { dailyChallengeStartingCapitalFor } from "./daily-challenge";
 import type { Mode } from "./mode";
 import { useDailyChallenge, type UseDailyChallengeResult } from "./use-daily-challenge";
 
@@ -53,7 +54,7 @@ describe("useDailyChallenge", () => {
     expect(result.current).toEqual({ dailyChallenge: null, loading: true });
   });
 
-  it("recompounds the most recent day in data.days from a fresh $20 once the fetch resolves", async () => {
+  it("recompounds the most recent day in data.days from a fresh, date-seeded starting capital once the fetch resolves (issue #174)", async () => {
     stubResultsFetch({
       model: "intraday-daily",
       days: [day({ date: "2026-08-24" }), day({ date: "2026-08-25" })],
@@ -64,10 +65,13 @@ describe("useDailyChallenge", () => {
       expect(result.current.loading).toBe(false);
     });
 
+    const seededStartingCapital = dailyChallengeStartingCapitalFor("2026-08-25");
     expect(result.current.dailyChallenge).not.toBeNull();
     expect(result.current.dailyChallenge!.date).toBe("2026-08-25");
-    expect(result.current.dailyChallenge!.startingCapital).toBe(20);
-    expect(result.current.dailyChallenge!.endingBalance).toBeCloseTo(20 * (172.8 / 170.1));
+    expect(result.current.dailyChallenge!.startingCapital).toBe(seededStartingCapital);
+    expect(result.current.dailyChallenge!.endingBalance).toBeCloseTo(
+      seededStartingCapital * (172.8 / 170.1),
+    );
   });
 
   it("degrades to loading: false, dailyChallenge: null on a fetch error", async () => {

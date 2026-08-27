@@ -2,7 +2,7 @@
 
 // The daily hero (issue #161): the previous market day's own result,
 // leading with a direct statement ("Had you known, you'd have made 3
-// trades and turned $20.00 into $X.XX") instead of the 1W range view's
+// trades and turned $X.XX into $Y.YY") instead of the 1W range view's
 // guess-then-reveal gate -- the app's new top-of-page content, matching
 // the "daily game" framing this UI-simplification pass is working
 // toward. See docs/design/ui-simplification-2026-08/ for the mockup
@@ -132,7 +132,8 @@ function TradeNarrationList({ narrations }: { narrations: TradeNarration[] }) {
 
 /**
  * The daily hero section itself: an eyebrow date label, the "had you
- * known" statement + $20 -> $X figures + multiplier badge, the ticker
+ * known" statement + $X -> $Y figures (a fresh, date-seeded starting
+ * capital, issue #174 -- not a fixed $20) + multiplier badge, the ticker
  * sequence, a scroll cue, and (as a following sibling section, per this
  * issue's own Scope item 4) the "Yesterday's trades" prose narration.
  * Returns a Fragment of two sibling sections -- like `TradeReplay.tsx`'s

@@ -4,6 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { IntradayDayResult, IntradayTrade } from "@hadiknowntrades/core";
 
+import { dailyChallengeStartingCapitalFor } from "@/lib/daily-challenge";
+import { formatHeroCurrency } from "@/lib/format-currency";
+
 import { DailyHero } from "./DailyHero";
 
 function trade(overrides: Partial<IntradayTrade> = {}): IntradayTrade {
@@ -23,8 +26,9 @@ function day(overrides: Partial<IntradayDayResult> = {}): IntradayDayResult {
   return {
     date: "2026-08-25",
     // A real, chained (issue #84) startingCapital -- deliberately NOT
-    // $20, so a test that accidentally renders this raw value instead
-    // of the recompounded-from-$20 one fails loudly.
+    // what dailyChallengeStartingCapitalFor(date) returns (issue #174),
+    // so a test that accidentally renders this raw value instead of the
+    // date-seeded one fails loudly.
     startingCapital: 28.12,
     endingBalance: 34.5,
     barIntervalMinutes: 60,
@@ -88,11 +92,13 @@ describe("DailyHero", () => {
     expect(await screen.findByText(/Yesterday · Tuesday, August 25, 2026/)).toBeInTheDocument();
 
     expect(screen.getByText("2 trades")).toBeInTheDocument();
-    // A fresh $20 -> $20 * (172.80/170.10) * (87.10/84.50), NOT the raw
-    // chained day.endingBalance (34.5) or day.startingCapital (28.12).
-    expect(screen.getByText("$20.00")).toBeInTheDocument();
-    const expectedEnding = 20 * (172.8 / 170.1) * (87.1 / 84.5);
-    expect(screen.getByText(`$${expectedEnding.toFixed(2)}`)).toBeInTheDocument();
+    // A fresh, date-seeded starting capital (issue #174) ->
+    // that * (172.80/170.10) * (87.10/84.50), NOT the raw chained
+    // day.endingBalance (34.5) or day.startingCapital (28.12).
+    const seededStartingCapital = dailyChallengeStartingCapitalFor("2026-08-25");
+    const expectedEnding = seededStartingCapital * (172.8 / 170.1) * (87.1 / 84.5);
+    expect(screen.getByText(formatHeroCurrency(seededStartingCapital))).toBeInTheDocument();
+    expect(screen.getByText(formatHeroCurrency(expectedEnding))).toBeInTheDocument();
     expect(screen.queryByText("$34.50")).toBeNull();
     expect(screen.queryByText("$28.12")).toBeNull();
 

@@ -24,10 +24,16 @@
 // time the component happens to re-render.
 
 import { balanceAtBar } from "./beat-the-bench";
+import { mulberry32, type Rng } from "./seeded-random";
 import type { SessionBar } from "@hadiknowntrades/core";
 
-/** A source of uniform `[0, 1)` numbers, shaped exactly like `Math.random` so a caller can pass that if it genuinely wants unseeded randomness. Nothing in this app does. */
-export type Rng = () => number;
+/**
+ * Re-exported so this file's own existing callers (`BeatTheBench.tsx`,
+ * `beat-the-bench-percentile.test.ts`) need no import changes --
+ * `mulberry32`/`Rng` themselves now live in `lib/seeded-random.ts`, see
+ * that module's own doc comment for why they moved (issue #174).
+ */
+export { mulberry32, type Rng };
 
 /**
  * How many synthetic traders the field holds.
@@ -59,25 +65,6 @@ export const SIMULATION_TRIALS = 500;
  * actually trade. It is a random-timing control group, nothing more.
  */
 export const TOGGLE_PROBABILITY = 0.05;
-
-/**
- * A small, fast, fully deterministic PRNG (mulberry32) -- 32 bits of
- * state, uniform enough for this and reproducible across engines, unlike
- * `Math.random()`, whose sequence is not specified or seedable at all.
- *
- * Used for the production seed as well as in tests: this module has no
- * "real randomness" mode that tests then have to work around.
- */
-export function mulberry32(seed: number): Rng {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 /**
  * A seed derived from the session's own price path.
