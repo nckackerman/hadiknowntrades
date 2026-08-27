@@ -17,6 +17,13 @@ export {
 } from "./yahoo-client";
 export type { DailyClose, IntradayBar } from "./yahoo-client";
 
+// Exported for apps/web's Call Board engine (issue #128), which scores
+// against a stored DailyClose series and needs the same "is this a
+// legitimate price" bar this package already holds every price to --
+// rather than re-deriving `Number.isFinite(v) && v > 0` a fourth time
+// (see this module's own doc comment on why it exists at all).
+export { isValidPrice } from "./is-valid-price";
+
 // fetchDailyClosesCached is deliberately not re-exported here — it's a
 // dev-only convenience, not part of the production API. Import it
 // directly from another TS module in this workspace:
