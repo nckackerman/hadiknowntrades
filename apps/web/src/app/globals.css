@@ -101,22 +101,29 @@
    *                     streak + best-streak figures and exact-match
    *                     history cells (#129), the Beat the Bench win
    *                     headline (#131), the Daily Ritual's completed
-   *                     rail steps and its "Copied" stamp (#133).
+   *                     rail steps and its "Copied" stamp (#133), and
+   *                     (issue #156) the gold piece in CelebrationBurst's
+   *                     confetti palette.
    *                     Deliberately scarce -- if it shows up on
    *                     something the user merely *clicked*, it is being
    *                     used wrong.
-   *                     NOT CelebrationBurst, despite this list having
-   *                     named it until issue #135's cross-feature QA
-   *                     pass measured the real page: that component
-   *                     keeps its own hardcoded festive palette, whose
-   *                     gold (#f5b301) is a genuinely different gold
-   *                     from this token, live on screen at the same
-   *                     moment as #129's gold history cells. Issue #125
-   *                     considered recoloring it and deferred it as its
-   *                     own diff (see apps/web/CLAUDE.md's "Celebration
-   *                     burst scaled to the result's magnitude"); this
-   *                     list simply never caught up. Don't read the
-   *                     confetti as already using this token.
+   *                     CelebrationBurst was NOT actually a consumer
+   *                     from #121 through #155, despite this list having
+   *                     named it since #121: that component hardcoded
+   *                     its own second, undocumented gold (#f5b301),
+   *                     live on screen at the same moment as #129's gold
+   *                     history cells -- caught by #135's cross-feature
+   *                     QA pass, which fixed only this list (making it
+   *                     honest about the gap) and filed the actual
+   *                     recolor as its own diff, since #125 had already
+   *                     considered and deferred it (see apps/web/CLAUDE.md's
+   *                     "Celebration burst scaled to the result's
+   *                     magnitude"). Issue #156 is that diff: the confetti
+   *                     now references this token directly rather than a
+   *                     hardcoded duplicate, so this list is accurate
+   *                     again -- keep it that way rather than letting a
+   *                     future palette change silently drift the confetti
+   *                     out of sync a second time.
    *   --accent-selection (new, an alias of the existing --series-1 blue)
    *                     selected/active/primary-interactive state:
    *                     RangeSelector's active pill, ModeToggle,
@@ -147,6 +154,15 @@
    * the chart's data series (PortfolioChart's line/area fill); use
    * --accent-selection when the thing being colored is an active control.
    * Both resolve to the same blue today, on purpose.
+   *
+   * A third, narrower case (issue #156): CelebrationBurst's confetti
+   * palette also references --series-1 directly, for its one blue piece.
+   * That confetti piece is neither a data series nor an active control --
+   * it references --series-1 by name specifically because it used to
+   * hardcode a byte-for-byte literal copy of this exact value, and the
+   * fix is to stop duplicating the hex, not to invent a third job for
+   * this token. Don't read this as --series-1 acquiring a new semantic
+   * meaning.
    *
    * CONTRAST, measured (WCAG 2.1 relative luminance) so downstream issues
    * do not have to recompute it:
