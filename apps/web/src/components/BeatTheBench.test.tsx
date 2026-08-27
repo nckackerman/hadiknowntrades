@@ -283,6 +283,35 @@ describe("BeatTheBench", () => {
     expect(screen.queryByRole("button", { name: /can you do better\?/i })).not.toBeInTheDocument();
   });
 
+  it("collapses back to the compact card, and resets mode so a re-expand starts at the chooser", async () => {
+    render(<BeatTheBench />);
+    expandCompactCard();
+
+    expect(screen.getByRole("heading", { name: "Beat the Bench" })).toBeInTheDocument();
+    await screen.findByText(/79 bars/); // the chooser's own session detail line
+    click(/play today's close/i);
+    expect(barReadout()).toMatch(/bar 1 of 79/); // now genuinely mid-game
+
+    fireEvent.click(screen.getByRole("button", { name: /collapse/i }));
+
+    // Back to the compact card, not left showing the game mid-collapse.
+    expect(screen.getByRole("button", { name: /can you do better\?/i })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Beat the Bench" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/bar \d+ of 79/)).not.toBeInTheDocument();
+
+    // Clickable and collapsible either direction, like The Call Board's
+    // own <summary> -- re-expanding lands back on the mode chooser, not
+    // resumed mid-game state.
+    expandCompactCard();
+    expect(screen.getByRole("heading", { name: "Beat the Bench" })).toBeInTheDocument();
+    await screen.findByText(/79 bars/);
+    expect(screen.queryByText(/bar \d+ of 79/)).not.toBeInTheDocument();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+  });
+
   it("says so, without alarm, when no session has been published", async () => {
     stubSessionFetch({ error: "not_found", message: "nope" }, 404);
     render(<BeatTheBench />);

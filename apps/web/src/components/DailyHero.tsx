@@ -35,35 +35,44 @@
 // heroMultiplierColor) still gives this section the same hero-scale look
 // and the same gain/loss coloring convention with zero new CSS.
 //
-// **Fixed height, not min-height (issue #175)**: SHOWCASE_HEIGHT_CLASSNAME
-// is a real CSS `height`, applied identically to all three possible
-// top-level renders (the loading skeleton, the zero-trade fallback, and
-// the real result) so the box never visibly resizes switching between
-// them -- the same "reserve the worst case, don't shrink to the common
-// case" principle apps/web/CLAUDE.md's issue #147 section documents for
-// the hero count-up. `overflow-hidden` on the outer box is a defensive
-// safety net, not the primary mechanism: every state's own content is
-// centered (`justify-center`) inside the fixed box rather than expected
-// to exactly fill it, so a shorter state (loading, a 0-trade day, chart
-// hidden) simply centers with more surrounding space than a taller one
-// (chart revealed) -- deliberately not tuned to look identically "full"
-// in every state, the same trade-off this file's own CLAUDE.md section
-// documents explicitly.
+// **Grows on reveal, no longer reserves the worst case upfront -- a
+// deliberate reversal of issue #175's original design, per a later
+// design pass that asked for a smaller default box.**
+// SHOWCASE_MIN_HEIGHT_CLASSNAME is a CSS `min-height`, not a fixed
+// `height`: the box takes up roughly half its old (issue #175) size by
+// default -- loading, a 0-trade day, or a real day with the chart still
+// hidden -- and grows on its own, via ordinary content flow, once
+// "Watch it happen" mounts the chart into its own reserved slot (see
+// below, only actually reserved while revealed). This isn't in tension
+// with issue #147's "reserve the worst case, don't shrink to the common
+// case" principle for the hero count-up -- that principle is about a
+// *tween* sweeping through several sizes while animating (see this
+// component's own "Deliberately not animated at the value level" note
+// above), which never happens here; growing once, in direct response to
+// a real click, is a different question, and this design pass explicitly
+// asked for a smaller default that only grows on demand. `overflow-hidden`
+// on the outer box stays as a defensive safety net, and every state's own
+// content is still centered (`justify-center`) rather than stretched to
+// fill the box.
 //
 // **The chart slot (CHART_SLOT_HEIGHT_CLASSNAME) is deliberately much
-// taller than the mockup's own 4.75rem** -- the mockup's chart is a tiny
-// decorative inline <svg> with `preserveAspectRatio="none"`, stretched
-// to whatever box it's given; this reuses the real PortfolioChart.tsx
-// (per this issue's own Out of scope: no changes to that file or its
-// reveal mechanics), whose axis text is sized in SVG viewBox units and
-// would render illegibly small if squeezed into a mockup-sized box. The
-// slot is sized generously enough to comfortably fit that real chart's
+// taller than the mockup's own 4.75rem, and only reserved once the chart
+// is actually revealed** -- the mockup's chart is a tiny decorative
+// inline <svg> with `preserveAspectRatio="none"`, stretched to whatever
+// box it's given; this reuses the real PortfolioChart.tsx (per issue
+// #175's own Out of scope: no changes to that file or its reveal
+// mechanics), whose axis text is sized in SVG viewBox units and would
+// render illegibly small if squeezed into a mockup-sized box. The slot
+// is sized generously enough to comfortably fit that real chart's
 // natural aspect-ratio height at this card's own real content width
 // (tuned against a live `next build`/`next start` render, see this
 // file's own CLAUDE.md section), with `overflow-y-auto` as a defensive
 // fallback -- not `overflow-hidden` -- so a viewer who expands the
 // chart's own nested "View chart data as a table" disclosure can still
-// scroll to see it rather than having it silently clipped.
+// scroll to see it rather than having it silently clipped. Before the
+// chart is revealed, this same slot holds only the "Watch it happen"
+// button at its own natural height -- no large reserved space -- which
+// is what makes the box's default height roughly half its revealed one.
 //
 // **Entrance animation plays once and holds, respecting
 // prefers-reduced-motion (issue #175)**: `useReducedMotionAfterMount`
@@ -135,17 +144,20 @@ interface DailyHeroProps {
 }
 
 /**
- * Fixed CSS `height` (not `min-height`) shared by every top-level render
- * this section can produce -- loading, a 0-trade day, and a real
- * 1-3-trade day (chart hidden or revealed) -- so the box never visibly
- * resizes switching between them. See this file's own header comment.
+ * A CSS `min-height` floor, not a fixed `height` -- shared by every
+ * top-level, chart-hidden render this section can produce (loading, a
+ * 0-trade day, and a real day before "Watch it happen" is clicked), so
+ * those states never visibly resize against each other. About half the
+ * box's old (issue #175) fixed height, per a later design pass; the box
+ * grows past this floor on its own once the chart's own slot mounts.
+ * See this file's own header comment.
  */
-const SHOWCASE_HEIGHT_CLASSNAME = "h-[40rem]";
+const SHOWCASE_MIN_HEIGHT_CLASSNAME = "min-h-[20rem]";
 /**
- * Fixed height of the slot holding either the "Watch it happen" button
- * or the revealed, real PortfolioChart -- see this file's own header
+ * Height of the slot holding the revealed, real PortfolioChart --
+ * applied only while `chartRevealed` is true (see this file's own header
  * comment on why this is much taller than the mockup's own tiny
- * decorative chart.
+ * decorative chart, and why it's no longer reserved upfront).
  */
 const CHART_SLOT_HEIGHT_CLASSNAME = "h-[24rem]";
 
@@ -165,7 +177,7 @@ function LoadingCard() {
   return (
     <div
       aria-hidden="true"
-      className={`${SHOWCASE_CLASSNAME} ${SHOWCASE_HEIGHT_CLASSNAME} animate-pulse`}
+      className={`${SHOWCASE_CLASSNAME} ${SHOWCASE_MIN_HEIGHT_CLASSNAME} animate-pulse`}
     >
       <div className="h-3 w-48 rounded bg-[var(--surface-2)]" />
       <div className="h-12 w-72 rounded bg-[var(--surface-2)]" />
@@ -175,17 +187,18 @@ function LoadingCard() {
 }
 
 /**
- * The daily hero showcase: a fixed-height, one-time-animated box holding
- * the eyebrow date label, the "had you known" statement, the
- * $X -> $Y figures + multiplier badge, a fixed-height slot holding
- * either the "Watch it happen" button or the revealed chart (issue
- * #162's mechanic, unchanged), and the ticker chips -- each folding in
- * its own trade's signed return (issue #175's own Scope item 3), via
- * `trade-math.ts`'s `computeTradeReturn` directly rather than routing
- * through `narrate-trades.ts` for a sentence this component no longer
- * needs. See this file's own header comment for the full design
- * reasoning (fixed height, entrance animation, the accessibility
- * tradeoff of removing the old always-visible trade narration).
+ * The daily hero showcase: a one-time-animated box, about half-height by
+ * default, holding the eyebrow date label, the "had you known" statement,
+ * the $X -> $Y figures + multiplier badge, a slot holding either the
+ * "Watch it happen" button or the revealed chart (issue #162's mechanic,
+ * unchanged) -- the box grows to fit the chart only once it's revealed --
+ * and the ticker chips -- each folding in its own trade's signed return
+ * (issue #175's own Scope item 3), via `trade-math.ts`'s
+ * `computeTradeReturn` directly rather than routing through
+ * `narrate-trades.ts` for a sentence this component no longer needs. See
+ * this file's own header comment for the full design reasoning (the
+ * grow-on-reveal box, entrance animation, the accessibility tradeoff of
+ * removing the old always-visible trade narration).
  */
 export function DailyHero({ mode }: DailyHeroProps) {
   const { dailyChallenge, loading } = useDailyChallenge(mode);
@@ -226,7 +239,7 @@ export function DailyHero({ mode }: DailyHeroProps) {
     return (
       <section
         aria-label="Yesterday's result"
-        className={`${SHOWCASE_CLASSNAME} ${SHOWCASE_HEIGHT_CLASSNAME}`}
+        className={`${SHOWCASE_CLASSNAME} ${SHOWCASE_MIN_HEIGHT_CLASSNAME}`}
       >
         <p className={EYEBROW_CLASSNAME}>Yesterday · {eyebrowDate}</p>
         <p className="text-sm text-[var(--text-secondary)]">
@@ -241,7 +254,7 @@ export function DailyHero({ mode }: DailyHeroProps) {
   return (
     <section
       aria-label="Yesterday's result"
-      className={`${SHOWCASE_CLASSNAME} ${SHOWCASE_HEIGHT_CLASSNAME}`}
+      className={`${SHOWCASE_CLASSNAME} ${SHOWCASE_MIN_HEIGHT_CLASSNAME}`}
     >
       <p
         className={entranceClassName(
@@ -291,7 +304,9 @@ export function DailyHero({ mode }: DailyHeroProps) {
       </p>
 
       <div
-        className={`flex w-full flex-col items-center justify-center gap-2 overflow-y-auto ${CHART_SLOT_HEIGHT_CLASSNAME}`}
+        className={`flex w-full flex-col items-center justify-center gap-2 ${
+          chartRevealed ? `${CHART_SLOT_HEIGHT_CLASSNAME} overflow-y-auto` : ""
+        }`}
       >
         {chartRevealed ? (
           <PortfolioChart points={points} />

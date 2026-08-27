@@ -63,13 +63,13 @@ afterEach(() => {
 });
 
 describe("DailyHero", () => {
-  it("renders a loading placeholder before the fetch resolves, in the same fixed-height showcase box", () => {
+  it("renders a loading placeholder before the fetch resolves, in the same half-height default showcase box", () => {
     stubResultsFetch({ model: "intraday-daily", days: [day()] });
     const { container } = render(<DailyHero mode="long" />);
 
     const placeholder = container.querySelector('[aria-hidden="true"].animate-pulse');
     expect(placeholder).not.toBeNull();
-    expect(placeholder).toHaveClass("h-[40rem]");
+    expect(placeholder).toHaveClass("min-h-[20rem]");
     expect(screen.queryByText(/Yesterday/)).toBeNull();
   });
 
@@ -83,7 +83,7 @@ describe("DailyHero", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("shows the real date, statement, and figures for the most recent day, in the fixed-height showcase box", async () => {
+  it("shows the real date, statement, and figures for the most recent day, in the half-height default showcase box", async () => {
     stubResultsFetch({
       model: "intraday-daily",
       days: [day({ date: "2026-08-24" }), day({ date: "2026-08-25" })],
@@ -106,36 +106,44 @@ describe("DailyHero", () => {
     expect(screen.queryByText("$28.12")).toBeNull();
 
     const section = screen.getByLabelText("Yesterday's result");
-    expect(section).toHaveClass("h-[40rem]");
+    expect(section).toHaveClass("min-h-[20rem]");
     expect(container.children).toHaveLength(1);
   });
 
-  it('hides the chart until "Watch it happen" is clicked (issue #162)', async () => {
+  it('hides the chart until "Watch it happen" is clicked, and the box only reserves the tall chart slot once revealed (issue #162, and the grow-on-reveal redesign)', async () => {
     const user = userEvent.setup();
     stubResultsFetch({ model: "intraday-daily", days: [day()] });
     const { container } = render(<DailyHero mode="long" />);
 
     // Genuinely absent from the DOM, not just visually hidden -- the
     // acceptance criterion is a DOM query, not a visual check.
-    await screen.findByText(/Yesterday · /);
+    const section = await screen.findByLabelText("Yesterday's result");
     expect(container.querySelector("svg")).toBeNull();
     expect(screen.queryByRole("img", { name: /portfolio value over time/i })).toBeNull();
+    // Before the reveal, the box only carries its half-height default
+    // floor -- the tall chart-slot height class isn't applied yet, since
+    // the chart hasn't mounted to grow the box into it.
+    expect(section).toHaveClass("min-h-[20rem]");
+    expect(section).not.toHaveClass("h-[24rem]");
 
     const button = screen.getByRole("button", { name: "Watch it happen" });
     await user.click(button);
 
     expect(container.querySelector("svg")).not.toBeNull();
     expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+    // The chart's own slot now reserves its tall height, which is what
+    // grows the box's real rendered height past its default floor.
+    expect(container.querySelector(".h-\\[24rem\\]")).not.toBeNull();
   });
 
-  it('does not render a "Watch it happen" button or chart for a zero-trade day, in the same fixed-height box', async () => {
+  it('does not render a "Watch it happen" button or chart for a zero-trade day, in the same half-height default box', async () => {
     stubResultsFetch({ model: "intraday-daily", days: [day({ trades: [] })] });
     const { container } = render(<DailyHero mode="long" />);
 
     const section = await screen.findByText(/No trade would have beaten holding cash on/);
     expect(screen.queryByRole("button", { name: "Watch it happen" })).toBeNull();
     expect(container.querySelector("svg")).toBeNull();
-    expect(section.closest("section")).toHaveClass("h-[40rem]");
+    expect(section.closest("section")).toHaveClass("min-h-[20rem]");
   });
 
   it('no longer renders TradeNarrationList/"Yesterday\'s trades"/"See the trades ↓" anywhere (issue #175)', async () => {
