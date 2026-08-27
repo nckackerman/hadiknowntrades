@@ -1,708 +1,916 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Had I Known Trades — Simplified Landing (Mockup, "after" state, rev. 3)</title>
-<style>
-  :root {
-    color-scheme: dark;
-    --background: #0a0a0a;
-    --surface-1: #1a1a19;
-    --surface-2: #262624;
-    --text-primary: #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted: #898781;
-    --gridline: #2c2c2a;
-    --baseline: #383835;
-    --series-1: #3987e5;
-    --status-good: #4ab86f;
-    --status-critical: #e46b64;
-    --accent-reward: #e8a33d;
-    --accent-reward-wash: rgb(232 163 61 / 12%);
-    --accent-selection: var(--series-1);
-    --shadow-surface:
-      0 1px 2px rgb(0 0 0 / 45%), 0 8px 24px rgb(0 0 0 / 35%), inset 0 1px 0 rgb(255 255 255 / 4%);
-    --font-display: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-    --font-numeric: "Geist Mono", ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
-  }
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Had I Known Trades — Simplified Landing (Mockup, "after" state, rev. 3)</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --background: #0a0a0a;
+        --surface-1: #1a1a19;
+        --surface-2: #262624;
+        --text-primary: #ffffff;
+        --text-secondary: #c3c2b7;
+        --text-muted: #898781;
+        --gridline: #2c2c2a;
+        --baseline: #383835;
+        --series-1: #3987e5;
+        --status-good: #4ab86f;
+        --status-critical: #e46b64;
+        --accent-reward: #e8a33d;
+        --accent-reward-wash: rgb(232 163 61 / 12%);
+        --accent-selection: var(--series-1);
+        --shadow-surface:
+          0 1px 2px rgb(0 0 0 / 45%), 0 8px 24px rgb(0 0 0 / 35%),
+          inset 0 1px 0 rgb(255 255 255 / 4%);
+        --font-display:
+          "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+        --font-numeric: "Geist Mono", ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
+      }
 
-  * { box-sizing: border-box; }
+      * {
+        box-sizing: border-box;
+      }
 
-  html, body {
-    margin: 0;
-    padding: 0;
-    background: var(--background);
-    color: var(--text-primary);
-    font-family: var(--font-display);
-  }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--background);
+        color: var(--text-primary);
+        font-family: var(--font-display);
+      }
 
-  body {
-    display: flex;
-    justify-content: center;
-    padding: 2.5rem 1.5rem 4rem;
-  }
+      body {
+        display: flex;
+        justify-content: center;
+        padding: 2.5rem 1.5rem 4rem;
+      }
 
-  .page {
-    width: 100%;
-    max-width: 42rem; /* ~ this app's own max-w-3xl-ish reading width */
-    display: flex;
-    flex-direction: column;
-    gap: 1.5rem;
-  }
+      .page {
+        width: 100%;
+        max-width: 42rem; /* ~ this app's own max-w-3xl-ish reading width */
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+      }
 
-  /* ---------- header ---------- */
-  .topbar {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-  }
+      /* ---------- header ---------- */
+      .topbar {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+      }
 
-  .wordmark {
-    font-size: 1.375rem;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-  }
+      .wordmark {
+        font-size: 1.375rem;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
 
-  .tagline {
-    margin: 0;
-    font-size: 0.8125rem;
-    color: var(--text-muted);
-  }
+      .tagline {
+        margin: 0;
+        font-size: 0.8125rem;
+        color: var(--text-muted);
+      }
 
-  /* ---------- the daily hero: its OWN section, containing only
+      /* ---------- the daily hero: its OWN section, containing only
        yesterday's date + statement + figures + tickers + the (hidden by
        default) chart. The two CTA cards are separate sibling sections
        below, not nested in here. ---------- */
-  .day-hero {
-    display: flex;
-    flex-direction: column;
-    gap: 0.9rem;
-    padding: 1.5rem 1.5rem 1.75rem;
-    background: var(--surface-1);
-    border: 1px solid var(--gridline);
-    border-radius: 1rem;
-    box-shadow: var(--shadow-surface);
-  }
+      .day-hero {
+        display: flex;
+        flex-direction: column;
+        gap: 0.9rem;
+        padding: 1.5rem 1.5rem 1.75rem;
+        background: var(--surface-1);
+        border: 1px solid var(--gridline);
+        border-radius: 1rem;
+        box-shadow: var(--shadow-surface);
+      }
 
-  .day-eyebrow {
-    margin: 0;
-    font-family: var(--font-numeric);
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--accent-reward);
-  }
+      .day-eyebrow {
+        margin: 0;
+        font-family: var(--font-numeric);
+        font-size: 0.75rem;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--accent-reward);
+      }
 
-  .hero-caption {
-    margin: 0;
-    font-size: 0.875rem;
-    color: var(--text-secondary);
-  }
+      .hero-caption {
+        margin: 0;
+        font-size: 0.875rem;
+        color: var(--text-secondary);
+      }
 
-  .hero-figures {
-    margin: 0;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0.5rem;
-    font-family: var(--font-numeric);
-  }
+      .hero-figures {
+        margin: 0;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0.5rem;
+        font-family: var(--font-numeric);
+      }
 
-  .hero-figure {
-    font-size: 2.75rem;
-    font-weight: 600;
-    line-height: 1;
-    letter-spacing: -0.01em;
-  }
+      .hero-figure {
+        font-size: 2.75rem;
+        font-weight: 600;
+        line-height: 1;
+        letter-spacing: -0.01em;
+      }
 
-  .hero-figure-gain {
-    color: var(--status-good);
-    text-shadow: 0 0 2px rgb(74 184 111 / 55%), 0 0 20px rgb(74 184 111 / 35%);
-  }
+      .hero-figure-gain {
+        color: var(--status-good);
+        text-shadow:
+          0 0 2px rgb(74 184 111 / 55%),
+          0 0 20px rgb(74 184 111 / 35%);
+      }
 
-  .hero-arrow {
-    font-size: 1.5rem;
-    color: var(--text-muted);
-  }
+      .hero-arrow {
+        font-size: 1.5rem;
+        color: var(--text-muted);
+      }
 
-  .hero-badge {
-    align-self: center;
-    font-size: 1.125rem;
-    font-weight: 600;
-    color: var(--status-good);
-  }
+      .hero-badge {
+        align-self: center;
+        font-size: 1.125rem;
+        font-weight: 600;
+        color: var(--status-good);
+      }
 
-  .hero-tickers {
-    margin: 0;
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-family: var(--font-numeric);
-    font-size: 0.8125rem;
-    font-weight: 600;
-    color: var(--text-secondary);
-    letter-spacing: 0.02em;
-  }
-  .hero-ticker-arrow { color: var(--text-muted); font-weight: 400; }
+      .hero-tickers {
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-family: var(--font-numeric);
+        font-size: 0.8125rem;
+        font-weight: 600;
+        color: var(--text-secondary);
+        letter-spacing: 0.02em;
+      }
+      .hero-ticker-arrow {
+        color: var(--text-muted);
+        font-weight: 400;
+      }
 
-  /* ---------- the immediate CTA cards: two separate sibling sections
+      /* ---------- the immediate CTA cards: two separate sibling sections
        below the daily hero, not nested inside it. A plain grid wrapper
        for layout only -- each card is its own bordered surface. ---------- */
-  .cta-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 0.75rem;
-  }
+      .cta-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.75rem;
+      }
 
-  .cta-card {
-    background: var(--surface-2);
-    border: 1px solid var(--gridline);
-    border-left: 3px solid var(--cta-accent, var(--accent-selection));
-    border-radius: 0.75rem;
-  }
-  .cta-card.cta-bench { --cta-accent: var(--accent-reward); }
-  .cta-card.cta-callboard { --cta-accent: var(--accent-selection); }
+      .cta-card {
+        background: var(--surface-2);
+        border: 1px solid var(--gridline);
+        border-left: 3px solid var(--cta-accent, var(--accent-selection));
+        border-radius: 0.75rem;
+      }
+      .cta-card.cta-bench {
+        --cta-accent: var(--accent-reward);
+      }
+      .cta-card.cta-callboard {
+        --cta-accent: var(--accent-selection);
+      }
 
-  .cta-card > summary {
-    cursor: pointer;
-    list-style: none;
-    display: flex;
-    align-items: flex-start;
-    gap: 0.65rem;
-    padding: 0.9rem 1rem;
-  }
-  .cta-card > summary::-webkit-details-marker { display: none; }
+      .cta-card > summary {
+        cursor: pointer;
+        list-style: none;
+        display: flex;
+        align-items: flex-start;
+        gap: 0.65rem;
+        padding: 0.9rem 1rem;
+      }
+      .cta-card > summary::-webkit-details-marker {
+        display: none;
+      }
 
-  .cta-icon { font-size: 1.3rem; line-height: 1; }
+      .cta-icon {
+        font-size: 1.3rem;
+        line-height: 1;
+      }
 
-  .cta-copy { display: flex; flex-direction: column; gap: 0.2rem; }
+      .cta-copy {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+      }
 
-  .cta-title {
-    font-size: 0.95rem;
-    font-weight: 700;
-    color: var(--text-primary);
-  }
+      .cta-title {
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: var(--text-primary);
+      }
 
-  .cta-sub {
-    font-size: 0.8125rem;
-    color: var(--text-secondary);
-    line-height: 1.4;
-  }
+      .cta-sub {
+        font-size: 0.8125rem;
+        color: var(--text-secondary);
+        line-height: 1.4;
+      }
 
-  .cta-status {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-  }
+      .cta-status {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+      }
 
-  .cta-arrow {
-    margin-left: auto;
-    align-self: center;
-    color: var(--text-muted);
-    font-size: 0.8rem;
-  }
-  .cta-card[open] > summary .cta-arrow { transform: rotate(90deg); }
+      .cta-arrow {
+        margin-left: auto;
+        align-self: center;
+        color: var(--text-muted);
+        font-size: 0.8rem;
+      }
+      .cta-card[open] > summary .cta-arrow {
+        transform: rotate(90deg);
+      }
 
-  .cta-body {
-    padding: 0 1rem 1rem;
-    font-size: 0.85rem;
-    color: var(--text-secondary);
-    line-height: 1.5;
-  }
-  .cta-body p { margin: 0 0 0.6rem; }
-  .cta-body .cta-alt { margin-top: 0.6rem; }
-  .cta-body a { color: var(--series-1); }
+      .cta-body {
+        padding: 0 1rem 1rem;
+        font-size: 0.85rem;
+        color: var(--text-secondary);
+        line-height: 1.5;
+      }
+      .cta-body p {
+        margin: 0 0 0.6rem;
+      }
+      .cta-body .cta-alt {
+        margin-top: 0.6rem;
+      }
+      .cta-body a {
+        color: var(--series-1);
+      }
 
-  .call-slots-cta { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-  .call-btn {
-    font-family: inherit;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: var(--text-secondary);
-    background: var(--surface-1);
-    border: 1px solid var(--gridline);
-    border-radius: 0.5rem;
-    padding: 0.4rem 0.7rem;
-    cursor: pointer;
-  }
+      .call-slots-cta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+      }
+      .call-btn {
+        font-family: inherit;
+        font-size: 0.8125rem;
+        font-weight: 500;
+        color: var(--text-secondary);
+        background: var(--surface-1);
+        border: 1px solid var(--gridline);
+        border-radius: 0.5rem;
+        padding: 0.4rem 0.7rem;
+        cursor: pointer;
+      }
 
-  /* ---------- the chart: hidden by default, revealed only once "Watch
+      /* ---------- the chart: hidden by default, revealed only once "Watch
        it happen" is clicked. The summary IS the button -- no separate
        always-visible chart to scroll past. ---------- */
-  .watch-toggle {
-    align-self: flex-start;
-  }
-  .watch-toggle > summary {
-    list-style: none;
-  }
-  .watch-toggle > summary::-webkit-details-marker { display: none; }
+      .watch-toggle {
+        align-self: flex-start;
+      }
+      .watch-toggle > summary {
+        list-style: none;
+      }
+      .watch-toggle > summary::-webkit-details-marker {
+        display: none;
+      }
 
-  .chart-wrap { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.75rem; }
+      .chart-wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+        margin-top: 0.75rem;
+      }
 
-  .chart {
-    width: 100%;
-    height: auto;
-    display: block;
-  }
+      .chart {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
 
-  .chart .grid { stroke: var(--gridline); stroke-width: 1; }
-  .chart .area { fill: rgb(74 184 111 / 12%); stroke: none; }
-  .chart .line { fill: none; stroke: var(--status-good); stroke-width: 2.5; }
-  .chart .marker { fill: var(--status-good); stroke: var(--surface-1); stroke-width: 2; }
-  .chart .marker.open { fill: var(--surface-1); stroke: var(--status-good); stroke-width: 2.5; }
+      .chart .grid {
+        stroke: var(--gridline);
+        stroke-width: 1;
+      }
+      .chart .area {
+        fill: rgb(74 184 111 / 12%);
+        stroke: none;
+      }
+      .chart .line {
+        fill: none;
+        stroke: var(--status-good);
+        stroke-width: 2.5;
+      }
+      .chart .marker {
+        fill: var(--status-good);
+        stroke: var(--surface-1);
+        stroke-width: 2;
+      }
+      .chart .marker.open {
+        fill: var(--surface-1);
+        stroke: var(--status-good);
+        stroke-width: 2.5;
+      }
 
-  .chart-axis {
-    display: flex;
-    justify-content: space-between;
-    font-size: 0.75rem;
-    color: var(--text-muted);
-  }
+      .chart-axis {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.75rem;
+        color: var(--text-muted);
+      }
 
-  .watch-btn {
-    align-self: flex-start;
-    font-family: inherit;
-    font-size: 0.875rem;
-    font-weight: 500;
-    color: #ffffff;
-    background: var(--accent-selection);
-    border: none;
-    border-radius: 0.6rem;
-    padding: 0.55rem 1rem;
-    cursor: pointer;
-  }
+      .watch-btn {
+        align-self: flex-start;
+        font-family: inherit;
+        font-size: 0.875rem;
+        font-weight: 500;
+        color: #ffffff;
+        background: var(--accent-selection);
+        border: none;
+        border-radius: 0.6rem;
+        padding: 0.55rem 1rem;
+        cursor: pointer;
+      }
 
-  .scroll-cue {
-    margin: -0.5rem 0 0;
-    text-align: center;
-    font-size: 0.75rem;
-    color: var(--text-muted);
-  }
+      .scroll-cue {
+        margin: -0.5rem 0 0;
+        text-align: center;
+        font-size: 0.75rem;
+        color: var(--text-muted);
+      }
 
-  /* ---------- trades ---------- */
-  .trades h2 {
-    margin: 0 0 0.6rem;
-    font-size: 1.05rem;
-    font-weight: 600;
-  }
+      /* ---------- trades ---------- */
+      .trades h2 {
+        margin: 0 0 0.6rem;
+        font-size: 1.05rem;
+        font-weight: 600;
+      }
 
-  .trade-narration {
-    margin: 0;
-    padding: 1rem 1.15rem;
-    background: var(--surface-1);
-    border: 1px solid var(--gridline);
-    border-radius: 0.75rem;
-    box-shadow: var(--shadow-surface);
-    font-size: 0.9rem;
-    line-height: 1.6;
-    color: var(--text-secondary);
-  }
+      .trade-narration {
+        margin: 0;
+        padding: 1rem 1.15rem;
+        background: var(--surface-1);
+        border: 1px solid var(--gridline);
+        border-radius: 0.75rem;
+        box-shadow: var(--shadow-surface);
+        font-size: 0.9rem;
+        line-height: 1.6;
+        color: var(--text-secondary);
+      }
 
-  .trade-narration li { display: inline; }
-  .trade-narration li + li::before { content: " "; }
+      .trade-narration li {
+        display: inline;
+      }
+      .trade-narration li + li::before {
+        content: " ";
+      }
 
-  .trade-narration strong { color: var(--text-primary); font-weight: 600; }
-  .gain { color: var(--status-good); font-weight: 600; }
+      .trade-narration strong {
+        color: var(--text-primary);
+        font-weight: 600;
+      }
+      .gain {
+        color: var(--status-good);
+        font-weight: 600;
+      }
 
-  /* ---------- explore other windows: demoted to the bottom, collapsed
+      /* ---------- explore other windows: demoted to the bottom, collapsed
        by default. Same hindsight idea, zoomed out -- a different game
        than the daily one above, so it's opt-in, not shared landing
        real estate. ---------- */
-  .explorer {
-    border: 1px solid var(--gridline);
-    border-radius: 0.85rem;
-    background: var(--surface-1);
-  }
-  .explorer > summary {
-    cursor: pointer;
-    list-style: none;
-    display: flex;
-    align-items: baseline;
-    gap: 0.6rem;
-    flex-wrap: wrap;
-    padding: 0.9rem 1.1rem;
-  }
-  .explorer > summary::-webkit-details-marker { display: none; }
-  .explorer > summary::after {
-    content: "▸ expand";
-    margin-left: auto;
-    color: var(--text-muted);
-    font-size: 0.75rem;
-  }
-  .explorer[open] > summary::after { content: "▾ collapse"; }
+      .explorer {
+        border: 1px solid var(--gridline);
+        border-radius: 0.85rem;
+        background: var(--surface-1);
+      }
+      .explorer > summary {
+        cursor: pointer;
+        list-style: none;
+        display: flex;
+        align-items: baseline;
+        gap: 0.6rem;
+        flex-wrap: wrap;
+        padding: 0.9rem 1.1rem;
+      }
+      .explorer > summary::-webkit-details-marker {
+        display: none;
+      }
+      .explorer > summary::after {
+        content: "▸ expand";
+        margin-left: auto;
+        color: var(--text-muted);
+        font-size: 0.75rem;
+      }
+      .explorer[open] > summary::after {
+        content: "▾ collapse";
+      }
 
-  .explorer-title { font-size: 0.9rem; font-weight: 600; color: var(--text-primary); }
-  .explorer-sub { font-family: var(--font-numeric); font-size: 0.75rem; color: var(--text-muted); }
+      .explorer-title {
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: var(--text-primary);
+      }
+      .explorer-sub {
+        font-family: var(--font-numeric);
+        font-size: 0.75rem;
+        color: var(--text-muted);
+      }
 
-  .explorer-body {
-    padding: 0 1.1rem 1.25rem;
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-    border-top: 1px solid var(--gridline);
-    margin-top: 0.1rem;
-    padding-top: 1rem;
-  }
+      .explorer-body {
+        padding: 0 1.1rem 1.25rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        border-top: 1px solid var(--gridline);
+        margin-top: 0.1rem;
+        padding-top: 1rem;
+      }
 
-  .explorer-note {
-    margin: 0;
-    font-size: 0.8125rem;
-    color: var(--text-muted);
-  }
+      .explorer-note {
+        margin: 0;
+        font-size: 0.8125rem;
+        color: var(--text-muted);
+      }
 
-  /* ---------- range row (now lives inside the explorer) ---------- */
-  .range-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
+      /* ---------- range row (now lives inside the explorer) ---------- */
+      .range-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+      }
 
-  .pill {
-    position: relative;
-    appearance: none;
-    border: 1px solid var(--gridline);
-    background: var(--surface-2);
-    color: var(--text-secondary);
-    font-family: inherit;
-    font-size: 0.875rem;
-    font-weight: 500;
-    padding: 0.5rem 0.9rem 0.7rem;
-    border-radius: 999px;
-    cursor: pointer;
-  }
+      .pill {
+        position: relative;
+        appearance: none;
+        border: 1px solid var(--gridline);
+        background: var(--surface-2);
+        color: var(--text-secondary);
+        font-family: inherit;
+        font-size: 0.875rem;
+        font-weight: 500;
+        padding: 0.5rem 0.9rem 0.7rem;
+        border-radius: 999px;
+        cursor: pointer;
+      }
 
-  .pill.active {
-    background: var(--accent-selection);
-    border-color: var(--accent-selection);
-    color: #ffffff;
-  }
+      .pill.active {
+        background: var(--accent-selection);
+        border-color: var(--accent-selection);
+        color: #ffffff;
+      }
 
-  .pill::after {
-    content: "";
-    position: absolute;
-    bottom: 0.32rem;
-    left: 50%;
-    transform: translateX(-50%);
-    height: 2px;
-    width: var(--bar, 8px);
-    background: currentColor;
-    opacity: 0.55;
-    border-radius: 2px;
-  }
+      .pill::after {
+        content: "";
+        position: absolute;
+        bottom: 0.32rem;
+        left: 50%;
+        transform: translateX(-50%);
+        height: 2px;
+        width: var(--bar, 8px);
+        background: currentColor;
+        opacity: 0.55;
+        border-radius: 2px;
+      }
 
-  .more-options { color: var(--text-secondary); }
-  .more-options > summary {
-    cursor: pointer;
-    font-size: 0.8125rem;
-    list-style: none;
-  }
-  .more-options > summary::-webkit-details-marker { display: none; }
-  .more-options > summary::before { content: "▸ "; }
-  .more-options[open] > summary::before { content: "▾ "; }
+      .more-options {
+        color: var(--text-secondary);
+      }
+      .more-options > summary {
+        cursor: pointer;
+        font-size: 0.8125rem;
+        list-style: none;
+      }
+      .more-options > summary::-webkit-details-marker {
+        display: none;
+      }
+      .more-options > summary::before {
+        content: "▸ ";
+      }
+      .more-options[open] > summary::before {
+        content: "▾ ";
+      }
 
-  .more-options-inner {
-    margin-top: 0.65rem;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.6rem;
-  }
+      .more-options-inner {
+        margin-top: 0.65rem;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.6rem;
+      }
 
-  .or { color: var(--text-muted); font-size: 0.8125rem; }
+      .or {
+        color: var(--text-muted);
+        font-size: 0.8125rem;
+      }
 
-  .ghost-select {
-    font-family: inherit;
-    font-size: 0.8125rem;
-    color: var(--text-secondary);
-    background: var(--surface-2);
-    border: 1px solid var(--gridline);
-    border-radius: 0.5rem;
-    padding: 0.4rem 0.7rem;
-    cursor: pointer;
-  }
+      .ghost-select {
+        font-family: inherit;
+        font-size: 0.8125rem;
+        color: var(--text-secondary);
+        background: var(--surface-2);
+        border: 1px solid var(--gridline);
+        border-radius: 0.5rem;
+        padding: 0.4rem 0.7rem;
+        cursor: pointer;
+      }
 
-  .mode-toggle {
-    display: inline-flex;
-    border: 1px solid var(--gridline);
-    border-radius: 999px;
-    overflow: hidden;
-  }
+      .mode-toggle {
+        display: inline-flex;
+        border: 1px solid var(--gridline);
+        border-radius: 999px;
+        overflow: hidden;
+      }
 
-  .mode-pill {
-    font-family: inherit;
-    font-size: 0.8125rem;
-    border: none;
-    background: var(--surface-2);
-    color: var(--text-secondary);
-    padding: 0.4rem 0.75rem;
-    cursor: pointer;
-  }
-  .mode-pill.active { background: var(--accent-selection); color: #fff; }
+      .mode-pill {
+        font-family: inherit;
+        font-size: 0.8125rem;
+        border: none;
+        background: var(--surface-2);
+        color: var(--text-secondary);
+        padding: 0.4rem 0.75rem;
+        cursor: pointer;
+      }
+      .mode-pill.active {
+        background: var(--accent-selection);
+        color: #fff;
+      }
 
-  /* ---------- explorer's own (smaller, muted) hero + chart ---------- */
-  .explorer-hero {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    padding: 1.15rem 1.15rem 1.35rem;
-    background: var(--surface-2);
-    border: 1px solid var(--gridline);
-    border-radius: 0.85rem;
-  }
-  .explorer-hero .hero-figure { font-size: 2.1rem; }
-  .explorer-hero .hero-badge { font-size: 1rem; }
-  .explorer-hero .watch-btn { background: var(--surface-1); color: var(--text-secondary); border: 1px solid var(--gridline); }
+      /* ---------- explorer's own (smaller, muted) hero + chart ---------- */
+      .explorer-hero {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        padding: 1.15rem 1.15rem 1.35rem;
+        background: var(--surface-2);
+        border: 1px solid var(--gridline);
+        border-radius: 0.85rem;
+      }
+      .explorer-hero .hero-figure {
+        font-size: 2.1rem;
+      }
+      .explorer-hero .hero-badge {
+        font-size: 1rem;
+      }
+      .explorer-hero .watch-btn {
+        background: var(--surface-1);
+        color: var(--text-secondary);
+        border: 1px solid var(--gridline);
+      }
 
-  .explorer-body .trade-narration { background: var(--surface-2); }
+      .explorer-body .trade-narration {
+        background: var(--surface-2);
+      }
 
-  /* ---------- footer disclosure: everything substantiating, one place ---------- */
-  .about { color: var(--text-secondary); }
-  .about > summary {
-    cursor: pointer;
-    list-style: none;
-    font-size: 0.8125rem;
-    color: var(--text-muted);
-  }
-  .about > summary::-webkit-details-marker { display: none; }
-  .about > summary::before { content: "▸ "; }
-  .about[open] > summary::before { content: "▾ "; }
+      /* ---------- footer disclosure: everything substantiating, one place ---------- */
+      .about {
+        color: var(--text-secondary);
+      }
+      .about > summary {
+        cursor: pointer;
+        list-style: none;
+        font-size: 0.8125rem;
+        color: var(--text-muted);
+      }
+      .about > summary::-webkit-details-marker {
+        display: none;
+      }
+      .about > summary::before {
+        content: "▸ ";
+      }
+      .about[open] > summary::before {
+        content: "▾ ";
+      }
 
-  .about-body {
-    margin-top: 0.75rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.6rem;
-    font-size: 0.8125rem;
-    line-height: 1.55;
-  }
-  .about-body a { color: var(--series-1); }
+      .about-body {
+        margin-top: 0.75rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem;
+        font-size: 0.8125rem;
+        line-height: 1.55;
+      }
+      .about-body a {
+        color: var(--series-1);
+      }
 
-  .methodology-nested {
-    border-top: 1px solid var(--gridline);
-    padding-top: 0.6rem;
-  }
-  .methodology-nested > summary {
-    cursor: pointer;
-    list-style: none;
-    font-size: 0.8125rem;
-    color: var(--text-muted);
-  }
-  .methodology-nested > summary::-webkit-details-marker { display: none; }
-  .methodology-nested > summary::before { content: "▸ "; }
-  .methodology-nested[open] > summary::before { content: "▾ "; }
-  .methodology-nested p { margin: 0.5rem 0 0; }
+      .methodology-nested {
+        border-top: 1px solid var(--gridline);
+        padding-top: 0.6rem;
+      }
+      .methodology-nested > summary {
+        cursor: pointer;
+        list-style: none;
+        font-size: 0.8125rem;
+        color: var(--text-muted);
+      }
+      .methodology-nested > summary::-webkit-details-marker {
+        display: none;
+      }
+      .methodology-nested > summary::before {
+        content: "▸ ";
+      }
+      .methodology-nested[open] > summary::before {
+        content: "▾ ";
+      }
+      .methodology-nested p {
+        margin: 0.5rem 0 0;
+      }
 
-  /* ---------- mobile (~390px) ---------- */
-  @media (max-width: 640px) {
-    body { padding: 1.5rem 1rem 3rem; }
-    .day-hero { padding: 1.1rem 1rem 1.25rem; }
-    .hero-figure { font-size: 1.9rem; }
-    .hero-badge { font-size: 0.95rem; }
-    .wordmark { font-size: 1.15rem; }
-    .cta-row { grid-template-columns: 1fr; }
-    .cta-card > summary { gap: 0.5rem; padding: 0.8rem 0.85rem; }
-    .explorer-sub { flex-basis: 100%; }
-  }
-</style>
-</head>
-<body>
-<div class="page">
-
-  <!-- Zone 1: micro-header. One wordmark, one caption line -- now
+      /* ---------- mobile (~390px) ---------- */
+      @media (max-width: 640px) {
+        body {
+          padding: 1.5rem 1rem 3rem;
+        }
+        .day-hero {
+          padding: 1.1rem 1rem 1.25rem;
+        }
+        .hero-figure {
+          font-size: 1.9rem;
+        }
+        .hero-badge {
+          font-size: 0.95rem;
+        }
+        .wordmark {
+          font-size: 1.15rem;
+        }
+        .cta-row {
+          grid-template-columns: 1fr;
+        }
+        .cta-card > summary {
+          gap: 0.5rem;
+          padding: 0.8rem 0.85rem;
+        }
+        .explorer-sub {
+          flex-basis: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <!-- Zone 1: micro-header. One wordmark, one caption line -- now
        framed around the daily cadence, not the range explorer. -->
-  <header class="topbar">
-    <div class="wordmark">Had I Known Trades</div>
-    <p class="tagline">A new hindsight trading puzzle every day — $20, at most 3 same-day trades, closed prices only.</p>
-  </header>
+      <header class="topbar">
+        <div class="wordmark">Had I Known Trades</div>
+        <p class="tagline">
+          A new hindsight trading puzzle every day — $20, at most 3 same-day trades, closed prices
+          only.
+        </p>
+      </header>
 
-  <!-- Zone 2: the daily hero. Defaults to the previous market day, not
+      <!-- Zone 2: the daily hero. Defaults to the previous market day, not
        a 1-week range -- this is the whole "daily game" pitch. The date
        leads (reinforcing "come back daily"), then the statement, then
        the immediate CTA, then the chart as supporting detail. -->
-  <section class="day-hero" aria-label="Yesterday's result">
-    <p class="day-eyebrow">Yesterday · Tuesday, August 25, 2026</p>
-    <p class="hero-caption">Had you known, you'd have made <strong>3 trades</strong> and turned</p>
-    <p class="hero-figures">
-      <span class="hero-figure">$20.00</span>
-      <span class="hero-arrow">→</span>
-      <span class="hero-figure hero-figure-gain">$22.84</span>
-      <span class="hero-badge">(1.14x)</span>
-    </p>
-    <p class="hero-tickers"><span>AVGO</span><span class="hero-ticker-arrow">→</span><span>PLTR</span><span class="hero-ticker-arrow">→</span><span>SMCI</span></p>
+      <section class="day-hero" aria-label="Yesterday's result">
+        <p class="day-eyebrow">Yesterday · Tuesday, August 25, 2026</p>
+        <p class="hero-caption">
+          Had you known, you'd have made <strong>3 trades</strong> and turned
+        </p>
+        <p class="hero-figures">
+          <span class="hero-figure">$20.00</span>
+          <span class="hero-arrow">→</span>
+          <span class="hero-figure hero-figure-gain">$22.84</span>
+          <span class="hero-badge">(1.14x)</span>
+        </p>
+        <p class="hero-tickers">
+          <span>AVGO</span><span class="hero-ticker-arrow">→</span><span>PLTR</span
+          ><span class="hero-ticker-arrow">→</span><span>SMCI</span>
+        </p>
 
-    <!-- The chart is hidden by default -- this <details> IS the reveal.
+        <!-- The chart is hidden by default -- this <details> IS the reveal.
          The summary carries the exact "Watch it happen" button styling,
          so there is no always-visible chart to scroll past; clicking it
          is what draws the chart in, same as the real TradeReplay/
          WholeRangeReplay "Watch it happen" affordance already does. -->
-    <details class="watch-toggle">
-      <summary class="watch-btn">▶ Watch it happen</summary>
-      <div class="chart-wrap">
-        <svg viewBox="0 0 600 200" class="chart" role="img" aria-label="Portfolio value through yesterday's session">
-          <line x1="0" y1="40" x2="600" y2="40" class="grid" />
-          <line x1="0" y1="95" x2="600" y2="95" class="grid" />
-          <line x1="0" y1="150" x2="600" y2="150" class="grid" />
-          <polygon points="0,175 90,175 90,150 260,150 260,105 430,105 430,40 600,40 600,200 0,200" class="area" />
-          <polyline points="0,175 90,175 90,150 260,150 260,105 430,105 430,40 600,40" class="line" />
-          <circle cx="90" cy="175" r="5" class="marker open" />
-          <circle cx="260" cy="150" r="5" class="marker close" />
-          <circle cx="260" cy="150" r="5" class="marker open" />
-          <circle cx="430" cy="105" r="5" class="marker close" />
-          <circle cx="430" cy="105" r="5" class="marker open" />
-          <circle cx="600" cy="40" r="5" class="marker close" />
-        </svg>
-        <div class="chart-axis"><span>9:30 AM</span><span>4:00 PM</span></div>
-      </div>
-    </details>
-  </section>
+        <details class="watch-toggle">
+          <summary class="watch-btn">▶ Watch it happen</summary>
+          <div class="chart-wrap">
+            <svg
+              viewBox="0 0 600 200"
+              class="chart"
+              role="img"
+              aria-label="Portfolio value through yesterday's session"
+            >
+              <line x1="0" y1="40" x2="600" y2="40" class="grid" />
+              <line x1="0" y1="95" x2="600" y2="95" class="grid" />
+              <line x1="0" y1="150" x2="600" y2="150" class="grid" />
+              <polygon
+                points="0,175 90,175 90,150 260,150 260,105 430,105 430,40 600,40 600,200 0,200"
+                class="area"
+              />
+              <polyline
+                points="0,175 90,175 90,150 260,150 260,105 430,105 430,40 600,40"
+                class="line"
+              />
+              <circle cx="90" cy="175" r="5" class="marker open" />
+              <circle cx="260" cy="150" r="5" class="marker close" />
+              <circle cx="260" cy="150" r="5" class="marker open" />
+              <circle cx="430" cy="105" r="5" class="marker close" />
+              <circle cx="430" cy="105" r="5" class="marker open" />
+              <circle cx="600" cy="40" r="5" class="marker close" />
+            </svg>
+            <div class="chart-axis"><span>9:30 AM</span><span>4:00 PM</span></div>
+          </div>
+        </details>
+      </section>
 
-  <!-- Zones 3 & 4: the two CTAs, each its own top-level section -- no
+      <!-- Zones 3 & 4: the two CTAs, each its own top-level section -- no
        longer nested inside the daily hero. Still expand-in-place
        <details>, so the full game costs nothing until it's opened; the
        grid below is a layout wrapper only, not a container section. -->
-  <div class="cta-row" aria-label="Play today">
-    <details class="cta-card cta-bench">
-      <summary>
-        <span class="cta-icon">🎯</span>
-        <span class="cta-copy">
-          <span class="cta-title">Can you do better?</span>
-          <span class="cta-sub">Play today's real session against the market, live.</span>
-          <span class="cta-status">Not played yet today</span>
-        </span>
-        <span class="cta-arrow">▸</span>
-      </summary>
-      <div class="cta-body">
-        <p>SPY · Aug 26, 2026 · 79 bars · about 23 seconds at normal speed.</p>
-        <button class="watch-btn">▶ Play today's close</button>
-        <p class="cta-alt"><a href="#">Play a mystery day instead</a></p>
+      <div class="cta-row" aria-label="Play today">
+        <details class="cta-card cta-bench">
+          <summary>
+            <span class="cta-icon">🎯</span>
+            <span class="cta-copy">
+              <span class="cta-title">Can you do better?</span>
+              <span class="cta-sub">Play today's real session against the market, live.</span>
+              <span class="cta-status">Not played yet today</span>
+            </span>
+            <span class="cta-arrow">▸</span>
+          </summary>
+          <div class="cta-body">
+            <p>SPY · Aug 26, 2026 · 79 bars · about 23 seconds at normal speed.</p>
+            <button class="watch-btn">▶ Play today's close</button>
+            <p class="cta-alt"><a href="#">Play a mystery day instead</a></p>
+          </div>
+        </details>
+        <details class="cta-card cta-callboard">
+          <summary>
+            <span class="cta-icon">🔮</span>
+            <span class="cta-copy">
+              <span class="cta-title">Think you know the future?</span>
+              <span class="cta-sub">Call the next 3 sessions, up or down, before they open.</span>
+              <span class="cta-status">0 of 3 sessions called</span>
+            </span>
+            <span class="cta-arrow">▸</span>
+          </summary>
+          <div class="cta-body">
+            <p>
+              Tap a bucket for each upcoming session — it saves immediately, and you can change it
+              until that session opens.
+            </p>
+            <div class="call-slots-cta">
+              <button class="call-btn">▲▲ Up big</button>
+              <button class="call-btn">▲ Up</button>
+              <button class="call-btn">▼ Down</button>
+              <button class="call-btn">▼▼ Down big</button>
+            </div>
+          </div>
+        </details>
       </div>
-    </details>
-    <details class="cta-card cta-callboard">
-      <summary>
-        <span class="cta-icon">🔮</span>
-        <span class="cta-copy">
-          <span class="cta-title">Think you know the future?</span>
-          <span class="cta-sub">Call the next 3 sessions, up or down, before they open.</span>
-          <span class="cta-status">0 of 3 sessions called</span>
-        </span>
-        <span class="cta-arrow">▸</span>
-      </summary>
-      <div class="cta-body">
-        <p>Tap a bucket for each upcoming session — it saves immediately, and you can change it until that session opens.</p>
-        <div class="call-slots-cta">
-          <button class="call-btn">▲▲ Up big</button>
-          <button class="call-btn">▲ Up</button>
-          <button class="call-btn">▼ Down</button>
-          <button class="call-btn">▼▼ Down big</button>
-        </div>
-      </div>
-    </details>
-  </div>
 
-  <p class="scroll-cue">See the trades ↓</p>
+      <p class="scroll-cue">See the trades ↓</p>
 
-  <!-- Zone 4: trade detail -- secondary to the headline and the CTAs,
+      <!-- Zone 4: trade detail -- secondary to the headline and the CTAs,
        still on the default page, one scroll below. -->
-  <section class="trades" aria-label="Trades">
-    <h2>Yesterday's trades</h2>
-    <ol class="trade-narration">
-      <li>Had you known, you'd have bought <strong>AVGO</strong> at 9:35 AM at $170.10 and sold it at 10:40 AM at $172.80 (<span class="gain">+1.6%</span>), turning your $20.00 into $20.32.</li>
-      <li>Then you'd have bought <strong>PLTR</strong> at 11:02 AM at $84.50 and sold it at 1:15 PM at $87.10 (<span class="gain">+3.1%</span>), turning that into $20.95.</li>
-      <li>Finally, you'd have bought <strong>SMCI</strong> at 1:45 PM at $42.30 and sold it at 3:55 PM at $46.10 (<span class="gain">+9.0%</span>), turning that into $22.84.</li>
-    </ol>
-  </section>
+      <section class="trades" aria-label="Trades">
+        <h2>Yesterday's trades</h2>
+        <ol class="trade-narration">
+          <li>
+            Had you known, you'd have bought <strong>AVGO</strong> at 9:35 AM at $170.10 and sold it
+            at 10:40 AM at $172.80 (<span class="gain">+1.6%</span>), turning your $20.00 into
+            $20.32.
+          </li>
+          <li>
+            Then you'd have bought <strong>PLTR</strong> at 11:02 AM at $84.50 and sold it at 1:15
+            PM at $87.10 (<span class="gain">+3.1%</span>), turning that into $20.95.
+          </li>
+          <li>
+            Finally, you'd have bought <strong>SMCI</strong> at 1:45 PM at $42.30 and sold it at
+            3:55 PM at $46.10 (<span class="gain">+9.0%</span>), turning that into $22.84.
+          </li>
+        </ol>
+      </section>
 
-  <!-- Zone 5: explore other windows -- demoted to the bottom, collapsed
+      <!-- Zone 5: explore other windows -- demoted to the bottom, collapsed
        by default. This is the entire previous hero/range-explorer
        experience (1W/1M/3M/1Y/5Y/Max), still fully present and fully
        functional, just no longer sharing the landing screen with the
        daily game -- it's a different, orthogonal thing to explore, not
        part of today's puzzle. -->
-  <details class="explorer">
-    <summary>
-      <span class="explorer-title">Explore other windows</span>
-      <span class="explorer-sub">1W · 1M · 3M · 1Y · 5Y · Max</span>
-    </summary>
-    <div class="explorer-body">
-      <p class="explorer-note">Same hindsight idea, zoomed out — fun to explore, but a different game than today's daily one above.</p>
+      <details class="explorer">
+        <summary>
+          <span class="explorer-title">Explore other windows</span>
+          <span class="explorer-sub">1W · 1M · 3M · 1Y · 5Y · Max</span>
+        </summary>
+        <div class="explorer-body">
+          <p class="explorer-note">
+            Same hindsight idea, zoomed out — fun to explore, but a different game than today's
+            daily one above.
+          </p>
 
-      <nav class="range-row" aria-label="Preset range">
-        <button class="pill active" style="--bar:8px">1W</button>
-        <button class="pill" style="--bar:11px">1M</button>
-        <button class="pill" style="--bar:14px">3M</button>
-        <button class="pill" style="--bar:17px">1Y</button>
-        <button class="pill" style="--bar:20px">5Y</button>
-        <button class="pill" style="--bar:23px">Max</button>
-      </nav>
-      <details class="more-options">
-        <summary>More options</summary>
-        <div class="more-options-inner">
-          <span class="or">or</span>
-          <button class="ghost-select">Choose a start date…</button>
-          <div class="mode-toggle">
-            <button class="mode-pill active">Long only</button>
-            <button class="mode-pill">Long + short</button>
-          </div>
+          <nav class="range-row" aria-label="Preset range">
+            <button class="pill active" style="--bar: 8px">1W</button>
+            <button class="pill" style="--bar: 11px">1M</button>
+            <button class="pill" style="--bar: 14px">3M</button>
+            <button class="pill" style="--bar: 17px">1Y</button>
+            <button class="pill" style="--bar: 20px">5Y</button>
+            <button class="pill" style="--bar: 23px">Max</button>
+          </nav>
+          <details class="more-options">
+            <summary>More options</summary>
+            <div class="more-options-inner">
+              <span class="or">or</span>
+              <button class="ghost-select">Choose a start date…</button>
+              <div class="mode-toggle">
+                <button class="mode-pill active">Long only</button>
+                <button class="mode-pill">Long + short</button>
+              </div>
+            </div>
+          </details>
+
+          <section class="explorer-hero" aria-label="Result for selected window">
+            <p class="hero-caption">Best possible outcome over the past week</p>
+            <p class="hero-figures">
+              <span class="hero-figure">$20.00</span>
+              <span class="hero-arrow">→</span>
+              <span class="hero-figure hero-figure-gain">$23.21</span>
+              <span class="hero-badge">(1.16x)</span>
+            </p>
+            <details class="watch-toggle">
+              <summary class="watch-btn">▶ Watch it happen</summary>
+              <div class="chart-wrap">
+                <svg
+                  viewBox="0 0 600 200"
+                  class="chart"
+                  role="img"
+                  aria-label="Portfolio value over the past week"
+                >
+                  <line x1="0" y1="40" x2="600" y2="40" class="grid" />
+                  <line x1="0" y1="95" x2="600" y2="95" class="grid" />
+                  <line x1="0" y1="150" x2="600" y2="150" class="grid" />
+                  <polygon
+                    points="0,175 90,175 90,140 260,140 260,100 430,100 430,45 600,45 600,200 0,200"
+                    class="area"
+                  />
+                  <polyline
+                    points="0,175 90,175 90,140 260,140 260,100 430,100 430,45 600,45"
+                    class="line"
+                  />
+                  <circle cx="90" cy="175" r="5" class="marker open" />
+                  <circle cx="260" cy="140" r="5" class="marker close" />
+                  <circle cx="260" cy="140" r="5" class="marker open" />
+                  <circle cx="430" cy="100" r="5" class="marker close" />
+                  <circle cx="430" cy="100" r="5" class="marker open" />
+                  <circle cx="600" cy="45" r="5" class="marker close" />
+                </svg>
+                <div class="chart-axis"><span>Mon, Aug 18</span><span>Fri, Aug 22</span></div>
+              </div>
+            </details>
+          </section>
+
+          <section class="trades" aria-label="Trades for selected window">
+            <h2>Trades</h2>
+            <ol class="trade-narration">
+              <li>
+                Had you known, you'd have bought <strong>NVDA</strong> on Mon, Aug 18 at $121.40 and
+                sold it Tue, Aug 19 at $128.35 (<span class="gain">+5.7%</span>), turning your
+                $20.00 into $21.14.
+              </li>
+              <li>
+                Then you'd have bought <strong>AVGO</strong> on Tue, Aug 19 at $168.20 and sold it
+                Wed, Aug 20 at $174.05 (<span class="gain">+3.5%</span>), turning that into $21.88.
+              </li>
+              <li>
+                Finally, you'd have bought <strong>PLTR</strong> on Wed, Aug 20 at $84.10 and sold
+                it Thu, Aug 21 at $89.20 (<span class="gain">+6.1%</span>), turning that into
+                $23.21.
+              </li>
+            </ol>
+          </section>
         </div>
       </details>
 
-      <section class="explorer-hero" aria-label="Result for selected window">
-        <p class="hero-caption">Best possible outcome over the past week</p>
-        <p class="hero-figures">
-          <span class="hero-figure">$20.00</span>
-          <span class="hero-arrow">→</span>
-          <span class="hero-figure hero-figure-gain">$23.21</span>
-          <span class="hero-badge">(1.16x)</span>
-        </p>
-        <details class="watch-toggle">
-          <summary class="watch-btn">▶ Watch it happen</summary>
-          <div class="chart-wrap">
-            <svg viewBox="0 0 600 200" class="chart" role="img" aria-label="Portfolio value over the past week">
-              <line x1="0" y1="40" x2="600" y2="40" class="grid" />
-              <line x1="0" y1="95" x2="600" y2="95" class="grid" />
-              <line x1="0" y1="150" x2="600" y2="150" class="grid" />
-              <polygon points="0,175 90,175 90,140 260,140 260,100 430,100 430,45 600,45 600,200 0,200" class="area" />
-              <polyline points="0,175 90,175 90,140 260,140 260,100 430,100 430,45 600,45" class="line" />
-              <circle cx="90" cy="175" r="5" class="marker open" />
-              <circle cx="260" cy="140" r="5" class="marker close" />
-              <circle cx="260" cy="140" r="5" class="marker open" />
-              <circle cx="430" cy="100" r="5" class="marker close" />
-              <circle cx="430" cy="100" r="5" class="marker open" />
-              <circle cx="600" cy="45" r="5" class="marker close" />
-            </svg>
-            <div class="chart-axis"><span>Mon, Aug 18</span><span>Fri, Aug 22</span></div>
-          </div>
-        </details>
-      </section>
-
-      <section class="trades" aria-label="Trades for selected window">
-        <h2>Trades</h2>
-        <ol class="trade-narration">
-          <li>Had you known, you'd have bought <strong>NVDA</strong> on Mon, Aug 18 at $121.40 and sold it Tue, Aug 19 at $128.35 (<span class="gain">+5.7%</span>), turning your $20.00 into $21.14.</li>
-          <li>Then you'd have bought <strong>AVGO</strong> on Tue, Aug 19 at $168.20 and sold it Wed, Aug 20 at $174.05 (<span class="gain">+3.5%</span>), turning that into $21.88.</li>
-          <li>Finally, you'd have bought <strong>PLTR</strong> on Wed, Aug 20 at $84.10 and sold it Thu, Aug 21 at $89.20 (<span class="gain">+6.1%</span>), turning that into $23.21.</li>
-        </ol>
-      </section>
-    </div>
-  </details>
-
-  <!-- Zone 6: everything substantiating -- disclaimer, methodology, the
+      <!-- Zone 6: everything substantiating -- disclaimer, methodology, the
        SPY comparison, and the share link -- lives in one collapsed
        disclosure, exactly like the shipped AboutSection. -->
-  <details class="about">
-    <summary>Disclaimer &amp; methodology</summary>
-    <div class="about-body">
-      <p>Best possible outcome for the selected window, with at most 3 sequential all-in trades across the S&amp;P 500, using only closed (EOD) or same-day intraday prices. As of Aug 26, 2026.</p>
-      <p>This is a hindsight toy, not investment advice or a predictor of future results.</p>
-      <p>Buying and holding SPY through yesterday's session would have turned $20.00 into $20.11 instead.</p>
-      <p><a href="#">Copy a shareable result card</a></p>
-      <details class="methodology-nested">
-        <summary>Methodology &amp; assumptions</summary>
-        <p>Computed nightly from real daily closing (and, for the daily game, intraday) prices across the S&amp;P 500 universe. At most 3 sequential, all-in, long-only trades are chosen with full hindsight to maximize the ending balance. Past performance shown here says nothing about future results.</p>
+      <details class="about">
+        <summary>Disclaimer &amp; methodology</summary>
+        <div class="about-body">
+          <p>
+            Best possible outcome for the selected window, with at most 3 sequential all-in trades
+            across the S&amp;P 500, using only closed (EOD) or same-day intraday prices. As of Aug
+            26, 2026.
+          </p>
+          <p>This is a hindsight toy, not investment advice or a predictor of future results.</p>
+          <p>
+            Buying and holding SPY through yesterday's session would have turned $20.00 into $20.11
+            instead.
+          </p>
+          <p><a href="#">Copy a shareable result card</a></p>
+          <details class="methodology-nested">
+            <summary>Methodology &amp; assumptions</summary>
+            <p>
+              Computed nightly from real daily closing (and, for the daily game, intraday) prices
+              across the S&amp;P 500 universe. At most 3 sequential, all-in, long-only trades are
+              chosen with full hindsight to maximize the ending balance. Past performance shown here
+              says nothing about future results.
+            </p>
+          </details>
+        </div>
       </details>
     </div>
-  </details>
-
-</div>
-</body>
+  </body>
 </html>

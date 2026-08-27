@@ -13,6 +13,7 @@ import { headlineFigureFor } from "@/lib/headline-figure";
 import { DEFAULT_MODE, parseMode, type Mode } from "@/lib/mode";
 import { BeatTheBench } from "@/components/BeatTheBench";
 import { CallBoard } from "@/components/CallBoard";
+import { DailyHero } from "@/components/DailyHero";
 import { DailyRitual } from "@/components/DailyRitual";
 import { CustomRangeSelector } from "@/components/CustomRangeSelector";
 import { ModeToggle } from "@/components/ModeToggle";
@@ -138,6 +139,21 @@ export function ResultsPage() {
   return (
     <div className="flex w-full max-w-3xl flex-col gap-8 px-6 py-16 sm:px-8">
       <OnboardingIntro />
+
+      {/* The daily hero (issue #161): the previous market day's own
+          "had you known" result, leading with a direct statement rather
+          than the 1W range view's guess-then-reveal gate -- the page's
+          new top-of-page content, per this issue's own Scope item 5.
+          Mounted above the header/range explorer (not inside it, and
+          not inside ResultsPanel) so it renders regardless of how the
+          range explorer's own /api/results?range=1W fetch goes -- the
+          same "a section, not a branch inside ResultsPanel" reasoning
+          issue #122 already established for BeatTheBench/CallBoard
+          below. Deliberately not removing or restructuring the header/
+          RangeSelector/ResultsPanel that follow -- see this issue's own
+          Out of scope: demoting the range explorer is a separate,
+          follow-up issue. */}
+      <DailyHero mode={mode} />
 
       <header className="flex flex-col gap-4">
         <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Had I Known Trades</h1>

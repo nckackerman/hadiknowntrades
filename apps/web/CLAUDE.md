@@ -7031,3 +7031,160 @@ Geist Sans. It reads as deliberate de-emphasis rather than a mistake --
 which is what #31 wanted from that stat -- so it was left alone. Worth
 knowing before someone "fixes" it in one direction without checking the
 other.
+
+## The daily hero: yesterday's result replaces the guess-then-reveal gate as the page's lead content (issue #161)
+
+The first build issue in a second UI-simplification pass (design
+references at `docs/design/ui-simplification-2026-08/`, distinct from
+the "Hindsight Wrapped" milestone above) -- the app is becoming a daily-
+game app, and the landing screen now leads with a direct statement about
+the most recently completed trading day instead of the 1W range view's
+own guess-then-reveal gate (issue #91). That gate, `WholeRangeBalance`/
+`WholeRangeReplay`, `RangeSelector`, and `ResultsPanel` are all
+completely untouched by this issue -- see its own Out of scope. This is
+a pure-frontend addition: `packages/core`/`apps/pipeline` diffs are
+empty, confirmed via `git status` before opening the PR.
+
+- **Three new files, mirroring `use-call-board.ts`'s own established
+  shape for a mechanic that reads a fixed range's data without taking a
+  `PrecomputedResult` prop:**
+  - `lib/daily-challenge.ts`'s `dailyChallengeFor(day: IntradayDayResult,
+mode: Mode)` recompounds a day's own mode-selected trades (issue #13's
+    `selectVariant`) from a **fresh `DAILY_CHALLENGE_STARTING_CAPITAL`
+    ($20)**, not the day's real chained `startingCapital` (issue #84's
+    `chainStartingCapital` -- see this file's own
+    "rescaleFromStartingCapital's per-day pattern..." section for why a
+    day's own `startingCapital` isn't a flat $20 any more). Pure, no
+    React -- loops `trade-math.ts`'s `compoundBalance` directly rather
+    than routing through `narrateTrades` (which also returns this same
+    running balance, but bundled with prose-specific fields this module
+    doesn't need).
+  - `lib/use-daily-challenge.ts`'s `useDailyChallenge(mode)` fetches
+    `/api/results?range=${DAILY_CHALLENGE_RANGE}` (`"1W"`, exported
+    for tests, and for the identical reason `CALL_BOARD_SERIES_RANGE`
+    is: 1W is `ResultsPage`'s own `DEFAULT_RANGE`, so this is very
+    likely already warm in the browser's cache on first load) and reads
+    the most recent entry in `data.days` through `dailyChallengeFor`.
+    Returns `{ dailyChallenge, loading }`, not a bare nullable value --
+    `loading` distinguishes "still fetching" (render a skeleton) from
+    "loaded, but genuinely nothing to show" (a fetch error, a window-
+    model body, or zero trading days -- all three degrade to
+    `dailyChallenge: null` forever), which matters here in a way it
+    didn't for `useCallBoardCloses()` (that hook only ever needs the
+    binary "do I have a series or not").
+  - `components/DailyHero.tsx` is the section itself.
+- **Mounted directly in `ResultsPage.tsx`, above the existing
+  `<header>`** (which still owns `RangeSelector`/`ResultsPanel`,
+  completely unchanged) -- not inside `ResultsPanel`, for the same two
+  reasons issue #122's standing decision already gives for
+  `BeatTheBench`/`CallBoard`: `ResultsPanel` renders nothing but a
+  skeleton or an error box until `/api/results` succeeds, and this
+  section is meant to be the very first thing a visitor sees regardless
+  of how that fetch goes. **This is a real, deliberate placement call
+  worth being explicit about**: the issue's own Scope only requires
+  landing above "the existing range explorer," and doesn't say anything
+  about the app's own `<h1>`/wordmark -- restructuring the header itself
+  (splitting the title from `RangeSelector`) was out of scope for this
+  issue (a separate, later issue demotes the range explorer entirely),
+  so the daily hero renders above the `<h1>` too, not between the title
+  and the pills. Verified live (see below) that this reads fine, not
+  awkward, matching the mockup's own "topbar, then daily hero" order
+  closely enough at 99% fidelity.
+- **The eyebrow is deliberately NOT `--accent-reward` gold**, despite
+  the mockup's own `.day-eyebrow` using it -- a considered deviation from
+  the mockup's literal styling, not an oversight. `globals.css`'s own
+  token decision record (issue #121) is explicit that gold is reserved
+  for genuinely _earned_ state (a streak, a win stamp, an unlocked
+  recap) and reads as wrong the moment it shows up on something merely
+  displayed, and a plain date label isn't an earned outcome -- it's the
+  same category of caption `DailyRitual.tsx`'s own date line already
+  uses `--text-muted` for. Styled `--text-muted` here instead, matching
+  that precedent.
+- **Deliberately not animated** -- unlike `HeroStat.tsx`'s count-up
+  reveal, this figure renders its final value immediately, no
+  `useCountUp`/`CelebrationBurst`/reveal-accent glow. Reusing
+  `HeroStat`'s already-exported typography constants
+  (`heroValueRowClassName`, `heroMultiplierClassName`/
+  `heroMultiplierColor`) gives this section the same hero-scale look and
+  the same gain/loss coloring convention with zero new CSS, while
+  staying consistent with this app's other static figures
+  (`WorstCaseStat`, `BenchmarkStat`, the trade narration), none of which
+  animate either. This also sidesteps issue #147's whole reserved-box
+  story entirely -- there's no tween to sweep through intermediate
+  compact-unit-ladder strings, so no `AnimatedFigure` is needed here.
+- **The "Yesterday's trades" narration reuses `narrateTrades` directly,
+  per this issue's own Scope, but does NOT reuse `TradeList.tsx`'s JSX
+  verbatim** -- a new small `TradeNarrationList` private component in
+  `DailyHero.tsx` builds its own sentence, differing from `TradeList`'s
+  established template in exactly one place: "at {time}" instead of "on
+  {date}" for each trade's open/close labels (matching
+  `IntradayTradeList`/`TradeRow.tsx`'s own established "at" convention
+  for a time-of-day label, since `narrate-trades.ts`'s own doc comment
+  already anticipated this exact split -- `NarratableTrade` takes
+  already-formatted label strings specifically so a time-labeled caller
+  could write its own sentence template with zero changes to that
+  module). Deliberately didn't add a `preposition` prop to `TradeList`
+  itself to let it double as this section's renderer too -- that would
+  mean threading a new prop through an already well-tested, unrelated
+  component for a single new caller, a larger change than this issue's
+  own scope called for. Worth reconsidering if a third "at"-vs-"on"
+  caller ever shows up.
+- **A real existing test needed a real update, not just a new
+  assertion**: `ResultsPage.test.tsx`'s "does not also fetch a preset
+  range's own result while in anchor mode" test used to assert the
+  _only_ `range=` fetch in anchor mode was the Call Board's own -- this
+  section's `useDailyChallenge` now unconditionally fetches the same
+  fixed `/api/results?range=1W` too, for its own unrelated reason
+  (reading `days` for the most recent trading day, vs. the Call Board's
+  own `benchmarkSeries`), so the assertion now expects **two** matching
+  requests. Both interpolate the same literal range (`CALL_BOARD_SERIES_RANGE`/
+  `DAILY_CHALLENGE_RANGE` are both `"1W"`), so the array-order question
+  this might otherwise raise (which of the two mounted components' own
+  effects fires its fetch first) never actually matters for this
+  particular assertion.
+- **Live-verified against a real local pipeline run** (`local-run.ts`,
+  the default 20-ticker sample, real Yahoo network calls, no S3 write)
+  plus `next build`/`next start` and the documented no-root headless-
+  Chromium workaround -- `next dev` cannot hydrate in this sandbox (see
+  issue #123's own note above), and this section's content only ever
+  appears after client-side hydration resolves its fetch (`page.tsx`'s
+  `Suspense` boundary around `ResultsPage`, which reads
+  `useSearchParams()`, bails the whole tree to CSR -- confirmed live via
+  `curl`, which got the `BAILOUT_TO_CLIENT_SIDE_RENDERING` placeholder
+  markup, not real content, exactly why this needed a real browser and
+  not just a fetch check). Real 1W result: 5 trading days, the most
+  recent (2026-08-26) carrying 3 real trades (ALB, AKAM, AKAM) with a
+  real chained `startingCapital` of $28.12 -- confirmed the rendered
+  page shows `$20.00 -> $21.43 (1.1x)`, matching a hand-computed
+  `20 * (135.35/132.02) * (108.36/106.31) * (109.51/106.80) ≈ 21.43`,
+  not the chained `$28.12 -> $30.13` still correctly shown further down
+  in the (untouched) `DayOverview` row for the same day -- confirming
+  this is genuinely a fresh-$20 figure, not the chained one, per the
+  issue's own spot-check acceptance criterion. Confirmed live: the daily
+  hero (including its own "Yesterday's trades" section) renders above
+  the `<h1>`/`RangeSelector`/`ResultsPanel` in document order; a 390px
+  mobile screenshot reflows cleanly with `scrollWidth === clientWidth`
+  (no horizontal overflow); zero console errors or `pageerror` events.
+  The temporary `playwright` devDependency was reverted afterward
+  (`git checkout -- package.json pnpm-lock.yaml`, confirmed via `git
+status`), per this file's own established convention.
+- **Not verified live** (no real trading day in the sample data lacked a
+  trade -- every day this issue's own optimizer runs against found at
+  least one): the zero-trade-day fallback ("No trade would have beaten
+  holding cash on {date}.") and the long+short mode variant, both
+  covered instead by `DailyHero.test.tsx`'s own component tests against
+  hand-built fixtures.
+- **A pre-existing, unrelated `pnpm format:check` failure was found and
+  fixed along the way**: `docs/design/ui-simplification-2026-08/
+mockup-simplified.html` (added by issue #160, already on `main` before
+  this issue started) was never run through Prettier -- confirmed via
+  `git stash` that `prettier --check` already fails against a clean
+  checkout of `main` itself, so this predates and is unrelated to this
+  issue's own changes. Reformatted (`prettier --write`, a purely
+  mechanical whitespace/quote-style change, no content edit -- confirmed
+  via a visual diff read before committing) as its own separate commit
+  in this issue's PR, both because CI's own "Check results" step gates
+  on `format:check` repo-wide (so leaving it broken would have kept this
+  PR's own CI red for a reason this issue didn't cause) and per this
+  repo's standing engineering-excellence convention of fixing a found
+  issue rather than routing around it.

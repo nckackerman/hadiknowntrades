@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { stubMatchMedia } from "@/lib/stub-match-media.test-util";
+import { DAILY_CHALLENGE_RANGE } from "@/lib/use-daily-challenge";
 import { CALL_BOARD_SERIES_RANGE } from "@/lib/use-call-board";
 
 const replace = vi.fn();
@@ -300,16 +301,21 @@ describe("ResultsPage", () => {
 
       // The view's own result comes from exactly one of useResults /
       // useCustomResults -- never both (see ResultsPage.tsx). The Call
-      // Board (issue #129) does fetch a preset range's result too, but
-      // for a completely unrelated reason: it reads only that result's
-      // range-independent `benchmarkSeries` (issue #126) and always asks
-      // for the same fixed range regardless of what the page is showing,
-      // so it can never be confused for the view's own result fetch.
+      // Board (issue #129) and the daily hero (issue #161) both
+      // independently fetch a preset range's result too, but for
+      // completely unrelated reasons -- the Call Board reads only that
+      // result's range-independent `benchmarkSeries` (issue #126); the
+      // daily hero reads only its `days` array for the most recently
+      // completed trading day (issue #161) -- and both always ask for
+      // the same fixed range (1W) regardless of what the page is
+      // showing, so neither can be confused for the view's own result
+      // fetch.
       const requested = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.map(
         (call) => call[0] as string,
       );
       expect(requested.filter((url) => url.includes("range="))).toEqual([
         `/api/results?range=${CALL_BOARD_SERIES_RANGE}`,
+        `/api/results?range=${DAILY_CHALLENGE_RANGE}`,
       ]);
     });
 
