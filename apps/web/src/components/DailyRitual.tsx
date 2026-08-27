@@ -178,7 +178,16 @@ function RecapPanel({ recap }: { recap: string }) {
           onClick={() => {
             void copyText(recap).then((ok) => setCopyResult({ text: recap, ok }));
           }}
-          className="inline-flex min-h-11 items-center justify-center rounded-md bg-[var(--accent-selection)] px-4 text-sm font-semibold text-white"
+          // Chunky "juicy" press-button (issue #188), matching the design
+          // reference's own `.copy-btn`/`.btn-juicy`: a solid bottom-edge
+          // box-shadow that flattens to a 1px edge on `:active` while the
+          // button shifts down the same 3px the shadow gave up -- the same
+          // physical "pressed in" treatment as DailyHero.tsx's own "Watch
+          // it happen" button (see that file's `WATCH_BUTTON_CLASSNAME`
+          // doc comment for the full reasoning), just in this button's own
+          // existing blue accent color. `min-h-11` (44px) already met this
+          // app's touch-target floor before this issue; unchanged here.
+          className="inline-flex min-h-11 items-center justify-center rounded-[0.65rem] bg-[var(--accent-selection)] px-[1.15rem] text-sm font-bold text-white shadow-[0_4px_0_0_#1f5aa8] transition duration-75 ease-out active:translate-y-[3px] active:shadow-[0_1px_0_0_#1f5aa8]"
         >
           Copy recap
         </button>
