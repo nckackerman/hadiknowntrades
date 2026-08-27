@@ -5877,6 +5877,37 @@ count and horizontal spread by tier.
   The verification scripts and the temporary `playwright` devDependency
   were reverted before committing, per this file's own convention.
 
+### The deferred token application, done (issue #156)
+
+The recolor this section's own "deliberately not applied here" bullet
+flagged as deferred. `CelebrationBurst.tsx`'s `CONFETTI_COLORS` used to
+hardcode two colors that duplicated real tokens rather than referencing
+them -- `#f5b301` (a second, undocumented gold, distinct from
+`--accent-reward`'s `#e8a33d`) and `#3987e5` (a literal copy of
+`--series-1`) -- confirmed live by issue #135's own QA pass as two golds
+on screen at once (the confetti's `rgb(245, 179, 1)` next to The Call
+Board's `rgb(232, 163, 61)`).
+
+**The decision: reference the tokens for those two, keep the other four
+as a deliberately separate festive palette.** `#ff6b6b`/`#2dd4bf`/
+`#a78bfa`/`#34d399` don't duplicate any existing semantic token, so
+there's no drift risk to fix and no reason to invent one by tokenizing
+them -- they stay festive literals, chosen for variety, with nothing to
+keep in sync. `CelebrationBurst.tsx`'s own doc comment above
+`CONFETTI_COLORS` now states this split explicitly, specifically so a
+future QA pass doesn't have to re-derive it a third time. `globals.css`'s
+own `--accent-reward` consumer list (see its own comment block) now says
+CelebrationBurst genuinely is a consumer, replacing the "NOT
+CelebrationBurst... don't read the confetti as already using this token"
+language #135 had to add when it wasn't yet true.
+
+No canvas/SVG constraint applied here -- confetti pieces are plain HTML
+`<span>`s with an inline `backgroundColor` style, which resolves a CSS
+custom property exactly the way a stylesheet rule would, so `var(--accent-reward)`/
+`var(--series-1)` needed no special-casing. `celebration-magnitude.ts`'s
+own tier table (piece count/spread) is untouched, per this issue's own
+explicit Out of scope -- this is a palette-only change.
+
 ## The Call Board engine: storage, scoring, resolution (issue #128)
 
 The pure logic layer behind the rolling 3-day prediction game -- **no UI

@@ -25,7 +25,41 @@ interface CelebrationBurstProps {
 // dataviz tokens in globals.css (this isn't a chart, it's a one-shot
 // decoration), chosen to stay legible against this app's one dark
 // background (issue #76: dark is the only theme, no toggle to key off).
-const CONFETTI_COLORS = ["#f5b301", "#ff6b6b", "#2dd4bf", "#a78bfa", "#3987e5", "#34d399"];
+//
+// Two of these six are real token references, not festive literals
+// (issue #156, filed by issue #135's cross-feature QA pass): this array
+// used to hardcode `#f5b301` (a second, undocumented gold, distinct from
+// `--accent-reward`'s `#e8a33d`) and `#3987e5` (a byte-for-byte literal
+// copy of `--series-1`). Both were live, on screen, at the same moment
+// as the token's own real color elsewhere on the page -- `--accent-reward`
+// on The Call Board's exact-match history cells, `--series-1` on the
+// portfolio chart's own line -- which is exactly the "two golds"/"two
+// blues" drift globals.css's own token doc comment exists to prevent.
+// Referencing the tokens directly means a future change to either one
+// (a rebalance like issue #123's, or a hue shift) reaches the confetti
+// automatically instead of leaving a stale duplicate behind for a future
+// QA pass to re-discover a third time. `<span>` background-color is a
+// plain HTML inline style, not an SVG/canvas paint operation that would
+// need a resolved literal -- a CSS custom property works here exactly as
+// it would in a stylesheet.
+//
+// The other four (`#ff6b6b`, `#2dd4bf`, `#a78bfa`, `#34d399`) are
+// deliberately kept as festive literals, not promoted to tokens: none of
+// them duplicates an existing semantic color anywhere else in this app,
+// so there is no drift risk to guard against and no semantic meaning
+// (gain/loss, selection, reward) they'd need to inherit or misrepresent.
+// They exist purely to make the burst read as colorful confetti, with no
+// collision to avoid -- don't "finish the migration" by tokenizing these
+// too; that would just invent meaning for colors that were never meant
+// to carry any.
+const CONFETTI_COLORS = [
+  "var(--accent-reward)",
+  "#ff6b6b",
+  "#2dd4bf",
+  "#a78bfa",
+  "var(--series-1)",
+  "#34d399",
+];
 
 interface ConfettiPiece {
   id: number;
