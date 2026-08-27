@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   beatTheBenchKey,
+  readAnyPlayedSession,
   readPlayedSession,
   savePlayedSession,
   type PlayedSession,
@@ -96,5 +97,39 @@ describe("readPlayedSession / savePlayedSession", () => {
     expect(savePlayedSession("2026-08-26", "todays-close", RECORD)).toBe(false);
     expect(() => readPlayedSession("2026-08-26", "todays-close")).not.toThrow();
     expect(readPlayedSession("2026-08-26", "todays-close")).toBeNull();
+  });
+});
+
+describe("readAnyPlayedSession (issue #133)", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    window.localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  it("finds a record whichever mode it was played in", () => {
+    // "mystery" is issue #132's mode and doesn't ship yet -- writing one
+    // here is exactly the point: the rail must not hard-code the one mode
+    // that exists today.
+    savePlayedSession("2026-08-26", "mystery", RECORD);
+
+    expect(readAnyPlayedSession("2026-08-26")).toEqual({ mode: "mystery", session: RECORD });
+  });
+
+  it("prefers the canonical mode when a date was played in more than one", () => {
+    const mystery: PlayedSession = { ...RECORD, outcome: "loss", moves: 7 };
+    savePlayedSession("2026-08-26", "mystery", mystery);
+    savePlayedSession("2026-08-26", "todays-close", RECORD);
+
+    expect(readAnyPlayedSession("2026-08-26")).toEqual({ mode: "todays-close", session: RECORD });
+  });
+
+  it("reports nothing for a date that wasn't played, even if a neighbouring one was", () => {
+    savePlayedSession("2026-08-25", "todays-close", RECORD);
+
+    expect(readAnyPlayedSession("2026-08-26")).toBeNull();
   });
 });
