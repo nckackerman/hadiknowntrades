@@ -695,3 +695,110 @@ body {
     animation: none;
   }
 }
+
+/*
+ * DailyHero's one-time showcase entrance (issue #175): the eyebrow +
+ * statement, the $X -> $Y figures row, the chart slot (holding either
+ * the "Watch it happen" button or the revealed chart), and each ticker
+ * chip fade/pop in once on mount, staggered, then hold -- there's
+ * nothing new to reveal by repeating identical, date-seeded data (see
+ * docs/design/gamified-hero-2026-08/mockup-gamified-hero.html's own
+ * comment on this exact reasoning).
+ *
+ * Two-layer reduced-motion guard, the same shape .results-fade-in/
+ * .hero-figure-accent-animate/.portfolio-chart-reveal above all use:
+ * DailyHero.tsx derives `playEntranceAnimation` once via
+ * useReducedMotionAfterMount (this component mounts at the ResultsPage
+ * level, which *can* render on the server -- see that hook's own doc
+ * comment for why useReducedMotionAtMount's useState-lazy-initializer
+ * shortcut isn't safe here) as the primary gate deciding whether to add
+ * any of the three "-animate" classes below at all; the media query
+ * here is defense-in-depth for a future caller that skips the check.
+ *
+ * Each base class (no "-animate" suffix, always applied alongside its
+ * "-animate" sibling) already renders the settled, fully-visible final
+ * state -- opacity 1, no transform. `animation: ... both` makes the
+ * "-animate" sibling apply the keyframe's `from` values for the
+ * duration of any `animation-delay` too (so a staggered element stays
+ * invisible during its own delay instead of flashing visible-then-
+ * hidden), then holds the keyframe's own `to` values once it finishes --
+ * which are identical to the base class's resting values. That's what
+ * makes it safe for `playEntranceAnimation` to flip from true to false
+ * shortly after mount (the deferred-correction hook's own inherent
+ * hydration-safety tradeoff) without ever stranding an element
+ * mid-fade: removing the "-animate" class mid-flight just snaps
+ * straight to the same values the animation was already animating
+ * toward, the identical technique `.hero-figure-accent`/
+ * `.hero-figure-accent-animate` above already establish.
+ */
+@keyframes daily-hero-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.daily-hero-fade-up {
+  opacity: 1;
+  transform: none;
+}
+
+.daily-hero-fade-up-animate {
+  animation: daily-hero-fade-up 700ms ease-out both;
+}
+
+@keyframes daily-hero-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.daily-hero-pop {
+  opacity: 1;
+  transform: none;
+}
+
+.daily-hero-pop-animate {
+  animation: daily-hero-pop 600ms ease-out both;
+}
+
+@keyframes daily-hero-chip-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  70% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.daily-hero-chip {
+  opacity: 1;
+  transform: none;
+}
+
+.daily-hero-chip-animate {
+  animation: daily-hero-chip-pop 500ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .daily-hero-fade-up-animate,
+  .daily-hero-pop-animate,
+  .daily-hero-chip-animate {
+    animation: none;
+  }
+}
