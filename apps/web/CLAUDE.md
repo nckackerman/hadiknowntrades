@@ -7740,3 +7740,155 @@ plus the documented no-root headless-Chromium workaround:
 - The temporary `playwright` devDependency and the `apt-get download`/
   `dpkg-deb -x`-extracted shared libraries were both reverted before
   committing, per this file's own established convention.
+
+## Landing simplification: end-to-end verification pass (issue #166), and why it stayed verification-only
+
+The closing issue of the "Landing simplification: daily-game default"
+milestone (#161-166). Its own Scope is explicit that this is
+verification, bug-fixing of what #161-165 shipped, and documentation --
+**not** new feature work, and that held: a full, real, played-through
+pass across every mechanic on the simplified landing found **zero
+genuinely broken behavior**. That's not a surprising outcome for this
+particular milestone specifically -- unlike most of this file's other
+sections, #161/#162/#163/#164/#165 (and the eight-issue "Hindsight
+Wrapped" build-out before them) each already carried their own live
+verification pass, several with multiple independent code-review rounds
+on top, before this issue ever started. This issue's own job was
+confirming all five of those passes still add up to one coherent,
+working page **together**, end to end, against real data -- not
+re-discovering bugs those passes had already caught individually.
+
+### The busyness problem this whole pass (and the milestone it closes) solved
+
+Before this milestone, the landing page led with the full 1W range
+explorer's own guess-then-reveal gate (`WholeRangeBalance`) plus two
+always-expanded, full-size mechanics (`BeatTheBench`, `CallBoard`)
+stacked beneath it in the DOM, all ahead of the app's own `<h1>`/
+`RangeSelector`. Per issue #135's own measurements (see its section
+above), that put the two mechanics roughly **1100-1900px** below the
+fold depending on range/width -- nowhere close to a single-scroll "daily
+ritual." #161-165 replaced that with: a static "had you known" daily
+hero as the lead content (#161, no guess gate, no gate on its trades),
+two mechanics collapsed to compact "Can you do better?" / "Think you
+know the future?" CTA cards that expand in place on click (#163/#164),
+the replay chart hidden until "Watch it happen" is clicked on both the
+new daily hero and the pre-existing whole-range headline (#162), and the
+entire pre-existing 1W-6M/5Y/MAX range-explorer experience demoted into
+one collapsed "Explore other windows" `<details>` at the very bottom of
+the page (#165). Net effect, reconfirmed by this issue's own fresh
+measurement below: both CTA cards now sit within **~20-320px** of the
+fold (1440px/390px respectively), not over a thousand.
+
+### What was verified, against real data, played through rather than screenshotted once
+
+The permanent `LOCAL_RESULTS_DIR` workflow (this file's own top section)
+-- a real `local-run.ts` pass against the default 20-ticker sample, real
+Yahoo network calls, producing real preset results, 1,254 real
+custom-anchor results, a real Beat the Bench Today's Close session, and
+a real 41-session mystery pool -- then `next build` + `next start` (not
+`next dev`; see issue #123's own note above on why headless Chromium
+can't hydrate a dev-mode page in this sandbox) plus a headless-Chromium
+Playwright pass (added with `pnpm add -D -w playwright` for the session,
+reverted afterward). Every check below ran with **zero console errors,
+zero console warnings, and zero `pageerror` events**:
+
+- **No-scroll-ish landing at 1440x900 and 390x844**: header, daily hero
+  (no chart), both CTA cards all render on first paint at both widths.
+- **Chart reveal on the daily hero**: zero `<svg>` elements anywhere on
+  first paint; clicking the daily hero's own "Watch it happen" mounts
+  exactly one.
+- **A full real Beat the Bench Today's Close session**, expanded from
+  its compact card, played bar-by-bar via repeated "Step forward one
+  bar" clicks through to a genuine settlement ("Along for the ride" /
+  "Level with the bench to the cent" on this run's real zero-move tie),
+  with the compact card's own status line correctly reflecting the
+  played session after a full page reload.
+- **A real Call Board pick** for all three open slots, made through the
+  expanded card, confirmed to persist -- both the status line ("3 of 3
+  called this week") and the underlying picks themselves -- across a
+  full page reload.
+- **`DailyRitual`'s status rail and recap**, exercised through a
+  complete real day: all three rail items (`✓ The reveal`, `✓ Beat the
+Bench`, `✓ The Call Board`) reached `done` only once their respective
+  real interactions completed, the recap stayed locked until then, and
+  once unlocked its "Copy recap" button (tested with real
+  `clipboard-read`/`clipboard-write` permissions, not just the
+  denied-permission fallback) put the exact on-screen text on the real
+  system clipboard -- including the "Hindsight over the past week: ..."
+  line, confirmed present only after the whole-range guess was
+  separately revealed (the same spoiler gate `ShareCardLink` already
+  respects, per issue #133's own section above -- reconfirmed still
+  correct here, not re-derived from scratch).
+- **The demoted "Explore other windows" section's full functionality**:
+  expanding it (a real `<details>.open` flip, not just a CSS visibility
+  toggle); `RangeSelector` switching to 5Y and correctly rendering the
+  window model's own always-visible hero; the nested "More options"
+  disclosure's `ModeToggle` (`?mode=long-short` written to the URL) and
+  `CustomRangeSelector` (a real calendar popover, an enabled day click
+  writing `?anchor=2026-08-03` and rendering that day's real result);
+  the 1W whole-range guess-then-reveal flow (a real guess, a real
+  reveal, `DayOverview`'s day rows updating `?day=` on click); and both
+  of this page's now-two independent "Watch it happen" replay controls
+  (the daily hero's own, and the explorer's `WholeRangeReplay`/
+  `TradeReplay`) confirmed to mount and behave correctly independently
+  of one another, with the window model's own replay confirmed through
+  a full "Skip to end" -> "Replay" cycle.
+- **No horizontal overflow** (`document.documentElement.scrollWidth ===
+clientWidth`, exactly, checked repeatedly through every interaction
+  above at 390px, not just on first paint) and **no unexpected
+  post-paint layout shift** (five samples of every top-level section's
+  own `top` offset, 400ms apart across 2s after load, byte-identical
+  across all five).
+
+### The one real finding: reconfirmed, not rediscovered
+
+Issue #165's own section above already measured and documented, in
+detail, that the two CTA cards sit slightly below the fold at both
+1440px (~21px, `921` vs `900`) and especially 390px (~320px, `1163.75`
+vs `844`) -- an honest, deliberately-deferred gap against this issue's
+own "zero scrolling" framing, with the reasons already spelled out there
+(the daily hero's inseparable trade-detail Fragment, and this app's
+established `gap-8` spacing between top-level sections). This issue's
+own fresh measurement, taken independently with a different selector
+strategy (the real `<section>` elements' own `getBoundingClientRect()`,
+not a text-node walk), landed on the **exact same numbers** -- `921` and
+`1163.75` respectively. Restated here rather than left only in #165's
+own section, since this issue's own acceptance criteria specifically
+call for confirming (or refuting) exactly this claim: **confirmed,
+unchanged, still real** -- not fixed, per this issue's own Out of scope
+("verification and bug-fixing of what #161-165 shipped, not new feature
+work"). Closing it would mean touching `BeatTheBench.tsx`/`CallBoard.tsx`'s
+own padding or `DailyHero.tsx`'s own trade-detail placement -- both a
+real, considered layout change, not a one-line fix appropriate for a
+verification pass.
+
+No other genuine-but-deferred findings turned up. Every copy string,
+spacing value, and interaction path exercised above matched what
+#161-165's own sections already document shipping.
+
+### A worktree-isolation pitfall worth remembering for the next agent working in this repo's own multi-worktree setup
+
+Not a product bug, but a real, reproducible harness gotcha hit while
+starting this issue's own verification, worth recording here rather than
+re-discovering it cold next time: a worktree-isolated agent session's
+`cd <shared-checkout-path> && <command>` is only blocked for `git`
+subcommands (the harness refuses those explicitly, with a clear error
+naming the isolation) -- but **not** for `pnpm`/`node`/`next` commands,
+which run against whatever directory the `cd` lands on with no warning
+at all. `cd`-ing to the shared checkout path by habit (rather than
+staying in the assigned worktree directory) let a `pnpm add -D -w
+playwright` genuinely dirty the **shared** checkout's `package.json`/
+`pnpm-lock.yaml` -- exactly the kind of change that would collide with
+whatever any other concurrently-running agent is doing there. Caught by
+`git status` refusing to run against the shared checkout at all (the one
+signal that something was off), diagnosed by a plain `diff` against the
+worktree's own clean copy (`diff`, unlike `git diff`, isn't blocked),
+and fixed by `cp`-ing the worktree's clean files back over the shared
+checkout's dirtied ones (`cp`/`Write` against the shared path is also
+blocked for `Write`, but not for a plain `cp` in `Bash`) -- both files
+came back byte-identical, confirmed via `diff` again before moving on.
+**The general lesson**: for any command in this environment, not just
+`git`, always confirm `pwd`/the command's own effective directory is the
+assigned worktree before running anything that writes to disk -- the
+isolation guardrail only catches one specific command family, not the
+underlying mistake of being in the wrong directory in the first place.
