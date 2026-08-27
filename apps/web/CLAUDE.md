@@ -8688,3 +8688,91 @@ format:check`) are green. Live-verified at 1440px and 375px via a real
   across the whole click-through (expand daily hero chart, expand Beat
   the Bench, collapse it, confirm the compact card is back) at both
   widths.
+
+## Hero showcase box: re-measured against the reference, gradient restored (issue #198)
+
+Two small fixes found in the same live-vs-mock comparison pass, both to
+`DailyHero.tsx`'s showcase box (`SHOWCASE_CLASSNAME`/
+`SHOWCASE_MIN_HEIGHT_CLASSNAME`, see that file's own doc comments): the
+box rendered taller than the design reference, and it had regressed to a
+flat fill with no gradient at all.
+
+- **The exact measured target height, and how it was gotten.** Don't
+  trust a rough eyeball or a CSS `min-height` value read straight off the
+  reference's stylesheet -- `docs/design/daily-hub-condensed-2026-08/
+mockup-daily-hub-condensed.html`'s own `.showcase.collapsed` rule says
+  `min-height: 12.5rem` (200px), but its real content (the statement,
+  figures, and button) pushes the actual rendered box taller than that
+  floor. Measured live via a headless-Chromium `getBoundingClientRect()`
+  read against the reference file directly (`file://...`, not a
+  screenshot pixel-count), at a 1280px viewport, in its "Fresh day"
+  (`#state-fresh`) chart-hidden (`.collapsed`, `#chart-slot[hidden]`)
+  state: **`234.46875px`** (`14.654rem`). This confirms the issue's own
+  rough `~233px`/`~14.6rem` estimate was close, not exact -- always
+  re-measure precisely rather than trusting a prior estimate, per this
+  issue's own instruction. Target per the acceptance criteria (reference
+  height, then a further 5% below _that_, not below the pre-fix shipped
+  height): `234.46875 * 0.95 = 222.745px = 13.9216rem`, rounded down
+  slightly to `min-h-[13.9rem]` (`222.4px`) to sit safely under that
+  ceiling. This replaced the pre-#198 `min-h-[20rem]` (320px) -- a real,
+  meaningful reduction (~30%), not a rounding-error-sized tweak.
+- **The floor only binds at desktop widths where content is shorter than
+  it -- not at every viewport, and that's expected, not a bug.** Live-
+  measured before/after at 1280px: the real showcase box (a 3-trade day)
+  went from `320px` (the old floor, since real content only needed
+  ~277px) to `276.78px` (now genuinely content-driven, since the new
+  `13.9rem`/`222.4px` floor no longer binds) -- the actual visible
+  shrink a viewer sees. At 390px mobile, the box measured `332px` both
+  before and after: mobile's wrapped statement/chips content already
+  exceeds _both_ the old and new floor, so neither change is the binding
+  constraint there and the rendered height is unaffected by this fix at
+  that width -- correct given `SHOWCASE_MIN_HEIGHT_CLASSNAME` is a floor,
+  not a fixed height (see the "Daily hero grows on reveal" section
+  above), not something to "fix" further.
+- **The gradient regression, and the fix.** `SHOWCASE_CLASSNAME` had
+  drifted to a flat `bg-[var(--surface-1)]` fill with no gradient --
+  confirmed via `git blame`/reading history that this was never
+  deliberately removed, just never carried forward through the
+  `min-h-[40rem]` -> `min-h-[20rem]` (grow-on-reveal) restructuring
+  documented in the section above. Restored via a new
+  `SHOWCASE_GRADIENT_STYLE` constant (`backgroundImage:
+"linear-gradient(180deg, #1d1d1b 0%, var(--surface-1) 55%)"`, matching
+  the reference's own `.showcase` rule exactly) applied via inline
+  `style` at all three of this component's render sites (the loading
+  skeleton, the zero-trade fallback, and the real result) -- following
+  `BeatTheBench.tsx`'s own `CompactCard` gradient doc comment's
+  established reasoning for inline `style` over a Tailwind arbitrary-
+  value background class (see that file's own note: bracket-value
+  parsing is easy to get subtly wrong for a gradient, and there's no
+  test/reuse reason here that needs a class). `.surface-card` (already on
+  this box) sets only `box-shadow`, no background of its own, so there's
+  no specificity fight to worry about. Live-verified the computed
+  `background-image` resolves both color stops correctly
+  (`linear-gradient(rgb(29, 29, 27) 0%, rgb(26, 26, 25) 55%)` --
+  `#1d1d1b` and the app's real `--surface-1` value) at both 1280px and
+  390px.
+- **The chart-revealed state (`CHART_SLOT_HEIGHT_CLASSNAME`, `h-[24rem]`)
+  is deliberately untouched**, per this issue's own scope -- it renders
+  the real `PortfolioChart`, not the reference's tiny decorative `<svg>`,
+  and is a separate, larger design pass filed as its own issue. Checked
+  the reference's own "expanded" (`.showcase.expanded`) state before
+  concluding this: it measures `455px` at 1280px (`.showcase.expanded`'s
+  own `min-height: 24.5rem`/392px floor, plus real content), materially
+  different from this app's real chart-slot sizing either way -- nothing
+  in that comparison suggested the revealed state needed a matching fix
+  here.
+- **Live-verified via a real before/after pass** (`LOCAL_RESULTS_DIR` +
+  `next build`/`next start`, the documented no-root-Chromium-adjacent
+  workaround -- Chromium launched cleanly here with no extra shared-lib
+  extraction needed this session, per this file's own "Headless-browser
+  screenshot verification" section's own caveat that this can vary),
+  `git stash`-ing just the fix to capture the true "before" state (not a
+  hand-reverted approximation): screenshotted both states at 1280px and
+  390px, chart-hidden. The "after" screenshots show a visibly shorter box
+  with the top-to-bottom wash clearly present; the "before" screenshots
+  confirm the pre-fix flat fill and the taller, floor-bound box. Zero
+  console errors or `pageerror` events across every load. The temporary
+  `playwright` devDependency and every scratch verification script were
+  reverted/deleted before committing, per this file's own established
+  convention; confirmed via `git status`/`git diff --stat` on
+  `package.json`/`pnpm-lock.yaml` showing no trace afterward.
