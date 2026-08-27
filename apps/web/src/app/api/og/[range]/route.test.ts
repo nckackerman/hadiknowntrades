@@ -126,6 +126,7 @@ function intradayResultFixture(days: IntradayDayResult[]): IntradayResult {
     universeSize: 503,
     skippedTickers: [],
     benchmark: null,
+    benchmarkSeries: null,
     days,
   };
 }
@@ -148,6 +149,7 @@ function windowResultFixture(): WindowResult {
     universeSize: 503,
     skippedTickers: [],
     benchmark: null,
+    benchmarkSeries: null,
   };
 }
 

@@ -5,8 +5,8 @@
 // logic is -- see that file's own header comment and this repo's working
 // agreement to verify rendering live instead. This module holds
 // everything that *is* worth a fast, deterministic unit test: which
-// results currently support a card, and the exact display strings/colors
-// derived from one.
+// figure each result model puts on its card, and the exact display
+// strings/colors derived from one.
 
 import type { PrecomputedResult } from "@hadiknowntrades/core";
 
