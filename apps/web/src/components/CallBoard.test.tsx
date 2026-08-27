@@ -288,10 +288,13 @@ describe("CallBoard: bold blue-gradient tile (issue #177)", () => {
     await renderBoard();
     const summary = screen.getByTestId("call-board-summary");
 
-    // Both carry the mockup's exact gradient stops/angle -- a solid fill,
-    // not the pre-#177 thin left-border accent.
+    // Both carry the same 155deg gradient angle/sweep -- a solid fill,
+    // not the pre-#177 thin left-border accent. The stop colors are the
+    // contrast-safe values (see CARD_CLASSNAME's own doc comment), not
+    // the mockup's literal hex values, which measured below this app's
+    // own contrast bar on their lightest stop.
     for (const element of [placeholderClassName, summary.className]) {
-      expect(element).toContain("linear-gradient(155deg,#5c9cf0_0%,#3987e5_55%,#2b6fc4_100%)");
+      expect(element).toContain("linear-gradient(155deg,#4374cf_0%,#3568c2_55%,#2a58ab_100%)");
       expect(element).toContain("rounded-2xl");
       expect(element).toContain("text-white");
       expect(element).not.toContain("border-l-[3px]");

@@ -255,10 +255,19 @@ function CallBoardSummaryRow({ statusLine }: { statusLine: string }) {
  * The collapsed tile's shared visual chrome (issue #177) -- one
  * gradient-fill/rounded-corner/shadow treatment applied to both the real,
  * interactive `<summary>` and the pre-hydration inert placeholder `<div>`,
- * so the two can never drift in size. The gradient stops/angle match the
- * mockup's own `.game-tile.callboard` exactly
+ * so the two can never drift in size. The gradient angle and "lighter to
+ * darker blue" sweep match the mockup's own `.game-tile.callboard`
  * (docs/design/gamified-hero-2026-08/mockup-gamified-hero.html), at that
- * folder's own stated "99% fidelity, not pixel-perfect" bar.
+ * folder's own stated "99% fidelity, not pixel-perfect" bar -- but the
+ * three stop *colors* are deliberately NOT the mockup's own literal hex
+ * values (`#5c9cf0`/`#3987e5`/`#2b6fc4`). Those measured at 2.81:1 /
+ * 3.64:1 / 5.03:1 against white text (WCAG relative-luminance formula);
+ * only the darkest stop cleared 4.5:1 AA. Replaced with
+ * `#4374cf`/`#3568c2`/`#2a58ab` -- every stop independently verified at
+ * >= 4.5:1 against white (4.53:1 / 5.37:1 / 6.81:1, recomputed
+ * independently from the same formula, not just trusted) -- same 155deg
+ * angle, same "lighter to darker blue" sweep, still clearly the same hue
+ * family as this app's real `--accent-selection`/`--series-1` (#3987e5).
  * `min-h-28` (7rem/112px) is a defensive floor, not a measured value --
  * the tile's real content (icon + two-line title + subtitle + status
  * pill) is already comfortably taller than the 44px touch-target floor
@@ -281,7 +290,7 @@ function CallBoardSummaryRow({ statusLine }: { statusLine: string }) {
  * background leaking around the body's edges once open.
  */
 const CARD_CLASSNAME =
-  "min-h-28 rounded-2xl bg-[linear-gradient(155deg,#5c9cf0_0%,#3987e5_55%,#2b6fc4_100%)] text-white shadow-[0_6px_18px_rgba(0,0,0,0.35)]";
+  "min-h-28 rounded-2xl bg-[linear-gradient(155deg,#4374cf_0%,#3568c2_55%,#2a58ab_100%)] text-white shadow-[0_6px_18px_rgba(0,0,0,0.35)]";
 
 /**
  * What renders before `useCallBoard`'s mount-time correction: the same

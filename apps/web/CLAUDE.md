@@ -8093,34 +8093,30 @@ identical class of gap).
   it regardless of future copy edits. Live-measured (see below) at
   704x161px on desktop and 342x177px at a 375-ish mobile width, both
   comfortably clearing 44px in both dimensions.
-- **Text contrast, measured honestly, not just asserted**: this issue's
-  own acceptance criterion asks for the tile's white text to pass "this
-  app's own established contrast bar" -- the same loose (not full WCAG AA
-  4.5:1) bar `globals.css`'s own `--accent-selection` decision record
-  already accepts for white-on-blue elsewhere (`RangeSelector`'s active
-  pill measures ~3.6:1 against the flat `--series-1` blue). Because this
-  tile is a _gradient_, not a flat fill, contrast varies across it --
-  measured live via real pixel sampling (a Playwright screenshot decoded
-  onto an in-page `<canvas>`, not just the gradient's own literal stop
-  values) at several points on the rendered tile: the bottom-right corner
-  (near the darkest stop, close to the status pill) measures ~4.8:1; the
-  icon/title corner (top-left, near the gradient's own lightest stop)
-  measures **~2.88:1** -- below even this app's own already-loose
-  precedent. **This is inherited directly from the mockup's own exact
-  gradient stops (`#5c9cf0`/`#3987e5`/`#2b6fc4`), which this issue was
-  asked to match precisely, not introduced by an implementation choice**
-  -- the icon/title unavoidably sits in the gradient's own lightest
-  region given the mockup's own icon-top layout and 155deg angle.
-  Flagged here rather than silently shipped or silently "fixed" by
-  deviating from the given hex values without being asked to: a future
-  issue that wants to close this gap has two real options -- nudge the
-  gradient's own lightest stop darker (a real, if small, deviation from
-  the mockup as specified), or add a subtle dark text-shadow behind the
-  icon/title (a common technique for legibility on a gradient/photo
-  background that doesn't change the computed contrast ratio a checker
-  reports, but does genuinely help real readability) -- neither was
-  applied here, since neither was asked for and both are real design
-  calls, not obvious bugs.
+- **Text contrast: every gradient stop independently clears 4.5:1 against
+  white, measured, not just asserted.** The mockup's own literal hex
+  stops (`#5c9cf0`/`#3987e5`/`#2b6fc4`) measured (WCAG relative-luminance
+  formula) at 2.81:1 / 3.64:1 / 5.03:1 against white -- only the darkest
+  stop cleared full AA 4.5:1, and the lightest (sitting right under the
+  icon/title, given the mockup's own icon-top layout and 155deg angle)
+  fell well short of even this app's own loosest existing precedent
+  (`RangeSelector`'s white-on-`--series-1` active pill, ~3.6:1). Rather
+  than ship that and flag it as a deferred gap, the three stops were
+  replaced with `#4374cf`/`#3568c2`/`#2a58ab` -- same 155deg angle, same
+  "lighter to darker blue" sweep, still clearly the same hue family as
+  this app's real `--accent-selection`/`--series-1` (#3987e5) -- each
+  independently verified at >= 4.5:1 against white (4.53:1 / 5.37:1 /
+  6.81:1). This is a deliberate, documented deviation from the mockup's
+  own literal hex values (not from its gradient _shape_): the mockup
+  folder's own README already states 99% visual fidelity is the bar, not
+  100%, and a real WCAG AA shortfall on legible body/title text is
+  exactly the kind of thing this repo's own working agreements say to
+  fix rather than route around, even mid-review. Re-verified live (see
+  below) via real pixel sampling on the rendered tile (a Playwright
+  screenshot decoded onto an in-page `<canvas>`, not just the gradient's
+  own literal stop values) at several points, including the icon/title
+  corner specifically (the previous worst case) -- every sampled point
+  now clears 4.5:1.
 - **Live-verified against a real local pipeline run** (`local-run.ts`,
   the default 20-ticker sample, real Yahoo network calls) plus `next
 build`/`next start` (not `next dev` -- see issue #123's own note above
@@ -8139,7 +8135,12 @@ build`/`next start` (not `next dev` -- see issue #123's own note above
   client can genuinely disagree about which trading day is "now," the
   same technique issue #164's own verification already established)
   logged **zero console errors and zero page errors**. Screenshotted at
-  1440px and 390px, both collapsed and expanded. The temporary
-  `playwright` devDependency and every scratch verification script were
-  reverted/deleted before committing, per this file's own established
-  convention.
+  1440px and 390px, both collapsed and expanded. The contrast fix above
+  was re-verified in this same pass with real pixel sampling at six
+  points on the rendered tile (four corners inset past the rounded
+  clip, plus the top-mid/left-mid edges) -- every sampled point cleared
+  4.5:1 against white, including the icon/title corner (the gradient's
+  own lightest region, and the point that previously measured ~2.88:1).
+  The temporary `playwright` devDependency and every scratch
+  verification script were reverted/deleted before committing, per this
+  file's own established convention.
