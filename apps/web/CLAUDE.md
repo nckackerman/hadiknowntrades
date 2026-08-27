@@ -6592,3 +6592,125 @@ whose _final_ string is short but which crosses a boundary on the way
 second line where it used to fit on one. That is the price of the row
 not moving during the reveal; the badge already wrapped for most of the
 old tween anyway.
+
+## The Daily Ritual: status rail + shareable recap (issue #133)
+
+| file                         | owns                                                                                            |
+| ---------------------------- | ----------------------------------------------------------------------------------------------- |
+| `lib/daily-ritual.ts`        | pure: the snapshot shape, every string in the rail and the recap, and `buildRecapText`          |
+| `lib/use-daily-ritual.ts`    | the read layer -- one snapshot over three other features' storage, kept current by subscription |
+| `lib/headline-figure.ts`     | "which number does this page headline right now?", for both result models                       |
+| `lib/copy-text.ts`           | the defensive clipboard write                                                                   |
+| `lib/select-variant.ts`      | issue #13's variant pick, extracted verbatim out of `ResultsPanel.tsx`                          |
+| `lib/range-copy.ts`          | `RANGE_COPY`, extracted the same way                                                            |
+| `components/DailyRitual.tsx` | the section: rail, lock, recap, copy                                                            |
+
+### The page order was already right, and was left alone
+
+Issue #122 offered #133 an `afterHero?: ReactNode` slot on `ResultsPanel`,
+rendered inside its two success branches, and explicitly left the call
+here. **It was not taken, deliberately -- `ResultsPanel.tsx` gained no
+slot at all**, and the order it would have produced was already true:
+verified live at 1280px on a real `next dev` page, the document order is
+hero reveal (344px) -> Beat the Bench (1467) -> The Call Board (1719) ->
+the ritual (2355), and `ResultsPage.test.tsx` asserts exactly that with
+`compareDocumentPosition`.
+
+The reason not to take the slot is a real defect it would have
+introduced, not a preference. Anything inside `ResultsPanel`'s success
+branches is behind its fetch gate, and `use-results.ts` **passes through
+a `"loading"` state on every range switch**, not just first load. So a
+player who clicked a range pill mid-session would have had
+`<BeatTheBench>` unmounted and remounted under them -- their game
+destroyed by a click that has nothing to do with it. The same gate also
+deletes the "the daily ritual stays playable while `/api/results` is slow
+or 500ing" property that two shipped tests already assert and that local
+dev hits constantly.
+
+The cost of leaving it alone is honest and worth stating: the two
+mechanics sit ~1100px below the hero on a desktop 5Y page, after the
+chart, the trade list and `AboutSection`. If that gap ever needs closing,
+**the fix is not the `afterHero` slot as specified** -- it's splitting
+`ResultsPanel`'s return into `[hero block, slot, rest]` at one stable
+fragment position so the slot's content keeps a single mount across
+loading/error/success. That is a bigger change than this issue needed.
+
+### The rail reads other features' storage; it mirrors nothing
+
+`local-storage.ts` grew `subscribeToLocalStorage`, and `writeLocalStorage`
+notifies it. That module is already the single choke point every feature's
+storage layer funnels through, so subscribing there wires the rail to Beat
+the Bench's played record, The Call Board's picks **and** issue #91's
+whole-range guess with zero per-feature coupling -- and, more importantly,
+with no second copy of any of those flags. The integration test plays a
+real session and makes a real pick through their own UIs and asserts the
+rail moves, precisely so this can't quietly degrade into three
+independently-toggled booleans.
+
+Two constraints on that subscription, both load-bearing:
+
+- **A listener must not write.** Notification is synchronous, so a writing
+  listener re-enters its own notification. `use-daily-ritual.ts` therefore
+  counts filled slots via `upcomingCallDays` + `getCallBoardPick` rather
+  than `syncCallBoard`, which writes a freshly-resolved history back.
+- **A failed write doesn't notify** -- nothing changed.
+
+`hero-seen` is a constant `true`. Nothing gates the hero reveal for either
+model, so the day starts at 1 of 3; that is an endowed-progress choice and
+the issue says so explicitly. Don't "clean it up".
+
+### What goes in the recap, and what deliberately doesn't
+
+- **The hindsight figure is in.** It's the same number issue #134's public
+  OG card already headlines for anyone with the link.
+- **...but never ahead of this app's own spoiler gate.** For
+  `intraday-daily` the headline figure _is_ the answer issue #91's
+  whole-range guess hides, so the recap omits that line until the viewer
+  has guessed -- the same rule `ShareCardLink` already follows. The window
+  model has no gate and is quoted immediately. Verified live in both
+  states.
+- **Beat the Bench is relative only.** A gap ("0.13% ahead") says how the
+  player did; the absolute balances would tell a recipient which way the
+  real session went and by how much. Same reasoning keeps the Call Board
+  line at "2 of 3 called" rather than naming buckets.
+
+Real generated text, from a real local pipeline run:
+
+```
+Had I Known Trades · Aug 26, 2026
+
+Hindsight over the past 5 years: $20.00 became $196.37 (9.8x)
+Beat the Bench: you rode it out, level with the bench to the cent
+The Call Board: 2 of 3 upcoming sessions called
+
+Hindsight only -- not advice, and not a predictor.
+```
+
+### Two things worth not re-deriving
+
+- **`userEvent.setup()` installs its own `navigator.clipboard` stub.** It
+  silently replaces one a test installed, so the success path asserts
+  against userEvent's fake and the failure path becomes unreachable. Both
+  happened before `DailyRitual.test.tsx` switched to `fireEvent` for the
+  copy button. (jsdom itself implements no clipboard at all -- stub the
+  shape `copy-text.ts` reads, don't fight it.)
+- **The recap is a `<pre>`, not a `<textarea>`, for a measured reason.** A
+  textarea needs a row count, and at 390px every recap line wraps, so a
+  count taken from the text's own newlines clipped the last line mid-word
+  behind an inner scrollbar. A `<pre class="whitespace-pre-wrap
+select-all">` sizes to content at any width and gives a better manual
+  fallback anyway: one click selects the whole recap.
+
+### Live verification
+
+Real `local-run.ts` output (6 tickers, real Yahoo calls) into a
+`LOCAL_RESULTS_DIR`, then `next dev` plus this file's own no-root
+headless-Chromium workaround, with `clipboard-read`/`clipboard-write`
+granted. A real click on "Copy recap" put the recap on the real system
+clipboard byte-identically (`navigator.clipboard.readText()` matched), and
+a real `Ctrl+V` into a real `<textarea>` pasted it byte-identically again.
+A Call Board pick made afterwards regenerated the recap and dropped the
+now-stale "Copied" stamp. A context whose `clipboard.writeText` rejects
+with `NotAllowedError` showed the manual-select fallback instead. At 390px
+the copy button measured 112x44 with `scrollWidth === clientWidth === 390`.
+Zero console or page errors across all four runs.

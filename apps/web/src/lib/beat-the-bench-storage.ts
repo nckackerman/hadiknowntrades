@@ -27,6 +27,17 @@ import type { SessionOutcome } from "./beat-the-bench";
  */
 export type BeatTheBenchMode = "todays-close" | "mystery";
 
+/**
+ * Every mode this key format can carry, most-canonical first.
+ *
+ * Exists for issue #133's status rail, which asks "did you play today, in
+ * *any* mode?" and must not hard-code `"todays-close"` -- the one mode that
+ * exists as this is written. Listing them here means issue #132 turning
+ * Mystery Day on is an addition to this array, not a second read path the
+ * rail would have to grow a branch for.
+ */
+export const BEAT_THE_BENCH_MODES: readonly BeatTheBenchMode[] = ["todays-close", "mystery"];
+
 const KEY_PREFIX = "hikt:beat-the-bench:";
 
 /** The exact key one played session is stored under -- `hikt:beat-the-bench:{date}:{mode}`, the shape issue #133's status rail reads. */
@@ -90,6 +101,29 @@ export function readPlayedSession(date: string, mode: BeatTheBenchMode): PlayedS
   if (!isFiniteNumber(moves) || moves < 0) return null;
 
   return { played: true, outcome, playerBalance, benchmarkBalance, moves };
+}
+
+/**
+ * The viewer's stored result for `date` in whichever mode they played it,
+ * or `null` if they haven't played that date at all.
+ *
+ * `BEAT_THE_BENCH_MODES` is ordered, so a date played in more than one mode
+ * reports the canonical ("todays-close") record rather than whichever
+ * happened to be enumerated first. Written for issue #133's status rail,
+ * which cares that the day was played, not which card it was played from.
+ *
+ * **Deliberately keyed on a date the caller supplies**, not on a scan of
+ * every stored key: "played today" has to mean today's session, and a
+ * key-space scan would happily report yesterday's record as today's.
+ */
+export function readAnyPlayedSession(
+  date: string,
+): { mode: BeatTheBenchMode; session: PlayedSession } | null {
+  for (const mode of BEAT_THE_BENCH_MODES) {
+    const session = readPlayedSession(date, mode);
+    if (session !== null) return { mode, session };
+  }
+  return null;
 }
 
 /**

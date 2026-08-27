@@ -1,8 +1,9 @@
-import { RESULTS_SCHEMA_VERSION } from "@hadiknowntrades/core";
-import { render, screen, within } from "@testing-library/react";
+import { RESULTS_SCHEMA_VERSION, type WindowResult } from "@hadiknowntrades/core";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { stubMatchMedia } from "@/lib/stub-match-media.test-util";
 import { CALL_BOARD_SERIES_RANGE } from "@/lib/use-call-board";
 
 const replace = vi.fn();
@@ -25,6 +26,99 @@ const { ResultsPage } = await import("./ResultsPage");
 // defaultViewedMonth in CustomRangeSelector.tsx) when nothing is
 // selected, which is 2024-01 here.
 const TEST_ANCHORS = ["2024-01-05", "2024-01-10", "2024-01-20"];
+
+/**
+ * A minimal 5Y window result, for issue #133's page-order and ritual
+ * tests -- the only ones in this file that need /api/results to actually
+ * resolve. The window model is deliberate: it has no guess-then-reveal
+ * gate (issue #91 scoped that to intraday-daily), so its headline figure
+ * is on screen the moment the fetch lands, which is exactly the "hero
+ * reveal" these tests anchor the page order on.
+ */
+const WINDOW_RESULT: WindowResult = {
+  schemaVersion: RESULTS_SCHEMA_VERSION,
+  model: "window",
+  range: "5Y",
+  generatedAt: "2026-08-26T19:50:21.468Z",
+  dataAsOf: "2026-08-26",
+  startDate: "2021-08-26",
+  endDate: "2026-08-26",
+  maxTrades: 3,
+  startingCapital: 20,
+  endingBalance: 1100,
+  trades: [
+    {
+      ticker: "AAPL",
+      direction: "long",
+      openDate: "2021-08-26",
+      openPrice: 10,
+      closeDate: "2026-08-26",
+      closePrice: 550,
+    },
+  ],
+  worstCase: {
+    endingBalance: 4,
+    trades: [
+      {
+        ticker: "GOOG",
+        direction: "long",
+        openDate: "2021-08-26",
+        openPrice: 100,
+        closeDate: "2026-08-26",
+        closePrice: 20,
+      },
+    ],
+  },
+  longShort: {
+    endingBalance: 2200,
+    trades: [
+      {
+        ticker: "COIN",
+        direction: "short",
+        openDate: "2021-08-26",
+        openPrice: 100,
+        closeDate: "2026-08-26",
+        closePrice: 10,
+      },
+    ],
+    worstCase: {
+      endingBalance: 2,
+      trades: [
+        {
+          ticker: "TSLA",
+          direction: "short",
+          openDate: "2021-08-26",
+          openPrice: 10,
+          closeDate: "2026-08-26",
+          closePrice: 100,
+        },
+      ],
+    },
+  },
+  benchmark: null,
+  benchmarkSeries: null,
+  universeSize: 503,
+  skippedTickers: [],
+};
+
+/**
+ * A two-bar Today's Close session -- the shortest thing `isPlayableSession`
+ * accepts, so the ritual integration test below can play a *real* session
+ * to a *real* settlement in one "Step" instead of 78. The zero-move
+ * settlement it produces ("Along for the ride") is the mechanic's own exact
+ * tie, not a rounding coincidence -- see lib/beat-the-bench.ts.
+ */
+const SESSION = {
+  schemaVersion: RESULTS_SCHEMA_VERSION,
+  generatedAt: "2026-08-27T00:52:58.157Z",
+  ticker: "SPY",
+  barIntervalMinutes: 5,
+  date: "2026-08-26",
+  bars: [
+    { time: "09:30:00", close: 100 },
+    { time: "09:35:00", close: 101 },
+  ],
+};
 
 describe("ResultsPage", () => {
   beforeEach(() => {
@@ -363,6 +457,124 @@ describe("ResultsPage", () => {
       expect(
         section.compareDocumentPosition(board) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
+    });
+  });
+
+  describe("The Daily Ritual (issue #133)", () => {
+    // Unlike every other test in this file, these need a *resolved*
+    // result: the page order this issue is about starts at the hero
+    // reveal, which only exists once /api/results has landed.
+    beforeEach(() => {
+      // These are the only tests in this file that write to localStorage
+      // (a played session, real Call Board picks), and the rail reads it
+      // back -- so each one has to start from a genuinely empty day.
+      window.localStorage.clear();
+      stubMatchMedia({ "(prefers-reduced-motion: reduce)": true });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((input: RequestInfo | URL) => {
+          const url = typeof input === "string" ? input : input.toString();
+          const body = url.startsWith("/api/beat-the-bench")
+            ? SESSION
+            : url.startsWith("/api/custom-anchors")
+              ? { schemaVersion: RESULTS_SCHEMA_VERSION, anchors: TEST_ANCHORS }
+              : WINDOW_RESULT;
+          return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+        }),
+      );
+    });
+
+    /** The `<section>` a top-level mechanic heading belongs to. */
+    function sectionFor(name: string): HTMLElement {
+      return screen.getByRole("heading", { name }).closest("section")!;
+    }
+
+    function follows(first: Element, second: Element): boolean {
+      return Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
+    }
+
+    it("renders hero reveal, then Beat the Bench, then The Call Board, then the ritual", async () => {
+      search = "range=5Y";
+      render(<ResultsPage />);
+
+      // The window model's hero reveal -- HeroStat's own "Starting from"
+      // row, the first thing ResultsPanel renders on success.
+      const hero = await screen.findByText("Starting from");
+      const bench = sectionFor("Beat the Bench");
+      const board = sectionFor("The Call Board");
+      const ritual = sectionFor("Today, so far");
+
+      expect(follows(hero, bench)).toBe(true);
+      expect(follows(bench, board)).toBe(true);
+      expect(follows(board, ritual)).toBe(true);
+    });
+
+    it("reflects a really-played session and really-made calls, not three independent toggles", async () => {
+      search = "range=5Y";
+      render(<ResultsPage />);
+      await screen.findByText("Starting from");
+
+      const ritual = sectionFor("Today, so far");
+      // Before anything is played: one endowed step, nothing else.
+      await waitFor(() => expect(within(ritual).getByText("1 of 3 done")).toBeInTheDocument());
+
+      // Play Beat the Bench for real, through its own UI, to a real
+      // settlement -- the two-bar session settles on one Step.
+      const benchSection = sectionFor("Beat the Bench");
+      fireEvent.click(await within(benchSection).findByRole("button", { name: /Play today's/ }));
+      fireEvent.click(within(benchSection).getByRole("button", { name: "Step forward one bar" }));
+      // "Play it again" only exists on the settlement card, so this is
+      // "the session really finished", not "some text mentioning it".
+      expect(
+        await within(benchSection).findByRole("button", { name: "Play it again" }),
+      ).toBeInTheDocument();
+
+      // ...and make a real Call Board pick, through its own UI.
+      const [firstSlot] = await screen.findAllByRole("group", { name: /^Your call for/ });
+      fireEvent.click(within(firstSlot!).getByRole("button", { name: "Up" }));
+
+      // The rail now reports what those two mechanics actually stored.
+      // Scoped to the rail's own <ol> so these can't be satisfied by the
+      // same sentences appearing inside the recap textarea below it.
+      const rail = within(ritual).getByRole("list");
+      await waitFor(() =>
+        expect(within(rail).getByText(/you rode it out, level with the bench/)).toBeInTheDocument(),
+      );
+      expect(within(rail).getByText(/1 of 3 upcoming sessions called/)).toBeInTheDocument();
+      expect(within(ritual).getByText("2 of 3 done")).toBeInTheDocument();
+
+      // And the recap, unlocked by that play, quotes the page's own
+      // headline figure alongside both.
+      const recap = within(ritual).getByTestId("daily-recap-text");
+      expect(recap.textContent).toContain(
+        "Hindsight over the past 5 years: $20.00 became $1.1K (55x)",
+      );
+      expect(recap.textContent).toContain("Beat the Bench: you rode it out");
+      expect(recap.textContent).toContain("The Call Board: 1 of 3 upcoming sessions called");
+    });
+
+    it("regenerates the recap when a Call Board pick changes after it unlocked", async () => {
+      search = "range=5Y";
+      render(<ResultsPage />);
+      await screen.findByText("Starting from");
+
+      const benchSection = sectionFor("Beat the Bench");
+      fireEvent.click(await within(benchSection).findByRole("button", { name: /Play today's/ }));
+      fireEvent.click(within(benchSection).getByRole("button", { name: "Step forward one bar" }));
+
+      const ritual = sectionFor("Today, so far");
+      const recap = await within(ritual).findByTestId("daily-recap-text");
+      await waitFor(() =>
+        expect(recap.textContent).toContain("The Call Board: 0 of 3 upcoming sessions called"),
+      );
+
+      const slots = await screen.findAllByRole("group", { name: /^Your call for/ });
+      fireEvent.click(within(slots[0]!).getByRole("button", { name: "Up" }));
+      fireEvent.click(within(slots[1]!).getByRole("button", { name: "Down" }));
+
+      await waitFor(() =>
+        expect(recap.textContent).toContain("The Call Board: 2 of 3 upcoming sessions called"),
+      );
     });
   });
 });

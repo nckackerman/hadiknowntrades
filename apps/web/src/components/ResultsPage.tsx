@@ -9,9 +9,11 @@ import { useCustomResults } from "@/lib/use-custom-results";
 import { useCustomAnchors } from "@/lib/use-custom-anchors";
 import { useStartingCapital } from "@/lib/use-starting-capital";
 import { parseAnchorDate, parseRange } from "@/lib/results-api";
+import { headlineFigureFor } from "@/lib/headline-figure";
 import { DEFAULT_MODE, parseMode, type Mode } from "@/lib/mode";
 import { BeatTheBench } from "@/components/BeatTheBench";
 import { CallBoard } from "@/components/CallBoard";
+import { DailyRitual } from "@/components/DailyRitual";
 import { CustomRangeSelector } from "@/components/CustomRangeSelector";
 import { ModeToggle } from "@/components/ModeToggle";
 import { OnboardingIntro } from "@/components/OnboardingIntro";
@@ -87,6 +89,16 @@ export function ResultsPage() {
   // cleared on range change) since "how much money to start with" isn't
   // tied to which window of data is being viewed.
   const [startingCapital, setStartingCapital] = useStartingCapital();
+
+  // The one figure the active view headlines (issue #133) -- the window
+  // model's HeroStat figure for 5Y/Max/a custom anchor, the whole-range
+  // chained balance for the intraday-daily ranges. Computed here, once,
+  // from the same helper ResultsPanel itself uses, and handed to the daily
+  // ritual's recap so the two can't disagree about the day's number. `null`
+  // until the fetch succeeds; the recap simply omits the line rather than
+  // stubbing it (see buildRecapText).
+  const headline =
+    state.status === "success" ? headlineFigureFor(state.data, range, mode, startingCapital) : null;
 
   function selectRange(next: PresetRange) {
     const params = new URLSearchParams(searchParams);
@@ -189,6 +201,19 @@ export function ResultsPage() {
           not who owns them. */}
       <BeatTheBench />
       <CallBoard />
+
+      {/* The Daily Ritual (issue #133): the "today, so far" rail plus the
+          shareable recap, the capstone on the two mechanics directly above
+          it -- so the locked copy's "Play Beat the Bench above" is
+          literally true, and the recap sits at the end of the day's run
+          rather than interrupting it. Mounted at this level for exactly the
+          reasons the two mechanics are (issue #122): it reads state those
+          two own, and it must not vanish when /api/results is slow or
+          failing. It takes the headline figure the page is already
+          rendering rather than a result to re-derive one from -- see
+          lib/headline-figure.ts, which ResultsPanel computes its own
+          whole-range figure through too. */}
+      <DailyRitual range={range} mode={mode} headline={headline} />
     </div>
   );
 }

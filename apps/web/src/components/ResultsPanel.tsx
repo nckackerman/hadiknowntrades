@@ -19,7 +19,10 @@ import {
 } from "@/lib/portfolio-series";
 import { formatDate } from "@/lib/format-date";
 import { DEFAULT_MODE, MODE_LABELS, type Mode } from "@/lib/mode";
+import { RANGE_COPY } from "@/lib/range-copy";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
+import { selectVariant } from "@/lib/select-variant";
+import { wholeRangeFinalBalance } from "@/lib/headline-figure";
 import { useRangeGuess } from "@/lib/use-range-guess";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
 import { AboutSection } from "@/components/AboutSection";
@@ -36,54 +39,6 @@ import {
   WHOLE_RANGE_REPLAY_PACING,
   WholeRangeReplay,
 } from "@/components/WholeRangeReplay";
-
-const RANGE_COPY: Record<PresetRange, string> = {
-  "1W": "the past week",
-  "1M": "the past month",
-  "3M": "the past 3 months",
-  "1Y": "the past year",
-  "5Y": "the past 5 years",
-  MAX: "all available history",
-};
-
-/** The three fields every dollar-figure/trade-list consumer below actually reads, shared by the window model's WindowResult/LongShortResult and the intraday-daily model's IntradayDayResult/IntradayLongShortResult -- both pairs have this exact shape. */
-interface Variant<T> {
-  endingBalance: number;
-  trades: T[];
-  worstCase: { endingBalance: number; trades: T[] };
-}
-
-/**
- * Picks which of a result's two computed variants (issue #13) every
- * dollar-figure/trade-list consumer below should read: the long-only
- * fields (unchanged since before this issue) or the sibling `longShort`
- * fields, both always present on a real pipeline-written result. This is
- * the single place that decision is made -- every consumer downstream
- * (HeroAndWorstCase, PortfolioChart via portfolio-series.ts,
- * TradeList/IntradayTradeList) is threaded this function's result instead
- * of reading the raw top-level fields directly, the same class of mistake
- * apps/web/CLAUDE.md documents happening *twice* for
- * `effectiveStartingCapital` (issue #15) -- a component quietly reading
- * the un-rescaled/wrong-variant field instead of the thread-through value.
- *
- * **Every call site below passes a `WindowResult`/`IntradayDayResult`
- * (or its own `longShort` field) straight through as `base`/`longShort`,
- * with no intermediate `{endingBalance, trades, worstCase}` object
- * construction (code review follow-up)** -- an earlier version of this
- * file built that object independently at each of the four call sites
- * below, exactly the duplication-drift risk this doc comment already
- * warned about. That construction was always redundant: `WindowResult`/
- * `IntradayDayResult`/`LongShortResult`/`IntradayLongShortResult` already
- * have `endingBalance`/`trades`/`worstCase` as own top-level fields with
- * these exact names and shapes, so passing the real result object
- * satisfies `Variant<T>` structurally (TypeScript's excess-property
- * check only applies to fresh object literals, not existing typed
- * variables) with nothing to keep in sync -- one fewer place to drift,
- * not just one shared helper to remember to call.
- */
-function selectVariant<T>(base: Variant<T>, longShort: Variant<T>, mode: Mode): Variant<T> {
-  return mode === "long" ? base : longShort;
-}
 
 /** A human error message per API error code (see ../app/api/results/route.ts's errorResponse calls) -- the API's own `message` is logged/available too, but these read better as UI copy for each specific, known failure shape. */
 function errorCopy(error: ClientErrorCode, apiMessage: string): { title: string; body: string } {
@@ -629,21 +584,12 @@ export function ResultsPanel({
     const finalDay = data.days.at(-1);
     // The range's true final chained balance for whichever track `mode`
     // currently selects, rescaled from the range's own root startingCapital
-    // -- deliberately NOT the per-day rescale pattern (variant.endingBalance
-    // paired with that *same day's own* startingCapital), which would
-    // algebraically cancel the chaining back out and silently show the
-    // "as if this day started fresh" figure instead of the real
-    // carried-over one. See apps/web/CLAUDE.md's "rescaleFromStartingCapital's
-    // per-day pattern silently cancels out..." section for the exact trap
-    // this call deliberately avoids -- do not "simplify" this to reuse
-    // that per-day pattern.
-    const wholeRangeFinalBalance = finalDay
-      ? rescaleFromStartingCapital(
-          selectVariant<IntradayTrade>(finalDay, finalDay.longShort, mode).endingBalance,
-          data.startingCapital,
-          effectiveStartingCapital,
-        )
-      : 0;
+    // -- deliberately NOT the per-day rescale pattern. That rule (and the
+    // trap it avoids) now lives in lib/headline-figure.ts, extracted there
+    // by issue #133 so the daily ritual's shareable recap quotes this exact
+    // figure rather than re-deriving a second, drift-prone copy of it; see
+    // that function's own doc comment.
+    const wholeRangeBalance = wholeRangeFinalBalance(data, mode, effectiveStartingCapital);
 
     // The whole range's own worst-case (max-trade, every choice wrong)
     // figure (issue #105) -- computed the same unconditional, alongside-
@@ -717,7 +663,7 @@ export function ResultsPanel({
         <WholeRangeReplay
           rangeLabel={RANGE_COPY[range]}
           startingCapital={effectiveStartingCapital}
-          finalBalance={wholeRangeFinalBalance}
+          finalBalance={wholeRangeBalance}
           points={wholeRangePoints}
           tradeCount={wholeRangeTradeCount}
           worstCaseEndingBalance={wholeRangeWorstCaseEndingBalance}
