@@ -32,6 +32,23 @@
 // Both play through the identical `beat-the-bench.ts` engine, unchanged:
 // the mystery half is a different *payload*, not a different mechanic.
 // Weekly/monthly modes remain backlog.
+//
+// **Collapsed by default (issue #163).** This section used to render the
+// mode chooser (and, once a mode was picked, the game itself) the moment
+// it mounted -- a full, always-rendered game rather than an immediate
+// call-to-action. It now renders a compact "Can you do better?" card
+// (`CompactCard`, an icon, the exact mockup copy, and a status line built
+// from `beat-the-bench-storage.ts`'s existing read) until that card is
+// clicked, at which point it expands *in place* to the exact same
+// chooser/playback/settlement experience this file always rendered --
+// unchanged in substance, per that issue's own scope. This is purely a
+// presentational/mounting change: `useTodaysCloseSession` is still called
+// unconditionally at the top of this component regardless of collapsed
+// state (so the fetch-on-mount behaviour this file's own Judgment-calls
+// section already documents is untouched), and the Mystery Day
+// zero-request-before-settlement rule above is completely orthogonal to
+// whether the card is collapsed or expanded -- it depends only on
+// `settled`, never on this new `expanded` flag.
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 
@@ -104,10 +121,26 @@ interface PlayableSession {
 
 type ChosenMode = BeatTheBenchMode | null;
 
+/** The one shared derivation of "is there a playable Today's Close session, and what is it" -- used by the compact card (its status line needs the session's own date), the mode chooser, and the game itself. Hoisted so all three read the identical check rather than each re-deriving it (a real duplication this file carried before issue #163). */
+function playableTodaysClose(state: ReturnType<typeof useTodaysCloseSession>): {
+  ticker: string;
+  date: string;
+  barIntervalMinutes: number;
+  bars: readonly SessionBar[];
+} | null {
+  return state !== null && state.status === "success" && isPlayableSession(state.data)
+    ? state.data
+    : null;
+}
+
 export function BeatTheBench() {
   const headingId = useId();
   const reducedMotion = useReducedMotionAfterMount();
 
+  // Collapsed by default (issue #163) -- see this file's own top-of-file
+  // note. Nothing below this flag's declaration changed in substance from
+  // before that issue; it only decides whether any of it renders yet.
+  const [expanded, setExpanded] = useState(false);
   const [mode, setMode] = useState<ChosenMode>(null);
   // Bumped to ask for *another* random day. It rides in the mystery
   // fetch's URL (see useMysterySession) because the shared fetch state
@@ -116,18 +149,23 @@ export function BeatTheBench() {
 
   const todaysCloseState = useTodaysCloseSession();
   const mysteryState = useMysterySession(mode === "mystery" ? pick : null);
+  const todaysClose = playableTodaysClose(todaysCloseState);
+
+  if (!expanded) {
+    return (
+      <CompactCard
+        headingId={headingId}
+        todaysCloseDate={todaysClose?.date ?? null}
+        onExpand={() => setExpanded(true)}
+      />
+    );
+  }
 
   if (mode === null) {
     return (
       <BeatTheBenchFrame headingId={headingId}>
         <ModeChooser
-          todaysClose={
-            todaysCloseState !== null &&
-            todaysCloseState.status === "success" &&
-            isPlayableSession(todaysCloseState.data)
-              ? todaysCloseState.data
-              : null
-          }
+          todaysClose={todaysClose}
           todaysCloseLoading={todaysCloseState === null || todaysCloseState.status === "loading"}
           reducedMotion={reducedMotion}
           onChoose={setMode}
@@ -137,12 +175,7 @@ export function BeatTheBench() {
   }
 
   if (mode === "todays-close") {
-    const session =
-      todaysCloseState !== null &&
-      todaysCloseState.status === "success" &&
-      isPlayableSession(todaysCloseState.data)
-        ? todaysCloseState.data
-        : null;
+    const session = todaysClose;
     if (session === null) return <BeatTheBenchFrame headingId={headingId} />;
     return (
       <BeatTheBenchFrame headingId={headingId}>
@@ -242,6 +275,102 @@ function BeatTheBenchFrame({ headingId, children }: { headingId: string; childre
       {children}
     </section>
   );
+}
+
+/**
+ * The default, collapsed view (issue #163): an icon, the mockup's exact
+ * copy ("Can you do better?" / "Play today's real session against the
+ * market, live."), and a status line reusing
+ * `beat-the-bench-storage.ts`'s existing `readPlayedSession` read --
+ * the same read `ModeChooser`'s own recap paragraph already does, not a
+ * new storage mechanism. Clicking the whole card is what expands this
+ * section into the exact mode-chooser/game/settlement experience this
+ * file always rendered -- see `BeatTheBench`'s own top-level `expanded`
+ * flag.
+ *
+ * Deliberately a plain `<button>`, not a native `<details>`: unlike this
+ * app's other expand-in-place disclosures ("More options," "View chart
+ * data as a table"), the content behind this click is a stateful game
+ * (fetches, playback intervals) this file's own Judgment-calls section
+ * already documents as "fetched on mount, always" -- expanding is a
+ * one-way mount, with nothing here that needs to also collapse back
+ * closed the way a plain content disclosure does.
+ */
+function CompactCard({
+  headingId,
+  todaysCloseDate,
+  onExpand,
+}: {
+  headingId: string;
+  todaysCloseDate: string | null;
+  onExpand: () => void;
+}) {
+  const [playedRecord, setPlayedRecord] = useState<PlayedSession | null>(null);
+
+  // Deferred to a post-mount microtask, never read synchronously during
+  // render: this section renders on the server (issue #122 mounts it at
+  // the ResultsPage level), so a synchronous storage read here would make
+  // the hydration render disagree with the server's -- the identical
+  // shape `ModeChooser`'s own read (below) already uses.
+  useEffect(() => {
+    if (todaysCloseDate === null) return;
+    queueMicrotask(() => setPlayedRecord(readPlayedSession(todaysCloseDate, "todays-close")));
+  }, [todaysCloseDate]);
+
+  return (
+    <section aria-label="Beat the Bench">
+      <button
+        type="button"
+        onClick={onExpand}
+        className="surface-card flex w-full items-start gap-3 rounded-lg border border-[var(--gridline)] border-l-[3px] border-l-[var(--accent-reward)] bg-[var(--surface-1)] px-4 py-4 text-left"
+      >
+        <span aria-hidden="true" className="text-xl leading-none">
+          🎯
+        </span>
+        <span className="flex flex-1 flex-col gap-1">
+          <span
+            id={headingId}
+            className="font-display text-base font-bold text-[var(--text-primary)]"
+          >
+            Can you do better?
+          </span>
+          <span className="text-sm text-[var(--text-secondary)]">
+            Play today&apos;s real session against the market, live.
+          </span>
+          <span className="text-xs text-[var(--text-muted)]">
+            {compactStatusLine(playedRecord)}
+          </span>
+        </span>
+        <span aria-hidden="true" className="self-center text-sm text-[var(--text-muted)]">
+          ▸
+        </span>
+      </button>
+    </section>
+  );
+}
+
+/**
+ * The compact card's status line -- reuses `beat-the-bench-storage.ts`'s
+ * existing read (issue #163's own scope), never a second storage
+ * mechanism.
+ *
+ * Mirrors `gapPhrase`'s own thresholds (above) rather than calling it:
+ * that function writes a full settlement-card sentence ("0.13% behind
+ * the bench."), and this needs a short standalone line for a card
+ * that's collapsed by default -- the same "same numbers, different
+ * sentence shape" precedent `lib/daily-ritual.ts`'s `benchGapClause`
+ * already establishes for this identical figure.
+ */
+function compactStatusLine(record: PlayedSession | null): string {
+  if (record === null) return "Not played yet today";
+  const { playerBalance, benchmarkBalance } = record;
+  if (playerBalance === benchmarkBalance) return "Level with the bench today";
+  const gap = playerBalance / benchmarkBalance - 1;
+  const direction = gap > 0 ? "ahead of" : "behind";
+  const magnitude = Math.abs(gap);
+  const magnitudeText =
+    magnitude < 0.00005 ? "Less than 0.01%" : `${(magnitude * 100).toFixed(2)}%`;
+  return `${magnitudeText} ${direction} the bench today`;
 }
 
 /**

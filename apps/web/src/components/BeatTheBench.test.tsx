@@ -31,9 +31,21 @@ function stubSessionFetch(body: unknown = SESSION, status = 200): void {
 }
 
 /**
- * Renders, waits for the real fetch state machine to resolve, then
- * switches to fake timers so every tick below is measured rather than
- * waited out.
+ * This section renders collapsed by default (issue #163) -- a compact
+ * "Can you do better?" card, not the mode chooser -- so every test that
+ * needs the chooser/game itself has to click through it first. Split out
+ * as its own helper rather than folded into `renderChooser`/
+ * `renderReducedMotionChooser` below since a couple of call sites need
+ * the click without either of those helpers' own extra waits.
+ */
+function expandCompactCard(): void {
+  fireEvent.click(screen.getByRole("button", { name: /can you do better\?/i }));
+}
+
+/**
+ * Renders, expands the compact card, waits for the real fetch state
+ * machine to resolve, then switches to fake timers so every tick below
+ * is measured rather than waited out.
  *
  * Clicks go through `fireEvent`, not `userEvent`, in this file only:
  * userEvent's own internal delay is itself a timer, so under
@@ -45,6 +57,7 @@ function stubSessionFetch(body: unknown = SESSION, status = 200): void {
  */
 async function renderChooser(): Promise<void> {
   render(<BeatTheBench />);
+  expandCompactCard();
   await screen.findByText(/79 bars/);
   vi.useFakeTimers();
 }
@@ -61,6 +74,7 @@ async function renderChooser(): Promise<void> {
  */
 async function renderReducedMotionChooser(): Promise<void> {
   render(<BeatTheBench />);
+  expandCompactCard();
   await screen.findByText(/79 bars/);
   await screen.findByText(/You prefer reduced motion/);
   vi.useFakeTimers();
@@ -146,9 +160,10 @@ function stubRoutedFetch(options: { revealGeneratedAt?: string; revealStatus?: n
   return calls;
 }
 
-/** Renders, picks Mystery Day, and waits for its (paused, under reduced motion) session to be on screen. */
+/** Renders, expands the compact card, picks Mystery Day, and waits for its (paused, under reduced motion) session to be on screen. */
 async function enterMysterySession(): Promise<void> {
   render(<BeatTheBench />);
+  expandCompactCard();
   await screen.findByText(/You prefer reduced motion/);
   click(/play a mystery day/i);
   await screen.findByText(/bar 1 of 78/);
@@ -186,9 +201,31 @@ describe("BeatTheBench", () => {
     window.localStorage.clear();
   });
 
-  it("states the stake, the starting position and the session's real length up front", async () => {
+  it("renders a compact 'Can you do better?' card by default, not the full game (issue #163)", async () => {
     render(<BeatTheBench />);
 
+    expect(screen.getByRole("button", { name: /can you do better\?/i })).toBeInTheDocument();
+    expect(
+      screen.getByText("Play today's real session against the market, live."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Not played yet today")).toBeInTheDocument();
+    // None of the full game's own content is rendered yet.
+    expect(screen.queryByRole("heading", { name: "Beat the Bench" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/already in the market/)).not.toBeInTheDocument();
+
+    // Let the always-on-mount session fetch (see this file's own
+    // Judgment-calls section) settle before the test ends, rather than
+    // resolving after RTL's cleanup unmounts the tree.
+    await act(async () => {
+      await Promise.resolve();
+    });
+  });
+
+  it("expands to the full game in place once the compact card is clicked", async () => {
+    render(<BeatTheBench />);
+    expandCompactCard();
+
+    expect(screen.getByRole("heading", { name: "Beat the Bench" })).toBeInTheDocument();
     // "Already in the market" is the fact that makes the zero-trade tie
     // work, so it's stated plainly rather than left to be inferred.
     expect(screen.getByText(/already in the market/)).toBeInTheDocument();
@@ -196,11 +233,14 @@ describe("BeatTheBench", () => {
     // 78 ticks x 300ms = 23.4s -> "about 23 seconds", the stated target.
     expect(await screen.findByText(/about 23 seconds at normal speed/)).toBeInTheDocument();
     expect(screen.getByText(/Aug 26, 2026/)).toBeInTheDocument();
+    // The compact card itself is gone, not left behind.
+    expect(screen.queryByRole("button", { name: /can you do better\?/i })).not.toBeInTheDocument();
   });
 
   it("says so, without alarm, when no session has been published", async () => {
     stubSessionFetch({ error: "not_found", message: "nope" }, 404);
     render(<BeatTheBench />);
+    expandCompactCard();
 
     expect(await screen.findByText(/There's no session to play right now/)).toBeInTheDocument();
   });
@@ -325,9 +365,13 @@ describe("BeatTheBench", () => {
     expect(barReadout()).toMatch(/bar 1 of 79/);
 
     // A fresh visit reads the stored record back through the same
-    // defensive path.
+    // defensive path -- both in the compact card's own status line
+    // (issue #163) and, once expanded, the mode chooser's own recap
+    // paragraph.
     vi.useRealTimers();
     render(<BeatTheBench />);
+    expect(await screen.findByText("Level with the bench today")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /can you do better\?/i }));
     expect(await screen.findAllByText(/You've played today's close/)).not.toHaveLength(0);
   });
 

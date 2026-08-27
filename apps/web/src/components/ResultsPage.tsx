@@ -155,6 +155,20 @@ export function ResultsPage() {
           follow-up issue. */}
       <DailyHero mode={mode} />
 
+      {/* Beat the Bench (issue #131; collapsed-by-default "Can you do
+          better?" card since issue #163) sits directly after the daily
+          hero and before the header/range explorer/ResultsPanel -- an
+          immediate call-to-action right under the "had you known"
+          statement, not a full always-rendered game further down the
+          page. Repositioned here from its previous spot as a direct
+          sibling of ResultsPanel (still per issue #122's standing
+          "section, not a route/branch inside ResultsPanel" decision --
+          only where it renders changed, not who owns it or that it takes
+          no PrecomputedResult/range/mode/selectedDay props): it renders
+          regardless of how /api/results goes, same reasoning DailyHero
+          above and CallBoard below already rely on. */}
+      <BeatTheBench />
+
       <header className="flex flex-col gap-4">
         <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Had I Known Trades</h1>
         <RangeSelector selected={range} onSelect={selectRange} />
@@ -201,21 +215,21 @@ export function ResultsPage() {
         onStartingCapitalChange={setStartingCapital}
       />
 
-      {/* Beat the Bench (issue #131) then The Call Board (issue #129),
-          both *sections*, both mounted here as direct siblings of
-          ResultsPanel rather than inside one of its model branches --
-          issue #122's standing decision, see apps/web/CLAUDE.md's "Page
-          structure" section, including this exact order. Two reasons it
-          matters: ResultsPanel renders nothing but a skeleton or an error
-          box until /api/results succeeds, and the daily ritual shouldn't
-          disappear when that fetch is slow or failing; and "inside" would
-          mean duplicating each mount into both WindowResultBody and the
-          intraday-daily branch, i.e. two state owners to keep in sync.
-          Neither takes any props at all -- neither is a function of the
-          hindsight result. Issue #133 may later move them into
-          ResultsPanel's `afterHero` slot; that changes where they render,
-          not who owns them. */}
-      <BeatTheBench />
+      {/* The Call Board (issue #129), a *section* mounted here as a direct
+          sibling of ResultsPanel rather than inside one of its model
+          branches -- issue #122's standing decision, see apps/web/
+          CLAUDE.md's "Page structure" section. ResultsPanel renders
+          nothing but a skeleton or an error box until /api/results
+          succeeds, and the daily ritual shouldn't disappear when that
+          fetch is slow or failing; and "inside" would mean duplicating
+          the mount into both WindowResultBody and the intraday-daily
+          branch, i.e. two state owners to keep in sync. Takes no props
+          at all -- not a function of the hindsight result. (Beat the
+          Bench, previously this section's own sibling here, moved
+          directly after DailyHero as of issue #163 -- see that mount
+          point's own comment above.) Issue #133 may later move this into
+          ResultsPanel's `afterHero` slot; that changes where it renders,
+          not who owns it. */}
       <CallBoard />
 
       {/* The Daily Ritual (issue #133): the "today, so far" rail plus the
