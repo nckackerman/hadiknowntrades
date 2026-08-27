@@ -5,6 +5,7 @@ import {
   formatHeroCurrency,
   formatMultiplier,
   formatPercent,
+  formatSessionPercent,
 } from "./format-currency";
 
 describe("formatHeroCurrency", () => {
@@ -160,5 +161,27 @@ describe("formatPercent", () => {
 
   it("handles non-finite input defensively", () => {
     expect(formatPercent(NaN)).toBe("--");
+  });
+});
+
+describe("formatSessionPercent", () => {
+  // A single trading session (Beat the Bench, issue #131) moves a
+  // fraction of a percent -- at formatPercent's one decimal, a real
+  // 0.053% day and a real 0.086% one both print "+0.1%", and the
+  // player's return and the bench's would routinely read identical even
+  // when one genuinely won.
+  it("keeps a second decimal, where formatPercent would round the difference away", () => {
+    expect(formatSessionPercent(0.00052898)).toBe("+0.05%");
+    expect(formatPercent(0.00052898)).toBe("+0.1%");
+    expect(formatSessionPercent(0.0042798)).toBe("+0.43%");
+  });
+
+  it("signs both directions, same convention as formatPercent", () => {
+    expect(formatSessionPercent(-0.0031)).toBe("-0.31%");
+    expect(formatSessionPercent(0)).toBe("+0.00%");
+  });
+
+  it("handles non-finite input defensively", () => {
+    expect(formatSessionPercent(NaN)).toBe("--");
   });
 });

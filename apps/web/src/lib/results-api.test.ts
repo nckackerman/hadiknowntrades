@@ -1,6 +1,7 @@
 import {
   PRESET_RANGES,
   RESULTS_SCHEMA_VERSION,
+  TODAYS_CLOSE_SESSION_KEY,
   type CustomWindowResult,
   type PrecomputedResult,
 } from "@hadiknowntrades/core";
@@ -10,6 +11,7 @@ import {
   getCustomAnchorsResponse,
   getCustomResultsResponse,
   getResultsResponse,
+  getTodaysCloseSessionResponse,
   isCanonicalRange,
   parseAnchorDate,
   parseRange,
@@ -490,6 +492,109 @@ describe("getCustomAnchorsResponse", () => {
     const responses = await Promise.all([
       getCustomAnchorsResponse(null),
       getCustomAnchorsResponse(memoryReader(new Map())),
+    ]);
+
+    for (const response of responses) {
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+    }
+  });
+});
+
+describe("getTodaysCloseSessionResponse", () => {
+  // Beat the Bench's read path (issue #131). Issue #127 published this
+  // object with no route to reach it at all -- these cover the same
+  // failure ladder every other results-reading route already has, since
+  // this shares readCurrentSchemaObject with them.
+  const session = {
+    schemaVersion: RESULTS_SCHEMA_VERSION,
+    generatedAt: "2026-08-27T00:52:58.157Z",
+    ticker: "SPY",
+    barIntervalMinutes: 5,
+    date: "2026-08-26",
+    bars: [
+      { time: "09:30:00", close: 765.67 },
+      { time: "09:35:00", close: 765.58 },
+    ],
+  };
+
+  it("returns a 500 when no reader is configured (RESULTS_BUCKET unset)", async () => {
+    const response = await getTodaysCloseSessionResponse(null);
+
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body.error).toBe("server_misconfigured");
+  });
+
+  it("returns a 404 before any pipeline run has published a session", async () => {
+    const response = await getTodaysCloseSessionResponse(memoryReader(new Map()));
+
+    expect(response.status).toBe(404);
+    const body = await response.json();
+    expect(body.error).toBe("not_found");
+  });
+
+  it("returns a 502 when the read fails", async () => {
+    const reader: ResultReader = {
+      getObject: vi.fn().mockRejectedValue(new Error("access denied")),
+    };
+
+    const response = await getTodaysCloseSessionResponse(reader);
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("upstream_error");
+  });
+
+  it("returns a 502 when the stored session isn't valid JSON", async () => {
+    const objects = new Map([[TODAYS_CLOSE_SESSION_KEY, "{not json"]]);
+
+    const response = await getTodaysCloseSessionResponse(memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("corrupt_data");
+  });
+
+  it("returns a 502 when schemaVersion doesn't match", async () => {
+    const objects = new Map([
+      [TODAYS_CLOSE_SESSION_KEY, JSON.stringify({ ...session, schemaVersion: 999 })],
+    ]);
+
+    const response = await getTodaysCloseSessionResponse(memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("schema_mismatch");
+  });
+
+  it("returns a 502 for a session with no bars, rather than a game with nothing to play", async () => {
+    for (const bars of [[], "09:30:00", undefined]) {
+      const objects = new Map([[TODAYS_CLOSE_SESSION_KEY, JSON.stringify({ ...session, bars })]]);
+
+      const response = await getTodaysCloseSessionResponse(memoryReader(objects));
+
+      expect(response.status).toBe(502);
+      const body = await response.json();
+      expect(body.error).toBe("schema_mismatch");
+    }
+  });
+
+  it("reads the published key and returns the whole session with caching headers", async () => {
+    const objects = new Map([[TODAYS_CLOSE_SESSION_KEY, JSON.stringify(session)]]);
+
+    const response = await getTodaysCloseSessionResponse(memoryReader(objects));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(session);
+    const cacheControl = response.headers.get("Cache-Control");
+    expect(cacheControl).toContain("max-age=300");
+    expect(cacheControl).toContain("stale-while-revalidate");
+  });
+
+  it("sets Cache-Control: no-store on every error response", async () => {
+    const responses = await Promise.all([
+      getTodaysCloseSessionResponse(null),
+      getTodaysCloseSessionResponse(memoryReader(new Map())),
     ]);
 
     for (const response of responses) {

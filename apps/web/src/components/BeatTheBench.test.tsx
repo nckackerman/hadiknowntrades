@@ -1,0 +1,333 @@
+import { RESULTS_SCHEMA_VERSION } from "@hadiknowntrades/core";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { beatTheBenchKey } from "@/lib/beat-the-bench-storage";
+import { stubPrefersReducedMotion } from "@/lib/stub-prefers-reduced-motion.test-util";
+import { SPY_SESSION_BARS } from "@/test-fixtures/spy-session-bars";
+import { BeatTheBench } from "./BeatTheBench";
+
+// The real 2026-08-26 SPY session, in the exact envelope
+// /api/beat-the-bench serves (packages/core's TodaysCloseSession).
+const SESSION = {
+  schemaVersion: RESULTS_SCHEMA_VERSION,
+  generatedAt: "2026-08-27T00:52:58.157Z",
+  ticker: "SPY",
+  barIntervalMinutes: 5,
+  date: "2026-08-26",
+  bars: SPY_SESSION_BARS,
+};
+
+const BAR_COUNT = SPY_SESSION_BARS.length; // 79
+const TICKS_TO_CLOSE = BAR_COUNT - 1; // the opening bar is already on screen
+const STORAGE_KEY = beatTheBenchKey(SESSION.date, "todays-close");
+
+function stubSessionFetch(body: unknown = SESSION, status = 200): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => Promise.resolve(new Response(JSON.stringify(body), { status }))),
+  );
+}
+
+/**
+ * Renders, waits for the real fetch state machine to resolve, then
+ * switches to fake timers so every tick below is measured rather than
+ * waited out.
+ *
+ * Clicks go through `fireEvent`, not `userEvent`, in this file only:
+ * userEvent's own internal delay is itself a timer, so under
+ * `vi.useFakeTimers()` every click has to be pumped by the same clock
+ * whose exact readings these tests are asserting on -- which is both
+ * circular and (verified: every timing test hung) fragile. These
+ * interactions are plain clicks on plain buttons, so the extra fidelity
+ * userEvent buys isn't in play.
+ */
+async function renderChooser(): Promise<void> {
+  render(<BeatTheBench />);
+  await screen.findByText(/79 bars/);
+  vi.useFakeTimers();
+}
+
+/**
+ * The reduced-motion variant. The preference is read *after* mount (see
+ * use-reduced-motion-after-mount.ts -- this section renders during SSR,
+ * so it can't be read during render), which leaves a microtask-wide
+ * window in which the chooser is already on screen but the preference
+ * hasn't landed. Real people can't click inside a microtask; a test
+ * absolutely can, and did -- these tests passed alone and failed under a
+ * loaded full-suite run before this wait existed. So wait for the
+ * preference to be visibly acknowledged before pressing play.
+ */
+async function renderReducedMotionChooser(): Promise<void> {
+  render(<BeatTheBench />);
+  await screen.findByText(/79 bars/);
+  await screen.findByText(/You prefer reduced motion/);
+  vi.useFakeTimers();
+}
+
+function click(name: string | RegExp): void {
+  fireEvent.click(screen.getByRole("button", { name }));
+}
+
+function advance(ms: number): void {
+  act(() => {
+    vi.advanceTimersByTime(ms);
+  });
+}
+
+function barReadout(): string {
+  return screen.getByText(/bar \d+ of 79/).textContent ?? "";
+}
+
+describe("BeatTheBench", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    stubPrefersReducedMotion(false);
+    stubSessionFetch();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    window.localStorage.clear();
+  });
+
+  it("states the stake, the starting position and the session's real length up front", async () => {
+    render(<BeatTheBench />);
+
+    // "Already in the market" is the fact that makes the zero-trade tie
+    // work, so it's stated plainly rather than left to be inferred.
+    expect(screen.getByText(/already in the market/)).toBeInTheDocument();
+    expect(screen.getByText(/\$20\.00/)).toBeInTheDocument();
+    // 78 ticks x 300ms = 23.4s -> "about 23 seconds", the stated target.
+    expect(await screen.findByText(/about 23 seconds at normal speed/)).toBeInTheDocument();
+    expect(screen.getByText(/Aug 26, 2026/)).toBeInTheDocument();
+  });
+
+  it("says so, without alarm, when no session has been published", async () => {
+    stubSessionFetch({ error: "not_found", message: "nope" }, 404);
+    render(<BeatTheBench />);
+
+    expect(await screen.findByText(/There's no session to play right now/)).toBeInTheDocument();
+  });
+
+  it("advances exactly one bar per 1x tick interval", async () => {
+    await renderChooser();
+    click(/play today's close/i);
+
+    expect(barReadout()).toMatch(/bar 1 of 79/);
+
+    advance(299);
+    expect(barReadout()).toMatch(/bar 1 of 79/);
+
+    advance(1);
+    expect(barReadout()).toMatch(/bar 2 of 79/);
+
+    advance(300 * 3);
+    expect(barReadout()).toMatch(/bar 5 of 79/);
+  });
+
+  // Issue #131's acceptance criterion asks for the real timings, not
+  // merely that the five multipliers differ -- so each speed is measured
+  // by holding the clock one millisecond short of its own interval.
+  it.each([
+    [/^0\.1x$/, 3000],
+    [/^0\.5x$/, 600],
+    [/^1x$/, 300],
+    [/^2x$/, 150],
+    [/^4x$/, 75],
+  ])("holds a bar on screen for its own interval at %s", async (label, intervalMs) => {
+    await renderChooser();
+    click(/play today's close/i);
+    click(label);
+
+    const before = barReadout();
+    advance(intervalMs - 1);
+    expect(barReadout()).toBe(before);
+
+    advance(1);
+    expect(barReadout()).not.toBe(before);
+  });
+
+  it("plays a whole session at 4x in the time the engine says it should", async () => {
+    await renderChooser();
+    click(/play today's close/i);
+    click(/^4x$/);
+
+    advance(TICKS_TO_CLOSE * 75 - 1);
+    expect(barReadout()).toMatch(/bar 78 of 79/);
+
+    advance(1);
+    expect(screen.getByText("Along for the ride")).toBeInTheDocument();
+  });
+
+  it("settles a zero-move session dead level with the bench, and says why", async () => {
+    await renderChooser();
+    click(/play today's close/i);
+    click(/^4x$/);
+    advance(TICKS_TO_CLOSE * 75);
+
+    expect(screen.getByText("Along for the ride")).toBeInTheDocument();
+    expect(screen.getByText("Level with the bench, exactly.")).toBeInTheDocument();
+    expect(screen.getByText(/You never moved/)).toBeInTheDocument();
+
+    // Both sides land on the same figure because they are the same
+    // computation -- see beat-the-bench.ts's own zero-trade invariant.
+    const stored = JSON.parse(window.localStorage.getItem(STORAGE_KEY)!) as {
+      played: boolean;
+      outcome: string;
+      moves: number;
+      playerBalance: number;
+      benchmarkBalance: number;
+    };
+    expect(stored.played).toBe(true);
+    expect(stored.outcome).toBe("tie");
+    expect(stored.moves).toBe(0);
+    expect(stored.playerBalance).toBe(stored.benchmarkBalance);
+  });
+
+  it("flips one toggle button between selling and buying back in", async () => {
+    await renderChooser();
+    click(/play today's close/i);
+
+    // Exactly one trade control exists at a time -- not a pair with one
+    // of them permanently dead.
+    expect(screen.getByRole("button", { name: "Sell, go to cash" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Buy back in" })).not.toBeInTheDocument();
+
+    click("Sell, go to cash");
+
+    expect(screen.getByRole("button", { name: "Buy back in" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sell, go to cash" })).not.toBeInTheDocument();
+    expect(screen.getByText("You (in cash)")).toBeInTheDocument();
+
+    click(/^4x$/);
+    advance(TICKS_TO_CLOSE * 75);
+    expect(screen.getByText(/You moved once/)).toBeInTheDocument();
+  });
+
+  it("pauses and resumes without losing the player's place", async () => {
+    await renderChooser();
+    click(/play today's close/i);
+    advance(300 * 4);
+    expect(barReadout()).toMatch(/bar 5 of 79/);
+
+    click("Pause");
+    advance(300 * 20);
+    expect(barReadout()).toMatch(/bar 5 of 79/);
+
+    click("Play");
+    advance(300);
+    expect(barReadout()).toMatch(/bar 6 of 79/);
+  });
+
+  it("remembers a played session and offers it again", async () => {
+    await renderChooser();
+    click(/play today's close/i);
+    click(/^4x$/);
+    advance(TICKS_TO_CLOSE * 75);
+    click("Play it again");
+
+    expect(barReadout()).toMatch(/bar 1 of 79/);
+
+    // A fresh visit reads the stored record back through the same
+    // defensive path.
+    vi.useRealTimers();
+    render(<BeatTheBench />);
+    expect(await screen.findAllByText(/You've played this one/)).not.toHaveLength(0);
+  });
+
+  it("still plays through when browser storage is unavailable", async () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("denied", "SecurityError");
+    });
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("denied", "SecurityError");
+    });
+
+    await renderChooser();
+    click(/play today's close/i);
+    click(/^4x$/);
+    advance(TICKS_TO_CLOSE * 75);
+
+    // The game finishes and settles; only the remembering is lost.
+    expect(screen.getByText("Along for the ride")).toBeInTheDocument();
+  });
+
+  describe("with reduced motion", () => {
+    beforeEach(() => {
+      stubPrefersReducedMotion(true);
+    });
+
+    // Every other animated affordance in this app is simply removed
+    // under reduced motion. That can't be the answer here -- the ticking
+    // chart *is* the mechanic -- so playback starts paused and "Step
+    // forward one bar" is a complete way to play the whole session.
+    it("starts paused, and never moves a bar on its own", async () => {
+      await renderReducedMotionChooser();
+      click(/play today's close/i);
+
+      expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
+      expect(screen.getByText(/Paused for reduced motion/)).toBeInTheDocument();
+
+      advance(60_000);
+      expect(barReadout()).toMatch(/bar 1 of 79/);
+    });
+
+    it("plays the whole session start to finish on the step button alone", async () => {
+      await renderReducedMotionChooser();
+      click(/play today's close/i);
+
+      for (let i = 0; i < TICKS_TO_CLOSE - 1; i += 1) {
+        click("Step forward one bar");
+      }
+      expect(barReadout()).toMatch(/bar 78 of 79/);
+
+      // Trades work identically while stepping -- this isn't a
+      // read-only fallback view.
+      click("Sell, go to cash");
+      click("Step forward one bar");
+
+      expect(
+        screen.getByText(/^(You beat the bench|The bench stayed ahead|Dead even with the bench)$/),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/You moved once/)).toBeInTheDocument();
+      expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY)!).played).toBe(true);
+    });
+
+    it("still lets a reduced-motion player press play if they want to", async () => {
+      await renderReducedMotionChooser();
+      click(/play today's close/i);
+      click("Play");
+
+      advance(300);
+      expect(barReadout()).toMatch(/bar 2 of 79/);
+    });
+  });
+
+  describe("touch targets", () => {
+    // Measured for real at 375px in a browser during live verification;
+    // asserted here as the class contract that produces it, since jsdom
+    // loads no stylesheet and reports every box as 0x0.
+    it("gives every playback control a >= 44px target", async () => {
+      await renderChooser();
+      click(/play today's close/i);
+
+      const controls = [
+        screen.getByRole("button", { name: "Pause" }),
+        screen.getByRole("button", { name: "Step forward one bar" }),
+        ...["0.1x", "0.5x", "1x", "2x", "4x"].map((label) =>
+          screen.getByRole("button", { name: label }),
+        ),
+      ];
+
+      for (const control of controls) {
+        expect(control.className).toContain("min-h-11");
+        expect(control.className).toContain("min-w-11");
+      }
+      // The row wraps rather than shrinking anything below that.
+      expect(screen.getByRole("group", { name: "Speed" }).className).toContain("flex-wrap");
+    });
+  });
+});

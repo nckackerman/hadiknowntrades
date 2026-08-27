@@ -216,6 +216,25 @@ export function formatPercent(fraction: number): string {
 }
 
 /**
+ * `formatPercent` with a second decimal place, for a **single trading
+ * session's** return (Beat the Bench, issue #131) -- e.g. "+0.34%".
+ *
+ * A deliberate second formatter rather than more precision on
+ * `formatPercent` itself: everything else in this app measures a window
+ * of weeks to decades, where a hundredth of a percent is noise and the
+ * extra digit is clutter. One session moves a fraction of a percent, so
+ * at one decimal the player's return and the benchmark's routinely print
+ * the same string even when one genuinely won.
+ */
+export function formatSessionPercent(fraction: number): string {
+  if (!Number.isFinite(fraction)) {
+    return "--";
+  }
+  const sign = fraction >= 0 ? "+" : "";
+  return `${sign}${(fraction * 100).toFixed(2)}%`;
+}
+
+/**
  * Formats a unitless "345x" multiplier badge for the hero stat (issue
  * #45), e.g. `formatMultiplier(endingBalance / startingCapital)`. Shares
  * `formatCurrency`'s compact-suffix/scientific-notation ladder

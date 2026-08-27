@@ -6319,3 +6319,168 @@ one**:
 
 Playwright was added with `pnpm add -D -w playwright` for the session and
 reverted afterwards, per this file's own convention.
+
+## Beat the Bench: the core session player (issue #131)
+
+The playable, bar-by-bar buy/sell game against the SPY benchmark,
+Today's Close mode. Mystery Day, the best-moves/percentile settlement
+narrative (both issue #132) and weekly/monthly modes (backlog) are
+deliberately not here.
+
+| file                                    | owns                                                                                            |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `lib/beat-the-bench.ts`                 | the whole mechanic as pure functions: speeds, holdings, settlement, and every settlement string |
+| `lib/beat-the-bench-storage.ts`         | `hikt:beat-the-bench:{date}:{mode}` (the key issue #133's status rail reads)                    |
+| `lib/use-todays-close-session.ts`       | the fetch, a thin `useFetchResultsState` instantiation                                          |
+| `lib/use-reduced-motion-after-mount.ts` | the SSR-safe reduced-motion read (see below)                                                    |
+| `components/BeatTheBenchChart.tsx`      | the ticking SVG chart                                                                           |
+| `components/BeatTheBench.tsx`           | the section itself: chooser, playback, settlement                                               |
+
+### The read path issue #127 deliberately didn't build
+
+`/api/beat-the-bench` -> `getTodaysCloseSessionResponse` (`results-api.ts`)
+-> `createResultReader()`. Shaped as `getCustomAnchorsResponse`'s
+sibling, not as a `ResultRouteConfig` instantiation: one fixed key, no
+identifier to parse. Everything genuinely shared with the other routes
+(reader check, getObject try/catch, not_found, JSON.parse, schemaVersion)
+still comes from `readCurrentSchemaObject`, plus one `bars` non-empty
+check on top -- the same light posture the anchors manifest gets, since
+apps/pipeline already ran `validateTodaysCloseSession` before storing it.
+
+### The zero-trade invariant, and why it's exact rather than close
+
+The player starts **in the market**, so "never touch it" and
+"buy and hold" have to settle identically. They do, by construction:
+`balanceAtBar(bars, [], capital, i)` **is** the benchmark, so the
+zero-move player and the bench are the same call with the same
+arguments, not two implementations that agree to within an epsilon.
+
+Holdings are a `{ shares, cash }` pair, not a running balance multiplied
+by each bar's return: valuing shares at the current price is one
+multiplication from the opening price no matter how many bars have
+passed, so a 79-bar session accumulates no per-bar drift. A separate
+test checks the shared construction is genuinely buy-and-hold
+(`benchmarkBalance` vs. the closed-form ratio), so the invariant test
+can't pass by being merely self-consistent.
+
+### The 1x session length is a target that was hit, not an emergent value
+
+`BASE_TICK_MS = 300`, chosen against a stated target of **under 30
+seconds at 1x**. A real regular session is 79 five-minute bars and the
+opening bar is already on screen, so a full run is 78 ticks = **23.4s**;
+measured end to end in a real browser at **23.7s** wall clock. The other
+four speeds fall out of it: 0.1x = 3.9 minutes, 0.5x = 46.8s, 2x =
+11.7s, 4x = 5.9s. `beat-the-bench.test.ts` asserts the real millisecond
+intervals, and `BeatTheBench.test.tsx` measures each one by holding a
+fake clock one millisecond short of it -- "the five multipliers differ"
+was explicitly not enough for this issue.
+
+### Reduced motion gets a real alternative, not a removal
+
+Every other animated affordance in this app (celebration burst, chart
+tap hint, trade replay) is simply **not rendered** under reduced motion.
+That answer doesn't work here: the ticking chart _is_ the mechanic, so
+removing it leaves nothing to play. Instead:
+
+- Playback **starts paused** when the viewer prefers reduced motion, and
+  the chooser says so before they commit.
+- **"Step forward one bar"** is present for everyone, always, and is a
+  complete way to play a session start to finish -- trades included.
+  Verified live: 78 real step clicks plus a trade, through to a real
+  settlement and a stored record, with the clock never advancing a bar
+  on its own.
+- The speed controls stay available -- a reduced-motion viewer who would
+  rather watch it at 4x than press step 78 times can.
+
+`use-reduced-motion-after-mount.ts` exists because of this section's
+placement, and the distinction is easy to get wrong: `useReducedMotionAtMount`
+reads the preference in a `useState` lazy initializer, which its own doc
+comment says is only safe from a component that never renders during
+SSR. Per issue #122 this one mounts at the `ResultsPage` level, which
+does. The new hook takes `use-hydrated-local-storage-state.ts`'s
+deferred-correction shape instead (`false` on the server and on the
+hydration render, corrected in a post-mount microtask).
+
+### The chart is its own SVG, and shows only what the player has reached
+
+Not a reuse of `PortfolioChart`: that plots a portfolio over trade events
+on a **log** axis (it has to survive $20 -> $218M). This plots one
+ticker's intraday closes across a single session whose whole range is
+well under 2%, where log would be indistinguishable from linear.
+
+- **The y-domain comes from revealed bars only.** An axis fitted to the
+  whole session would publish the day's high and low before the player
+  got there. There's a regression test that renders the same revealed
+  prefix with a wildly out-of-range future bar and asserts the geometry
+  is byte-identical.
+- **No time labels inside the SVG.** The viewBox is 880 units wide and
+  paints at ~295px on a 375px screen, so a 12px label (PortfolioChart's
+  own axis size) renders at about 4px -- and early in a session the
+  opening and live labels overprint into a smudge. Both seen for real at
+  375px, not theorized. The component renders the revealed span
+  ("9:30 AM -> 11:05 AM - bar 20 of 79") as ordinary HTML above the
+  chart instead. Worth knowing before adding axis text to any chart this
+  small.
+- While the player is in cash the line goes **muted and dashed** -- the
+  price kept moving, they just weren't on it.
+
+### Tone: the mechanic is borrowed, the voice is not
+
+Beat the Couch taunts ("go ahead, time it", "crawling back so soon?",
+"twitchy"). This app's register is `narrate-trades.ts`'s. Every string
+was written against that, and the settlement copy lives in
+`beat-the-bench.ts` (`outcomeHeadline`/`outcomeDetail`/`gapPhrase`) with
+a test asserting the zero-move outcome reads "Along for the ride" and
+explains itself, rather than the source's "even odds" -- which is also
+just wrong, since zero trades is buy-and-hold, not a coin flip.
+
+`gapPhrase` exists because one session moves a fraction of a percent:
+both balances routinely round to the same dollars-and-cents figure even
+when one genuinely won, so the **gap** is what goes on screen ("0.13%
+behind the bench", or "Less than 0.01% ahead" below a hundredth of a
+percent). `formatSessionPercent` (a second decimal) is there for the
+same reason and is deliberately separate from `formatPercent`.
+
+### Testing notes worth not rediscovering
+
+- **`fireEvent`, not `userEvent`, in `BeatTheBench.test.tsx`.**
+  userEvent's own internal delay is a timer, so under `vi.useFakeTimers()`
+  every click has to be pumped by the same clock whose exact readings
+  these tests assert on. Every timing test hung before this switch.
+- **The reduced-motion tests wait for the preference to land** before
+  pressing play. It's read in a post-mount microtask, so there's a
+  microtask-wide window where the chooser is up but the preference
+  isn't applied -- a human can't click inside that, a test can, and did:
+  they passed alone and failed under a loaded full-suite run.
+- `test-fixtures/spy-session-bars.ts` is a real published session (79
+  bars, 2026-08-26, +0.053%) straight from a real local pipeline run.
+
+### Judgment calls a future issue may want to revisit
+
+- **The session is fetched on mount, always**, even for a viewer who
+  never plays -- a few KB, and the chooser card names the real date,
+  which is in the payload. Issue #132's pool is many sessions; don't
+  assume this precedent covers it.
+- **A replay overwrites the stored record** rather than being refused.
+  Nothing enforces one play per day: the settlement on screen should be
+  the one the page remembers. If #133's ritual wants a once-a-day lock,
+  that's its call to make.
+- **A move settles at the price on screen**, which is a small look-ahead
+  edge over real life (you always trade at a price you've already seen).
+  Stated in the settlement copy rather than modelled away.
+
+### Live verification (real pipeline output, real browser)
+
+Real `local-run.ts` pass (6 tickers, real Yahoo calls) into a
+`LOCAL_RESULTS_DIR`, then `next dev` plus the documented no-root
+headless-Chromium workaround: `/api/beat-the-bench` served the real
+2026-08-26 session; a full 1x playthrough took 23.74s wall clock; a
+zero-move run settled "Along for the ride" with both sides reading
+$20.01 (+0.05%); at 375px every playback control measured >= 44px
+(44x44 for each speed pill, 68x44 Pause, 59x44 Step) with
+`scrollWidth === clientWidth === 375`; a reduced-motion context started
+paused, sat still for 3s, and played through on step clicks alone; a
+context with `localStorage` throwing on every access still played to
+settlement. Zero console or page errors across all five runs. The
+temporary `playwright` devDependency and the verification script were
+reverted before committing, per this file's own convention.

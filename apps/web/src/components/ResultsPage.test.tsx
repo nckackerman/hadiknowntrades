@@ -337,4 +337,32 @@ describe("ResultsPage", () => {
       ).toBeTruthy();
     });
   });
+
+  describe("Beat the Bench is a section, not a branch of the result panel (issues #122/#131)", () => {
+    // Same reasoning as the Call Board block directly above, for the
+    // other mechanic mounted at this level: /api/results never resolves
+    // in this file, and the daily ritual still has to be there.
+    it("renders even while the hindsight result is still loading", () => {
+      render(<ResultsPage />);
+
+      expect(screen.getByRole("heading", { name: "Beat the Bench" })).toBeInTheDocument();
+      expect(screen.getByText(/already in the market/)).toBeInTheDocument();
+    });
+
+    it("mounts exactly once, as a direct child of the page column, ahead of The Call Board", () => {
+      const { container } = render(<ResultsPage />);
+      const column = container.firstElementChild!;
+      const headings = screen.getAllByRole("heading", { name: "Beat the Bench" });
+
+      expect(headings).toHaveLength(1);
+      const section = headings[0]!.closest("section")!;
+      expect(section.parentElement).toBe(column);
+      // Issue #122 fixes this order: hero result, then Beat the Bench,
+      // then The Call Board.
+      const board = screen.getByRole("heading", { name: "The Call Board" }).closest("section")!;
+      expect(
+        section.compareDocumentPosition(board) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+  });
 });
