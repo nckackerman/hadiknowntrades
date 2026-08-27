@@ -8144,6 +8144,7 @@ build`/`next start` (not `next dev` -- see issue #123's own note above
   The temporary `playwright` devDependency and every scratch
   verification script were reverted/deleted before committing, per this
   file's own established convention.
+
 ## Daily hero: fixed-height "showcase" box, one-time entrance, ticker chips fold in each trade's return (issue #175)
 
 Restructures `DailyHero.tsx`'s main render into a fixed-height,
