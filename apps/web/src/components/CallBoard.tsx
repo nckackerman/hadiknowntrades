@@ -286,8 +286,19 @@ function CallBoardSummaryRow({
         </span>
       )}
       <span className="flex flex-col gap-2">
-        <span aria-hidden="true" className="text-3xl leading-none">
-          {CTA_ICON}
+        {/* Icon plate (issue #188): a soft circular translucent backdrop
+            behind the emoji, matching the design reference's own
+            `.tile-icon-plate` -- 2.75rem (44px, this app's own established
+            touch-target size) housing the existing text-3xl emoji, with the
+            same subtle drop-shadow the reference gives the icon itself for
+            a little lift off the plate. */}
+        <span
+          aria-hidden="true"
+          className="flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.16]"
+        >
+          <span className="text-3xl leading-none drop-shadow-[0_2px_4px_rgba(0,0,0,0.25)]">
+            {CTA_ICON}
+          </span>
         </span>
         <span className="flex flex-col gap-1">
           <span className="font-display text-lg leading-tight font-extrabold tracking-tight">
@@ -375,9 +386,15 @@ function CallBoardSummaryRow({
  * `<details>` is closed (a closed `<details>`'s box is exactly its
  * `<summary>`'s own box), and this way there's no risk of the parent's
  * background leaking around the body's edges once open.
+ *
+ * **Colored ambient glow (issue #188)**: the outer `shadow-[...]` gained a
+ * second, blue-tinted layer (`rgba(57,135,229,0.35)`, the same
+ * `--series-1`/`--accent-selection` hue this tile's own gradient stops
+ * already sit in) ahead of the pre-existing plain black drop shadow -- both
+ * layers render together in one `box-shadow`, not one replacing the other.
  */
 const CARD_CLASSNAME =
-  "min-h-28 rounded-2xl bg-[linear-gradient(155deg,#4374cf_0%,#3568c2_55%,#2a58ab_100%)] text-white shadow-[0_6px_18px_rgba(0,0,0,0.35)]";
+  "min-h-28 rounded-2xl bg-[linear-gradient(155deg,#4374cf_0%,#3568c2_55%,#2a58ab_100%)] text-white shadow-[0_8px_22px_rgba(57,135,229,0.35),0_6px_18px_rgba(0,0,0,0.35)]";
 
 /**
  * What renders before `useCallBoard`'s mount-time correction: the same

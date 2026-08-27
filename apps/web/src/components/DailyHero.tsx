@@ -145,7 +145,6 @@ import {
   heroValueRowClassName,
 } from "@/components/HeroStat";
 import { PortfolioChart } from "@/components/PortfolioChart";
-import { buttonClassName } from "@/components/TradeReplay";
 import { formatHeroCurrency, formatMultiplier, formatPercent } from "@/lib/format-currency";
 import type { Mode } from "@/lib/mode";
 import { deriveWholeRangeIntradaySeries, type PortfolioPoint } from "@/lib/portfolio-series";
@@ -174,6 +173,33 @@ const SHOWCASE_MIN_HEIGHT_CLASSNAME = "min-h-[20rem]";
  * decorative chart, and why it's no longer reserved upfront).
  */
 const CHART_SLOT_HEIGHT_CLASSNAME = "h-[24rem]";
+
+/**
+ * "Watch it happen" (issue #188): a chunky, "juicy" press-button --
+ * matching the design reference's own `.watch-btn`/`.btn-juicy` -- a solid
+ * bottom-edge `box-shadow` standing in for depth, which flattens to a 1px
+ * edge on `:active` while the button itself shifts down the same 3px the
+ * shadow gave up, reading as a physical button being pressed in rather
+ * than a plain color-change hover.
+ *
+ * `min-h-11` (2.75rem/44px) is a real, load-bearing floor, not decoration:
+ * the design reference's own first draft measured this button at roughly
+ * 32-34px, under this app's established touch-target floor
+ * (`CONTROL_CLASS`, `BeatTheBench.tsx`) -- caught and fixed in that
+ * reference before this issue ever started, and built from that fixed
+ * value here, not from scratch.
+ *
+ * Deliberately a new, local class rather than reusing `TradeReplay.tsx`'s
+ * exported `buttonClassName` (which this button used before this issue):
+ * that class is shared by `TradeReplay`'s own "Watch it happen"/"Skip to
+ * end"/"Replay" buttons and `WholeRangeReplay`'s identical pair, all deep
+ * inside the demoted "Explore other windows" section -- out of this
+ * issue's own scope, which names only this button and `DailyRitual.tsx`'s
+ * "Copy recap". Restyling the shared class would have silently reached
+ * those other buttons too.
+ */
+const WATCH_BUTTON_CLASSNAME =
+  "inline-flex min-h-11 items-center justify-center rounded-[0.65rem] bg-[var(--surface-2)] px-[1.15rem] py-2 text-sm font-bold text-[var(--text-primary)] shadow-[0_4px_0_0_#0d0d0c] transition duration-75 ease-out active:translate-y-[3px] active:shadow-[0_1px_0_0_#0d0d0c]";
 
 const SHOWCASE_CLASSNAME =
   "surface-card relative flex flex-col items-center justify-center gap-3 overflow-hidden rounded-xl border border-[var(--gridline)] bg-[var(--surface-1)] px-6 py-8 text-center";
@@ -317,7 +343,7 @@ export function DailyHero({ mode }: DailyHeroProps) {
             type="button"
             onClick={() => setChartRevealed(true)}
             className={entranceClassName(
-              buttonClassName,
+              WATCH_BUTTON_CLASSNAME,
               "daily-hero-pop-animate",
               playEntranceAnimation,
             )}

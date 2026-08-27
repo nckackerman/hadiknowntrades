@@ -416,6 +416,16 @@ function BeatTheBenchFrame({
  * on the button itself is what gives the badge's `absolute` positioning
  * (STATUS_BADGE_CLASSNAME) something to anchor to at the tile's own
  * corner, not the padded content inside it.
+ *
+ * **Icon plate + colored ambient glow (issue #188)**: the emoji now sits
+ * inside a soft circular translucent plate (`bg-white/[0.16]`, the design
+ * reference's own `.tile-icon-plate` value, sized to this app's own 44px
+ * touch-target constant) with a small drop-shadow lift, and the tile's own
+ * outer `shadow-[...]` gained a second, amber-tinted layer
+ * (`rgba(232,163,61,0.35)`, this app's own `--accent-reward` value) ahead of
+ * the pre-existing plain black drop shadow -- both layers render together in
+ * one `box-shadow`, not a replacement of the original. Purely additive:
+ * no gradient/layout/badge change from #176/#186.
  */
 function CompactCard({
   headingId,
@@ -447,7 +457,7 @@ function CompactCard({
           backgroundImage: "linear-gradient(155deg, #f0b658 0%, #e8a33d 55%, #d88f28 100%)",
           color: "#241a08",
         }}
-        className="relative flex w-full flex-col gap-4 rounded-2xl px-[1.15rem] py-[1.1rem] text-left shadow-[0_6px_18px_rgba(0,0,0,0.35)] transition-transform duration-150 ease-out hover:-translate-y-0.5 hover:scale-[1.015] active:translate-y-0 active:scale-[0.99]"
+        className="relative flex w-full flex-col gap-4 rounded-2xl px-[1.15rem] py-[1.1rem] text-left shadow-[0_8px_22px_rgba(232,163,61,0.35),0_6px_18px_rgba(0,0,0,0.35)] transition-transform duration-150 ease-out hover:-translate-y-0.5 hover:scale-[1.015] active:translate-y-0 active:scale-[0.99]"
       >
         {playedRecord !== null && (
           // aria-hidden: the compact status line below already conveys
@@ -461,8 +471,19 @@ function CompactCard({
           </span>
         )}
         <div className="flex flex-col gap-1">
-          <span aria-hidden="true" className="text-[1.75rem] leading-none">
-            🎯
+          {/* Icon plate (issue #188): a soft circular translucent backdrop
+              behind the emoji, matching the design reference's own
+              `.tile-icon-plate` -- 2.75rem (44px, this app's own established
+              touch-target size, CONTROL_CLASS above) housing the existing
+              1.75rem emoji, with the same subtle drop-shadow the reference
+              gives the icon itself for a little lift off the plate. */}
+          <span
+            aria-hidden="true"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.16]"
+          >
+            <span className="text-[1.75rem] leading-none drop-shadow-[0_2px_4px_rgba(0,0,0,0.25)]">
+              🎯
+            </span>
           </span>
           <span
             id={headingId}
