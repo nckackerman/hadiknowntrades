@@ -6055,3 +6055,71 @@ fixture's full 62-call window: 32 wins, 48 points, best streak 4. (Issue
 #128 cites 12/22, ~55%, best streak 4 from the original design process
 against a different window -- recomputed here against the data this repo
 actually ships, and landing in the same place.)
+
+## Gain/loss rebalance + duration-coded range pills (issue #123)
+
+Like #121, **the decision record lives in `src/app/globals.css`'s own
+comment block above `--status-critical`/`--status-good`** -- read that
+before changing either value. The short version, plus the things that only
+showed up live:
+
+- `--status-good` `#0ca30c` -> `#4ab86f`, `--status-critical` `#e66767` ->
+  `#e46b64`. The defect was **not** a WCAG failure (an earlier draft of the
+  issue claimed one and was wrong -- both old values already cleared 4.5:1
+  on every surface): it was a 31-point HSL-lightness gap plus a 0.048 OKLCH
+  chroma gap, a dark maximally-saturated forest green next to a light
+  moderate salmon, so a loss read louder than a gain. Now 13.7 HSL-lightness
+  points apart (2.9 in OKLCH lightness, 0.005 in chroma). Contrast improved
+  on all three surfaces for both: good 5.90/5.19/4.52 -> 7.90/6.95/6.05,
+  critical 6.13/5.39/4.69 -> 6.21/5.46/4.75 (`--background`/`--surface-1`/
+  `--surface-2`; `--surface-2` is the binding one).
+- **`app/global-error.tsx`'s hand-copied `#e66767` had to move with it**
+  (three places: the hex plus two `rgba(230, 103, 103, ...)` values). That
+  file can't import `globals.css` -- see its own doc comment -- so nothing
+  enforces the sync; it is the one thing to grep for on any future change
+  to these values.
+- `RangeSelector`'s pills gained an `aria-hidden` duration bar (8/11/14/17/
+  20/23px, ordinal by `PRESET_RANGES` position, not proportional to real
+  elapsed time -- 1W to MAX spans three-plus orders of magnitude and a
+  true-to-scale bar renders the short ranges as identical slivers). Length,
+  not a color per range: color on this page already means gain/loss and
+  earned-vs-selected, and duration is ordinal. The width is an inline
+  `style`, not a Tailwind class, because this repo's jsdom setup loads no
+  stylesheet and a class-based width isn't assertable.
+- **The bar is absolutely positioned inside the pill, and that is
+  load-bearing, found by measuring rather than by eye.** The first version
+  stacked label-over-bar in flow; a bar wider than its own (very short)
+  label widens that pill -- "1Y" is the narrowest at ~14px of content
+  against a 17px bar -- which grew the row from 343px to 345px and pushed
+  `document.documentElement.scrollWidth` to 377px at a 375px viewport, a
+  real 2px horizontal overflow on the page this control already nearly
+  fills (issue #63). Taking the bar out of flow (`absolute bottom-1.5
+left-1/2 -translate-x-1/2`, with `pb-3` reserving the room) keeps every
+  pill's width purely label-driven: re-measured live at 343px and
+  `scrollWidth` 375, identical to before the indicator existed.
+- The active pill now fills with `--accent-selection` instead of
+  `--series-1` directly -- the same blue, and exactly the consumer #121's
+  own decision block names. The other five active-control sites
+  (`ModeToggle`, `CustomRangeSelector`, `DayOverview`, `WholeRangeBalance`,
+  `app/error.tsx`) still say `--series-1`; migrating them is a separate,
+  purely mechanical pass nobody has done yet.
+- **Live verification gotcha, cost real time: in this sandbox a headless
+  Chromium cannot hydrate a `next dev` page.** Every `/_next/static/chunks/
+*.js` request came back **403** to the browser while the exact same URL
+  returned 200 to `curl`/Node, and the HMR websocket failed with
+  `ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`. The page still renders
+  (SSR'd markup screenshots fine), so the failure is silent and looks like
+  "React is fine but nothing animates" -- the count-up sat frozen at its
+  starting value and clicking "Watch it happen" did nothing. `next build`
+  - `next start` on the same port has no such problem. **Use the production
+    server, not `next dev`, for any screenshot pass that needs real
+    interaction here** -- and if a run ever shows unstyled/oddly-narrow
+    markup, check for a leftover `next start` still holding the port from a
+    previous build (its stale asset manifest 500s on the new CSS chunk, and
+    `pnpm start` only logs `EADDRINUSE` to its own log file).
+- Verified live at 375px and 1024px, before and after, on the production
+  server: the six pills' bar lengths read as a ramp with no row-width
+  change, and `TradeReplay`'s playback overlay ("Watching {date}" + "Skip to
+  end" + the chart-anchored callout bubble) was screenshotted mid-playback
+  for both a gain and a loss fixture, since it consumes `heroMultiplierColor`
+  directly. Zero console errors across the whole run.

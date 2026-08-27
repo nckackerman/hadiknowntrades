@@ -86,12 +86,15 @@ export default function GlobalError({ error, reset }: GlobalErrorPageProps) {
               alignItems: "flex-start",
               gap: "0.5rem",
               borderRadius: "0.5rem",
-              border: "1px solid rgba(230, 103, 103, 0.3)",
-              background: "rgba(230, 103, 103, 0.05)",
+              // #e46b64, globals.css's own --status-critical as
+              // rebalanced by issue #123 -- hand-copied, since this
+              // document has no :root to read the token from.
+              border: "1px solid rgba(228, 107, 100, 0.3)",
+              background: "rgba(228, 107, 100, 0.05)",
               padding: "1rem 1.25rem",
             }}
           >
-            <p style={{ margin: 0, fontWeight: 600, color: "#e66767" }}>Something went wrong</p>
+            <p style={{ margin: 0, fontWeight: 600, color: "#e46b64" }}>Something went wrong</p>
             <p style={{ margin: 0, fontSize: "0.875rem", color: "#c3c2b7" }}>
               This page hit an unexpected error while rendering. This is a bug on our end, not
               something you did.

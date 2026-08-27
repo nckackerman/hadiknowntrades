@@ -41,6 +41,33 @@ describe("RangeSelector", () => {
     expect(renderedOrder).toEqual(expectedOrder);
   });
 
+  describe("duration-coded indicator (issue #123)", () => {
+    it("renders one bar per pill whose width strictly increases in PRESET_RANGES order", () => {
+      render(<RangeSelector selected="1Y" onSelect={() => {}} />);
+
+      const bars = screen.getAllByTestId("range-duration-bar");
+      expect(bars.map((bar) => bar.dataset.range)).toEqual([...PRESET_RANGES]);
+
+      // Widths come from an inline style, not a Tailwind class, precisely
+      // so they're readable here -- this repo's jsdom setup loads no
+      // stylesheet, so a class-based width would compute to "".
+      const widths = bars.map((bar) => Number.parseFloat(bar.style.width));
+      expect(widths.every((width) => Number.isFinite(width) && width > 0)).toBe(true);
+      for (let i = 1; i < widths.length; i += 1) {
+        expect(widths[i]).toBeGreaterThan(widths[i - 1]!);
+      }
+    });
+
+    it("hides every bar from assistive tech, leaving the pill's accessible name as its visible label alone", () => {
+      render(<RangeSelector selected="1Y" onSelect={() => {}} />);
+
+      for (const bar of screen.getAllByTestId("range-duration-bar")) {
+        expect(bar).toHaveAttribute("aria-hidden", "true");
+        expect(bar).toHaveTextContent("");
+      }
+    });
+  });
+
   it("marks every pill unpressed when selected is null (a custom start-date anchor is active instead, issue #11)", () => {
     render(<RangeSelector selected={null} onSelect={() => {}} />);
 
