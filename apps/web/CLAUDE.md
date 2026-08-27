@@ -5876,6 +5876,7 @@ count and horizontal spread by tier.
   render in green). Zero console errors or page errors on any of them.
   The verification scripts and the temporary `playwright` devDependency
   were reverted before committing, per this file's own convention.
+
 ## The Call Board engine: storage, scoring, resolution (issue #128)
 
 The pure logic layer behind the rolling 3-day prediction game -- **no UI
