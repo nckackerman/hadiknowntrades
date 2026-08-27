@@ -276,8 +276,11 @@ function LoadingCard() {
 }
 
 /**
- * The daily hero showcase: a one-time-animated box, about half-height by
- * default, holding the "had you known" statement (its own first line --
+ * The daily hero showcase: a one-time-animated box, shrunk to match the
+ * design reference by default (issue #198 -- `SHOWCASE_MIN_HEIGHT_CLASSNAME`,
+ * not "half-height" any more; that was issue #175's original reduction from
+ * a taller fixed height, since superseded), holding the "had you known"
+ * statement (its own first line --
  * the eyebrow date line that used to sit above it moved up into
  * ResultsPage.tsx's own `<header>`, next to the `<h1>`, issue #187), the
  * $X -> $Y figures + multiplier badge, a slot holding either the

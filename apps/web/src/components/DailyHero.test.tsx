@@ -63,7 +63,7 @@ afterEach(() => {
 });
 
 describe("DailyHero", () => {
-  it("renders a loading placeholder before the fetch resolves, in the same half-height default showcase box", () => {
+  it("renders a loading placeholder before the fetch resolves, in the same reduced-height default showcase box", () => {
     stubResultsFetch({ model: "intraday-daily", days: [day()] });
     const { container } = render(<DailyHero mode="long" />);
 
@@ -82,7 +82,7 @@ describe("DailyHero", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("shows the statement and figures for the most recent day, in the half-height default showcase box, with no date text of its own (issue #187 -- the date moved to ResultsPage.tsx's own header)", async () => {
+  it("shows the statement and figures for the most recent day, in the reduced-height default showcase box, with no date text of its own (issue #187 -- the date moved to ResultsPage.tsx's own header)", async () => {
     stubResultsFetch({
       model: "intraday-daily",
       days: [day({ date: "2026-08-24" }), day({ date: "2026-08-25" })],
@@ -138,7 +138,7 @@ describe("DailyHero", () => {
     expect(container.querySelector(".h-\\[24rem\\]")).not.toBeNull();
   });
 
-  it('does not render a "Watch it happen" button or chart for a zero-trade day, in the same half-height default box, with no date text (issue #187)', async () => {
+  it('does not render a "Watch it happen" button or chart for a zero-trade day, in the same reduced-height default box, with no date text (issue #187)', async () => {
     stubResultsFetch({ model: "intraday-daily", days: [day({ trades: [] })] });
     const { container } = render(<DailyHero mode="long" />);
 
