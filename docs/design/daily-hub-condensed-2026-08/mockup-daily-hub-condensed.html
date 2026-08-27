@@ -1,0 +1,824 @@
+<title>Condensed Daily Pass</title>
+<style>
+  :root {
+    --background: #0a0a0a;
+    --surface-1: #1a1a19;
+    --surface-2: #262624;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --gridline: #2c2c2a;
+    --baseline: #383835;
+    --series-1: #3987e5;
+    --status-good: #4ab86f;
+    --status-critical: #e46b64;
+    --accent-reward: #e8a33d;
+    --accent-reward-wash: rgb(232 163 61 / 12%);
+    --accent-selection: #3987e5;
+    --font-display: -apple-system, "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+    --font-numeric: "SFMono-Regular", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    background: var(--background);
+    color: var(--text-primary);
+    font-family: var(--font-display);
+    margin: 0;
+    padding: 0;
+  }
+
+  .page {
+    max-width: 48rem;
+    margin: 0 auto;
+    padding: 2.25rem 1.5rem 4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.75rem;
+  }
+
+  /* -------------------- toolbar (mockup chrome, not app UI) -------------------- */
+  .toolbar {
+    max-width: 48rem;
+    margin: 0 auto;
+    padding: 0.9rem 1.5rem 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 0.75rem;
+  }
+  .toolbar span.lbl {
+    color: var(--text-muted);
+    margin-right: 0.25rem;
+  }
+  .toolbar button {
+    font-family: inherit;
+    font-size: 0.75rem;
+    font-weight: 600;
+    border-radius: 999px;
+    border: 1px solid var(--gridline);
+    background: var(--surface-1);
+    color: var(--text-secondary);
+    padding: 0.35rem 0.75rem;
+    cursor: pointer;
+  }
+  .toolbar button[aria-pressed="true"] {
+    background: var(--accent-selection);
+    border-color: var(--accent-selection);
+    color: white;
+  }
+  .toolbar .divider {
+    width: 1px;
+    height: 1.1rem;
+    background: var(--gridline);
+    margin: 0 0.25rem;
+  }
+
+  /* -------------------- header -------------------- */
+  header.top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.6rem 0.75rem;
+    flex-wrap: wrap;
+  }
+  h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+  .day-chip {
+    font-family: var(--font-numeric);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    border: 1px solid var(--gridline);
+    border-radius: 999px;
+    padding: 0.3rem 0.7rem;
+    white-space: nowrap;
+  }
+
+  /* -------------------- showcase -------------------- */
+  .showcase {
+    position: relative;
+    border: 1px solid var(--gridline);
+    background: linear-gradient(180deg, #1d1d1b 0%, var(--surface-1) 55%);
+    border-radius: 0.85rem;
+    padding: 1.3rem 1.25rem 1.4rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 0.55rem;
+    overflow: hidden;
+    transition: min-height 0.15s ease;
+  }
+  .showcase.collapsed {
+    min-height: 12.5rem;
+    justify-content: center;
+  }
+  .showcase.expanded {
+    min-height: 24.5rem;
+    justify-content: center;
+  }
+
+  .statement {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    max-width: 26rem;
+    margin-top: 0.1rem;
+  }
+  .statement strong {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .figures {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    font-family: var(--font-numeric);
+    font-weight: 700;
+    font-size: 2.35rem;
+    line-height: 1;
+    margin: 0.15rem 0;
+  }
+  .figures .arrow {
+    color: var(--text-muted);
+    font-weight: 400;
+    font-size: 1.5rem;
+  }
+  .figures .gain {
+    color: var(--status-good);
+  }
+  .figures .mult {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--status-good);
+    align-self: center;
+  }
+
+  /*
+   * The "juicy" chunky button (Duolingo's signature interaction cue): a
+   * solid bottom edge stands in for depth and flattens on press -- a
+   * physical button being pushed in, not just a color-change hover.
+   * Applied to every primary action button in this mockup.
+   */
+  .btn-juicy {
+    font-family: inherit;
+    font-weight: 700;
+    cursor: pointer;
+    border: none;
+    border-radius: 0.65rem;
+    transition:
+      transform 0.08s ease,
+      box-shadow 0.08s ease;
+  }
+  .btn-juicy:active {
+    transform: translateY(3px);
+  }
+
+  .watch-btn {
+    /* min-h-11 (44px), matching this app's own established touch-target
+       floor (BeatTheBench.tsx's CONTROL_CLASS) -- the first draft of
+       this button measured closer to 32-34px, caught in independent
+       review before this became the real spec. */
+    min-height: 2.75rem;
+    display: inline-flex;
+    align-items: center;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    background: var(--surface-2);
+    box-shadow: 0 4px 0 0 #0d0d0c;
+    padding: 0.5rem 1.15rem;
+    margin-top: 0.15rem;
+  }
+  .watch-btn:active {
+    box-shadow: 0 1px 0 0 #0d0d0c;
+  }
+
+  .chart-slot {
+    width: 100%;
+    height: 13rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    border: 1px dashed var(--gridline);
+    border-radius: 0.5rem;
+    margin-top: 0.25rem;
+  }
+  .chart-slot[hidden] {
+    display: none;
+  }
+
+  .chips {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.1rem;
+  }
+  .chip {
+    font-family: var(--font-numeric);
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: var(--surface-2);
+    border: 1px solid var(--gridline);
+    border-radius: 999px;
+    padding: 0.28rem 0.6rem;
+    display: inline-flex;
+    gap: 0.3rem;
+  }
+  .chip .tk {
+    color: var(--text-primary);
+  }
+  .chip .pc.good {
+    color: var(--status-good);
+  }
+
+  /* -------------------- game grid (2x2) -------------------- */
+  .game-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.85rem;
+  }
+  .game-tile {
+    position: relative;
+    /* A grid item's default min-width is `auto`, not 0 -- it won't
+       shrink below its own content's min-content size even inside a
+       `1fr` track. A long, unwrapped status string was enough to blow
+       the whole column past the viewport at 375px; this is the actual
+       fix, `.tile-status`'s own wrapping is the belt-and-suspenders
+       half of it (see below). */
+    min-width: 0;
+    border-radius: 1.1rem;
+    padding: 1.1rem 1.15rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    color: white;
+    cursor: pointer;
+    border: none;
+    text-align: left;
+    font-family: inherit;
+    transition:
+      transform 0.15s ease,
+      box-shadow 0.15s ease;
+  }
+  .game-tile:hover {
+    transform: translateY(-2px) scale(1.012);
+  }
+  /* A colored ambient glow under each tile, tinted to its own hue --
+     one more "juicy" cue borrowed from Duolingo/mobile-game UI, where a
+     bright element gets a soft halo instead of a flat neutral shadow. */
+  .game-tile.bench {
+    background: linear-gradient(155deg, #f0b658 0%, #e8a33d 55%, #d88f28 100%);
+    color: #241a08;
+    box-shadow:
+      0 8px 22px rgb(232 163 61 / 35%),
+      0 3px 8px rgb(0 0 0 / 45%);
+  }
+  .game-tile.callboard {
+    background: linear-gradient(155deg, #4374cf 0%, #3568c2 55%, #2a58ab 100%);
+    box-shadow:
+      0 8px 22px rgb(57 135 229 / 35%),
+      0 3px 8px rgb(0 0 0 / 45%);
+  }
+  .tile-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  /* A soft circular plate behind the icon -- the "app icon" treatment
+     Duolingo/mobile games use, and a step bolder than a bare emoji. */
+  .tile-icon-plate {
+    width: 2.75rem;
+    height: 2.75rem;
+    border-radius: 999px;
+    background: rgb(255 255 255 / 16%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .tile-icon {
+    font-size: 1.5rem;
+    line-height: 1;
+    filter: drop-shadow(0 2px 4px rgb(0 0 0 / 25%));
+  }
+  .tile-title {
+    font-size: 1.02rem;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    line-height: 1.15;
+  }
+  .tile-sub {
+    font-size: 0.72rem;
+    font-weight: 500;
+    opacity: 0.85;
+    margin-top: 0.15rem;
+  }
+  .tile-status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.4rem;
+    margin-top: auto;
+    min-width: 0;
+  }
+  .tile-status {
+    font-family: var(--font-numeric);
+    font-size: 0.64rem;
+    font-weight: 700;
+    background: rgb(0 0 0 / 14%);
+    border-radius: 999px;
+    padding: 0.2rem 0.55rem;
+    overflow-wrap: break-word;
+    min-width: 0;
+  }
+  .game-tile.callboard .tile-status {
+    background: rgb(255 255 255 / 20%);
+  }
+  .chevron {
+    font-size: 0.7rem;
+    opacity: 0.7;
+  }
+
+  /* At-a-glance done/partial badge, top-right corner -- the same STEP_STYLES glyph vocabulary already coded in DailyRitual.tsx, relocated onto the card it describes. */
+  .status-badge {
+    position: absolute;
+    top: -0.5rem;
+    right: -0.5rem;
+    width: 1.7rem;
+    height: 1.7rem;
+    border-radius: 999px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.85rem;
+    font-weight: 700;
+    border: 2px solid var(--background);
+  }
+  .status-badge.done {
+    background: var(--accent-reward);
+    color: #241a08;
+    box-shadow:
+      0 0 0 3px var(--background),
+      0 0 14px rgb(232 163 61 / 55%);
+  }
+  .status-badge.partial {
+    background: var(--surface-2);
+    color: var(--text-primary);
+    border-color: var(--surface-1);
+  }
+  .status-badge.todo {
+    display: none;
+  }
+
+  /* Beat the Bench's recent-form strip: small win/loss/tie squares plus a streak chip. */
+  .form-row,
+  .history-row {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  .form-row[hidden],
+  .history-row[hidden] {
+    display: none;
+  }
+  .form-pip {
+    width: 0.85rem;
+    height: 0.85rem;
+    border-radius: 999px;
+    border: 1.5px solid rgb(0 0 0 / 22%);
+  }
+  .form-pip.win {
+    background: #1d7a44;
+  }
+  .form-pip.loss {
+    background: #a3271f;
+  }
+  .form-pip.tie {
+    background: rgb(0 0 0 / 32%);
+  }
+
+  /* Call Board's history strip: the exact four outcome glyphs the real app already scores calls into (exact / right-direction / near-miss / far-miss). */
+  .hist-pip {
+    width: 1.15rem;
+    height: 1.15rem;
+    border-radius: 999px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.6rem;
+    font-weight: 800;
+  }
+  .hist-pip.exact {
+    background: var(--accent-reward);
+    color: #241a08;
+  }
+  .hist-pip.right {
+    background: rgb(255 255 255 / 92%);
+    color: #1d7a44;
+  }
+  .hist-pip.near {
+    background: rgb(255 255 255 / 38%);
+    color: #1c2b4d;
+  }
+  .hist-pip.far {
+    background: rgb(255 255 255 / 92%);
+    color: #a3271f;
+  }
+
+  .streak-chip {
+    margin-left: 0.1rem;
+    font-family: var(--font-numeric);
+    font-size: 0.66rem;
+    font-weight: 800;
+    padding: 0.12rem 0.42rem;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .streak-chip.light {
+    background: rgb(255 255 255 / 20%);
+    color: #ffe4b0;
+  }
+  .streak-chip.dark {
+    background: rgb(0 0 0 / 16%);
+    color: #4a2f00;
+  }
+
+  /* -------------------- recap disclosure (replaces the old rail) -------------------- */
+  details.recap {
+    border: 1px solid var(--gridline);
+    background: var(--surface-1);
+    border-radius: 0.65rem;
+    overflow: hidden;
+  }
+  details.recap summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 0.85rem 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+  details.recap summary::-webkit-details-marker {
+    display: none;
+  }
+  .recap-left {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+  }
+  .recap-glyph {
+    width: 1.4rem;
+    height: 1.4rem;
+    border-radius: 999px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    flex-shrink: 0;
+  }
+  .recap-glyph.locked {
+    border: 1px solid var(--gridline);
+    color: var(--text-muted);
+  }
+  .recap-glyph.ready {
+    background: var(--accent-reward);
+    color: #241a08;
+  }
+  .recap-title.locked {
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+  .recap-title.ready {
+    color: var(--text-primary);
+  }
+  .recap-caret {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    transition: transform 0.15s ease;
+  }
+  details[open] .recap-caret {
+    transform: rotate(90deg);
+  }
+  .recap-body {
+    padding: 0 1rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+  .recap-body p {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+  }
+  .recap-pre {
+    font-family: var(--font-numeric);
+    font-size: 0.72rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    background: var(--surface-2);
+    border: 1px solid var(--gridline);
+    border-radius: 0.5rem;
+    padding: 0.7rem 0.8rem;
+    color: var(--text-secondary);
+    margin: 0;
+  }
+  .copy-btn {
+    min-height: 2.75rem;
+    display: inline-flex;
+    align-items: center;
+    align-self: flex-start;
+    font-size: 0.8rem;
+    color: white;
+    background: var(--accent-selection);
+    box-shadow: 0 4px 0 0 #1f5aa8;
+    padding: 0.5rem 1.15rem;
+  }
+  .copy-btn:active {
+    box-shadow: 0 1px 0 0 #1f5aa8;
+  }
+
+  /* -------------------- explore other windows -------------------- */
+  details.explore {
+    border: 1px solid var(--gridline);
+    background: var(--surface-1);
+    border-radius: 0.65rem;
+    padding: 0;
+  }
+  details.explore summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 0.85rem 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+  details.explore summary::-webkit-details-marker {
+    display: none;
+  }
+  .explore-ranges {
+    color: var(--text-muted);
+    font-weight: 500;
+    font-size: 0.78rem;
+    margin-left: 0.5rem;
+  }
+
+  footer.note {
+    text-align: center;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+    max-width: 34rem;
+    margin: 0.25rem auto 0;
+  }
+</style>
+
+<div class="toolbar" role="group" aria-label="Mockup controls (not part of the app)">
+  <span class="lbl">State:</span>
+  <button id="state-fresh" aria-pressed="true">Fresh day</button>
+  <button id="state-played" aria-pressed="false">Played today</button>
+  <button id="state-returning" aria-pressed="false">Returning streaker</button>
+  <div class="divider"></div>
+  <span class="lbl">Width:</span>
+  <button id="width-desktop" aria-pressed="true">Desktop</button>
+  <button id="width-mobile" aria-pressed="false">Mobile</button>
+</div>
+
+<div class="page" id="page">
+  <header class="top">
+    <h1>Had I Known Trades</h1>
+    <span class="day-chip">YESTERDAY · AUG 27, 2026</span>
+  </header>
+
+  <section class="showcase collapsed" id="showcase">
+    <p class="statement">Had you known, you'd have made <strong>3 trades</strong> and turned</p>
+    <p class="figures">
+      <span>$6.5K</span><span class="arrow">→</span><span class="gain">$7K</span
+      ><span class="mult">(1.1x)</span>
+    </p>
+    <button class="watch-btn btn-juicy" id="watch-btn">Watch it happen</button>
+    <div class="chart-slot" id="chart-slot" hidden>chart renders here, in place</div>
+    <p class="chips">
+      <span class="chip"><span class="tk">ALGN</span><span class="pc good">+2.0%</span></span>
+      <span class="chip"><span class="tk">A</span><span class="pc good">+2.4%</span></span>
+      <span class="chip"><span class="tk">ALB</span><span class="pc good">+3.1%</span></span>
+    </p>
+  </section>
+
+  <div class="game-row">
+    <button class="game-tile bench" id="bench-tile">
+      <span class="status-badge todo" id="bench-badge">✓</span>
+      <div class="tile-top">
+        <span class="tile-icon-plate"><span class="tile-icon">🎯</span></span>
+      </div>
+      <div>
+        <div class="tile-title">Can you do better?</div>
+        <div class="tile-sub">Play today's real session against the market, live.</div>
+      </div>
+      <div class="form-row" id="bench-form" hidden>
+        <span class="form-pip win"></span>
+        <span class="form-pip win"></span>
+        <span class="form-pip loss"></span>
+        <span class="form-pip win"></span>
+        <span class="form-pip tie"></span>
+        <span class="streak-chip dark">🔥 2</span>
+      </div>
+      <div class="tile-status-row">
+        <span class="tile-status" id="bench-status">Not played yet today</span>
+      </div>
+    </button>
+
+    <button class="game-tile callboard" id="board-tile">
+      <span class="status-badge todo" id="board-badge">✓</span>
+      <div class="tile-top">
+        <span class="tile-icon-plate"><span class="tile-icon">🔮</span></span>
+      </div>
+      <div>
+        <div class="tile-title">Think you know the future?</div>
+        <div class="tile-sub">Call the next 3 sessions, up or down, before they open.</div>
+      </div>
+      <div class="history-row" id="board-history" hidden>
+        <span class="hist-pip exact">★</span>
+        <span class="hist-pip right">✓</span>
+        <span class="hist-pip right">✓</span>
+        <span class="hist-pip far">✕</span>
+        <span class="hist-pip near">~</span>
+        <span class="streak-chip light">🔥 3</span>
+      </div>
+      <div class="tile-status-row">
+        <span class="tile-status" id="board-status">0 of 3 called this week</span>
+        <span class="chevron">▸</span>
+      </div>
+    </button>
+  </div>
+  <!-- The Order / The Lineup deliberately omitted from this reference:
+       independent staff-designer + staff-PM review recommended parking
+       both pending a real daily-selection-mechanism design pass, so
+       they are not part of this build's scope. See the backlog issue
+       for the full reasoning and findings. -->
+
+  <details class="recap" id="recap">
+    <summary>
+      <span class="recap-left">
+        <span class="recap-glyph locked" id="recap-glyph">🔒</span>
+        <span class="recap-title locked" id="recap-title"
+          >Today's recap unlocks after you play Beat the Bench</span
+        >
+      </span>
+      <span class="recap-caret">▸</span>
+    </summary>
+    <div class="recap-body" id="recap-body">
+      <p>
+        It gathers what hindsight would have made, how your session came out, and the calls you've
+        made so far — short enough to paste anywhere.
+      </p>
+    </div>
+  </details>
+
+  <details class="explore">
+    <summary>
+      <span
+        >Explore other windows<span class="explore-ranges">
+          1W · 1M · 3M · 1Y · 5Y · Max</span
+        ></span
+      >
+      <span class="recap-caret">▸</span>
+    </summary>
+  </details>
+
+  <footer class="note">
+    Hindsight only, from at most 3 trades across the S&amp;P 500 using closed daily prices — not a
+    predictor. Full methodology inside &ldquo;Explore other windows.&rdquo;
+  </footer>
+</div>
+
+<script>
+  const page = document.getElementById("page");
+  const showcase = document.getElementById("showcase");
+  const watchBtn = document.getElementById("watch-btn");
+  const chartSlot = document.getElementById("chart-slot");
+
+  watchBtn.addEventListener("click", () => {
+    const revealed = chartSlot.hidden === false;
+    chartSlot.hidden = revealed;
+    showcase.classList.toggle("collapsed", revealed);
+    showcase.classList.toggle("expanded", !revealed);
+    watchBtn.textContent = revealed ? "Watch it happen" : "Watching…";
+  });
+
+  const stateButtons = {
+    fresh: document.getElementById("state-fresh"),
+    played: document.getElementById("state-played"),
+    returning: document.getElementById("state-returning"),
+  };
+  const benchBadge = document.getElementById("bench-badge");
+  const boardBadge = document.getElementById("board-badge");
+  const benchStatus = document.getElementById("bench-status");
+  const boardStatus = document.getElementById("board-status");
+  const benchForm = document.getElementById("bench-form");
+  const boardHistory = document.getElementById("board-history");
+  const recap = document.getElementById("recap");
+  const recapGlyph = document.getElementById("recap-glyph");
+  const recapTitle = document.getElementById("recap-title");
+  const recapBody = document.getElementById("recap-body");
+
+  const RECAP_BODY = (calls) =>
+    '<pre class="recap-pre">Had I Known Trades · Aug 27, 2026\n\n' +
+    "Hindsight over the past week: $6,542.63 became $7,049.31 (1.1x)\n" +
+    "Beat the Bench: you beat the bench by 0.13%\n" +
+    `The Call Board: ${calls} of 3 upcoming sessions called\n\n` +
+    "Hindsight only -- not advice, and not a predictor.</pre>" +
+    '<button class="copy-btn btn-juicy">Copy recap</button>';
+
+  function setState(state) {
+    for (const [key, btn] of Object.entries(stateButtons)) {
+      btn.setAttribute("aria-pressed", String(key === state));
+    }
+    recap.open = false;
+
+    if (state === "fresh") {
+      benchBadge.className = "status-badge todo";
+      benchStatus.textContent = "Not played yet today";
+      benchForm.hidden = true;
+
+      boardBadge.className = "status-badge todo";
+      boardStatus.textContent = "0 of 3 called this week";
+      boardHistory.hidden = true;
+
+      recapGlyph.className = "recap-glyph locked";
+      recapGlyph.textContent = "🔒";
+      recapTitle.className = "recap-title locked";
+      recapTitle.textContent = "Today's recap unlocks after you play Beat the Bench";
+      recapBody.innerHTML =
+        "<p>It gathers what hindsight would have made, how your session came out, and the calls you've made so far — short enough to paste anywhere.</p>";
+    } else if (state === "played") {
+      benchBadge.className = "status-badge done";
+      benchBadge.textContent = "✓";
+      benchStatus.textContent = "0.13% ahead of the bench today";
+      benchForm.hidden = true;
+
+      boardBadge.className = "status-badge partial";
+      boardBadge.textContent = "1";
+      boardStatus.textContent = "1 of 3 called this week";
+      boardHistory.hidden = true;
+
+      recapGlyph.className = "recap-glyph ready";
+      recapGlyph.textContent = "✓";
+      recapTitle.className = "recap-title ready";
+      recapTitle.textContent = "Today's recap is ready — Copy";
+      recapBody.innerHTML = RECAP_BODY(1);
+    } else {
+      benchBadge.className = "status-badge done";
+      benchBadge.textContent = "✓";
+      benchStatus.textContent = "0.13% ahead of the bench today";
+      benchForm.hidden = false;
+
+      boardBadge.className = "status-badge done";
+      boardBadge.textContent = "✓";
+      boardStatus.textContent = "3 of 3 called this week";
+      boardHistory.hidden = false;
+
+      recapGlyph.className = "recap-glyph ready";
+      recapGlyph.textContent = "✓";
+      recapTitle.className = "recap-title ready";
+      recapTitle.textContent = "Today's recap is ready — Copy";
+      recapBody.innerHTML = RECAP_BODY(3);
+    }
+  }
+
+  stateButtons.fresh.addEventListener("click", () => setState("fresh"));
+  stateButtons.played.addEventListener("click", () => setState("played"));
+  stateButtons.returning.addEventListener("click", () => setState("returning"));
+
+  const desktopBtn = document.getElementById("width-desktop");
+  const mobileBtn = document.getElementById("width-mobile");
+  desktopBtn.addEventListener("click", () => {
+    page.style.maxWidth = "48rem";
+    desktopBtn.setAttribute("aria-pressed", "true");
+    mobileBtn.setAttribute("aria-pressed", "false");
+  });
+  mobileBtn.addEventListener("click", () => {
+    page.style.maxWidth = "24.375rem";
+    desktopBtn.setAttribute("aria-pressed", "false");
+    mobileBtn.setAttribute("aria-pressed", "true");
+  });
+</script>
