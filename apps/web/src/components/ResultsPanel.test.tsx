@@ -1446,6 +1446,41 @@ describe("ResultsPanel", () => {
     });
   });
 
+  describe("share card link (issue #134)", () => {
+    const shareButton = () => screen.queryByRole("button", { name: "Copy share card link" });
+
+    it("offers the share link on a window-model range, which has no guess gate of its own", () => {
+      const state: ResultsState = { status: "success", data: fixtureResult() };
+      render(<ResultsPanel range="1Y" state={state} />);
+
+      expect(shareButton()).toBeInTheDocument();
+    });
+
+    it("offers no share link for a custom start-date anchor, which has no /api/og route", () => {
+      const state: ResultsState<CustomWindowResult> = {
+        status: "success",
+        data: fixtureCustomWindowResult(),
+      };
+      render(<ResultsPanel range={null} state={state} />);
+
+      expect(shareButton()).not.toBeInTheDocument();
+    });
+
+    it("withholds the share link on an intraday-daily range until the whole-range guess is revealed", async () => {
+      const user = userEvent.setup();
+      const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
+      render(<ResultsPanel range="1M" state={state} />);
+
+      // Pre-reveal, a share link would be a one-click spoiler for the
+      // very figure WholeRangeBalance's guess prompt is protecting.
+      expect(shareButton()).not.toBeInTheDocument();
+
+      await submitWholeRangeGuess(user);
+
+      expect(shareButton()).toBeInTheDocument();
+    });
+  });
+
   describe("range/anchor switch fade-in transition (issue #65)", () => {
     // jsdom in this repo's Vitest setup has no window.matchMedia at all
     // (see prefers-reduced-motion.ts's own doc comment) -- stubMatchMedia

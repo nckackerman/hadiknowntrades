@@ -691,16 +691,19 @@ tested); pixels come from `src/components/OgCard.tsx`'s `renderOgCard`
 entirely -- see "Live verification without headless-browser or real S3"
 below).
 
-- **Scope: only the "window" result model (5Y, MAX today) gets a card.**
-  `buildOgCardContent` returns `null` for an "intraday-daily" result
-  (1W/1M/3M/1Y, issue #28; 1W since issue #60) and the route turns that into a 404 -- not an
-  oversight. That model has no single top-level `endingBalance` to
-  headline (per-day results don't compound, see
-  `packages/core/CLAUDE.md`), and picking which day's result a card
-  would even feature is its own product decision. Deliberately keyed off
-  the result's actual `model` field, not a hardcoded range list, so a
-  future model/range change stays correct with no list to remember to
-  update.
+- **Scope: every preset range gets a card as of issue #134 -- see that
+  issue's own section below.** It used to be window-model-only (5Y/MAX),
+  with `buildOgCardContent` returning `null` for an "intraday-daily"
+  result (1W/1M/3M/1Y, issue #28; 1W since issue #60) and the route
+  turning that into a 404. That restriction was real when it shipped
+  ("no single top-level `endingBalance` to headline, since per-day
+  results don't compound") but went stale the moment issues #84/#91
+  shipped whole-range capital chaining -- **don't re-derive that
+  reasoning from a stale comment somewhere; the chained whole-range
+  balance is the card's headline for that model now.** Still deliberately
+  keyed off the result's actual `model` field, not a hardcoded range
+  list, so a future model/range change stays correct with no list to
+  remember to update.
 - **Caching: real ISR (`export const dynamic = "force-static"` +
   `export const revalidate = 86400`), not just a `Cache-Control` header
   like `/api/results` uses.** This was a deliberate choice over that
@@ -5684,3 +5687,111 @@ The short version:
 - Nothing was applied to any component here on purpose: this issue ships
   tokens and the decision record, and each downstream issue does its own
   application.
+
+## Surfacing the share card, and extending it to the intraday-daily model (issue #134)
+
+Two independent halves, plus one drift fix found along the way. See the
+"OG share card (issue #33)" section above for everything about the route
+itself that this issue did **not** change (ISR/caching, the exact-case
+route-param guard, the `generateStaticParams` reasoning).
+
+- **`buildOgCardContent` now covers both result models.** For
+  "intraday-daily" it headlines the **whole-range chained balance**: the
+  **final** day's `endingBalance` paired with the **range's own root**
+  `startingCapital` -- exactly what `ResultsPanel.tsx`'s
+  `wholeRangeFinalBalance` computes and `WholeRangeBalance.tsx`
+  headlines on the page. Deliberately **not** the per-day rescale
+  pattern (a day's own `endingBalance` paired with that same day's own
+  `startingCapital`), which algebraically cancels the chaining back out
+  -- see this file's own "rescaleFromStartingCapital's per-day pattern
+  silently cancels out per-day capital chaining" section for that trap,
+  and `og-card.test.ts`'s own regression test for it (a fixture whose
+  final day carries in $30, so a card built the wrong way would read
+  "$30 -> $41" instead of "$20 -> $41"). Still long-only for both
+  models, unchanged (see "Long-only vs. long+short mode" above).
+  `null` is still a real return value, now for exactly one case: a
+  result with no trading days at all, which has nothing to headline.
+- **`OgCardContent` gained `subtitleLabel`**, moving the line under the
+  figures out of `OgCard.tsx` (where it was the hardcoded string
+  "{range} range - best possible 3-trade outcome") and into
+  `og-card.ts`. Not cosmetic: that sentence would be flatly wrong on a
+  chained intraday card (1Y's own chained result routinely runs to
+  hundreds of trades, not 3). The window model's version now reads the
+  result's own `maxTrades` instead of a literal `3`, matching what
+  `AboutSection`'s copy already does.
+- **`OgCard.tsx`'s palette is untouched** -- still the deliberate light,
+  third-party-safe card (see issue #76's own note above). **Verified as
+  byte-identical, not just eyeballed**: the MAX card rendered before and
+  after this change (same real result, same values) produced the exact
+  same PNG, `md5` for `md5`. Worth reusing as the cheap check for any
+  future change that claims not to touch this card's own rendering.
+- **A visible way in: `ShareCardLink.tsx`**, a copy-link button
+  (`${window.location.origin}/api/og/{range}`) rendered at the bottom of
+  a result view, just above `AboutSection`. Before this, nothing in the
+  app linked to the card at all -- it had existed since issue #33 with
+  no way for a user to discover it. Copy-link rather than a file
+  download, per the issue's own scope: page-initiated downloads are
+  inert in some embedding contexts, and a link is the better share
+  primitive regardless (it re-renders as the nightly pipeline refreshes
+  the result, rather than freezing yesterday's numbers into someone's
+  downloads folder).
+  - **Rendered only where the figure it headlines is already on
+    screen.** The window model (5Y/MAX) has no guess gate at all, so it
+    renders unconditionally there; the intraday-daily branch renders it
+    inside the same `rangeGuess !== null` gate `BenchmarkStat`/the
+    whole-range chart already sit behind (issue #91), so a player is
+    never handed a one-click link to the answer they're mid-way through
+    guessing. The card's URL is public and guessable either way -- this
+    is about not spoiling the game from inside the page, not about the
+    number being secret. A custom start-date anchor (issue #11) has no
+    `/api/og/...` route at all, so `WindowResultBody`'s own
+    `shareRange` prop is `null` there and no button renders.
+  - `navigator.clipboard` is genuinely **absent** (not merely
+    permission-denied) on any non-secure origin and under jsdom, so the
+    unguarded call throws a `TypeError` rather than rejecting -- both
+    shapes fall through one `try`/`catch` into the same fallback, which
+    reveals a read-only, select-on-focus input holding the URL rather
+    than dead-ending. **`ShareCardLink.test.tsx` must call
+    `userEvent.setup()` BEFORE stubbing the clipboard**: setup installs
+    its own working `navigator.clipboard` stub, which otherwise silently
+    wins and makes every "denied/absent clipboard" test exercise the
+    happy path instead (a real failure, caught by the tests failing, not
+    a hypothetical).
+- **Drift fix: `/api/og/[range]` now builds its reader via
+  `createResultReader()`** like `/api/results` and `/api/custom-anchors`
+  already did, instead of constructing an `S3ResultReader` from
+  `RESULTS_BUCKET` itself. That helper was extracted after this route
+  shipped, so this was the one results-reading route that ignored
+  `LOCAL_RESULTS_DIR` -- meaning **no card could be rendered locally at
+  all** without real AWS credentials (confirmed live: pre-fix,
+  `/api/og/MAX` under a real `LOCAL_RESULTS_DIR` dev server returned
+  `server_misconfigured`). Production behavior is unchanged.
+- **`route.test.ts` is now `@vitest-environment node`** (the whole file,
+  not a second file) so it can drive a real end-to-end
+  fetch-validate-**render** pass: it writes real current-schema JSON to
+  a temp dir under the same `results/{RANGE}.json` layout, points
+  `LOCAL_RESULTS_DIR` at it, `vi.resetModules()` + re-imports the route
+  (its reader is module-scope), and asserts a real PNG comes back
+  (signature bytes, not just a non-empty body). Node is required because
+  `next/og`'s resvg rasterization fails with "Unsupported input" under
+  this project's default jsdom environment -- the same fact this file's
+  own issue #33 note already documented for a throwaway script.
+- **Live-verified** against a real local pipeline run (the committed
+  `LOCAL_RESULTS_DIR` workflow at the top of this file -- real Yahoo
+  data, 12 tickers) plus the documented no-root headless-Chromium
+  workaround: a real 1W card rendered at `$20.00 -> $30.37` matching
+  that range's own real chained result; the 1W page showed no share
+  button pre-reveal and exactly one post-reveal; clicking it copied
+  `http://localhost:3001/api/og/1W`, and fetching that copied string
+  back returned `200 image/png` (58,764 bytes -- the same card);
+  5Y showed the button ungated and copied its own link; a custom anchor
+  showed none; 390px mobile reflowed with no horizontal overflow; zero
+  console/page errors across the run. The temporary `playwright`
+  devDependency and all verification scripts were reverted before
+  committing, per this file's own convention.
+- **Deliberately NOT done: wiring `openGraph` metadata** (so a link to
+  the _page_ unfurls with this card) -- that needs a `metadataBase`, and
+  this app still has no canonical public URL (CloudFront is blocked on
+  AWS account verification, see `infra/CLAUDE.md`). Picking a fake one
+  would ship a broken unfurl. The natural follow-up the moment a real
+  domain exists.
