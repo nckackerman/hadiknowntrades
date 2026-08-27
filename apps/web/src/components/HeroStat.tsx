@@ -8,6 +8,7 @@ import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { shouldCelebrate } from "@/lib/should-celebrate";
 import { useCountUp } from "@/lib/use-count-up";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
+import { AnimatedFigure } from "@/components/AnimatedFigure";
 import { CelebrationBurst } from "@/components/CelebrationBurst";
 
 interface HeroStatProps {
@@ -59,8 +60,50 @@ const COUNT_UP_DURATION_MS = 1200;
 
 /**
  * The "$20 -> $X" headline figure. Exactly one per view, per the dataviz
- * skill's hero-figure spec: >=48px, the same sans as the rest of the
- * page, proportional (not tabular) figures.
+ * skill's hero-figure spec: >=48px, the same weight/scale as the rest of
+ * the page.
+ *
+ * **The figures are tabular, not proportional -- a deliberate reversal
+ * of that spec's "proportional (not tabular) figures" line, made in
+ * issue #147.** The spec's advice is written for a *static* hero number,
+ * where proportional figures genuinely read better; this one animates.
+ * Issue #124 measured what that costs on the real app: Geist Sans' "1"
+ * is 25.4px against its "0"'s 42.4px at 64px/600, so the animated
+ * figure's box changed width on essentially every frame of the 1.2s
+ * count-up (a 61px sweep across 30 distinct widths on a plain
+ * `$20.00 -> $21.43` result), which re-wrapped the `flex flex-wrap` row
+ * it lives in and moved everything below the hero by up to 76px while
+ * the number counted. A hero figure that shoves the page around as it
+ * reveals is worse than one whose digits aren't optically spaced.
+ *
+ * So the value row renders in `--font-numeric` (Geist Mono), the role
+ * issue #121 declared for exactly this -- "anything tabular or animated
+ * digit by digit, where a proportional face makes the number jitter as
+ * it changes -- useCountUp's reveal" -- plus `tabular-nums`, as that
+ * token's own note asks for wherever digits change in place.
+ *
+ * **Geist Sans' own `tabular-nums` was tried first and measured
+ * insufficient, so don't "simplify" back to it.** Issue #124 reported
+ * that Geist's tabular figures all measure 38.406px, but that was
+ * sampled on `$XX.XX` strings built from 0/1/2/9 only. Measured across
+ * all ten digits in a real browser on this app's own hero row (64px/600,
+ * `font-variant-numeric: tabular-nums`, letter-spacing zeroed): eight
+ * digits advance 40.0px, but **"4" advances 41.0px and "7" advances
+ * 39.0px** -- Geist's `tnum` table is not actually uniform. Real strings
+ * hit that: `$999.99` measures 256px and `$444.44` measures 261px, and
+ * the plain `$20.00 -> $21.43` day (a "4" appearing and disappearing as
+ * the number counts) still swept three distinct widths under
+ * `tabular-nums` alone. The same measurement on Geist Mono returns
+ * exactly 38.0px for every digit *and* for "$", ".", "K" and "M", which
+ * is what makes the reservation below exact rather than approximate.
+ *
+ * Static figures elsewhere in the app (`WorstCaseStat`, `BenchmarkStat`,
+ * the trade narration) are untouched and stay proportional: none of them
+ * animate, so none of them pay this cost. See `heroValueRowClassName`
+ * below for why the treatment lives on the shared row class rather than
+ * on this component's own span, and `components/AnimatedFigure.tsx` for
+ * the second half of the fix -- the ladder-crossing width reservation,
+ * which no choice of figures does anything about.
  *
  * The ending balance counts up from `startingCapital` on mount (see
  * useCountUp) -- ResultsPanel remounts this component fresh for every
@@ -139,8 +182,22 @@ const COUNT_UP_DURATION_MS = 1200;
 // matching markup structure or behavior, which is why this shares only
 // the two className strings rather than a bigger chunk of JSX/logic.
 export const heroLabelClassName = "text-sm font-medium text-[var(--text-secondary)]";
+// `font-numeric tabular-nums` (issue #147) is deliberately on the *row*,
+// not on the animated span alone, for two reasons. First, it is what
+// makes the fix impossible to apply to only one side of an overlay: the
+// `heroSlot` overlay (HeroAndWorstCase.tsx) is sized by the real,
+// invisible HeroStat behind it, so the two must wrap identically or the
+// overlay overflows its box -- a bug issue #107 hit twice, both times by
+// changing one side's metrics without the other's. Anything that reaches
+// this string reaches both sides at once. Second, one mono figure beside
+// a proportional sibling figure and a proportional "(Nx)" badge reads as
+// a mistake, not a design: the row is all numeric data, so it all gets
+// the numeric face. Nothing here changes behavior -- the starting figure
+// and the badge are static either way, they just paint in Geist Mono
+// now; only the animated figure needed the metrics, and the row is the
+// only place to put them that both sides of the overlay share.
 export const heroValueRowClassName =
-  "flex flex-wrap items-baseline gap-3 text-[clamp(2.5rem,6vw,4rem)] font-semibold leading-none tracking-tight text-[var(--text-primary)]";
+  "flex flex-wrap items-baseline gap-3 font-numeric text-[clamp(2.5rem,6vw,4rem)] font-semibold tabular-nums leading-none tracking-tight text-[var(--text-primary)]";
 // Same reasoning as the two exports above (code review, issue #96
 // follow-up round five) -- TradeReplay.tsx's playing-phase overlay needs
 // the exact same "(Nx)" multiplier badge this component always renders,
@@ -213,8 +270,19 @@ export function HeroStat({
           <span aria-hidden="true" className="text-[var(--text-muted)]">
             →
           </span>
-          <span
+          {/* Issue #147: a box wide enough for every string this tween
+              can produce, so the compact-unit ladder crossing a boundary
+              mid-count ("$994.72" -> "$1K") can't change the row's width
+              and re-wrap it. Sized from the tween's *endpoints*, never
+              from `animatedEndingBalance` -- TradeReplay.tsx's
+              playing-phase overlay renders the same component with the
+              same two values, so it and this figure reserve identically
+              and keep wrapping in lockstep. See AnimatedFigure.tsx. */}
+          <AnimatedFigure
             aria-hidden="true"
+            from={displayStartingCapital}
+            to={displayedEndingBalance}
+            value={formatHeroCurrency(displayedAnimatedEndingBalance)}
             className={
               settled
                 ? `hero-figure-accent${animateAccentReveal ? " hero-figure-accent-animate" : ""}`
@@ -223,9 +291,7 @@ export function HeroStat({
             style={
               settled ? ({ "--hero-accent-glow": accentGlowColor } as CSSProperties) : undefined
             }
-          >
-            {formatHeroCurrency(displayedAnimatedEndingBalance)}
-          </span>
+          />
           <span className="sr-only">{formatHeroCurrency(displayedEndingBalance)}</span>
           <span
             className={heroMultiplierClassName}

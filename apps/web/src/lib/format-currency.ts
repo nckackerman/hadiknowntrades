@@ -206,6 +206,85 @@ export function formatAxisCurrency(value: number): string {
   return formatCurrency(value, { cents: false });
 }
 
+/**
+ * Per-tier widest-possible `formatHeroCurrency` output, as a probe value
+ * to format. Mirrors `formatCurrency({ cents: true })` tier for tier:
+ *
+ *   - below $1,000, cents always shown: "$9.99" / "$99.99" / "$999.99"
+ *   - inside a compact unit, one decimal below 100 and none above it:
+ *     "$9.9K" / "$99.9K" / "$999K"
+ *   - past `SCIENTIFIC_THRESHOLD`: "$1.23×10¹⁵"
+ *
+ * Every value inside a tier formats to that tier's probe skeleton or to
+ * a strictly shorter one -- a stripped trailing ".0" ("$1K" for "$1.0K"),
+ * or a rounding overflow that steps up a unit ("$1K" for 999.995,
+ * "$1M" for 999,950). So the probe is an upper bound for its whole tier,
+ * never an underestimate.
+ */
+const HERO_WIDTH_PROBE_TIERS: { min: number; max: number; probe: number }[] = [
+  { min: 0, max: 10, probe: 9.99 },
+  { min: 10, max: 100, probe: 99.99 },
+  { min: 100, max: 1e3, probe: 999.99 },
+  ...COMPACT_UNITS.map((unit) => unit.threshold)
+    .reverse()
+    .flatMap((threshold) => [
+      { min: threshold, max: threshold * 10, probe: threshold * 9.9 },
+      { min: threshold * 10, max: threshold * 100, probe: threshold * 99.9 },
+      { min: threshold * 100, max: threshold * 1000, probe: threshold * 999 },
+    ]),
+  { min: SCIENTIFIC_THRESHOLD, max: Number.POSITIVE_INFINITY, probe: 1.23e15 },
+];
+
+/**
+ * Every distinct "widest string this ladder tier can produce" that a
+ * value sweeping from `from` to `to` could pass through -- the set of
+ * strings whose rendered widths bound the whole sweep.
+ *
+ * Exists for issue #147. A count-up tween walks every value between its
+ * two endpoints, and this ladder changes the string's *shape* as it
+ * crosses a unit boundary ("$994.72" -> "$1K"), so the animated figure's
+ * box changes width mid-tween and re-wraps the flex row it lives in,
+ * shoving the rest of the page around. `components/AnimatedFigure.tsx`
+ * fixes that by reserving a box up front; these are the strings it
+ * renders (invisibly) to make the browser measure that box, rather than
+ * this module trying to predict pixel widths of glyphs it can't see.
+ *
+ * Derived from the ladder's own tiers rather than by sampling the
+ * interval, so it is correct however the interval happens to line up
+ * with a tier boundary -- an interval can easily straddle a tier without
+ * containing that tier's own widest value (1,000 -> 2,000 never formats
+ * as either endpoint's "$1K"/"$2K" in between: 1,500 is "$1.5K").
+ * Lives here, next to the ladder it mirrors, so a future change to
+ * `formatCurrency`'s tiers has this table in view; `format-currency.test.ts`
+ * brute-forces the two against each other so a divergence fails a test
+ * rather than silently under-reserving.
+ *
+ * Returns `[]` when either endpoint is non-finite -- `formatHeroCurrency`
+ * renders a fixed "--" for those, so there is nothing to reserve.
+ */
+export function heroCurrencyWidthProbes(from: number, to: number): string[] {
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return [];
+
+  const lo = Math.min(from, to);
+  const hi = Math.max(from, to);
+  // A negative endpoint adds a "-" sign, and an interval straddling zero
+  // reaches every magnitude down to 0. Neither happens for any real
+  // result in this app (balances are positive), so this is purely
+  // defensive over-reservation, not a case worth modelling precisely.
+  const sign = lo < 0 ? "-" : "";
+  const absLo = lo < 0 ? 0 : lo;
+  const absHi = Math.max(Math.abs(lo), Math.abs(hi));
+
+  const probes: string[] = [];
+  for (const tier of HERO_WIDTH_PROBE_TIERS) {
+    // Half-open tiers: does `[tier.min, tier.max)` intersect `[absLo, absHi]`?
+    if (tier.min > absHi || tier.max <= absLo) continue;
+    const formatted = sign + formatHeroCurrency(tier.probe);
+    if (!probes.includes(formatted)) probes.push(formatted);
+  }
+  return probes;
+}
+
 /** Formats a signed percentage return, e.g. "+412.3%" / "-8.0%". */
 export function formatPercent(fraction: number): string {
   if (!Number.isFinite(fraction)) {

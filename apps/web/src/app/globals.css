@@ -544,6 +544,29 @@ body {
 }
 
 /*
+ * AnimatedFigure's width probes (issue #147). A figure that counts up
+ * reserves its box by stacking every string its tween could pass through
+ * into one grid cell, invisibly, and letting the browser size the column
+ * to the widest -- see components/AnimatedFigure.tsx for the full
+ * reasoning.
+ *
+ * The probe text is painted from a `data-figure-probe` attribute rather
+ * than being a real child text node, deliberately: generated content
+ * still occupies layout (which is the entire point of a probe) but does
+ * NOT appear in `textContent` or `innerText`. Without that, every probe
+ * would silently join the figure's own text -- a headline whose real
+ * content is "$1.1K" would read "$99.99$999.99$9.9K$1.1K" to
+ * `getByText`, to `document.querySelector(...).textContent`, and to any
+ * future scraping/debug script, and would need remembering forever after.
+ * `visibility: hidden` (Tailwind's `invisible`, applied on the element
+ * itself) is what keeps the probes unpainted, unselectable and out of the
+ * accessibility tree while still contributing their width.
+ */
+.figure-width-probe::after {
+  content: attr(data-figure-probe);
+}
+
+/*
  * HeroStat's reveal accent (issue #77): once useCountUp's tween settles
  * on its exact final value, the visible ending-balance figure (the
  * aria-hidden span -- see HeroStat.tsx's own doc comment for why the

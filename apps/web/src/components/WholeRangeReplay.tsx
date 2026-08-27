@@ -39,6 +39,7 @@ import {
   type ReplayPacing,
   type ReplaySegmentMode,
 } from "@/lib/use-trade-replay";
+import { AnimatedFigure } from "@/components/AnimatedFigure";
 import { buttonClassName } from "@/components/TradeReplay";
 import { PortfolioChart, type ChartLanding } from "@/components/PortfolioChart";
 import {
@@ -421,7 +422,17 @@ export function WholeRangeReplay({
           <span aria-hidden="true" className="text-[var(--text-muted)]">
             →
           </span>
-          <span className="text-[var(--series-1)]">{formatHeroCurrency(frame.currentValue)}</span>
+          {/* Issue #147: the exact same reserved box
+              WholeRangeBalance.tsx gives its own headline figure, from
+              the exact same two endpoint values -- this overlay is only
+              ever the same height as the invisible real headline behind
+              it while the two wrap identically. */}
+          <AnimatedFigure
+            className="text-[var(--series-1)]"
+            from={startingCapital}
+            to={finalBalance}
+            value={formatHeroCurrency(frame.currentValue)}
+          />
         </p>
       </div>
     );

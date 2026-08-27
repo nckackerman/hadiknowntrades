@@ -426,4 +426,40 @@ describe("TradeReplay (issue #96)", () => {
     await user.click(screen.getByRole("button", { name: "Replay" }));
     expect(currentSvg()).toBe(svgAtIdle);
   });
+
+  it("reserves the identical figure width on the playing overlay and the real HeroStat behind it (issue #147)", async () => {
+    // The overlay is `absolute inset-0`, sized by the invisible real
+    // HeroStat behind it -- the two only stay the same height while they
+    // wrap identically, which issue #107 broke twice by changing one
+    // side's metrics and not the other's. jsdom can't measure the widths
+    // themselves (issue #147's own headless-Chromium pass does that),
+    // but it can prove neither side got the reservation patched into it
+    // alone: both must reserve from the same endpoints, so both must
+    // render the same probe set.
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+    const raf = createRafPump();
+    const user = userEvent.setup();
+    // $20 -> $1.1K: crosses the compact ladder mid-tween, so the
+    // reservation is genuinely wider than the final string.
+    const { container } = render(<TradeReplay {...BASE_PROPS} endingBalance={1145.91} />);
+    const probeSets = () =>
+      Array.from(container.querySelectorAll(".grid")).map((figure) =>
+        Array.from(figure.querySelectorAll("[data-figure-probe]")).map((p) =>
+          p.getAttribute("data-figure-probe"),
+        ),
+      );
+
+    // Idle: just the real HeroStat's own figure.
+    expect(probeSets()).toEqual([["$99.99", "$999.99", "$9.9K"]]);
+
+    await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+    raf.tick(REWIND_COMPLETE_NOW); // completes the rewind, landing on "playing"
+
+    // Playing: the real HeroStat (still mounted, visually hidden) and
+    // the overlay, reserving byte for byte the same box.
+    const playing = probeSets();
+    expect(playing).toHaveLength(2);
+    expect(playing[0]).toEqual(playing[1]);
+    expect(playing[0]).toEqual(["$99.99", "$999.99", "$9.9K"]);
+  });
 });

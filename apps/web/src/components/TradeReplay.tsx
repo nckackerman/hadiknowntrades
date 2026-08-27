@@ -25,6 +25,7 @@ import { calloutText, chartLandingFor } from "@/lib/replay-callout";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
 import { canReplayFor, isReplayLive, useTradeReplay } from "@/lib/use-trade-replay";
+import { AnimatedFigure } from "@/components/AnimatedFigure";
 import { HeroAndWorstCase } from "@/components/HeroAndWorstCase";
 import {
   heroLabelClassName,
@@ -400,7 +401,17 @@ export function TradeReplay({
         <p className={heroValueRowClassName}>
           <span>{displayStartingCapitalFormatted}</span>
           <span className="text-[var(--text-muted)]">→</span>
-          <span>{formatHeroCurrency(frame.currentValue)}</span>
+          {/* Issue #147: the exact same reserved box HeroStat.tsx gives
+              its own counting figure, from the exact same two endpoint
+              values -- this overlay only stays the same height as the
+              invisible real figure it's drawn over while the two wrap
+              identically (see this file's own doc comment above on the
+              two designs that broke that in issue #107). */}
+          <AnimatedFigure
+            from={displayStartingCapital}
+            to={endingBalanceDisplayValue}
+            value={formatHeroCurrency(frame.currentValue)}
+          />
           <span
             className={heroMultiplierClassName}
             style={{ color: heroMultiplierColor(multiplier) }}

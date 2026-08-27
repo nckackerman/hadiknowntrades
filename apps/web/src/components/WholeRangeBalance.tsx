@@ -5,6 +5,7 @@ import type { FormEvent } from "react";
 
 import { formatHeroCurrency } from "@/lib/format-currency";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
+import { AnimatedFigure } from "@/components/AnimatedFigure";
 import { WorstCaseStat } from "@/components/WorstCaseStat";
 
 const CAPTION_TEXT = "Whole-range running balance -- carried day to day, start to finish";
@@ -21,8 +22,16 @@ const CAPTION_TEXT = "Whole-range running balance -- carried day to day, start t
  * exports.
  */
 export const wholeRangeLabelClassName = "text-sm font-medium text-[var(--text-muted)]";
+// `font-numeric tabular-nums` (issue #147) for the same reasons
+// HeroStat.tsx's own `heroValueRowClassName` carries it -- see that
+// constant's own comment, and this component's doc comment for the
+// measurement behind the face choice. This row has the identical overlay
+// shape (a tweened `revealSlot` figure sized by the real, invisible
+// headline behind it), so the metrics have to change on both sides at
+// once, which is exactly what putting them on the shared row class
+// guarantees.
 export const wholeRangeValueRowClassName =
-  "flex flex-wrap items-baseline gap-3 text-xl font-semibold leading-none tracking-tight text-[var(--text-primary)] sm:text-2xl";
+  "flex flex-wrap items-baseline gap-3 font-numeric text-xl font-semibold tabular-nums leading-none tracking-tight text-[var(--text-primary)] sm:text-2xl";
 
 interface WholeRangeBalanceProps {
   /** Human-readable phrase for the range being guessed, e.g. "the past month" (RANGE_COPY[range]) -- used in the guess prompt's copy. */
@@ -189,7 +198,20 @@ export function WholeRangeBalance({
                   <span aria-hidden="true" className="text-[var(--text-muted)]">
                     →
                   </span>
-                  <span className="text-[var(--series-1)]">{formatHeroCurrency(finalBalance)}</span>
+                  {/* Issue #147: reserves the same box
+                      WholeRangeReplay.tsx's own tweened overlay figure
+                      reserves, from the same two endpoint values, so the
+                      overlay and this headline wrap identically for the
+                      whole replay run. Static here (it has no tween of
+                      its own), but the reservation still has to match
+                      the overlay's or the two stop being the same
+                      height -- see AnimatedFigure.tsx. */}
+                  <AnimatedFigure
+                    className="text-[var(--series-1)]"
+                    from={startingCapital}
+                    to={finalBalance}
+                    value={formatHeroCurrency(finalBalance)}
+                  />
                 </p>
               </div>
               {revealSlot}

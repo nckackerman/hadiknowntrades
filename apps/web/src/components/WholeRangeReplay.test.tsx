@@ -381,4 +381,36 @@ describe("WholeRangeReplay (issue #105)", () => {
       );
     });
   });
+
+  it("reserves the identical figure width on the playing overlay and the real headline behind it (issue #147)", async () => {
+    // WholeRangeBalance's `revealSlot` overlay is `absolute inset-0`,
+    // sized by the invisible real headline behind it, exactly like
+    // HeroAndWorstCase's own `heroSlot` -- so the two must reserve the
+    // same box or they stop wrapping (and therefore stop being) the same
+    // height. jsdom measures no text, so this asserts the structural
+    // half: neither side can have had the reservation patched into it
+    // alone. See TradeReplay.test.tsx's own twin of this test.
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+    const raf = createRafPump();
+    const user = userEvent.setup();
+    // $20 -> $1.1K: crosses the compact ladder mid-tween, so the
+    // reservation is genuinely wider than the final string.
+    const { container } = render(<WholeRangeReplay {...BASE_PROPS} finalBalance={1145.91} />);
+    const probeSets = () =>
+      Array.from(container.querySelectorAll(".grid")).map((figure) =>
+        Array.from(figure.querySelectorAll("[data-figure-probe]")).map((p) =>
+          p.getAttribute("data-figure-probe"),
+        ),
+      );
+
+    expect(probeSets()).toEqual([["$99.99", "$999.99", "$9.9K"]]);
+
+    await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+    raf.tick(REWIND_COMPLETE_NOW); // completes the rewind, landing on "playing"
+
+    const playing = probeSets();
+    expect(playing).toHaveLength(2);
+    expect(playing[0]).toEqual(playing[1]);
+    expect(playing[0]).toEqual(["$99.99", "$999.99", "$9.9K"]);
+  });
 });

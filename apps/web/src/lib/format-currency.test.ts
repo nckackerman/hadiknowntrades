@@ -6,6 +6,7 @@ import {
   formatMultiplier,
   formatPercent,
   formatSessionPercent,
+  heroCurrencyWidthProbes,
 } from "./format-currency";
 
 describe("formatHeroCurrency", () => {
@@ -183,5 +184,87 @@ describe("formatSessionPercent", () => {
 
   it("handles non-finite input defensively", () => {
     expect(formatSessionPercent(NaN)).toBe("--");
+  });
+});
+
+describe("heroCurrencyWidthProbes (issue #147)", () => {
+  // The probes exist to reserve a fixed box for a figure that counts up,
+  // and that figure renders in a monospace face (see AnimatedFigure.tsx),
+  // so "widest string" and "longest string" are the same question --
+  // which is exactly the half that IS assertable without a real browser.
+  const longest = (strings: string[]) => Math.max(0, ...strings.map((s) => s.length));
+
+  /** Values a tween from `from` to `to` passes through, densely sampled. */
+  function sweep(from: number, to: number): number[] {
+    const values: number[] = [from, to];
+    // Linear *and* geometric sampling: a purely linear sweep barely
+    // resolves the bottom of a $20 -> $218M range, where several of the
+    // ladder's tiers live.
+    for (let i = 1; i < 2000; i++) {
+      values.push(from + ((to - from) * i) / 2000);
+      values.push(from * Math.pow(to / from, i / 2000));
+    }
+    return values;
+  }
+
+  it("bounds every string a tween can produce, for each range issue #147 measures", () => {
+    // 1W/1Y per-day (no ladder crossing), 5Y (crosses $1K), MAX (crosses
+    // $1K and $1M), plus a scientific-notation sweep for completeness.
+    for (const [from, to] of [
+      [20, 21.43],
+      [20, 1145.91],
+      [20, 218_048_363.85],
+      [20, 4.2e19],
+    ] as const) {
+      const bound = longest(heroCurrencyWidthProbes(from, to));
+      for (const value of sweep(from, to)) {
+        expect(formatHeroCurrency(value).length).toBeLessThanOrEqual(bound);
+      }
+    }
+  });
+
+  it("is tight, not merely safe -- the bound is a string the tween really reaches", () => {
+    // A reservation wider than anything actually displayed would show as
+    // dead space beside the figure, so the widest probe should equal the
+    // widest string the sweep genuinely produces.
+    for (const [from, to] of [
+      [20, 21.43],
+      [20, 1145.91],
+      [20, 218_048_363.85],
+    ] as const) {
+      const observed = Math.max(...sweep(from, to).map((v) => formatHeroCurrency(v).length));
+      expect(longest(heroCurrencyWidthProbes(from, to))).toBe(observed);
+    }
+  });
+
+  it("stays correct when an interval straddles a tier without containing its widest value", () => {
+    // $1,000 -> $2,000 formats as "$1K"/"$2K" at both endpoints but
+    // "$1.5K" in between -- sampling the endpoints would under-reserve.
+    expect(heroCurrencyWidthProbes(1000, 2000)).toEqual(["$9.9K"]);
+    expect(formatHeroCurrency(1500).length).toBeLessThanOrEqual(longest(["$9.9K"]));
+  });
+
+  it("returns one probe per ladder tier the interval touches", () => {
+    expect(heroCurrencyWidthProbes(20, 21.43)).toEqual(["$99.99"]);
+    expect(heroCurrencyWidthProbes(20, 1145.91)).toEqual(["$99.99", "$999.99", "$9.9K"]);
+    expect(heroCurrencyWidthProbes(5, 250)).toEqual(["$9.99", "$99.99", "$999.99"]);
+  });
+
+  it("is symmetric in its arguments -- a losing tween reserves the same box as a winning one", () => {
+    expect(heroCurrencyWidthProbes(1145.91, 20)).toEqual(heroCurrencyWidthProbes(20, 1145.91));
+  });
+
+  it("covers the sign and every magnitude down to zero for a negative endpoint", () => {
+    // Not reachable from any real result (balances are positive), but
+    // this is display code at the edge of the app -- see the function's
+    // own comment on why it over-reserves rather than modelling this.
+    const probes = heroCurrencyWidthProbes(-50, 20);
+    expect(probes).toEqual(["-$9.99", "-$99.99"]);
+    expect(formatHeroCurrency(-49.99).length).toBeLessThanOrEqual(longest(probes));
+  });
+
+  it("reserves nothing for a non-finite endpoint, since the figure renders a fixed '--'", () => {
+    expect(heroCurrencyWidthProbes(20, NaN)).toEqual([]);
+    expect(heroCurrencyWidthProbes(Infinity, 20)).toEqual([]);
   });
 });
