@@ -7892,3 +7892,138 @@ came back byte-identical, confirmed via `diff` again before moving on.
 assigned worktree before running anything that writes to disk -- the
 isolation guardrail only catches one specific command family, not the
 underlying mistake of being in the wrong directory in the first place.
+
+## Daily hero: date-seeded starting capital, $1-$10,000 (issue #174)
+
+`lib/daily-challenge.ts`'s `DAILY_CHALLENGE_STARTING_CAPITAL` constant
+(a flat $20, since issue #161) is gone. `dailyChallengeStartingCapitalFor(date:
+string): number` replaces it -- a pure, deterministic function returning
+a value in `[1, 10000)` (inclusive lower bound, exclusive upper bound:
+`1 + rng() * 9999`, so a single `mulberry32` draw in `[0, 1)` can never
+itself reach the $10,000 ceiling), seeded from `date` via a small
+FNV-1a-style hash (`seedFromDate`, mirroring
+`beat-the-bench-percentile.ts`'s own `seedFromBars` in style -- loop
+over characters, no external dependency). `dailyChallengeFor(day, mode)`
+now calls this with `day.date` instead of reading the old constant --
+everything downstream (`compoundBalance`'s own multiplicative chain,
+`narrate-trades.ts`'s running-balance loop, the chart series via
+`deriveWholeRangeIntradaySeries`) needed zero changes, since all of it
+already reads `startingCapital` off the `DailyChallenge` shape rather
+than hardcoding $20 -- exactly the same "the optimal trade sequence is
+entirely a function of price ratios, never of `startingCapital` itself"
+fact issue #15's original configurable-starting-capital feature already
+established and this module's own header comment already cited.
+
+- **Deliberately does NOT randomize which trades are shown or how
+  many**, per the issue's own explicit Out of scope -- the real trade
+  count for a given day (0-3) is whatever the optimizer actually found,
+  completely untouched by this seed; only the two dollar figures (and
+  the prose narration's dollar figures, since `narrateTrades` already
+  takes `startingCapital` as a parameter) rescale to the new baseline.
+- **Judgment call: `mulberry32` was promoted out of
+  `beat-the-bench-percentile.ts` into a new shared `lib/seeded-random.ts`**,
+  rather than importing it directly from the game-specific file, per the
+  issue's own explicit "document which you pick" instruction. Reasoning:
+  a plain display-layer feature (the daily hero) depending on a module
+  literally named "beat-the-bench" would be a real, avoidable coupling
+  smell -- and this codebase has an established convention of extracting
+  a shared helper the moment a second genuine caller needs it (see e.g.
+  `trade-math.ts`, `easing.ts`, `replay-callout.ts`, `select-variant.ts`,
+  `range-copy.ts`, all promoted for the identical reason once a second
+  consumer showed up). `beat-the-bench-percentile.ts` now re-exports
+  `mulberry32`/`Rng` from `seeded-random.ts` (`export { mulberry32, type
+Rng };`) so its own existing callers (`BeatTheBench.tsx`,
+  `beat-the-bench-percentile.test.ts`) needed zero import changes --
+  `beat-the-bench-percentile.test.ts`'s own "mulberry32" describe block
+  still exercises the real, shared implementation via that re-export, so
+  no test coverage was lost or duplicated by the move.
+- **Seeding from a date is the one case `seedFromBars`'s own doc comment
+  explicitly warns against -- and that warning correctly does not apply
+  here.** `seedFromBars`'s doc comment says "never seed this from a
+  session date," for Mystery Day's secrecy reasons (issue #132: the
+  session's real date must never be derivable from anything the client
+  already has before settlement). The daily hero's date is the opposite
+  case -- it's already public, printed directly in the section's own
+  eyebrow -- so hashing it here leaks nothing that isn't already on
+  screen. `seedFromDate` is a new, separate function local to
+  `daily-challenge.ts` (not promoted alongside `mulberry32`, since it's
+  a one-line, feature-specific hash with no second caller), not a reuse
+  of `seedFromBars` itself -- the two hash different input shapes (a
+  date string vs. an array of session bars) and have no logic to share
+  beyond "FNV-1a over some bytes."
+- **Test coverage matches the issue's own Acceptance criteria
+  one-for-one**: `daily-challenge.test.ts` gained a
+  `dailyChallengeStartingCapitalFor` describe block covering purity
+  (same date twice -> same value), a sanity check that five real
+  consecutive dates produce five distinct values, and a 1000-iteration
+  property-style sweep confirming every result lands in `[1, 10000)`.
+  The existing `dailyChallengeFor` tests were updated to compute their
+  own expected values via `dailyChallengeStartingCapitalFor` rather than
+  a literal `20`, plus one new regression test asserting `trades` stays
+  byte-identical across two different dates sharing the same underlying
+  trade content while `startingCapital` differs -- the "trades/tickers/
+  percentage-returns are byte-identical... only startingCapital/
+  endingBalance differ" acceptance criterion, made concrete.
+- **Every "always $20"/"a fresh $20" doc comment this issue's own Scope
+  named was fixed**, plus two more found by grepping the same feature
+  area that the issue's own Scope didn't explicitly name but which
+  would otherwise have gone stale for the identical reason:
+  `use-daily-challenge.ts`'s own `UseDailyChallengeResult.dailyChallenge`
+  doc comment, and two illustrative doc-comment lines in
+  `DailyHero.tsx` itself (`"$20.00 into $X.XX"` / `"$20 -> $X figures"`,
+  both now `"$X.XX into $Y.YY"` / `"$X -> $Y figures"`) -- this repo's
+  own established convention is that a stale doc comment gets fixed
+  wherever it's found, not left to rot just because the issue's own
+  Scope prose didn't happen to enumerate that exact file.
+- **A real existing test needed a real update, not just a new
+  assertion**: `use-daily-challenge.test.ts`'s own "recompounds... from
+  a fresh $20" test asserted `startingCapital` was literally `20` --
+  updated to compute the expected value via
+  `dailyChallengeStartingCapitalFor` the same way the fixed-fixture
+  tests in `daily-challenge.test.ts` now do, and `DailyHero.test.tsx`'s
+  own render test (which asserted `screen.getByText("$20.00")`and a
+literal`20 * ...`ending-balance computation) was updated the same
+way, via`formatHeroCurrency(dailyChallengeStartingCapitalFor(date))`.
+- **A pre-existing, unrelated `pnpm format:check` failure was found and
+  fixed along the way, as its own separate commit** -- the exact same
+  situation, and the exact same fix, issue #161's own section above
+  already documents for a different mockup file:
+  `docs/design/gamified-hero-2026-08/mockup-gamified-hero.html` (added
+  by issue #173, already on `main` before this issue started) was never
+  run through Prettier -- confirmed via `git stash` that `prettier
+--check` already fails against a clean checkout of `main` itself.
+  Reformatted (`prettier --write`, confirmed purely mechanical --
+  doctype casing, a trailing comma in an array literal, attribute
+  reflow -- via a whitespace-stripped byte diff, not just eyeballed) as
+  its own commit before the feature work, both because CI's own "Check
+  results" step gates on `format:check` repo-wide and per this repo's
+  standing engineering-excellence convention of fixing a found issue
+  rather than routing around it.
+- **Live-verified against a real local pipeline run**
+  (`local-run.ts`, the default 20-ticker sample, real Yahoo network
+  calls, no S3 write) plus `next build`/`next start` and the documented
+  no-root headless-Chromium workaround (`next dev` cannot hydrate in
+  this sandbox -- see issue #123's own note above). A real 1W result's
+  most recent day (2026-08-27, 3 real trades: ALGN, A, ALB) rendered
+  `$6.5K -> $7K (1.1x)` -- confirmed independently, not just eyeballed,
+  by reimplementing `seedFromDate`/`mulberry32` in a standalone Node
+  script and computing `dailyChallengeStartingCapitalFor("2026-08-27")`
+  by hand: `$6,542.63`, which formats to the same `"$6.5K"`, and which
+  compounds through that day's own three real open/close prices (pulled
+  straight from `/api/results?range=1W`) to `$7,049.31`, which formats
+  to the same `"$7K"` -- an exact match, not a coincidence of both being
+  "big." A second page load (a real reload, not a re-render) showed the
+  byte-identical hero text, confirming the seed is genuinely
+  date-derived and not request-derived, per this issue's own Acceptance
+  criteria. Zero console/`pageerror` events across both loads. The
+  temporary `playwright` devDependency and the `apt-get download`/
+  `dpkg-deb -x`-extracted shared libraries were both reverted/discarded
+  before committing, per this file's own established convention;
+  confirmed via `git status`/`git diff --stat` on
+  `package.json`/`pnpm-lock.yaml` showing no trace afterward.
+- **Not separately live-verified**: the zero-trade-day fallback and the
+  long+short mode variant, for the identical reason issue #161's own
+  section above gives for the same two cases -- no real trading day in
+  the local sample data happened to lack a trade. Covered instead by
+  `daily-challenge.test.ts`/`DailyHero.test.tsx`'s own existing
+  component-level tests against hand-built fixtures.

@@ -29,7 +29,8 @@ export const DAILY_CHALLENGE_RANGE = "1W";
 export interface UseDailyChallengeResult {
   /**
    * The most recently completed trading day's own trades, replayed from
-   * a fresh $20 -- `null` while the fetch is still in flight.
+   * a fresh, date-seeded starting capital (issue #174) -- `null` while
+   * the fetch is still in flight.
    */
   dailyChallenge: DailyChallenge | null;
   /**
