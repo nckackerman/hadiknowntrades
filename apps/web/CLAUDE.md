@@ -7285,6 +7285,7 @@ Board" }).closest("section")` keep passing completely unmodified --
   Zero console/page errors across every pass. The temporary `playwright`
   devDependency and all verification scripts were reverted before
   committing, per this file's own established convention.
+
 ## Hide the replay chart until "Watch it happen" is clicked (issue #162)
 
 Two independent gates, one new (the daily hero, which had no chart at
