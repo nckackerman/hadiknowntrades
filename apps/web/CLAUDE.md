@@ -5795,3 +5795,84 @@ route-param guard, the `generateStaticParams` reasoning).
   AWS account verification, see `infra/CLAUDE.md`). Picking a fake one
   would ship a broken unfurl. The natural follow-up the moment a real
   domain exists.
+
+## Celebration burst scaled to the result's magnitude (issue #125)
+
+Before this issue `CelebrationBurst` threw the identical fixed 24-piece,
+full-row burst for every gain -- a $20 -> $20.44 custom anchor got exactly
+what a $20 -> $218M Max result got. `lib/celebration-magnitude.ts` adds a
+tier table over the _same_ `endingBalance / startingCapital` multiplier
+`HeroStat`'s "(345x)" badge already computes (deliberately that value, not
+a second notion of "how big was this" that could drift from the badge on
+screen), and `CelebrationBurst` gained an `intensity` prop scaling piece
+count and horizontal spread by tier.
+
+- **The tier is strictly an intensity dial layered on top of
+  `shouldCelebrate(isGain, settled)` -- it can scale an approved burst
+  down (to nothing), never turn one on.** `HeroStat` still passes
+  `active={shouldCelebrate(...)}`, and `CelebrationBurst` renders `null`
+  whenever `active` is false regardless of what intensity it's handed.
+  That gate (gain + settled + `!prefersReducedMotion()`, with the live
+  read-at-fire-time and render-scoped-overlay fragilities documented in
+  the "Client-side animation" section above) is untouched by this issue --
+  no attempt was made to "fix" either fragility as a side effect.
+  `HeroStat.test.tsx`'s own "never introduces a burst where
+  shouldCelebrate already says no" test covers all four no-cases (flat,
+  loss, reduced motion, unsettled tween) with scaling on, using a
+  top-tier multiplier for the last two.
+- **Thresholds are decades, not linear steps**: suppress below 1.25x
+  (0 pieces), modest below 10x (8 pieces, 45% spread), strong below 100x
+  (16 pieces, 72% spread), full at 100x and up (24 pieces, 100% spread --
+  byte-for-byte the pre-#125 burst). The outcome space genuinely spans
+  many orders of magnitude (the portfolio chart already plots it on a log
+  scale for the same reason), so a linear ladder would put essentially
+  every window-model result in the top tier and change nothing.
+  `spreadPercent` is a band centered on the figure
+  (`50 + (rand - 0.5) * spread`), so 100 reproduces the original
+  `Math.random() * 100` distribution exactly.
+- **Opt-in per call site (`HeroStat`'s `scaleCelebrationToMagnitude`,
+  default `false`), not always-on -- a deliberate scope call, not an
+  oversight.** Issue #125 scopes itself to the window model.
+  `TradeReplay.tsx` (window/custom-window only, by construction) is the
+  one call site that passes `true`, via a matching pass-through prop on
+  `HeroAndWorstCase`. `ResultsPanel.tsx`'s intraday-daily _per-day_
+  `HeroAndWorstCase` deliberately doesn't -- note that call site renders a
+  real `HeroStat`/`CelebrationBurst` too (unlike `WholeRangeBalance.tsx`,
+  the whole-range headline the issue's own Background section discusses,
+  which has no burst at all), and its single-day multipliers (~1.0-1.2x)
+  would _all_ land in the suppressed tier, silently removing confetti
+  from every intraday day. That's a real product change for a model this
+  issue explicitly puts out of scope -- exactly the class of undisclosed
+  scope expansion #105's own post-PR review flagged as release-blocking --
+  so it's left for its own issue. `HeroStat.test.tsx` regression-tests
+  that a non-opted-in caller still gets the full 24-piece burst for a
+  1.05x win.
+- **The `--accent-reward` gold token (issue #121) was deliberately not
+  applied here**, even though `globals.css`'s own token comment names the
+  celebration burst as an `--accent-reward` surface. #125's scope is
+  magnitude, not palette; #121's own note says each downstream issue does
+  its own application pass. Recoloring the confetti is a separate visual
+  change worth its own diff.
+- **Live-verified against real precomputed data** (the `LOCAL_RESULTS_DIR`
+  workflow at the top of this file -- a real `local-run.ts` pipeline pass
+  over the default 20-ticker sample, 6 preset results + 1,254 real
+  custom-anchor results, then `next dev` + the documented no-root
+  headless-Chromium workaround). A **real near-1.0x window-model result
+  existed in the data** -- no "closest example" fallback was needed: the
+  custom anchors nearest today are genuinely short windows. Measured piece
+  counts and left-percent spans at ~1.3s after load (just after the
+  1200ms count-up lands, mid-fall):
+  - `?range=MAX`, 10.9Mx ($20 -> $218M): 24 pieces, spanning 12.1%-99.6%
+  - `?range=5Y`, 57.3x ($20 -> $1.1K): 16 pieces, 23.9%-78.3%
+  - `?anchor=2026-08-06`, 1.56x ($20 -> $31.14): 8 pieces, 28.1%-69.1%
+  - `?anchor=2026-08-19`, 1.12x ($20 -> $22.48): no burst element at all
+  - `?anchor=2026-08-25`, 1.02x ($20 -> $20.44): no burst element at all
+  - `?range=1W` (intraday-daily per-day, not opted in), a 1.1x day: still
+    24 pieces spanning 5.4%-96.6% -- unchanged, as intended
+
+  Screenshots confirm the visual reading matches the numbers (a wide dense
+  burst on Max, a tight little cluster under the figure at 1.6x, nothing
+  at 1.02x while the multiplier badge and issue #77's reveal glow still
+  render in green). Zero console errors or page errors on any of them.
+  The verification scripts and the temporary `playwright` devDependency
+  were reverted before committing, per this file's own convention.

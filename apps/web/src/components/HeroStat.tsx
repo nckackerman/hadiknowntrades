@@ -2,6 +2,7 @@
 
 import type { CSSProperties } from "react";
 
+import { celebrationIntensityFor, FULL_CELEBRATION_INTENSITY } from "@/lib/celebration-magnitude";
 import { formatHeroCurrency, formatMultiplier } from "@/lib/format-currency";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { shouldCelebrate } from "@/lib/should-celebrate";
@@ -28,6 +29,28 @@ interface HeroStatProps {
    * once per capital edit.
    */
   displayStartingCapital?: number;
+  /**
+   * Scale the celebration burst to how large this result's own
+   * multiplier actually is (issue #125) -- a marginal win gets a small
+   * burst or none, a many-decade win gets the full one. Defaults to
+   * `false`, i.e. the pre-#125 fixed 24-piece burst for every gain.
+   *
+   * **Opt-in per call site on purpose, rather than always-on.** Issue
+   * #125 is explicitly scoped to the window model (5Y/MAX and
+   * custom-date anchors), where this figure is genuinely the page's
+   * headline -- `TradeReplay.tsx` (window/custom-window only, by
+   * construction) passes `true`; `ResultsPanel.tsx`'s intraday-daily
+   * per-day drill-down, whose modest single-day multipliers would all
+   * land in the suppressed/modest tiers, deliberately doesn't, so that
+   * model's behavior is unchanged by this issue. Flipping it on there
+   * is a real product change worth its own issue, not a side effect of
+   * this one.
+   *
+   * Never widens the celebration: `shouldCelebrate` still solely decides
+   * whether a burst is allowed at all, and this only ever scales an
+   * already-approved one down. See `lib/celebration-magnitude.ts`.
+   */
+  scaleCelebrationToMagnitude?: boolean;
 }
 
 // Long enough to read as a deliberate count rather than a flicker, short
@@ -57,6 +80,13 @@ const COUNT_UP_DURATION_MS = 1200;
  * reuses this component. `settled` compares the animated value against
  * the final one bit-for-bit, which is safe because useCountUp always
  * sets the exact target (not an approximation) once it lands.
+ *
+ * *How much* confetti that burst throws is a separate axis, opt-in per
+ * call site via `scaleCelebrationToMagnitude` (issue #125) -- see that
+ * prop's own doc comment for which call sites opt in and why, and
+ * `lib/celebration-magnitude.ts` for the tier table. It only ever
+ * scales an approved burst down (possibly to nothing); `shouldCelebrate`
+ * above is still the only thing that can turn one on.
  *
  * A plain "(345x)" multiplier badge (issue #45) sits alongside the
  * dollar figures, inside the same flex row -- deliberately *not* tied to
@@ -127,6 +157,7 @@ export function HeroStat({
   startingCapital,
   endingBalance,
   displayStartingCapital = startingCapital,
+  scaleCelebrationToMagnitude = false,
 }: HeroStatProps) {
   const animatedEndingBalance = useCountUp(startingCapital, endingBalance, COUNT_UP_DURATION_MS);
   const isGain = endingBalance > startingCapital;
@@ -134,6 +165,16 @@ export function HeroStat({
   const celebrate = shouldCelebrate(isGain, settled);
   const multiplier = endingBalance / startingCapital;
   const isMultiplierGain = multiplier >= 1;
+  // Burst magnitude (issue #125) -- derived from the *same* multiplier
+  // the "(345x)" badge below already renders, so what the confetti says
+  // about the size of the win can never disagree with what the badge
+  // says. Strictly an intensity dial layered on top of `celebrate`
+  // (which is still the only gate), never a second way to turn a burst
+  // on: `CelebrationBurst` renders nothing whenever `active` is false,
+  // whatever intensity it's handed.
+  const celebrationIntensity = scaleCelebrationToMagnitude
+    ? celebrationIntensityFor(multiplier)
+    : FULL_CELEBRATION_INTENSITY;
   // Reveal accent (issue #77) -- see this component's own doc comment
   // above for the full reasoning, including why `useReducedMotionAtMount`
   // latches once rather than reading live. `animateAccentReveal` decides
@@ -193,7 +234,7 @@ export function HeroStat({
             ({formatMultiplier(multiplier)})
           </span>
         </p>
-        <CelebrationBurst active={celebrate} />
+        <CelebrationBurst active={celebrate} intensity={celebrationIntensity} />
       </div>
     </div>
   );

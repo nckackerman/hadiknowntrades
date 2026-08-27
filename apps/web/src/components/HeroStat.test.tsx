@@ -265,6 +265,123 @@ describe("HeroStat", () => {
     });
   });
 
+  describe("burst magnitude scaling (issue #125)", () => {
+    /** Land the count-up on its final value in a single frame. */
+    function landTheReveal() {
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+        cb(performance.now() + 100_000);
+        return 1;
+      });
+    }
+
+    it("leaves callers that don't opt in on the pre-#125 fixed burst", () => {
+      stubPrefersReducedMotion(false);
+      landTheReveal();
+
+      // A 1.05x win -- suppressed outright once scaling is on (below),
+      // but this call site (the intraday-daily per-day drill-down, which
+      // deliberately doesn't opt in) still gets the full burst.
+      render(<HeroStat startingCapital={20} endingBalance={21} />);
+
+      expect(screen.getByTestId("celebration-burst").children.length).toBe(24);
+    });
+
+    it("suppresses the burst for a small-magnitude win", () => {
+      stubPrefersReducedMotion(false);
+      landTheReveal();
+
+      render(
+        <HeroStat startingCapital={20} endingBalance={21} scaleCelebrationToMagnitude={true} />,
+      );
+
+      expect(screen.queryByTestId("celebration-burst")).not.toBeInTheDocument();
+      // The win is still marked as one everywhere else -- only the
+      // confetti is scaled back, not the badge or the accent glow.
+      expect(screen.getByText("(1.1x)")).toBeInTheDocument();
+    });
+
+    it("fires a smaller-than-full burst for a mid-magnitude win", () => {
+      stubPrefersReducedMotion(false);
+      landTheReveal();
+
+      render(
+        <HeroStat startingCapital={20} endingBalance={40} scaleCelebrationToMagnitude={true} />,
+      );
+
+      const burst = screen.getByTestId("celebration-burst");
+      expect(burst.children.length).toBeGreaterThan(0);
+      expect(burst.children.length).toBeLessThan(24);
+    });
+
+    it("fires the full burst for a large-magnitude (Max-range-scale) win", () => {
+      stubPrefersReducedMotion(false);
+      landTheReveal();
+
+      // $20 -> ~$716M, the real Max-range figure documented in
+      // apps/web/CLAUDE.md -- ~35.8Mx.
+      render(
+        <HeroStat
+          startingCapital={20}
+          endingBalance={716_000_000}
+          scaleCelebrationToMagnitude={true}
+        />,
+      );
+
+      expect(screen.getByTestId("celebration-burst").children.length).toBe(24);
+    });
+
+    // The load-bearing property of this whole issue: the tier is an
+    // intensity dial layered on top of shouldCelebrate(isGain, settled)
+    // -- it can scale an approved burst down (even to nothing), but it
+    // must never fire one shouldCelebrate already said no to.
+    it("never introduces a burst where shouldCelebrate already says no", () => {
+      const cases: { name: string; props: { startingCapital: number; endingBalance: number } }[] = [
+        // Not a gain at all (`isGain` false).
+        { name: "flat", props: { startingCapital: 20, endingBalance: 20 } },
+        { name: "loss", props: { startingCapital: 20, endingBalance: 5 } },
+      ];
+
+      for (const { name, props } of cases) {
+        stubPrefersReducedMotion(false);
+        landTheReveal();
+
+        const { unmount } = render(<HeroStat {...props} scaleCelebrationToMagnitude={true} />);
+
+        expect(screen.queryByTestId("celebration-burst"), name).not.toBeInTheDocument();
+        unmount();
+        vi.restoreAllMocks();
+      }
+
+      // Reduced motion, with a multiplier the top tier would otherwise
+      // celebrate as loudly as possible.
+      stubPrefersReducedMotion(true);
+      landTheReveal();
+      const reducedMotion = render(
+        <HeroStat
+          startingCapital={20}
+          endingBalance={716_000_000}
+          scaleCelebrationToMagnitude={true}
+        />,
+      );
+      expect(screen.queryByTestId("celebration-burst")).not.toBeInTheDocument();
+      reducedMotion.unmount();
+      vi.restoreAllMocks();
+
+      // Same huge multiplier, but the tween hasn't landed yet
+      // (`settled` false) -- never invoke the RAF callback.
+      stubPrefersReducedMotion(false);
+      vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+      render(
+        <HeroStat
+          startingCapital={20}
+          endingBalance={716_000_000}
+          scaleCelebrationToMagnitude={true}
+        />,
+      );
+      expect(screen.queryByTestId("celebration-burst")).not.toBeInTheDocument();
+    });
+  });
+
   describe("reveal accent (issue #77)", () => {
     it("adds no accent class to the visible figure before the reveal settles", () => {
       stubPrefersReducedMotion(false);
