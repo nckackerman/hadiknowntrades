@@ -22,6 +22,7 @@ function windowResult(overrides: Partial<WindowResult> = {}): WindowResult {
     universeSize: 500,
     skippedTickers: [],
     benchmark: null,
+    benchmarkSeries: null,
     ...overrides,
   };
 }
@@ -39,6 +40,7 @@ function intradayResult(overrides: Partial<IntradayResult> = {}): IntradayResult
     universeSize: 500,
     skippedTickers: [],
     benchmark: null,
+    benchmarkSeries: null,
     days: [],
     ...overrides,
   };

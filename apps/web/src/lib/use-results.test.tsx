@@ -26,6 +26,7 @@ function fixtureResult(): PrecomputedResult {
     universeSize: 503,
     skippedTickers: [],
     benchmark: null,
+    benchmarkSeries: null,
   };
 }
 

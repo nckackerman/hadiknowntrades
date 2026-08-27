@@ -903,6 +903,80 @@ every range this run if SPY's fetch fails outright.
   `buildCustomWindowResults`'s per-anchor benchmark (see below) with no
   PresetRange-specific branching anywhere in the function.
 
+## Trailing SPY daily-close series (issue #126)
+
+`computeBenchmarkSeries` persists a **trailing 90-calendar-day slice of
+the SPY daily closes `fetchBenchmarkHistory` was already fetching** into
+a new `benchmarkSeries` field on every `PrecomputedResult` -- the data
+foundation issue #128's Call Board engine needs. **Zero new fetch
+capability**: the full series was already in memory; `computeBenchmark`
+just discarded everything but start/end. Window size lives in one
+constant, `BENCHMARK_SERIES_TRAILING_DAYS = 90` (`pipeline.ts`), next to
+`FIVE_MINUTE_LOOKBACK_DAYS`/`ONE_MINUTE_LOOKBACK_DAYS` -- but unlike
+those two it's **not** a Yahoo retention wall, it's a pure "how much is
+worth storing" product number (~62 real trading days; measured live at
+exactly 63 for a 2026-08-26 run).
+
+- **Computed once per _run_, not once per range** -- unlike
+  `benchmarksByRange` (per-range, since each range's own window differs),
+  the series is a fixed trailing span off `asOf`, so the identical object
+  is stamped onto all 6 preset results. Deliberate, not a shortcut: its
+  consumer is a rolling daily game about recent trading days, not about
+  whichever range the viewer has selected, and scoping it per range would
+  leave 1W with ~5 days -- too few to score anything. See
+  `BenchmarkSeries`' own doc comment in `packages/core`.
+- **Deliberately NOT on `CustomWindowResult`**, unlike `benchmark`: ~1,255
+  anchor results per run x ~3.3KB of byte-identical, range-independent
+  series would be megabytes of duplication for a field no custom-anchor
+  reader wants. `validateBenchmarkSeries` is therefore wired into
+  `validateBase` (PrecomputedResult-only), **not** the shared
+  `validateSharedResultFields` -- worth remembering, since every other
+  shared field went the other way for the anti-drift reason that
+  function's own doc comment explains.
+- **Failure-mode contract, stated explicitly (the issue asked for this)**:
+  it inherits `fetchBenchmarkHistory`'s deliberately non-fatal posture
+  verbatim -- a failed SPY fetch means `benchmarkSeries: null` on every
+  range for that run, exactly like `benchmark: null` already, and never
+  contributes to the "at least one path failed" throw. `null` (not an
+  empty `closes` array) is also what a fetch that _succeeded_ but landed
+  no bars inside the trailing window produces, mirroring
+  `computeBenchmark`'s own `inWindow.length === 0` guard, so a reader
+  never has to distinguish the two. The narrower nuance worth keeping
+  straight: a _malformed_ series that got built anyway still trips
+  `validatePrecomputedResult` and fails the run -- that's issue #47's
+  write-time gate doing its job (a `NaN benchmark.endPrice` already
+  behaves identically), not this field being held to a stricter standard
+  than its sibling.
+- The validator requires `closes` to be **strictly ascending by date** --
+  a duplicate date would silently double-count one trading day for a
+  day-over-day consumer. `computeBenchmarkSeries` sorts its own slice
+  rather than trusting `fetchDailyCloses`' return order (documented as
+  "ascending in practice," not a contract -- see
+  `packages/core/CLAUDE.md`); ordering matters more here than in
+  `computeBenchmark` because it's part of this field's own _published_
+  contract, not just an internal convenience.
+- **`RESULTS_SCHEMA_VERSION` bumped 7 -> 8.** Unlike `barIntervalMinutes`
+  (an additive field that skipped a bump, see "Granularity overrides"),
+  this clears that constant's own "a shape change a reader needs to know
+  about" bar: issue #128 reads the field directly, so a reader deployed
+  against the new shape must not silently accept a stale pre-#126 object
+  that lacks it. **Same rollout hazard as every prior bump** -- a
+  pipeline run writing schema 8 must happen before or atomically with
+  deploying the schema-8-only `apps/web`, or every range 502s with
+  `schema_mismatch`. Real-AWS action, needs the user's explicit go-ahead;
+  not performed as of this issue's implementation.
+- **Live-verified, no S3 write** (real Yahoo data, `LOCAL_RESULTS_DIR`
+  run, `LOCAL_TICKER_COUNT=8`, 2026-08-26): 63 real SPY closes spanning
+  2026-05-28..2026-08-26, byte-identical across all 6 range files, ~3.3KB
+  of JSON each. Cross-checked against a **standalone script hitting the
+  same chart endpoint with its own request/parse code** (not
+  `packages/core`'s client, so a client-side slicing/date-derivation bug
+  would show as a disagreement rather than being reproduced on both
+  sides): 0 value mismatches past $0.005, the stored date set exactly
+  equals the independent fetch's trading days inside the window, and all
+  18 independently-known older trading days -- newest 2026-05-27, one day
+  before the 90-day boundary -- were correctly excluded.
+
 ## Custom date-range anchors (issue #11, month-granularity mechanics superseded by issue #75)
 
 **The bullets immediately below describe issue #11's original

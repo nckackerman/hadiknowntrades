@@ -111,6 +111,7 @@ function fixtureResult(overrides: Partial<WindowResult> = {}): WindowResult {
     universeSize: 503,
     skippedTickers: [],
     benchmark: null,
+    benchmarkSeries: null,
     ...overrides,
   };
 }
@@ -128,6 +129,7 @@ function fixtureIntradayResult(overrides: Partial<IntradayResult> = {}): Intrada
     universeSize: 503,
     skippedTickers: [],
     benchmark: null,
+    benchmarkSeries: null,
     days: [
       {
         date: "2026-08-20",
@@ -524,6 +526,53 @@ describe("ResultsPanel", () => {
     };
     rerender(<ResultsPanel range="1Y" state={withoutBenchmark} />);
     expect(screen.queryByText(/Buying and holding SPY/)).not.toBeInTheDocument();
+  });
+
+  // apps/pipeline's SPY fetch is deliberately non-fatal (see
+  // fetchBenchmarkHistory / computeBenchmarkSeries), so a real stored
+  // result can carry `benchmarkSeries: null` at any time -- and an
+  // object written before issue #126 shipped won't have the key at all.
+  // Nothing in the UI reads this field yet (issue #128's Call Board is
+  // its first consumer), so the point of this test is to lock the
+  // absent/null cases in *before* that consumer exists: whatever starts
+  // reading the series must keep rendering the rest of the panel
+  // normally when it isn't there, rather than blanking the page or
+  // throwing on a `.closes` read.
+  it("renders the whole panel normally whether benchmarkSeries is present, null, or missing entirely (issue #126)", () => {
+    const withSeries: ResultsState = {
+      status: "success",
+      data: fixtureResult({
+        benchmarkSeries: {
+          ticker: "SPY",
+          trailingDays: 90,
+          closes: [
+            { date: "2026-08-19", close: 642.18 },
+            { date: "2026-08-20", close: 645.32 },
+          ],
+        },
+      }),
+    };
+    const withNullSeries: ResultsState = {
+      status: "success",
+      data: fixtureResult({ benchmarkSeries: null }),
+    };
+    // A stale pre-#126 stored object: the key simply isn't there. Only
+    // reachable by casting -- the compile-time type requires the field,
+    // which is exactly why a runtime-shaped test is worth having.
+    const missingSeriesData = fixtureResult() as unknown as Record<string, unknown>;
+    delete missingSeriesData.benchmarkSeries;
+    const withMissingSeries: ResultsState = {
+      status: "success",
+      data: missingSeriesData as unknown as WindowResult,
+    };
+
+    for (const state of [withSeries, withNullSeries, withMissingSeries]) {
+      const { unmount } = render(<ResultsPanel range="1Y" state={state} />);
+      expect(screen.getAllByText("$6.9K").length).toBeGreaterThan(0);
+      expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+      expect(screen.getAllByText(/SNDK/).length).toBeGreaterThan(0);
+      unmount();
+    }
   });
 
   describe("intraday-daily model (issue #28)", () => {

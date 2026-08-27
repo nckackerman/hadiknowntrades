@@ -87,6 +87,7 @@ import {
   validateCustomAnchorsManifest,
   type AnchorDate,
   type BenchmarkResult,
+  type BenchmarkSeries,
   type CustomAnchorsManifest,
   type CustomWindowResult,
   type DailyClose,
@@ -152,6 +153,22 @@ const ONE_MINUTE_LOOKBACK_DAYS = 29;
 // the fetch layer; see computeBenchmark's `truncated` handling for where
 // that gap is surfaced instead.
 const BENCHMARK_TICKER = "SPY";
+// How much of the already-fetched SPY daily-close series to persist on
+// every PrecomputedResult (issue #126, `benchmarkSeries`). Unlike the
+// two lookback constants above, this is NOT a Yahoo retention wall --
+// the full series is already in memory from the benchmark fetch (see
+// fetchBenchmarkHistory), so this is purely a "how much is worth
+// storing" product number, chosen and stated here rather than deferred
+// to whatever a consumer turns out to want.
+//
+// 90 calendar days is ~62 real trading days: comfortably more than
+// issue #128's Call Board history strip needs (a rolling 3-day
+// lookahead plus a visible run of resolved calls), with enough slack
+// that a user who lapses for a couple of months still comes back to a
+// series that covers the whole gap rather than a truncated one. The
+// cost side is negligible -- ~62 `{date, close}` entries is ~2.5KB of
+// JSON per range file, ~15KB across all 6.
+const BENCHMARK_SERIES_TRAILING_DAYS = 90;
 
 // The "window" (whole-window, daily-close) ranges vs. the "intraday"
 // (per-day, 60m-bar) ranges introduced by issue #28. Together these must
@@ -902,6 +919,70 @@ function computeBenchmark(
   };
 }
 
+/**
+ * Slices a trailing window out of the *same* SPY `closes` array
+ * computeBenchmark above already reads, into the `benchmarkSeries` field
+ * every PrecomputedResult carries (issue #126) -- see BenchmarkSeries
+ * (packages/core/src/results-schema.ts) for the shape and
+ * BENCHMARK_SERIES_TRAILING_DAYS above for the window size.
+ *
+ * **No new fetch, and no new failure mode.** fetchBenchmarkHistory
+ * already holds SPY's full daily series in memory; this issue is purely
+ * about persisting a slice of it instead of discarding everything but
+ * the start/end pair. Consequently it inherits that fetch's
+ * deliberately non-fatal contract verbatim (see fetchBenchmarkHistory's
+ * own doc comment): a failed SPY fetch yields an empty `closes` array
+ * here, this returns `null`, and every range's stored result carries
+ * `benchmarkSeries: null` for that run -- exactly as it already carries
+ * `benchmark: null` -- without contributing to runPipeline's "at least
+ * one path failed" throw. Readers must render sanely with the field
+ * null; that requirement is stated on the field itself, and covered by
+ * a test in apps/web.
+ *
+ * "Non-fatal" here means exactly what it already means for `benchmark`:
+ * a *fetch* failure degrades to null and the run still succeeds. A
+ * *malformed* series that somehow got built anyway still trips
+ * validatePrecomputedResult and fails the run, the same as a NaN
+ * `benchmark.endPrice` already would -- that's issue #47's write-time
+ * gate doing its job, not this field being held to a stricter standard
+ * than its sibling.
+ *
+ * Called **once per run**, not once per range: the window is a fixed
+ * trailing span off `asOf`, deliberately independent of any range's own
+ * start date (see BenchmarkSeries' own doc comment for why the consumer
+ * wants it that way), so the identical object is stamped onto all 6
+ * preset results.
+ *
+ * Returns null (rather than an empty series) when nothing lands in the
+ * window, mirroring computeBenchmark's own `inWindow.length === 0`
+ * guard, so a reader never has to distinguish "no data" from "an empty
+ * array."
+ *
+ * Sorts its own slice ascending rather than trusting the fetched order
+ * -- same defensive posture (and same reason) as computeBenchmark's
+ * explicit min/max scan just above: fetchDailyCloses' return order is
+ * "ascending in practice," not a documented contract (see
+ * packages/core/CLAUDE.md). Here it matters more than there, since
+ * ordering is part of this field's own published contract, not just an
+ * internal convenience.
+ */
+function computeBenchmarkSeries(
+  closes: readonly DailyClose[],
+  fromDateString: string,
+  endDateString: string,
+): BenchmarkSeries | null {
+  const inWindow = closes
+    .filter((c) => c.date >= fromDateString && c.date <= endDateString)
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  if (inWindow.length === 0) return null;
+
+  return {
+    ticker: BENCHMARK_TICKER,
+    trailingDays: BENCHMARK_SERIES_TRAILING_DAYS,
+    closes: inWindow.map((c) => ({ date: c.date, close: c.close })),
+  };
+}
+
 // computeWindowOptimization's own binary-search slicing (issue #11 code
 // review finding) -- see sortedHistory's own doc comment for the full
 // reasoning; these two are its plain array-index helpers.
@@ -1056,6 +1137,8 @@ interface BuildWindowResultsOptions {
   skipped: readonly string[];
   /** SPY buy-and-hold comparison (issue #12), precomputed once per range by runPipeline -- see computeBenchmark. */
   benchmarksByRange: Map<PresetRange, BenchmarkResult | null>;
+  /** The trailing SPY daily-close series (issue #126), computed once per *run* rather than per range -- see computeBenchmarkSeries for why it's range-independent. Null when the (non-fatal) SPY fetch produced nothing usable. */
+  benchmarkSeries: BenchmarkSeries | null;
 }
 
 /** buildWindowResults' own return shape (code review follow-up to issue #13) -- see its own doc comment for why a per-range compute failure needs a side channel rather than either propagating (aborting every other range's already-computable result) or being silently swallowed. */
@@ -1111,6 +1194,7 @@ function buildWindowResults({
   maxTrades,
   skipped,
   benchmarksByRange,
+  benchmarkSeries,
 }: BuildWindowResultsOptions): BuildWindowResultsOutcome {
   const results: WindowResult[] = [];
   const failures: string[] = [];
@@ -1161,6 +1245,7 @@ function buildWindowResults({
         universeSize: windowed.size,
         skippedTickers: [...skipped],
         benchmark: benchmarksByRange.get(range) ?? null,
+        benchmarkSeries,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1493,6 +1578,8 @@ interface BuildIntradayResultsOptions {
   overrides: readonly GranularityOverrideInput[];
   /** SPY buy-and-hold comparison (issue #12), precomputed once per range by runPipeline -- see computeBenchmark. */
   benchmarksByRange: Map<PresetRange, BenchmarkResult | null>;
+  /** The trailing SPY daily-close series (issue #126), computed once per *run* rather than per range -- see computeBenchmarkSeries for why it's range-independent. Null when the (non-fatal) SPY fetch produced nothing usable. */
+  benchmarkSeries: BenchmarkSeries | null;
 }
 
 /** buildIntradayResults' own return shape (code review follow-up to issue #13) -- mirrors BuildWindowResultsOutcome's own "results plus a side channel of failure strings" shape. */
@@ -1679,6 +1766,7 @@ function buildIntradayResults({
   skipped,
   overrides,
   benchmarksByRange,
+  benchmarkSeries,
 }: BuildIntradayResultsOptions): BuildIntradayResultsOutcome {
   // Solve every trading day once, over the full fetched history (capped
   // only at endDateString, same "don't trust data past what was
@@ -1832,6 +1920,7 @@ function buildIntradayResults({
       universeSize: tickersInRange.size,
       skippedTickers: rangeSkipped,
       benchmark: benchmarksByRange.get(range) ?? null,
+      benchmarkSeries,
     };
   });
 
@@ -1940,6 +2029,20 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     }),
   );
 
+  // The trailing SPY daily-close series (issue #126) -- computed once
+  // per run from the same already-fetched `closes` array
+  // benchmarksByRange above reads, then stamped identically onto all 6
+  // preset results (it's deliberately range-independent, unlike the
+  // per-range benchmark summary -- see computeBenchmarkSeries and
+  // BenchmarkSeries' own doc comments). Null when the non-fatal SPY
+  // fetch failed or covered no days in the window, exactly like every
+  // range's `benchmark` already is.
+  const benchmarkSeries = computeBenchmarkSeries(
+    benchmarkFetch.closes,
+    toDateString(daysBeforeUtc(asOf, BENCHMARK_SERIES_TRAILING_DAYS)),
+    endDateString,
+  );
+
   // Compute everything before writing anything, so a failure in the
   // optimizer (e.g. an unexpected data shape) can't leave some ranges'
   // S3 objects updated and others stale. This doesn't make the S3 writes
@@ -1974,6 +2077,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         maxTrades,
         skipped: windowFetch.skipped,
         benchmarksByRange,
+        benchmarkSeries,
       });
   const windowResults = windowBuild.results;
 
@@ -1995,6 +2099,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         // for every day" with no special-casing needed here.
         overrides: overrideInputs,
         benchmarksByRange,
+        benchmarkSeries,
       });
   const intradayResults = intradayBuild.results;
 

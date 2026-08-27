@@ -623,6 +623,42 @@ that field wouldn't have caught.
   `@hadiknowntrades/core` without ever adding the export), caught before
   implementation started, not after a build failure.
 
+## Trailing SPY daily-close series (issue #126)
+
+`results-schema.ts`'s `BenchmarkSeries` (a `benchmarkSeries:
+BenchmarkSeries | null` field on `PrecomputedResultBase`) is a trailing
+window of SPY's **raw** daily closes -- `{ticker, trailingDays, closes}`,
+where `closes` reuses `DailyClose` as-is -- sitting alongside the
+whole-window `benchmark` summary the same fetch already produces. See
+`apps/pipeline/CLAUDE.md`'s own "Trailing SPY daily-close series"
+section for how it's sliced, the live cross-check numbers, and the
+failure-mode contract.
+
+- **`RESULTS_SCHEMA_VERSION` bumped 7 -> 8.** This is the first field
+  since #12 to clear that constant's "a shape change a reader needs to
+  know about" bar rather than take the additive-field exemption
+  `barIntervalMinutes` took (see "Mixed-granularity 1M/3M assembly"
+  above) -- issue #128's Call Board engine reads it directly, so a
+  reader on the new shape must not silently accept a stale pre-#126
+  object.
+- **Deliberately absent from `CustomWindowResult`**, which is the first
+  time a `PrecomputedResultBase` field has _not_ been mirrored onto that
+  sibling type (`benchmark` was). Consequence worth knowing before
+  touching the validators: `validateBenchmarkSeries` hangs off
+  `validateBase` (PrecomputedResult-only), **not** the shared
+  `validateSharedResultFields` both result families call -- so the usual
+  "add it to the shared helper so the two can't drift" instinct is
+  wrong here. Reason is pure storage cost: ~1,255 anchor results per
+  run x ~3.3KB of byte-identical, range-independent series.
+- `validateBenchmarkSeries` keeps `validateBenchmark`'s exact
+  null-vs-`undefined` discipline (null passes as the real "no data this
+  run" state; a missing field fails), and additionally requires `closes`
+  to be non-empty and **strictly ascending by date** -- an empty window
+  is represented as `benchmarkSeries: null`, and a duplicate date would
+  silently double-count a trading day for a day-over-day consumer.
+- Exported from `index.ts` alongside `BenchmarkResult` -- issue #12's own
+  notes above record forgetting exactly this for `BenchmarkResult`.
+
 ## Write-time result self-validation (issue #47)
 
 `src/results-schema.ts`'s `validatePrecomputedResult` is a runtime,

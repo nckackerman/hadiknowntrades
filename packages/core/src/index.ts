@@ -85,4 +85,5 @@ export type {
   WorstCaseResult,
   LongShortResult,
   BenchmarkResult,
+  BenchmarkSeries,
 } from "./results-schema";

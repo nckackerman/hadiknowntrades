@@ -10,6 +10,7 @@ import {
   validateCustomWindowResult,
   validatePrecomputedResult,
   type BenchmarkResult,
+  type BenchmarkSeries,
   type CustomAnchorsManifest,
   type CustomWindowResult,
   type IntradayResult,
@@ -47,6 +48,19 @@ function validWindowResult(): WindowResult {
     universeSize: 1,
     skippedTickers: [],
     benchmark: null,
+    // A real (if tiny) series on this fixture and `null` on the
+    // intraday one below, so the default fixtures already exercise both
+    // sides of benchmarkSeries' documented "present or null" contract
+    // (issue #126) without either needing a dedicated setup step.
+    benchmarkSeries: {
+      ticker: "SPY",
+      trailingDays: 90,
+      closes: [
+        { date: "2024-06-12", close: 542.19 },
+        { date: "2024-06-13", close: 544.4 },
+        { date: "2024-06-14", close: 542.86 },
+      ],
+    },
     model: "window",
     startDate: "2019-06-15",
     endDate: "2024-06-15",
@@ -115,6 +129,7 @@ function validIntradayResult(): IntradayResult {
     universeSize: 1,
     skippedTickers: ["MSFT"],
     benchmark: null,
+    benchmarkSeries: null,
     model: "intraday-daily",
     endDate: "2024-06-15",
     maxTradesPerDay: 3,
@@ -546,6 +561,128 @@ describe("validatePrecomputedResult", () => {
       const result = validWindowResult();
       result.benchmark = { ...validBenchmark(), truncated: "yes" as unknown as boolean };
       expect(() => validatePrecomputedResult(result)).toThrow(/benchmark\.truncated/);
+    });
+  });
+
+  describe("benchmarkSeries (issue #126)", () => {
+    /** A well-formed trailing SPY series, using real-shaped values -- three consecutive trading days. */
+    function validSeries(): BenchmarkSeries {
+      return {
+        ticker: "SPY",
+        trailingDays: 90,
+        closes: [
+          { date: "2024-06-12", close: 542.19 },
+          { date: "2024-06-13", close: 544.4 },
+          { date: "2024-06-14", close: 542.86 },
+        ],
+      };
+    }
+
+    it("passes a well-formed series (the default WindowResult fixture already carries one)", () => {
+      expect(() => validatePrecomputedResult(validWindowResult())).not.toThrow();
+    });
+
+    it("passes a null series (the SPY fetch failed, or covered no days in the window, this run)", () => {
+      const result = validWindowResult();
+      result.benchmarkSeries = null;
+      expect(() => validatePrecomputedResult(result)).not.toThrow();
+    });
+
+    it("rejects an entirely-missing benchmarkSeries field (undefined), distinct from a valid null", () => {
+      const result = validWindowResult() as unknown as Record<string, unknown>;
+      delete result.benchmarkSeries;
+      expect(() => validatePrecomputedResult(result as unknown as WindowResult)).toThrow(
+        /benchmarkSeries must be null or an object, got undefined/,
+      );
+    });
+
+    it("rejects a series that isn't null or an object", () => {
+      const result = validWindowResult() as unknown as Record<string, unknown>;
+      result.benchmarkSeries = "SPY";
+      expect(() => validatePrecomputedResult(result as unknown as WindowResult)).toThrow(
+        /benchmarkSeries must be null or an object/,
+      );
+    });
+
+    it("rejects a series with an empty ticker", () => {
+      const result = validWindowResult();
+      result.benchmarkSeries = { ...validSeries(), ticker: "" };
+      expect(() => validatePrecomputedResult(result)).toThrow(/benchmarkSeries\.ticker/);
+    });
+
+    it("rejects a series whose trailingDays isn't a positive integer", () => {
+      for (const trailingDays of [0, -90, 90.5, NaN]) {
+        const result = validWindowResult();
+        result.benchmarkSeries = { ...validSeries(), trailingDays };
+        expect(() => validatePrecomputedResult(result)).toThrow(/benchmarkSeries\.trailingDays/);
+      }
+    });
+
+    it("rejects a series whose closes isn't an array", () => {
+      const result = validWindowResult();
+      result.benchmarkSeries = {
+        ...validSeries(),
+        closes: {} as unknown as BenchmarkSeries["closes"],
+      };
+      expect(() => validatePrecomputedResult(result)).toThrow(
+        /benchmarkSeries\.closes must be an array/,
+      );
+    });
+
+    it("rejects an empty closes array (an empty window is represented as benchmarkSeries: null)", () => {
+      const result = validWindowResult();
+      result.benchmarkSeries = { ...validSeries(), closes: [] };
+      expect(() => validatePrecomputedResult(result)).toThrow(
+        /benchmarkSeries\.closes must be non-empty/,
+      );
+    });
+
+    it("rejects a close with a non-positive-finite price", () => {
+      for (const close of [NaN, 0, -1, Infinity]) {
+        const result = validWindowResult();
+        const series = validSeries();
+        series.closes[1] = { ...series.closes[1]!, close };
+        result.benchmarkSeries = series;
+        expect(() => validatePrecomputedResult(result)).toThrow(
+          /benchmarkSeries\.closes\[1\]\.close must be a positive finite number/,
+        );
+      }
+    });
+
+    it("rejects a close with an empty date", () => {
+      const result = validWindowResult();
+      const series = validSeries();
+      series.closes[0] = { ...series.closes[0]!, date: "" };
+      result.benchmarkSeries = series;
+      expect(() => validatePrecomputedResult(result)).toThrow(/benchmarkSeries\.closes\[0\]\.date/);
+    });
+
+    it("rejects a series that isn't strictly ascending by date (out of order)", () => {
+      const result = validWindowResult();
+      const series = validSeries();
+      series.closes = [series.closes[2]!, series.closes[0]!, series.closes[1]!];
+      result.benchmarkSeries = series;
+      expect(() => validatePrecomputedResult(result)).toThrow(
+        /benchmarkSeries\.closes\[1\]\.date must be strictly after the previous entry's date \(2024-06-14\)/,
+      );
+    });
+
+    it("rejects a duplicated date, which would silently double-count one trading day for a day-over-day consumer", () => {
+      const result = validWindowResult();
+      const series = validSeries();
+      series.closes[2] = { ...series.closes[2]!, date: series.closes[1]!.date };
+      result.benchmarkSeries = series;
+      expect(() => validatePrecomputedResult(result)).toThrow(
+        /benchmarkSeries\.closes\[2\]\.date must be strictly after the previous entry's date \(2024-06-13\)/,
+      );
+    });
+
+    it("is not required on a CustomWindowResult, which deliberately has no such field", () => {
+      const custom = validCustomWindowResult() as unknown as Record<string, unknown>;
+      expect(custom.benchmarkSeries).toBeUndefined();
+      expect(() =>
+        validateCustomWindowResult(custom as unknown as CustomWindowResult),
+      ).not.toThrow();
     });
   });
 });
