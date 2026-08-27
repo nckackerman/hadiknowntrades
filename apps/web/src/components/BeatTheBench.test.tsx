@@ -1,5 +1,5 @@
 import { RESULTS_SCHEMA_VERSION } from "@hadiknowntrades/core";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { beatTheBenchKey } from "@/lib/beat-the-bench-storage";
@@ -264,6 +264,42 @@ describe("BeatTheBench", () => {
 
     await act(async () => {
       await Promise.resolve();
+    });
+  });
+
+  describe("status badge (issue #186)", () => {
+    it("shows no badge before today's session has been played", async () => {
+      render(<BeatTheBench />);
+
+      const tile = screen.getByRole("button", { name: /can you do better\?/i });
+      expect(within(tile).queryByText("✓")).not.toBeInTheDocument();
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+    });
+
+    it("shows a real, gold done badge once today's session has actually been played", async () => {
+      await renderChooser();
+      click(/play today's close/i);
+      click(/^4x$/);
+      advance(TICKS_TO_CLOSE * 75);
+      expect(screen.getByText("Along for the ride")).toBeInTheDocument();
+
+      // A fresh mount reads the real stored record back -- the same
+      // contract "remembers a played session and offers it again" above
+      // already covers for the status line; this is the identical claim
+      // for the badge sitting right next to it. Waited on via the status
+      // line itself (not just the tile's own presence, which renders
+      // immediately regardless of whether the deferred storage read has
+      // landed yet) so the badge assertion below isn't racing that read.
+      vi.useRealTimers();
+      render(<BeatTheBench />);
+      await screen.findByText("Level with the bench today");
+      const tile = screen.getByRole("button", { name: /can you do better\?/i });
+      const badge = within(tile).getByText("✓");
+      expect(badge).toHaveAttribute("aria-hidden", "true");
+      expect(badge.className).toContain("bg-[var(--accent-reward)]");
     });
   });
 

@@ -592,7 +592,7 @@ describe("ResultsPage", () => {
 
       const bench = benchSection();
       const board = sectionFor("The Call Board");
-      const ritual = sectionFor("Today, so far");
+      const ritual = sectionFor("Today's ritual");
       // The window model's hero reveal -- HeroStat's own "Starting from"
       // row -- now lives inside the demoted "Explore other windows"
       // section (issue #165), which sits at the very bottom of the page,
@@ -610,9 +610,13 @@ describe("ResultsPage", () => {
       render(<ResultsPage />);
       await screen.findByText("Starting from");
 
-      const ritual = sectionFor("Today, so far");
-      // Before anything is played: one endowed step, nothing else.
-      await waitFor(() => expect(within(ritual).getByText("1 of 3 done")).toBeInTheDocument());
+      const ritual = sectionFor("Today's ritual");
+      // Before anything is played: the recap disclosure stays locked.
+      await waitFor(() =>
+        expect(
+          within(ritual).getByText("Today's recap unlocks after you play Beat the Bench"),
+        ).toBeInTheDocument(),
+      );
 
       // Expand Beat the Bench, then play it for real through its own UI,
       // to a real settlement -- the two-bar session settles on one Step.
@@ -631,24 +635,28 @@ describe("ResultsPage", () => {
       const [firstSlot] = await screen.findAllByRole("group", { name: /^Your call for/ });
       fireEvent.click(within(firstSlot!).getByRole("button", { name: "Up" }));
 
-      // The rail now reports what those two mechanics actually stored.
-      // Scoped to the rail's own <ol> so these can't be satisfied by the
-      // same sentences appearing inside the recap textarea below it.
-      const rail = within(ritual).getByRole("list");
-      await waitFor(() =>
-        expect(within(rail).getByText(/you rode it out, level with the bench/)).toBeInTheDocument(),
-      );
-      expect(within(rail).getByText(/1 of 3 upcoming sessions called/)).toBeInTheDocument();
-      expect(within(ritual).getByText("2 of 3 done")).toBeInTheDocument();
+      // The Call Board's own compact card now reports what it actually
+      // stored -- a real corner badge and status line, not a rail reading
+      // a second copy of the same flags. (Beat the Bench's own badge sits
+      // on its compact card too, but that card is currently expanded --
+      // BeatTheBench.test.tsx covers its badge directly.)
+      const board = sectionFor("The Call Board");
+      const callBoardSummary = within(board).getByTestId("call-board-summary");
+      await waitFor(() => expect(within(callBoardSummary).getByText("1")).toBeInTheDocument());
+      expect(within(board).getByText("1 of 3 called this week")).toBeInTheDocument();
 
       // And the recap, unlocked by that play, quotes the page's own
-      // headline figure alongside both.
+      // headline figure alongside both -- read straight from the same
+      // two mechanics' own storage, not a third copy.
       const recap = within(ritual).getByTestId("daily-recap-text");
-      expect(recap.textContent).toContain(
-        "Hindsight over the past 5 years: $20.00 became $1.1K (55x)",
+      await waitFor(() =>
+        expect(recap.textContent).toContain(
+          "Hindsight over the past 5 years: $20.00 became $1.1K (55x)",
+        ),
       );
       expect(recap.textContent).toContain("Beat the Bench: you rode it out");
       expect(recap.textContent).toContain("The Call Board: 1 of 3 upcoming sessions called");
+      expect(within(ritual).getByText("Today's recap is ready -- Copy")).toBeInTheDocument();
     });
 
     it("regenerates the recap when a Call Board pick changes after it unlocked", async () => {
@@ -662,7 +670,7 @@ describe("ResultsPage", () => {
       fireEvent.click(await within(bench).findByRole("button", { name: /Play today's/ }));
       fireEvent.click(within(bench).getByRole("button", { name: "Step forward one bar" }));
 
-      const ritual = sectionFor("Today, so far");
+      const ritual = sectionFor("Today's ritual");
       const recap = await within(ritual).findByTestId("daily-recap-text");
       await waitFor(() =>
         expect(recap.textContent).toContain("The Call Board: 0 of 3 upcoming sessions called"),

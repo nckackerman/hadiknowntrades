@@ -222,6 +222,11 @@ describe("CallBoard: hydration safety", () => {
     expect(placeholder).toHaveTextContent(
       "Call the next 3 sessions, up or down, before they open.",
     );
+    // No badge, no mini history, no streak either -- every one of those
+    // is exactly as clock/storage-derived as the slots themselves
+    // (issue #186).
+    expect(placeholder).not.toHaveTextContent("✓");
+    expect(placeholder).not.toHaveTextContent("Current streak");
   });
 });
 
@@ -266,6 +271,76 @@ describe("CallBoard: compact card (issue #164)", () => {
     });
     // Still expanded -- making a pick doesn't collapse the card back.
     expect(details).toHaveAttribute("open");
+  });
+});
+
+describe("CallBoard: compact card status badge (issue #186)", () => {
+  it("shows no badge until at least one open call is made", async () => {
+    freezeClock(WEDNESDAY_BEFORE_OPEN);
+    await renderBoard();
+
+    const summary = screen.getByTestId("call-board-summary");
+    expect(within(summary).queryByText("✓")).not.toBeInTheDocument();
+    expect(within(summary).queryByText("1")).not.toBeInTheDocument();
+  });
+
+  it("shows the filled call count once some, but not all, sessions are called", async () => {
+    freezeClock(WEDNESDAY_BEFORE_OPEN);
+    const user = await renderBoard();
+
+    await user.click(slotButtons("Aug 27, 2026")[1]!);
+
+    const summary = screen.getByTestId("call-board-summary");
+    await waitFor(() => {
+      expect(within(summary).getByText("1")).toBeInTheDocument();
+    });
+    expect(within(summary).queryByText("✓")).not.toBeInTheDocument();
+  });
+
+  it("shows the gold done badge once every open session has been called", async () => {
+    freezeClock(WEDNESDAY_BEFORE_OPEN);
+    const user = await renderBoard();
+
+    for (const label of ["Aug 26, 2026", "Aug 27, 2026", "Aug 28, 2026"]) {
+      await user.click(slotButtons(label)[0]!);
+    }
+
+    const summary = screen.getByTestId("call-board-summary");
+    await waitFor(() => {
+      const badge = within(summary).getByText("✓");
+      expect(badge).toHaveAttribute("aria-hidden", "true");
+      expect(badge.className).toContain("bg-[var(--accent-reward)]");
+    });
+  });
+});
+
+describe("CallBoard: compact card mini history strip and streak (issue #186)", () => {
+  it("stays absent when nothing has resolved yet", async () => {
+    freezeClock(WEDNESDAY_BEFORE_OPEN);
+    await renderBoard();
+
+    const summary = screen.getByTestId("call-board-summary");
+    expect(within(summary).queryByText("★")).not.toBeInTheDocument();
+    expect(within(summary).queryByLabelText(/Current streak/)).not.toBeInTheDocument();
+  });
+
+  it("shows a mini pip per recent resolved call and the real current streak", async () => {
+    saveResolvedCalls([
+      resolvedCall({ date: "2026-08-20", pick: "up-strong", actual: "up-strong", score: 2 }),
+      resolvedCall({ date: "2026-08-21", pick: "up-strong", actual: "up", score: 1 }),
+    ]);
+    freezeClock(WEDNESDAY_BEFORE_OPEN);
+    await renderBoard();
+
+    const summary = screen.getByTestId("call-board-summary");
+    await waitFor(() => {
+      expect(within(summary).getByText("★")).toBeInTheDocument();
+    });
+    expect(within(summary).getByText("✓")).toBeInTheDocument();
+    // Both calls are wins (score >= 1), consecutive, and most recent --
+    // the same computeCallBoardStats currentStreak the full board's own
+    // "Current streak" stat reads.
+    expect(within(summary).getByLabelText("Current streak: 2")).toBeInTheDocument();
   });
 });
 

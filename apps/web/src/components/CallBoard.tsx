@@ -39,6 +39,15 @@
 // mechanism and pre-hydration inert placeholder `<div>` -- this issue's
 // own scope is purely the collapsed tile's colors/layout, not the
 // expand mechanism or anything inside the expanded board.
+//
+// **Issue #186's condensation**: the compact card itself gained a small
+// corner status badge (done/partial/todo, `lib/daily-ritual.ts`'s own
+// `STEP_STYLES`/`callsState` -- see `CallBoardSummaryRow`'s own doc
+// comment) plus a miniature version of the history strip/streak chip
+// below, reusing `callOutcomeFor`/`OUTCOME_STYLES` unchanged, once
+// `board.resolved` is non-empty. This replaces what used to be a
+// separate, always-visible "Today, so far" status rail above every
+// mechanic (`DailyRitual.tsx`) -- see that file's own doc comment.
 
 import { useState } from "react";
 
@@ -49,12 +58,26 @@ import {
   type CallBucket,
   type ResolvedCall,
 } from "@/lib/call-board-scoring";
+import {
+  STATUS_BADGE_CLASSNAME,
+  STEP_STYLES,
+  callsState,
+  type RitualStepState,
+} from "@/lib/daily-ritual";
 import { formatDate } from "@/lib/format-date";
 import { formatPercent } from "@/lib/format-currency";
 import { useCallBoard, useCallBoardCloses } from "@/lib/use-call-board";
 
 /** How many settled calls the history strip shows, newest last. */
 export const HISTORY_STRIP_LENGTH = 10;
+
+/**
+ * How many settled calls the *compact card's own* mini history strip
+ * shows (issue #186) -- a smaller "handful" than the full board's own
+ * `HISTORY_STRIP_LENGTH`, since this one has to fit inside a card
+ * tile's own corner, not a full-width expanded row.
+ */
+export const SUMMARY_HISTORY_LENGTH = 5;
 
 const BUCKET_LABELS: Record<CallBucket, string> = {
   "up-strong": "Up big",
@@ -206,7 +229,9 @@ const CTA_SUBTITLE = `Call the next ${MAX_OPEN_CALLS} sessions, up or down, befo
  * interactive `<summary>` so the two can never drift in size -- the whole
  * point of a placeholder is that swapping it for the real thing causes no
  * layout shift, which only holds if both render byte-for-byte the same
- * markup (differing only in `statusLine`'s text).
+ * markup (differing only in `statusLine`/`badgeState`/`filledCount`/
+ * `recentCalls`/`currentStreak`'s own values, per the placeholder's own
+ * always-`"todo"`/always-empty call site below).
  *
  * A tile layout (issue #177), not the pre-#177 horizontal row: a large
  * icon up top, the title/subtitle stacked below it, and a status pill
@@ -218,10 +243,48 @@ const CTA_SUBTITLE = `Call the next ${MAX_OPEN_CALLS} sessions, up or down, befo
  * dark-surface token system the rest of the app paints against, the same
  * way `OgCard.tsx`'s share-card palette is its own standalone thing (see
  * `apps/web/CLAUDE.md`'s "Dark mode only" section).
+ *
+ * **The corner status badge, mini history strip and streak chip (issue
+ * #186)**: `badgeState` (from `callsState`, `lib/daily-ritual.ts`) shows
+ * nothing for `"todo"` (no calls made yet), the filled call count for
+ * `"partial"`, or `STEP_STYLES.done`'s own gold checkmark for `"done"`
+ * (every open call made) -- matching the design reference's own
+ * `.status-badge`. `recentCalls` (the board's own `resolved` history,
+ * sliced to `SUMMARY_HISTORY_LENGTH` by the caller) reuses
+ * `callOutcomeFor`/`OUTCOME_STYLES` unchanged, just rendered smaller and
+ * only once there's any history at all -- the mini pips are purely
+ * decorative (`aria-hidden`; the full, accessible history strip with its
+ * own sr-only descriptions is one click away in the expanded board
+ * below), but the streak chip carries a real accessible name of its own
+ * (`aria-label`) since nothing else on this collapsed card states the
+ * streak in words.
  */
-function CallBoardSummaryRow({ statusLine }: { statusLine: string }) {
+function CallBoardSummaryRow({
+  statusLine,
+  badgeState,
+  filledCount,
+  recentCalls,
+  currentStreak,
+}: {
+  statusLine: string;
+  badgeState: RitualStepState;
+  filledCount: number;
+  recentCalls: readonly ResolvedCall[];
+  currentStreak: number;
+}) {
   return (
-    <span className="flex flex-col justify-between gap-4 p-5">
+    <span className="relative flex flex-col justify-between gap-4 p-5">
+      {badgeState !== "todo" && (
+        // aria-hidden: statusLine below already states this same count in
+        // full, readable text -- this badge is a purely visual
+        // at-a-glance duplicate of it.
+        <span
+          aria-hidden="true"
+          className={`${STATUS_BADGE_CLASSNAME} ${STEP_STYLES[badgeState].colorClassName}`}
+        >
+          {badgeState === "done" ? STEP_STYLES.done.glyph : filledCount}
+        </span>
+      )}
       <span className="flex flex-col gap-2">
         <span aria-hidden="true" className="text-3xl leading-none">
           {CTA_ICON}
@@ -233,6 +296,30 @@ function CallBoardSummaryRow({ statusLine }: { statusLine: string }) {
           <span className="text-xs font-medium text-white/85">{CTA_SUBTITLE}</span>
         </span>
       </span>
+      {recentCalls.length > 0 && (
+        <span className="flex flex-wrap items-center gap-1">
+          <span aria-hidden="true" className="flex flex-wrap items-center gap-1">
+            {recentCalls.map((call) => {
+              const outcome = callOutcomeFor(call);
+              const style = OUTCOME_STYLES[outcome];
+              return (
+                <span
+                  key={call.date}
+                  className={`flex h-4 w-4 items-center justify-center rounded-full border text-[9px] font-bold ${style.className}`}
+                >
+                  {style.glyph}
+                </span>
+              );
+            })}
+          </span>
+          <span
+            aria-label={`Current streak: ${currentStreak}`}
+            className="font-numeric ml-1 rounded-full bg-white/20 px-1.5 py-0.5 text-[0.65rem] font-bold"
+          >
+            <span aria-hidden="true">🔥 {currentStreak}</span>
+          </span>
+        </span>
+      )}
       <span className="flex items-center justify-between gap-2">
         <span className="font-numeric rounded-full bg-white/20 px-2.5 py-1 text-[0.6875rem] font-bold">
           {statusLine}
@@ -314,11 +401,25 @@ const CARD_CLASSNAME =
  * that module's own doc comment for the full reasoning (this board's
  * clock-derived output changes at two boundaries a day, not once a
  * month, and 9:30 AM Eastern is a high-traffic moment for this page).
+ *
+ * `badgeState="todo"`/`filledCount={0}`/`recentCalls={[]}`/
+ * `currentStreak={0}` for the identical reason `statusLine=" "` already
+ * is: every one of those is exactly as clock/storage-derived as the full
+ * board's own slots, so there is nothing real to show yet -- and `"todo"`
+ * plus an empty history are also `CallBoardSummaryRow`'s own quietest
+ * rendering (no badge, no strip), which happens to match the single most
+ * common real state (a first visit) too.
  */
 function CallBoardPlaceholder() {
   return (
     <div aria-hidden="true" className={CARD_CLASSNAME}>
-      <CallBoardSummaryRow statusLine=" " />
+      <CallBoardSummaryRow
+        statusLine=" "
+        badgeState="todo"
+        filledCount={0}
+        recentCalls={[]}
+        currentStreak={0}
+      />
     </div>
   );
 }
@@ -361,6 +462,10 @@ export function CallBoard() {
   }
 
   const recent = board.resolved.slice(-HISTORY_STRIP_LENGTH);
+  // The compact card's own mini strip (a smaller "handful", issue #186)
+  // -- the same `resolved` history the full strip above slices from,
+  // just to a shorter length so it fits inside the card's own corner.
+  const summaryHistory = board.resolved.slice(-SUMMARY_HISTORY_LENGTH);
   // The issue's own spec for the first-visit state is "0/0%/0/0", so a
   // null win rate (nothing resolved yet) renders as 0% rather than a dash
   // -- there is no history for it to misrepresent, and a placeholder in
@@ -368,6 +473,11 @@ export function CallBoard() {
   // honest. `winRate` stays null in the engine; only this display coerces.
   const winRateLabel = `${Math.round((stats.winRate ?? 0) * 100)}%`;
   const calledCount = board.openCalls.filter((call) => call.pick !== null).length;
+  // The compact card's own corner badge state (issue #186) -- the same
+  // done/partial/todo split `callsState` already gives the rest of this
+  // app's status badges, applied here to "how many of the open calls are
+  // filled in."
+  const badgeState = callsState({ filled: calledCount, total: MAX_OPEN_CALLS });
   // e.g. "2 of 3 called this week" -- issue #164's own example status
   // line. `board.openCalls` is always `[]` before hydration (see
   // `UNHYDRATED_VIEW`), so this component never actually needs to branch
@@ -393,7 +503,13 @@ export function CallBoard() {
             data-testid="call-board-summary"
             className={`${CARD_CLASSNAME} cursor-pointer list-none transition-transform duration-150 hover:-translate-y-0.5 hover:scale-[1.015] active:translate-y-0 active:scale-[0.99]`}
           >
-            <CallBoardSummaryRow statusLine={statusLine} />
+            <CallBoardSummaryRow
+              statusLine={statusLine}
+              badgeState={badgeState}
+              filledCount={calledCount}
+              recentCalls={summaryHistory}
+              currentStreak={stats.currentStreak}
+            />
           </summary>
 
           {/* The expanded board's own, ordinary dark surface-card wrapper

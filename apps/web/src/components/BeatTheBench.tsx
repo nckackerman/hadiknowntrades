@@ -63,6 +63,14 @@
 // above is completely orthogonal to whether the card is collapsed or
 // expanded -- it depends only on `settled`, never on this `expanded`
 // flag.
+//
+// **Issue #186's condensation**: `CompactCard` gained a small corner
+// status badge (`done` once today's session has been played, nothing
+// otherwise -- see its own doc comment) built from
+// `lib/daily-ritual.ts`'s own `STEP_STYLES`, shared with The Call
+// Board's identical badge. This replaces what used to be a separate,
+// always-visible "Today, so far" status rail above every mechanic
+// (`DailyRitual.tsx`) -- see that file's own doc comment.
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 
@@ -98,6 +106,7 @@ import {
   type BeatTheBenchMode,
   type PlayedSession,
 } from "@/lib/beat-the-bench-storage";
+import { STATUS_BADGE_CLASSNAME, STEP_STYLES } from "@/lib/daily-ritual";
 import { formatDate, formatTime } from "@/lib/format-date";
 import { formatHeroCurrency, formatSessionPercent } from "@/lib/format-currency";
 import { useReducedMotionAfterMount } from "@/lib/use-reduced-motion-after-mount";
@@ -396,6 +405,17 @@ function BeatTheBenchFrame({
  * app's real `max-w-3xl` content width, which reads as broken, not bold.
  * The tile keeps the mockup's padding/radius/shadow/hover-lift and its
  * icon-title-subtitle-status layout, sized by its own content instead.
+ *
+ * **The corner status badge (issue #186)**: `done` once today's session
+ * has been played, nothing rendered otherwise -- matching
+ * `STEP_STYLES.todo`'s own established "render nothing" convention for
+ * this pass (a recent win/loss/tie history strip, like The Call Board's
+ * own, needs a new persisted-history storage mechanism this codebase
+ * doesn't have yet -- see that issue's own Background section -- so
+ * there's no "partial" state to show here, only done/todo). `relative`
+ * on the button itself is what gives the badge's `absolute` positioning
+ * (STATUS_BADGE_CLASSNAME) something to anchor to at the tile's own
+ * corner, not the padded content inside it.
  */
 function CompactCard({
   headingId,
@@ -427,8 +447,19 @@ function CompactCard({
           backgroundImage: "linear-gradient(155deg, #f0b658 0%, #e8a33d 55%, #d88f28 100%)",
           color: "#241a08",
         }}
-        className="flex w-full flex-col gap-4 rounded-2xl px-[1.15rem] py-[1.1rem] text-left shadow-[0_6px_18px_rgba(0,0,0,0.35)] transition-transform duration-150 ease-out hover:-translate-y-0.5 hover:scale-[1.015] active:translate-y-0 active:scale-[0.99]"
+        className="relative flex w-full flex-col gap-4 rounded-2xl px-[1.15rem] py-[1.1rem] text-left shadow-[0_6px_18px_rgba(0,0,0,0.35)] transition-transform duration-150 ease-out hover:-translate-y-0.5 hover:scale-[1.015] active:translate-y-0 active:scale-[0.99]"
       >
+        {playedRecord !== null && (
+          // aria-hidden: the compact status line below already conveys
+          // this same "played" fact in full, readable text -- this badge
+          // is a purely visual at-a-glance duplicate of it.
+          <span
+            aria-hidden="true"
+            className={`${STATUS_BADGE_CLASSNAME} ${STEP_STYLES.done.colorClassName}`}
+          >
+            {STEP_STYLES.done.glyph}
+          </span>
+        )}
         <div className="flex flex-col gap-1">
           <span aria-hidden="true" className="text-[1.75rem] leading-none">
             🎯
