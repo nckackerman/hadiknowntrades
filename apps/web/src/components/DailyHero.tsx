@@ -121,6 +121,21 @@
 // just moves behind the existing chart reveal, one click away instead of
 // an always-visible prose section. See apps/web/CLAUDE.md's own daily
 // hero (issue #175) section for the full writeup.
+//
+// **Issue #187 moved the eyebrow date line out of this box entirely**,
+// up into ResultsPage.tsx's own `<header>`, next to the `<h1>` -- sourced
+// there via a third, independent `useDailyChallenge(mode)` call (this
+// hook's own doc comment already establishes the "independent fetch
+// relying on the browser's HTTP cache" pattern for a second caller,
+// `CallBoard.tsx`'s `useCallBoardCloses`; a third caller is consistent
+// with that precedent, not a new architectural risk). No date text
+// remains inside this section at all any more -- the zero-trade
+// fallback's own copy dropped its inline date reference too ("...cash
+// yesterday." rather than "...cash on {date}.") for the same reason.
+// The "had you known" statement is now this box's first line, and every
+// later element's own `animationDelay` shifted down by 200ms (the
+// eyebrow's old slot) to keep the staggered entrance's relative spacing
+// unchanged.
 
 import { useMemo, useState } from "react";
 
@@ -132,7 +147,6 @@ import {
 import { PortfolioChart } from "@/components/PortfolioChart";
 import { buttonClassName } from "@/components/TradeReplay";
 import { formatHeroCurrency, formatMultiplier, formatPercent } from "@/lib/format-currency";
-import { formatDateWithWeekday } from "@/lib/format-date";
 import type { Mode } from "@/lib/mode";
 import { deriveWholeRangeIntradaySeries, type PortfolioPoint } from "@/lib/portfolio-series";
 import { computeTradeReturn } from "@/lib/trade-math";
@@ -164,8 +178,6 @@ const CHART_SLOT_HEIGHT_CLASSNAME = "h-[24rem]";
 const SHOWCASE_CLASSNAME =
   "surface-card relative flex flex-col items-center justify-center gap-3 overflow-hidden rounded-xl border border-[var(--gridline)] bg-[var(--surface-1)] px-6 py-8 text-center";
 
-const EYEBROW_CLASSNAME =
-  "font-numeric text-xs font-semibold tracking-wide text-[var(--text-muted)] uppercase";
 const STATEMENT_CLASSNAME = "min-h-[2.6em] max-w-md text-sm text-[var(--text-secondary)]";
 
 /** `base` plus `animateClass` when `play` is true -- every entrance element's own resting (base) class already renders the settled, fully-visible final state, so this never needs a third "reduced motion" variant of its own; see globals.css's own comment on `daily-hero-fade-up`/`daily-hero-pop`/`daily-hero-chip` for why. */
@@ -188,8 +200,10 @@ function LoadingCard() {
 
 /**
  * The daily hero showcase: a one-time-animated box, about half-height by
- * default, holding the eyebrow date label, the "had you known" statement,
- * the $X -> $Y figures + multiplier badge, a slot holding either the
+ * default, holding the "had you known" statement (its own first line --
+ * the eyebrow date line that used to sit above it moved up into
+ * ResultsPage.tsx's own `<header>`, next to the `<h1>`, issue #187), the
+ * $X -> $Y figures + multiplier badge, a slot holding either the
  * "Watch it happen" button or the revealed chart (issue #162's mechanic,
  * unchanged) -- the box grows to fit the chart only once it's revealed --
  * and the ticker chips -- each folding in its own trade's signed return
@@ -233,7 +247,6 @@ export function DailyHero({ mode }: DailyHeroProps) {
 
   const tickers = dailyChallenge.trades.map((trade) => trade.ticker);
   const tradeCount = tickers.length;
-  const eyebrowDate = formatDateWithWeekday(dailyChallenge.date);
 
   if (tradeCount === 0) {
     return (
@@ -241,9 +254,8 @@ export function DailyHero({ mode }: DailyHeroProps) {
         aria-label="Yesterday's result"
         className={`${SHOWCASE_CLASSNAME} ${SHOWCASE_MIN_HEIGHT_CLASSNAME}`}
       >
-        <p className={EYEBROW_CLASSNAME}>Yesterday · {eyebrowDate}</p>
         <p className="text-sm text-[var(--text-secondary)]">
-          No trade would have beaten holding cash on {eyebrowDate}.
+          No trade would have beaten holding cash yesterday.
         </p>
       </section>
     );
@@ -258,21 +270,11 @@ export function DailyHero({ mode }: DailyHeroProps) {
     >
       <p
         className={entranceClassName(
-          EYEBROW_CLASSNAME,
-          "daily-hero-fade-up-animate",
-          playEntranceAnimation,
-        )}
-        style={{ animationDelay: "100ms" }}
-      >
-        Yesterday · {eyebrowDate}
-      </p>
-      <p
-        className={entranceClassName(
           STATEMENT_CLASSNAME,
           "daily-hero-fade-up-animate",
           playEntranceAnimation,
         )}
-        style={{ animationDelay: "300ms" }}
+        style={{ animationDelay: "100ms" }}
       >
         Had you known, you&apos;d have made{" "}
         <strong className="font-semibold text-[var(--text-primary)]">
@@ -286,7 +288,7 @@ export function DailyHero({ mode }: DailyHeroProps) {
           "daily-hero-pop-animate",
           playEntranceAnimation,
         )}
-        style={{ animationDelay: "650ms" }}
+        style={{ animationDelay: "450ms" }}
       >
         <span>{formatHeroCurrency(dailyChallenge.startingCapital)}</span>
         <span aria-hidden="true" className="text-[var(--text-muted)]">
@@ -319,7 +321,7 @@ export function DailyHero({ mode }: DailyHeroProps) {
               "daily-hero-pop-animate",
               playEntranceAnimation,
             )}
-            style={{ animationDelay: "950ms" }}
+            style={{ animationDelay: "750ms" }}
           >
             Watch it happen
           </button>
@@ -346,7 +348,7 @@ export function DailyHero({ mode }: DailyHeroProps) {
                   "daily-hero-chip-animate",
                   playEntranceAnimation,
                 )}
-                style={{ animationDelay: `${1150 + index * 200}ms` }}
+                style={{ animationDelay: `${950 + index * 200}ms` }}
               >
                 <span className="font-semibold text-[var(--text-primary)]">{trade.ticker}</span>{" "}
                 <span

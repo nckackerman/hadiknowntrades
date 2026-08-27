@@ -70,7 +70,6 @@ describe("DailyHero", () => {
     const placeholder = container.querySelector('[aria-hidden="true"].animate-pulse');
     expect(placeholder).not.toBeNull();
     expect(placeholder).toHaveClass("min-h-[20rem]");
-    expect(screen.queryByText(/Yesterday/)).toBeNull();
   });
 
   it("renders nothing once loaded if the range has no trading days (a fetch error, or nothing published yet)", async () => {
@@ -83,16 +82,19 @@ describe("DailyHero", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("shows the real date, statement, and figures for the most recent day, in the half-height default showcase box", async () => {
+  it("shows the statement and figures for the most recent day, in the half-height default showcase box, with no date text of its own (issue #187 -- the date moved to ResultsPage.tsx's own header)", async () => {
     stubResultsFetch({
       model: "intraday-daily",
       days: [day({ date: "2026-08-24" }), day({ date: "2026-08-25" })],
     });
     const { container } = render(<DailyHero mode="long" />);
 
-    // The eyebrow names the *most recent* day (2026-08-25, a Tuesday),
-    // not the first day in the array.
-    expect(await screen.findByText(/Yesterday · Tuesday, August 25, 2026/)).toBeInTheDocument();
+    // The statement names the *most recent* day's trade count (2026-08-25,
+    // not the first day in the array) without naming the date itself --
+    // the eyebrow date line that used to do that moved up into
+    // ResultsPage.tsx's own header (issue #187).
+    expect(await screen.findByText(/Had you known/)).toBeInTheDocument();
+    expect(screen.queryByText(/Yesterday/)).toBeNull();
 
     expect(screen.getByText("2 trades")).toBeInTheDocument();
     // A fresh, date-seeded starting capital (issue #174) ->
@@ -136,21 +138,24 @@ describe("DailyHero", () => {
     expect(container.querySelector(".h-\\[24rem\\]")).not.toBeNull();
   });
 
-  it('does not render a "Watch it happen" button or chart for a zero-trade day, in the same half-height default box', async () => {
+  it('does not render a "Watch it happen" button or chart for a zero-trade day, in the same half-height default box, with no date text (issue #187)', async () => {
     stubResultsFetch({ model: "intraday-daily", days: [day({ trades: [] })] });
     const { container } = render(<DailyHero mode="long" />);
 
-    const section = await screen.findByText(/No trade would have beaten holding cash on/);
+    const section = await screen.findByText(/No trade would have beaten holding cash/);
     expect(screen.queryByRole("button", { name: "Watch it happen" })).toBeNull();
     expect(container.querySelector("svg")).toBeNull();
     expect(section.closest("section")).toHaveClass("min-h-[20rem]");
+    // No date text remains inside the box -- the eyebrow's own inline
+    // date reference moved to ResultsPage.tsx's own header (issue #187).
+    expect(screen.queryByText(/2026/)).toBeNull();
   });
 
   it('no longer renders TradeNarrationList/"Yesterday\'s trades"/"See the trades ↓" anywhere (issue #175)', async () => {
     stubResultsFetch({ model: "intraday-daily", days: [day()] });
     render(<DailyHero mode="long" />);
 
-    await screen.findByText(/Yesterday · /);
+    await screen.findByText(/Had you known/);
     expect(screen.queryByRole("heading", { name: "Yesterday's trades" })).toBeNull();
     expect(screen.queryByRole("link", { name: "See the trades ↓" })).toBeNull();
     expect(screen.queryByRole("list")).toBeNull();
@@ -176,7 +181,7 @@ describe("DailyHero", () => {
     });
     render(<DailyHero mode="long" />);
 
-    await screen.findByText(/Yesterday · /);
+    await screen.findByText(/Had you known/);
 
     const gainReturn = 172.8 / 170.1 - 1;
     const lossReturn = 90 / 100 - 1;
@@ -199,9 +204,7 @@ describe("DailyHero", () => {
     stubResultsFetch({ model: "intraday-daily", days: [day({ trades: [] })] });
     render(<DailyHero mode="long" />);
 
-    expect(
-      await screen.findByText(/No trade would have beaten holding cash on/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/No trade would have beaten holding cash/)).toBeInTheDocument();
   });
 
   it("switches to the day's long+short trades under long-short mode (issue #13)", async () => {
@@ -219,17 +222,20 @@ describe("DailyHero", () => {
       stubResultsFetch({ model: "intraday-daily", days: [day()] });
       render(<DailyHero mode="long" />);
 
-      const eyebrow = await screen.findByText(/Yesterday · /);
-      expect(eyebrow).toHaveClass("daily-hero-fade-up-animate");
+      // The statement is this box's own first line since issue #187
+      // moved the old eyebrow date line out into ResultsPage.tsx's own
+      // header -- it inherits the eyebrow's former entrance timing.
+      const statement = await screen.findByText(/Had you known/);
+      expect(statement).toHaveClass("daily-hero-fade-up-animate");
       const watchButton = screen.getByRole("button", { name: "Watch it happen" });
       expect(watchButton).toHaveClass("daily-hero-pop-animate");
 
       // An unrelated state change within the same mounted instance (the
-      // click itself) doesn't remove or re-add the eyebrow's own
+      // click itself) doesn't remove or re-add the statement's own
       // already-settled animate class -- it's a plain, unconditional
       // string, never touched again once this instance mounted.
       await user.click(watchButton);
-      expect(eyebrow).toHaveClass("daily-hero-fade-up-animate");
+      expect(statement).toHaveClass("daily-hero-fade-up-animate");
     });
 
     it("skips the animation entirely under prefers-reduced-motion, rendering the settled state immediately", async () => {
@@ -237,11 +243,11 @@ describe("DailyHero", () => {
       stubResultsFetch({ model: "intraday-daily", days: [day()] });
       render(<DailyHero mode="long" />);
 
-      const eyebrow = await screen.findByText(/Yesterday · /);
+      const statement = await screen.findByText(/Had you known/);
       // Settled values (real text) are visible immediately regardless --
       // only the animate classes themselves are gated.
       await waitFor(() => {
-        expect(eyebrow).not.toHaveClass("daily-hero-fade-up-animate");
+        expect(statement).not.toHaveClass("daily-hero-fade-up-animate");
       });
       expect(screen.getByRole("button", { name: "Watch it happen" })).not.toHaveClass(
         "daily-hero-pop-animate",

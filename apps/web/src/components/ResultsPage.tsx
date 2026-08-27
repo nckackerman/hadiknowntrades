@@ -8,6 +8,8 @@ import { useResults } from "@/lib/use-results";
 import { useCustomResults } from "@/lib/use-custom-results";
 import { useCustomAnchors } from "@/lib/use-custom-anchors";
 import { useStartingCapital } from "@/lib/use-starting-capital";
+import { useDailyChallenge } from "@/lib/use-daily-challenge";
+import { formatDate } from "@/lib/format-date";
 import { parseAnchorDate, parseRange } from "@/lib/results-api";
 import { headlineFigureFor } from "@/lib/headline-figure";
 import { DEFAULT_MODE, parseMode, type Mode } from "@/lib/mode";
@@ -102,6 +104,18 @@ export function ResultsPage() {
   // tied to which window of data is being viewed.
   const [startingCapital, setStartingCapital] = useStartingCapital();
 
+  // The header's own date chip (issue #187) -- reads only `.dailyChallenge?.date`
+  // to show "YESTERDAY · AUG 27, 2026" next to the `<h1>`. `<header>` has
+  // no access to `DailyHero`'s own fetched data (that component fetches
+  // independently, by its own design -- see use-daily-challenge.ts's own
+  // doc comment), so this is a third independent caller of the same
+  // hook, resolving the same way this codebase already resolves the
+  // identical problem for CallBoard.tsx's `useCallBoardCloses()`
+  // (relying on the browser's own HTTP cache to make the second, and now
+  // third, call cheap). Degrades to rendering nothing while loading or
+  // on a fetch error -- see the header JSX below.
+  const { dailyChallenge: headerDailyChallenge } = useDailyChallenge(mode);
+
   // The one figure the active view headlines (issue #133) -- the window
   // model's HeroStat figure for 5Y/Max/a custom anchor, the whole-range
   // chained balance for the intraday-daily ranges. Computed here, once,
@@ -149,24 +163,29 @@ export function ResultsPage() {
 
   return (
     <div className="flex w-full max-w-3xl flex-col gap-8 px-6 py-16 sm:px-8">
-      {/* Micro-header (issue #165): one wordmark, one caption line -- no
+      {/* Micro-header (issue #165, condensed further by issue #187): one
+          wordmark plus a small date-chip pill next to it -- no
           RangeSelector/"More options" here any more, both demoted into
-          "Explore other windows" below. The caption folds in
-          OnboardingIntro's former one-sentence banner (issue #64) rather
-          than keeping that as a second, separate always-visible/
-          dismissible element above the header; OnboardingIntro.tsx and
-          its own storage module (lib/onboarding-storage.ts,
-          lib/use-onboarding-dismissed.ts) are deleted outright, not left
-          in place unused -- nothing else in the app referenced any of
-          the three beyond their own doc comments/tests, confirmed via a
-          repo-wide grep before deleting. */}
-      <header className="flex flex-col gap-2">
+          "Explore other windows" below. The issue #165 tagline paragraph
+          that used to sit under the `<h1>` (itself OnboardingIntro's
+          former one-sentence banner, issue #64, folded in rather than
+          kept as a second dismissible element) is gone -- replaced by
+          the short footer note at the very bottom of the page, pointing
+          at "Explore other windows" for the full methodology, so a
+          first-time visitor still gets *some* pre-scroll framing rather
+          than zero (see this issue's own Background section). The date
+          chip reads "Yesterday · Aug 27, 2026" (styled uppercase via
+          CSS, matching the design reference's "YESTERDAY · AUG 27,
+          2026") -- headerDailyChallenge is `null` while loading or on a
+          fetch error, so the chip simply doesn't render then rather than
+          showing a broken/empty pill. */}
+      <header className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-2">
         <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Had I Known Trades</h1>
-        <p className="text-sm text-[var(--text-secondary)]">
-          This is a hindsight toy: starting from $20, it finds the best possible outcome from at
-          most 3 trades across the whole S&amp;P 500, using only closed daily prices -- not a
-          predictor of what happens next.
-        </p>
+        {headerDailyChallenge !== null && (
+          <span className="font-numeric shrink-0 rounded-full border border-[var(--gridline)] px-3 py-1 text-xs font-semibold tracking-wide whitespace-nowrap text-[var(--text-muted)] uppercase">
+            Yesterday · {formatDate(headerDailyChallenge.date)}
+          </span>
+        )}
       </header>
 
       {/* The daily hero (issue #161): the previous market day's own
@@ -322,6 +341,17 @@ export function ResultsPage() {
           />
         </div>
       </details>
+
+      {/* Footer note (issue #187): the page's own last element, replacing
+          the deleted tagline paragraph under the `<h1>` -- a deliberate,
+          considered replacement (not a silent cut) so a first-time
+          visitor still gets some pre-interaction framing, pointing at
+          "Explore other windows" above for the full methodology/
+          disclaimer rather than restating it here. */}
+      <footer className="max-w-md self-center text-center text-xs text-[var(--text-muted)]">
+        Hindsight only, from at most 3 trades across the S&amp;P 500 using closed daily prices --
+        not a predictor. Full methodology inside &quot;Explore other windows.&quot;
+      </footer>
     </div>
   );
 }
