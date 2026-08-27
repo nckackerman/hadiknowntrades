@@ -567,7 +567,13 @@ describe("ResultsPage", () => {
 
     /** The `<section>` a top-level mechanic heading belongs to. */
     function sectionFor(name: string): HTMLElement {
-      return screen.getByRole("heading", { name }).closest("section")!;
+      // `level: 2` (issue #195): The Call Board's own expanded panel now
+      // also carries a *visible* level-3 heading with this exact same
+      // name (a connector device, echoing the sr-only landmark heading
+      // this query is actually after) -- disambiguating by level keeps
+      // this helper correct whether or not that board happens to be
+      // expanded when it's called.
+      return screen.getByRole("heading", { name, level: 2 }).closest("section")!;
     }
 
     /**
