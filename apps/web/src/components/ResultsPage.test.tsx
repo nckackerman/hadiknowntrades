@@ -438,31 +438,92 @@ describe("ResultsPage", () => {
     });
   });
 
-  describe("Beat the Bench is a section, not a branch of the result panel (issues #122/#131)", () => {
+  describe("Beat the Bench is a section, not a branch of the result panel (issues #122/#131/#163)", () => {
     // Same reasoning as the Call Board block directly above, for the
     // other mechanic mounted at this level: /api/results never resolves
     // in this file, and the daily ritual still has to be there.
+    //
+    // It renders collapsed by default since issue #163 -- a compact
+    // "Can you do better?" card, not the full "Beat the Bench" heading
+    // and mode chooser, which only exist once that card is clicked (see
+    // the "Beat the Bench: collapsed by default" describe block below).
     it("renders even while the hindsight result is still loading", () => {
       render(<ResultsPage />);
 
-      expect(screen.getByRole("heading", { name: "Beat the Bench" })).toBeInTheDocument();
-      expect(screen.getByText(/already in the market/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /can you do better\?/i })).toBeInTheDocument();
+      expect(
+        screen.getByText("Play today's real session against the market, live."),
+      ).toBeInTheDocument();
     });
 
     it("mounts exactly once, as a direct child of the page column, ahead of The Call Board", () => {
       const { container } = render(<ResultsPage />);
       const column = container.firstElementChild!;
-      const headings = screen.getAllByRole("heading", { name: "Beat the Bench" });
+      const cards = screen.getAllByRole("button", { name: /can you do better\?/i });
 
-      expect(headings).toHaveLength(1);
-      const section = headings[0]!.closest("section")!;
+      expect(cards).toHaveLength(1);
+      const section = cards[0]!.closest("section")!;
       expect(section.parentElement).toBe(column);
-      // Issue #122 fixes this order: hero result, then Beat the Bench,
-      // then The Call Board.
+      // Issue #163 moved this section ahead of the header/range explorer/
+      // ResultsPanel entirely (directly after DailyHero) -- still ahead
+      // of The Call Board either way.
       const board = screen.getByRole("heading", { name: "The Call Board" }).closest("section")!;
       expect(
         section.compareDocumentPosition(board) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
+    });
+  });
+
+  describe("Beat the Bench: collapsed by default, expands in place (issue #163)", () => {
+    it("expands to the full mode-chooser experience on click, with no page navigation", async () => {
+      render(<ResultsPage />);
+
+      fireEvent.click(screen.getByRole("button", { name: /can you do better\?/i }));
+
+      expect(await screen.findByRole("heading", { name: "Beat the Bench" })).toBeInTheDocument();
+      expect(screen.getByText(/already in the market/)).toBeInTheDocument();
+      // The compact card itself is gone, not left behind alongside the
+      // expanded game.
+      expect(
+        screen.queryByRole("button", { name: /can you do better\?/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("shows a played-today status line on the compact card, reusing the stored record", async () => {
+      window.localStorage.clear();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((input: RequestInfo | URL) => {
+          const url = typeof input === "string" ? input : input.toString();
+          if (url.startsWith("/api/custom-anchors")) {
+            return Promise.resolve(
+              new Response(
+                JSON.stringify({ schemaVersion: RESULTS_SCHEMA_VERSION, anchors: TEST_ANCHORS }),
+                { status: 200 },
+              ),
+            );
+          }
+          const body = url.startsWith("/api/beat-the-bench") ? SESSION : WINDOW_RESULT;
+          return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+        }),
+      );
+      const first = render(<ResultsPage />);
+
+      expect(await screen.findByText("Not played yet today")).toBeInTheDocument();
+
+      // Play the session to settlement through the real UI, then unmount
+      // and mount a fresh instance of the page -- the same "a fresh visit
+      // reads the stored record back" contract BeatTheBench.test.tsx
+      // already covers for the mode-chooser's own recap paragraph.
+      fireEvent.click(screen.getByRole("button", { name: /can you do better\?/i }));
+      fireEvent.click(await screen.findByRole("button", { name: /Play today's/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Step forward one bar" }));
+      await screen.findByRole("button", { name: "Play it again" });
+      first.unmount();
+
+      render(<ResultsPage />);
+      expect(await screen.findByText("Level with the bench today")).toBeInTheDocument();
+      window.localStorage.clear();
     });
   });
 
@@ -495,23 +556,41 @@ describe("ResultsPage", () => {
       return screen.getByRole("heading", { name }).closest("section")!;
     }
 
+    /**
+     * Beat the Bench's own `<section>` -- unlike `sectionFor`, this has to
+     * work before its "Beat the Bench" heading even exists: the section
+     * renders collapsed by default (issue #163), as a compact "Can you do
+     * better?" card with no heading role of its own, and only gains the
+     * real "Beat the Bench" heading once that card is clicked and the
+     * whole subtree remounts as the full mode-chooser experience.
+     */
+    function benchSection(): HTMLElement {
+      const collapsed = screen.queryByRole("button", { name: /can you do better\?/i });
+      if (collapsed !== null) return collapsed.closest("section")!;
+      return screen.getByRole("heading", { name: "Beat the Bench" }).closest("section")!;
+    }
+
     function follows(first: Element, second: Element): boolean {
       return Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
     }
 
-    it("renders hero reveal, then Beat the Bench, then The Call Board, then the ritual", async () => {
+    it("renders Beat the Bench, then the hero reveal, then The Call Board, then the ritual", async () => {
       search = "range=5Y";
       render(<ResultsPage />);
 
       // The window model's hero reveal -- HeroStat's own "Starting from"
       // row, the first thing ResultsPanel renders on success.
       const hero = await screen.findByText("Starting from");
-      const bench = sectionFor("Beat the Bench");
+      const bench = benchSection();
       const board = sectionFor("The Call Board");
       const ritual = sectionFor("Today, so far");
 
-      expect(follows(hero, bench)).toBe(true);
-      expect(follows(bench, board)).toBe(true);
+      // Issue #163 moved Beat the Bench ahead of the header/range
+      // explorer/ResultsPanel entirely (directly after DailyHero), so it
+      // now precedes the hero reveal rather than following it -- the
+      // rest of the order (hero -> Call Board -> ritual) is unchanged.
+      expect(follows(bench, hero)).toBe(true);
+      expect(follows(hero, board)).toBe(true);
       expect(follows(board, ritual)).toBe(true);
     });
 
@@ -524,15 +603,17 @@ describe("ResultsPage", () => {
       // Before anything is played: one endowed step, nothing else.
       await waitFor(() => expect(within(ritual).getByText("1 of 3 done")).toBeInTheDocument());
 
-      // Play Beat the Bench for real, through its own UI, to a real
-      // settlement -- the two-bar session settles on one Step.
-      const benchSection = sectionFor("Beat the Bench");
-      fireEvent.click(await within(benchSection).findByRole("button", { name: /Play today's/ }));
-      fireEvent.click(within(benchSection).getByRole("button", { name: "Step forward one bar" }));
+      // Expand Beat the Bench, then play it for real through its own UI,
+      // to a real settlement -- the two-bar session settles on one Step.
+      fireEvent.click(screen.getByRole("button", { name: /can you do better\?/i }));
+      await screen.findByRole("heading", { name: "Beat the Bench" });
+      const bench = benchSection();
+      fireEvent.click(await within(bench).findByRole("button", { name: /Play today's/ }));
+      fireEvent.click(within(bench).getByRole("button", { name: "Step forward one bar" }));
       // "Play it again" only exists on the settlement card, so this is
       // "the session really finished", not "some text mentioning it".
       expect(
-        await within(benchSection).findByRole("button", { name: "Play it again" }),
+        await within(bench).findByRole("button", { name: "Play it again" }),
       ).toBeInTheDocument();
 
       // ...and make a real Call Board pick, through its own UI.
@@ -564,9 +645,11 @@ describe("ResultsPage", () => {
       render(<ResultsPage />);
       await screen.findByText("Starting from");
 
-      const benchSection = sectionFor("Beat the Bench");
-      fireEvent.click(await within(benchSection).findByRole("button", { name: /Play today's/ }));
-      fireEvent.click(within(benchSection).getByRole("button", { name: "Step forward one bar" }));
+      fireEvent.click(screen.getByRole("button", { name: /can you do better\?/i }));
+      await screen.findByRole("heading", { name: "Beat the Bench" });
+      const bench = benchSection();
+      fireEvent.click(await within(bench).findByRole("button", { name: /Play today's/ }));
+      fireEvent.click(within(bench).getByRole("button", { name: "Step forward one bar" }));
 
       const ritual = sectionFor("Today, so far");
       const recap = await within(ritual).findByTestId("daily-recap-text");

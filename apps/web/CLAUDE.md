@@ -7379,3 +7379,121 @@ build`/`next start` (not `next dev` -- see issue #123's own note above
   devDependency and the `apt-get download`/`dpkg-deb -x`-extracted
   shared libraries were both reverted before committing, per this file's
   own established convention.
+
+## Beat the Bench collapses to a "Can you do better?" CTA, and moves ahead of the daily hero (issue #163)
+
+Second build issue in the same UI-simplification pass as #161. Two
+independent changes, both to presentation/mounting only -- every file
+issue #163's own Out of scope names (`lib/beat-the-bench.ts`,
+`lib/beat-the-bench-storage.ts`, `lib/beat-the-bench-moves.ts`,
+`lib/beat-the-bench-percentile.ts`, `lib/use-todays-close-session.ts`,
+`lib/use-mystery-session.ts`, `BeatTheBenchChart.tsx`, the mystery-day
+API routes) is untouched; confirmed via `git diff --stat` before opening
+the PR.
+
+- **`BeatTheBench.tsx` gained one new top-level boolean, `expanded`
+  (`useState(false)`).** While `false` it renders `CompactCard` (a new
+  private component) instead of the mode chooser/game -- an icon (🎯),
+  the mockup's exact copy ("Can you do better?" / "Play today's real
+  session against the market, live."), and a status line built from
+  `beat-the-bench-storage.ts`'s existing `readPlayedSession` read (the
+  same read `ModeChooser`'s own recap paragraph already made -- no new
+  storage mechanism). Clicking it flips `expanded` to `true`, which
+  unmounts `CompactCard` and mounts the exact same
+  chooser/playback/settlement tree this file always rendered, completely
+  unchanged in substance. **One-way, not a native `<details>`
+  disclosure** (unlike this app's other expand-in-place controls, "More
+  options" / "View chart data as a table"): the content behind the click
+  is a stateful game (fetches, playback intervals), and nothing in this
+  issue's own scope asked for a way back to collapsed.
+- **`playableTodaysClose(state)` is a new hoisted helper** -- the
+  `todaysCloseState !== null && status === "success" &&
+isPlayableSession(...)` check `ModeChooser`'s own `todaysClose` prop and
+  the `mode === "todays-close"` branch's local `session` variable each
+  independently re-derived before this issue. Both call sites, plus the
+  new `CompactCard`'s own need for the session's date (to key its status
+  read), now share one derivation -- a real, if small, duplication this
+  restructuring removed rather than added a third copy of.
+- **`useTodaysCloseSession()` is still called unconditionally at the top
+  of `BeatTheBench()`, regardless of `expanded`** -- deliberately
+  untouched. This preserves the "fetched on mount, always" behavior this
+  file's own Judgment-calls section already documents and accepts (the
+  chooser card names the real session date, which is in the payload);
+  collapsing the card to a teaser must not change _when_ that fetch
+  fires, only how much of the game renders around it. The Mystery Day
+  zero-request-before-settlement guarantee (issue #132) is completely
+  orthogonal to this new `expanded` flag -- it depends only on `settled`
+  (see `useMysteryReveal(settled ? session.sessionId : null)` in
+  `SessionGame`), which is unreachable until a mode is chosen and played
+  through regardless of whether the outer card used to auto-render or
+  not. Verified live, not just by inspection (see below).
+- **`compactStatusLine(record)`** mirrors `gapPhrase`'s own thresholds
+  (`beat-the-bench.ts`) rather than calling it, the same "same numbers,
+  different sentence shape" precedent `lib/daily-ritual.ts`'s
+  `benchGapClause` already established for this identical figure:
+  `gapPhrase` writes a full settlement-card sentence ("0.13% behind the
+  bench."), and this needed a short standalone line for a card that's
+  collapsed by default ("0.13% behind the bench today", "Level with the
+  bench today", or "Not played yet today").
+- **`ResultsPage.tsx`: `<BeatTheBench />` moved from a direct sibling of
+  `<ResultsPanel>` (after it) to a direct sibling of `<DailyHero>`
+  (immediately after it, before the `<header>`/`RangeSelector`/
+  `ResultsPanel` entirely).** Still per issue #122's standing "section,
+  not a route or a branch inside `ResultsPanel`" decision -- only
+  _where_ it renders changed, not who owns it, and it still takes no
+  `PrecomputedResult`/`range`/`mode`/`selectedDay` props. `<CallBoard />`
+  was deliberately left in its previous position (still a sibling of
+  `<ResultsPanel>`) -- issue #164, built in parallel, is what
+  repositions that one; this issue's own scope is Beat the Bench only.
+- **`ResultsPage.test.tsx`/`BeatTheBench.test.tsx` needed real test
+  updates, not just new assertions**, per this issue's own explicit
+  callout: every existing test that rendered `<BeatTheBench />` (or
+  `<ResultsPage />` and then interacted with the game) assumed the
+  chooser/game was already on screen. Both files gained an
+  `expandCompactCard()`/`benchSection()`-style helper that clicks
+  through the compact card first, and one existing `ResultsPage.test.tsx`
+  test ("renders hero reveal, then Beat the Bench, then The Call Board,
+  then the ritual") needed its own _ordering_ assertion corrected, not
+  just a click added -- issue #163 moved Beat the Bench ahead of the
+  window model's own hero reveal entirely, so it now _precedes_ that
+  reveal rather than following it (the rest of the order -- hero, Call
+  Board, ritual -- is unchanged).
+- **Live-verified against a real local pipeline run**
+  (`local-run.ts`, the default 20-ticker sample, real Yahoo network
+  calls, no S3 write -- includes `results/beat-the-bench/` and
+  `results/mystery-index.json`) plus `next build`/`next start` (not
+  `next dev` -- see issue #123's own note on hydration failing here) and
+  the documented no-root headless-Chromium workaround. Confirmed, with a
+  real recorded network log:
+  - The compact card renders by default (icon, exact copy, "Not played
+    yet today"), with **zero** `"Beat the Bench"` heading and zero
+    "already in the market" text anywhere in the DOM until clicked --
+    the full game genuinely isn't mounted, not just visually hidden.
+  - Clicking it expands in place to the identical chooser (unchanged
+    real session data: "SPY, Aug 26, 2026, 79 bars, about 23 seconds at
+    normal speed"), positioned exactly where the compact card was --
+    immediately after the daily hero's own "Yesterday's trades"
+    narration, before the "Had I Known Trades" `<h1>`/`RangeSelector`.
+  - A full real Today's Close session, stepped through to settlement
+    ("Along for the ride", both sides at $20.01/+0.05%, matching the
+    real session's own zero-trade tie), produced **zero** requests
+    containing `"mystery"` and **zero** console/`pageerror` events.
+  - **Mystery Day's secrecy guarantee holds unchanged**: after
+    expanding and picking "Play a mystery day," a scan of the Beat the
+    Bench section's own `innerHTML` (not the whole page -- the rest of
+    the page legitimately shows plenty of unrelated dates, from
+    `DailyHero`/`DayOverview`/etc.) found no date-shaped substring
+    before settlement, and the recorded network log showed **0**
+    requests to `/api/beat-the-bench/mystery/reveal` before settlement
+    and **exactly 1** immediately after (`?id=s12`, matching whichever
+    slot the server happened to pick).
+  - Reloading the page after a played session showed the compact
+    card's own status line correctly reusing the stored record ("Level
+    with the bench today"), confirming `compactStatusLine`'s read
+    survives a fresh mount the same way `ModeChooser`'s own recap
+    paragraph already does.
+  - 390px mobile: no horizontal overflow (`scrollWidth === clientWidth
+=== 390`).
+  - The temporary `playwright` devDependency and every verification
+    script were reverted before committing, per this file's own
+    established convention.
