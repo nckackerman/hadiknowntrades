@@ -32,8 +32,54 @@
   --baseline: #383835;
   --series-1: #3987e5;
   --series-1-wash: rgb(57 135 229 / 12%);
-  --status-critical: #e66767;
-  --status-good: #0ca30c;
+  /*
+   * Gain/loss pair (rebalanced by issue #123). These two are read as a
+   * pair everywhere they appear -- TradeRow's return badge, TradeList's
+   * narrated percentages, HeroStat's multiplier badge and reveal glow
+   * (via heroMultiplierColor, also consumed by TradeReplay's playback
+   * overlay), PortfolioChart's line/area/markers -- so what matters is
+   * not just that each one is legible on its own, but that neither one
+   * shouts louder than the other at a glance.
+   *
+   * THE DEFECT THIS FIXES (measured, not eyeballed -- and note that it
+   * is NOT a WCAG failure; an earlier draft of issue #123 claimed one
+   * and was wrong). The previous pair was
+   * --status-good #0ca30c = hsl(120 86% 34.3%) and
+   * --status-critical #e66767 = hsl(0 72% 65.3%): 31.0 HSL-lightness
+   * points apart, and 0.207 vs 0.159 in OKLCH chroma. A dark, maximally
+   * saturated forest green next to a light, moderate salmon meant a
+   * losing figure read as the louder of the two even though both
+   * already cleared 4.5:1 on every surface token (old good: 5.90 /
+   * 5.19 / 4.52 against --background / --surface-1 / --surface-2; old
+   * critical: 6.13 / 5.39 / 4.69).
+   *
+   * THE REBALANCE: lift the green out of its dark/over-saturated corner
+   * and settle the red a touch, so the two land close in lightness AND
+   * in chroma:
+   *   --status-good     #4ab86f = hsl(140 44% 50.6%), oklch(70.1% 0.147 152)
+   *   --status-critical #e46b64 = hsl(3 70% 64.3%),  oklch(67.1% 0.152 25)
+   * HSL-lightness gap 13.7 points (was 31.0); OKLCH-lightness gap 2.9
+   * points (was 4.8); chroma gap 0.005 (was 0.048).
+   *
+   * CONTRAST, measured (WCAG 2.1 relative luminance), against
+   * --background / --surface-1 / --surface-2 -- the floor is 4.5:1 on
+   * all three and neither token may regress below what it had:
+   *   --status-good      7.90 / 6.95 / 6.05  (was 5.90 / 5.19 / 4.52)
+   *   --status-critical  6.21 / 5.46 / 4.75  (was 6.13 / 5.39 / 4.69)
+   * Both improved on every surface; --surface-2 stays the binding one.
+   *
+   * Both are foreground/glyph colors. Neither has ever been used as a
+   * fill behind text, and white on either fails at these values -- if a
+   * future issue wants a filled gain/loss chip, use var(--background)
+   * for its text, the same rule --accent-reward's block below states.
+   *
+   * app/global-error.tsx hand-copies --status-critical's literal value
+   * (it cannot import this file -- see its own doc comment); it was
+   * updated alongside this change and has to be again if this value
+   * ever moves.
+   */
+  --status-critical: #e46b64;
+  --status-good: #4ab86f;
 
   /*
    * Reward accent (issue #121, prerequisite for the "Hindsight Wrapped"
@@ -92,9 +138,10 @@
    * background behind a reward-state row/cell), same 12% alpha, so five
    * agents do not each pick a different alpha for the same effect.
    *
-   * Note for issue #123, which rebalances --status-good/--status-critical
-   * toward matching HSL lightness: --accent-reward sits at hsl(36 79% 57%),
-   * between the two. It never encodes gain/loss, so overlap in lightness is
+   * Note on the rebalanced --status-good/--status-critical pair (issue
+   * #123, now shipped -- see their own block above): --accent-reward sits
+   * at hsl(36 79% 57.5%), between the two, and closer to both than they
+   * used to be. It never encodes gain/loss, so overlapping lightness is
    * fine, but do not place a gold element and a status-colored element in
    * the same legend/scale where hue is the only thing telling them apart.
    *
