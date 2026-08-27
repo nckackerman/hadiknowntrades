@@ -6101,8 +6101,10 @@ left-1/2 -translate-x-1/2`, with `pb-3` reserving the room) keeps every
   `--series-1` directly -- the same blue, and exactly the consumer #121's
   own decision block names. The other five active-control sites
   (`ModeToggle`, `CustomRangeSelector`, `DayOverview`, `WholeRangeBalance`,
-  `app/error.tsx`) still say `--series-1`; migrating them is a separate,
-  purely mechanical pass nobody has done yet.
+  `app/error.tsx`) still said `--series-1` after this issue; **issue #135's
+  cross-feature QA pass finished that migration**, so all six now genuinely
+  say `--accent-selection`. Same pixels (it is an alias) -- see this file's
+  own "Final cross-feature design QA pass" section at the end.
 - **Live verification gotcha, cost real time: in this sandbox a headless
   Chromium cannot hydrate a `next dev` page.** Every `/_next/static/chunks/
 *.js` request came back **403** to the browser while the exact same URL
@@ -6887,3 +6889,145 @@ now-stale "Copied" stamp. A context whose `clipboard.writeText` rejects
 with `NotAllowedError` showed the manual-select fallback instead. At 390px
 the copy button measured 112x44 with `scrollWidth === clientWidth === 390`.
 Zero console or page errors across all four runs.
+
+## Final cross-feature design QA pass (issue #135)
+
+The last issue of the "Hindsight Wrapped" build-out (#121-#134, plus
+#147): does the whole page read as one thing, rather than five features
+that each shipped a clean screenshot of themselves? Verified against a
+real `LOCAL_RESULTS_DIR` pipeline run with **every mechanic genuinely
+played**, not a first-visit shell -- whole-range guess revealed, a real
+Beat the Bench Today's Close session played to settlement (two real
+moves, a real win), all three Call Board slots picked plus 12 seeded
+picks resolved against real SPY closes into a real history strip, and
+the Daily Ritual's rail at 3 of 3 with the recap unlocked.
+
+**`next dev` still cannot hydrate in this sandbox** (issue #123's note)
+-- `next build` + `next start`. And the same note's second half bit
+again, so it is worth restating as a hard rule: **rebuilding while an
+old `next start` still holds the port silently serves the old build's
+asset manifest**, chunks 404, the page never hydrates, and every
+Playwright locator times out on content that "should obviously be
+there." `pkill -f next-server` and confirm the port is actually free
+before restarting, rather than debugging the selector.
+
+### What was measured, and what was clean
+
+At 375px and 1280px, on the intraday-daily model (1W) and the window
+model (5Y), full-page:
+
+- **No horizontal overflow at any width**:
+  `document.documentElement.scrollWidth === clientWidth` exactly (375, 1280) on the _full_ page, not one component. The only element wider
+  than the viewport at 375px is `ChartDataTable`'s own
+  `min-w-[24rem]` table, which sits inside its own `overflow-x-auto`
+  container and scrolls itself -- correct, not a finding.
+- **No layout collisions.** Every gap between `ResultsPage`'s top-level
+  children measured **exactly 32px** (`gap-8`) at both widths and in
+  both models -- results panel -> Beat the Bench -> Call Board -> the
+  ritual rail. Nothing overlaps and no margin collapses.
+- **No post-paint layout shift**: sampling every top-level child's
+  offset every 100ms for 2s after load returned exactly **one** distinct
+  offset set at both widths. (#147's reserved-box work holds.)
+- **Zero console errors, warnings, and `pageerror`s** across every run.
+
+### Accent-token consistency: gold was fine, blue was not, and one doc was lying
+
+- **Gold (`--accent-reward`, `#e8a33d`) is genuinely one token, not four
+  lookalikes.** Every gold surface across `CallBoard` (exact-match
+  history cells, their `--accent-reward-wash` background, the streak and
+  best-streak figures), `BeatTheBench` (the win headline) and
+  `DailyRitual` (completed rail steps, the "Copied" stamp) reads back
+  `rgb(232, 163, 61)` live off the DOM. No hardcoded hex gold anywhere
+  in those three.
+- **The one real exception: `CelebrationBurst`'s hardcoded
+  `#f5b301`** -- a second, genuinely different gold, confirmed live on
+  screen (`rgb(245, 179, 1)`) at the same moment as the Call Board's
+  `rgb(232, 163, 61)`. Its palette also hardcodes `#3987e5`, a literal
+  duplicate of `--series-1`. **This is deferred, not fixed** -- issue
+  #125 considered recoloring the confetti and explicitly left it to its
+  own diff, and a QA pass is not where a decorative palette gets
+  redesigned. What _was_ fixed: `globals.css`'s `--accent-reward` block
+  had been listing "CelebrationBurst (#125)" as one of its consumers
+  since #121, which was never true. A future agent reading that token's
+  own decision record would have concluded the confetti already used it.
+  The list now says the opposite, explicitly. Filed as backlog for the
+  actual recolor.
+- **Blue: `--accent-selection` is now used by every active control, for
+  real.** #123 migrated `RangeSelector` and recorded that the other five
+  sites "still say `--series-1`; migrating them is a separate, purely
+  mechanical pass nobody has done yet." That pass is this one:
+  `ModeToggle`, `CustomRangeSelector`'s selected day, `DayOverview`'s
+  selected row, `WholeRangeBalance`'s "Reveal the answer" button and
+  `app/error.tsx`'s "Try again" button now all say
+  `--accent-selection`. Zero visual change by construction (the token is
+  an alias) and **verified live rather than assumed**: all four
+  reachable sites still paint `rgb(57, 135, 229)`, and `DayOverview`'s
+  `/15` opacity modifier -- the one with any real risk, since it feeds an
+  arbitrary-value `var()` through Tailwind's `color-mix` -- still
+  resolves to `oklab(0.622046 -0.0415549 -0.155741 / 0.15)`.
+- **`--series-1` was deliberately left alone in two places**, because
+  neither is an active control: `BeatTheBenchChart`'s price line (a real
+  data series, exactly the name's stated job), and the whole-range
+  headline figure in `WholeRangeBalance`/`WholeRangeReplay` (a value
+  figure, which the token block names under neither job -- don't
+  "finish the migration" by changing it without deciding what it means).
+- **`font-display` on section headings**: `CallBoard` and `DailyRitual`
+  had it, `BeatTheBench` did not -- despite that same file using it on
+  its own settlement headline. Same pixels today (`--font-display` is
+  Geist Sans, which the body already inherits), so this is a
+  consistency fix that only starts mattering if `--font-display` is ever
+  pointed at a real display face. Fixed.
+
+### Three findings left for a human, deliberately not fixed here
+
+1. **The ~1100px gap #133 flagged is real, and now measured.** On 5Y at
+   1280px the hero block starts at y=344 and "Beat the Bench" at
+   y=1484 -- **1140px**, matching #133's own estimate. On 1W it is
+   worse, because the intraday model is taller: **1744px** at 1280px and
+   **1908px** at 375px. It is **not a visual defect** -- nothing
+   collides, and the page reads as an orderly sequence of cards -- but
+   it is a real product problem for a feature whose whole framing is a
+   single-scroll "daily ritual". #133 already worked out both why the
+   obvious fix is wrong (#122's `afterHero` slot sits behind
+   `ResultsPanel`'s fetch gate, so a range-pill click mid-session would
+   unmount an in-progress Beat the Bench game) and what the right shape
+   would be (split `ResultsPanel`'s return into `[hero, slot, rest]` at
+   one stable fragment position). Filed as backlog with these numbers,
+   not attempted here.
+2. **"You guessed $X." is orphaned below the worst-case stat under
+   640px.** `WholeRangeBalance`'s revealed branch is
+   `flex flex-col gap-4 sm:flex-row`, holding the headline and
+   `WorstCaseStat`, with the "You guessed" line as a _following
+   sibling_. At `sm` and up that reads correctly (two columns, the
+   guessed line under the left one). Below `sm` it stacks headline ->
+   worst case -> "You guessed", so the guess appears to belong to the
+   worst-case figure it now sits directly under. **The naive fix is a
+   trap**: moving that line into the left column puts it inside the
+   `relative`/`invisible` pair that `revealSlot`'s `absolute inset-0`
+   overlay sizes itself against -- exactly the overlay-height parity
+   that broke twice in #107 and that #147 had to re-establish. Needs a
+   considered layout change; filed as backlog.
+3. **Hero-row wrap artifacts, inherent to #147's reserved box.** On 5Y
+   at 1280px the row settles as `$20.00 →` / `$1.1K` with roughly 87px
+   of dead space between `$1.1K` and its `(57x)` badge -- the badge is
+   sitting past the width probe reserved for the widest string the tween
+   passes through. #147 documents the badge wrapping as an accepted
+   trade-off; the _visible gap_ is the same trade-off seen from the
+   other side, and shrinking the box once the tween settles would
+   reintroduce precisely the end-of-reveal shift #147 exists to remove.
+   Related: at 375px the per-day hero breaks as `$20.00 →` / `$20.97
+(1x)`, leaving the arrow dangling at the end of the first line.
+   Reported, not touched -- any fix here is a hero-layout redesign, not
+   a QA tweak.
+
+### One observation worth knowing, not a defect
+
+#147 put the hero value rows on Geist Mono and deliberately left
+"static figures elsewhere (`WorstCaseStat`, `BenchmarkStat`, the trade
+narration) untouched". The visible consequence is that
+`WorstCaseStat`'s figure sits immediately beside (1280px) or directly
+below (375px) a mono hero figure in the same card, in proportional
+Geist Sans. It reads as deliberate de-emphasis rather than a mistake --
+which is what #31 wanted from that stat -- so it was left alone. Worth
+knowing before someone "fixes" it in one direction without checking the
+other.
