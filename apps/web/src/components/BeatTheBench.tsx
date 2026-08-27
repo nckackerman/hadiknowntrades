@@ -249,6 +249,15 @@ function BeatTheBenchFrame({ headingId, children }: { headingId: string; childre
   return (
     <section
       aria-labelledby={headingId}
+      // Only ever rendered once BeatTheBench's own `expanded` flag is
+      // true (issue #163) -- this marker attribute exists purely so the
+      // 2-up grid wrapping both game cards (issue #178, ResultsPage.tsx)
+      // can detect "this tile is showing its full real game, not the
+      // compact CTA card" via a plain CSS `:has()` selector, without
+      // lifting `expanded` state up into the parent. CallBoard needs no
+      // equivalent marker -- its own expanded state is already a native
+      // `<details open>`, directly selectable on its own.
+      data-bench-expanded="true"
       className="surface-card flex flex-col gap-4 rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-4"
     >
       <div className="flex flex-col gap-2">

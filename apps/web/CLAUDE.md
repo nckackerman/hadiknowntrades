@@ -8324,3 +8324,269 @@ direction)` directly, per this issue's own Scope item 3** -- not routed
   devDependency was reverted before committing, per this file's own
   established convention; confirmed via `git status`/`git diff --stat`
   on `package.json`/`pnpm-lock.yaml` showing no trace afterward.
+
+## Gamified hero: the whole pass, end to end (issues #174-178)
+
+The closing issue of the "Gamified hero + NYT-Games-style tiles" milestone
+(design references at `docs/design/gamified-hero-2026-08/`, itself
+building directly on the "UI simplification" milestone's daily hero and
+CTA cards -- see that folder's own README). Its own job was two things:
+lay `<BeatTheBench />` and `<CallBoard />` out as a real 2-column grid
+below the showcase, and confirm the four issues before it (#174-177)
+actually add up to one coherent page, played through together against
+real data -- not re-discovering bugs those issues' own live-verification
+passes had already caught individually (each of #174/#175/#176/#177
+already carried its own real-pipeline live-verification pass before this
+issue ever started).
+
+### The busyness/emotional-flatness problem this milestone solved
+
+Before #174, the daily hero was a flat, unanimated card: a fixed $20
+starting figure every single day, plain "Yesterday's trades" prose below
+it, and both game CTAs were subdued, bordered `surface-card` boxes
+(issue #163/#164's own restyle) -- functionally correct but visually
+inert next to the two real "games" the page was built around. Four
+issues fixed this in sequence, each swapped in cleanly with zero changes
+to the ones before it:
+
+- **#174** made the daily hero's starting capital a seeded-per-day
+  random value in `[1, 10000)` instead of a flat $20 -- the same trade
+  sequence, a genuinely different-looking headline figure every day, so
+  the page has something new to notice even on a day with an unremarkable
+  trade.
+- **#175** restructured the daily hero into a fixed-height (`h-[40rem]`)
+  "showcase" box with a one-time staggered entrance animation and
+  folded the old "Yesterday's trades" prose section into compact ticker
+  chips (`{TICKER} {sign}{percent}%`) inside that same box -- a
+  cinematic reveal instead of a static readout.
+- **#176/#177** restyled both CTA cards from subdued bordered boxes into
+  bold, solid-gradient-fill NYT-Games-style tiles (amber for Beat the
+  Bench, blue for The Call Board) with a large icon, matching the design
+  mockup's own `.game-tile` treatment.
+- **#178 (this issue)** is the one piece none of the four before it
+  built: laying those two now-bold tiles out as an actual 2-column grid
+  (the mockup's own `.game-row`) instead of two full-width stacked
+  siblings -- see "The 2-up grid mechanism" below.
+
+Net effect, most visible in the before/after screenshots this milestone's
+own design folder ships (`before-desktop.png`/`after-desktop-*.png`):
+the page reads as a small set of daily games sitting side by side under
+one animated hero, not a stack of independently-built widgets that
+happen to share a page.
+
+### The 2-up grid mechanism (issue #178's own scope)
+
+`ResultsPage.tsx` wraps `<BeatTheBench />` and `<CallBoard />` in one
+`grid grid-cols-2 gap-4` container, matching the mockup's own `.game-row`
+(`display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem`) at that
+folder's stated "99% fidelity, not pixel-perfect" bar (`gap-4` = 1rem
+vs. the mockup's 0.85rem -- close enough that a side-by-side glance
+agrees, not worth a bespoke arbitrary-value gap for 2.4px).
+
+**The real design decision this issue's own Scope flagged as needing a
+call**: neither tile's _expanded_ content was ever designed to fit in a
+50%-width column -- both already rendered full-width, stacked, before
+this issue (Beat the Bench's playback controls; The Call Board's
+`sm:grid-cols-3` 3-slot picker). Squeezing either into a half-width grid
+column once expanded would be a real, unreadable regression, not a small
+tweak. The fix: the grid collapses itself to one column, via a plain CSS
+`:has()` selector, the instant either tile expands into its full real
+game/board --
+
+```
+grid grid-cols-2 gap-4 has-[[data-bench-expanded]]:grid-cols-1 has-[details[open]]:grid-cols-1
+```
+
+**First use of `:has()`/Tailwind's `has-*` variant in this codebase.**
+Two independent single-selector variants rather than one comma-joined
+selector, deliberately -- this app has already been bitten once by
+Tailwind's own bracket-value class-name parsing choking on an unexpected
+character inside `[...]` (see `BeatTheBench.tsx`'s own doc comment on
+why its amber gradient is an inline `style`, not a bracket class), so
+two simple selectors were chosen over one compound selector as the safer
+bet, confirmed live rather than assumed:
+
+- **The Call Board's own expanded state is already a native
+  `<details open>`** (issue #164) -- directly selectable via
+  `has-[details[open]]`, no new markup needed at all.
+- **Beat the Bench has no native disclosure element to key off** -- its
+  "expanded" flag is a plain `useState` (issue #163), so
+  `BeatTheBenchFrame` (only ever rendered once that flag is true) now
+  carries a `data-bench-expanded="true"` marker attribute purely for
+  this selector to key on, rather than lifting `expanded` state up into
+  `ResultsPage.tsx`.
+
+When the grid collapses to one column, both children (the still-compact
+tile and the now-expanded frame) fall out full-width automatically --
+the exact stacked layout both components already had pre-#178, just
+reached via a CSS state change instead of always being the only layout.
+No `col-span` juggling, no lifted state, no prop threading through
+either component's own public surface.
+
+**No internal restructuring of either tile was needed** (the issue's own
+Scope flagged this as a real risk worth checking, and worth noting
+explicitly since it did _not_ materialize): both `CompactCard`
+(BeatTheBench) and `CallBoardSummaryRow` (CallBoard) were already
+written with a future 2-up grid in mind -- `CompactCard`'s own doc
+comment literally named "issue #176's own Out of scope explicitly
+defers that layout" as the reason it didn't yet have `aspect-ratio`
+sizing, and `CallBoardSummaryRow`'s tile layout (icon over title over
+subtitle, a status pill anchored to the bottom) was already built for a
+narrow column, not a wide row. Neither needed a single internal CSS
+change to read well at 344px (half of this app's `max-w-3xl` content
+width at 1440px) or ~163px (half of the real content width at 390px,
+after `px-6` padding) -- confirmed live, not assumed, including with
+real status-line text longer than either tile's own placeholder copy
+(see the measurements below).
+
+### Live verification (real pipeline data, real browser, played through)
+
+Real `local-run.ts` output (the default 20-ticker sample, real Yahoo
+network calls, no S3 write -- 6 preset results, 1,255 custom-anchor
+results) into a `LOCAL_RESULTS_DIR`, then `next build` + `next start`
+(not `next dev` -- see issue #123's own note above on why headless
+Chromium can't hydrate a dev-mode page in this sandbox) plus the
+documented no-root headless-Chromium workaround. **Zero console errors,
+zero console warnings, and zero `pageerror` events across every pass
+below**:
+
+- **The grid is a real 2 columns at both widths, with first-visit
+  (short, placeholder-length) status text**: at 1440px,
+  `getComputedStyle(grid).gridTemplateColumns` read `"344px 344px"`,
+  both tiles' own `getBoundingClientRect()` reported identical `177px`
+  heights sharing one row (`y: 848` for both, `x: 368`/`x: 728`); at
+  390px the Beat the Bench tile measured `163 x 213.66px`, comfortably
+  clearing the 44px touch-target floor in both dimensions, with
+  `document.documentElement.scrollWidth === clientWidth` exactly (390)
+  -- no horizontal overflow.
+- **Real, longer-than-placeholder status-line text still fits legibly
+  at both widths** -- the issue's own explicit concern, checked with
+  real (not mockup-placeholder) copy: a played Beat the Bench session
+  ("0.13% ahead of the bench today") and two real Call Board picks
+  ("2 of 3 called this week"), injected via `localStorage` before load.
+  At 390px both status pills wrap to two lines inside their tile and
+  stay fully legible; at 1440px both fit on one line. No stacking
+  deviation from the mockup's own side-by-side layout was needed at
+  either width -- confirmed, not assumed, with the actual longer
+  strings this app's own `compactStatusLine`/Call Board status line can
+  produce, not just the mockup's short placeholder text.
+- **The showcase's entrance animation plays once and settles, with no
+  chart visible**: confirmed via `DailyHero.test.tsx`'s own existing
+  coverage (issue #175, unchanged by this issue) plus a fresh
+  `reducedMotion: "reduce"` pass here -- zero elements anywhere in the
+  section carry any `*-animate` class 150ms after load, with the
+  settled state (real figures, ticker chips, the button) visible
+  immediately, screenshotted.
+- **Clicking "Watch it happen" reveals the chart within its fixed slot,
+  with no box resize**: the daily hero's own `section[aria-label="Yesterday's result"]`
+  measured exactly `640px` tall (`h-[40rem]`, issue #175's own fixed
+  height) both before and after the click; the SVG count went from 0 to
+  1 on the same click, confirming the chart genuinely mounted in place
+  rather than pushing the box's own height around.
+- **Reloading the page shows the identical showcase figures** -- the
+  daily hero section's own text content, captured before and after a
+  real `page.reload()`, matched byte-for-byte, confirming issue #174's
+  date-seeded (not request-seeded) starting capital survives a fresh
+  page load exactly as that issue's own live verification already
+  established.
+- **Both tiles render correctly in the 2-up grid and expand to their
+  full real games on click**: expanding Beat the Bench alone collapsed
+  the grid to `grid-template-columns: "704px"` (one column, full
+  content width) with The Call Board's own tile still rendering
+  correctly, still compact, directly below it; expanding The Call Board
+  too (both tiles expanded at once) kept the single-column layout, with
+  the real 3-slot picker/stats/history rendering at full width beneath
+  its own still-blue collapsed summary bar -- screenshotted in both
+  states.
+- **`prefers-reduced-motion` skips the showcase's entrance straight to
+  the settled state**: covered above and re-confirmed with a full-page
+  screenshot -- the showcase, both tiles, and the ritual rail all render
+  fully settled on first paint, no partial/mid-animation frame visible.
+- **No horizontal overflow anywhere on the page at 390px**, checked
+  repeatedly (first-visit state and the real-status-line stress-test
+  state above) -- `scrollWidth === clientWidth` exactly, every time.
+- **No unexpected layout shift after initial paint**: sampling every
+  top-level child's own `getBoundingClientRect().top` six times, 300ms
+  apart across 2s after load, returned exactly one distinct offset set
+  -- the showcase's own entrance animation is opacity/transform-based
+  (it never changes layout-affecting properties), so it never moves any
+  top-level section's own position while it plays.
+- **No hydration mismatch introduced by the new grid wrapper**: a pass
+  with only the client's clock faked to a real Wednesday before 9:30 ET
+  (the same technique issue #164's own verification established, since
+  The Call Board's placeholder is clock-derived and now renders inside
+  this same grid) logged zero console/page errors -- the grid container
+  itself is a static, prop-free `<div>` with no window/clock reads of
+  its own, so this was a low-risk check, run anyway for due diligence.
+
+### Findings: none deferred
+
+Every check above passed on the first real pass against real data --
+unlike several of this app's other "final QA" issues (e.g. #135, #166),
+which each surfaced at least one genuine, deliberately-deferred rough
+edge, this one didn't turn up any. The one thing worth being explicit
+about, since the issue's own Scope explicitly asked to flag it either
+way: **neither tile needed real internal restructuring to fit the 2-up
+grid** -- both were already built anticipating this exact layout (see
+"The 2-up grid mechanism" above), and no deviation from the mockup's
+own side-by-side-at-every-width layout was needed on mobile. The only
+real design decision this issue made on its own was the `:has()`-based
+grid-collapse mechanism for the expanded state, which the mockup itself
+doesn't cover at all (it only shows the two tiles collapsed side by
+side, never expanded) -- documented above, not silently invented.
+
+### `high` code review, two findings, both addressed
+
+A `high` review of the PR above found the diff itself small, well-scoped
+and well-verified, with two lower-severity, plausible-risk findings --
+both about the new `:has()` mechanism specifically, since it's genuinely
+novel to this codebase:
+
+- **No fallback for a browser with zero `:has()` support at all**, which
+  would leave the grid permanently at two columns and squeeze an
+  expanded game into an unreadably narrow half-column with no error or
+  console signal. Fixed with a plain-CSS answer, not a JS one:
+  `globals.css` gained a `@supports not selector(:has(a))` block
+  targeting a new `.game-row-grid` marker class on the container (no
+  styling of its own -- purely a `@supports` target), forcing
+  `grid-template-columns: 1fr` whenever `:has()` itself isn't
+  understood. `@supports selector()` shipped in the same browser
+  releases as `:has()` itself (Chrome 105, Firefox 121, Safari 15.4), so
+  a browser that fails this specific `@supports` check reliably has no
+  `:has()` support either -- the same reasoning that makes it a safe
+  feature-detection gate here. **Verified two ways, since no
+  `:has()`-lacking browser engine was available to test against
+  directly**: (1) an isolated single-file HTML repro (two rules, one
+  base and one inside the exact `@supports not selector(:has(a))`
+  block, differing only in `grid-template-columns`) loaded directly in
+  this sandbox's real Chromium, confirming `CSS.supports("selector(:has(a))")`
+  reads `true` and the fallback rule's own `1fr` value is correctly
+  **not** applied -- i.e. the rule is syntactically valid CSS a real
+  engine understands, and inert (no accidental regression) in the
+  primary, `:has()`-supporting case every real visitor to this app hits
+  today. (2) The full real app re-verified afterward at 320/360/375/
+  1440px with real stress-test content (a played Beat the Bench session,
+  real Call Board picks) and through a real expand/collapse cycle --
+  identical results to the pre-fix pass, byte-for-byte
+  (`grid-template-columns: "344px 344px"` collapsed, `"704px"` expanded,
+  zero horizontal overflow, zero console/`pageerror` events), confirming
+  the new marker class and `@supports` block introduced no regression to
+  the primary mechanism.
+- **Only 390px and 1440px had been checked, not anything narrower.**
+  Re-verified live at 320px and 360px too (the practical floor for any
+  real device today), with the same real stress-test status-line
+  content ("0.13% ahead of the bench today", "2 of 3 called this week")
+  as the original 390px pass, not just first-visit placeholder-length
+  text. Both tiles still measured with zero horizontal overflow at every
+  width (`scrollWidth === clientWidth` exactly, 320/360/375px all
+  checked) and remained legible -- longer status lines wrap to more
+  lines at the narrowest width (up to 3, at 320px) but never overflow or
+  clip. No stacking deviation from the mockup's own side-by-side layout
+  was needed at any tested width, confirming the original finding: the
+  2-up grid holds up down to the realistic floor, not just the two
+  widths originally checked.
+
+All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
+931 passing, `pnpm format:check`) re-ran green after both fixes, on a
+tree confirmed clean of the temporary `playwright` devDependency
+(`git status`/`git diff package.json pnpm-lock.yaml` showing no trace).

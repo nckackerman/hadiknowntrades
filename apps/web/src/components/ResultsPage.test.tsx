@@ -460,18 +460,26 @@ describe("ResultsPage", () => {
       ).toBeInTheDocument();
     });
 
-    it("mounts exactly once, as a direct child of the page column, ahead of The Call Board", () => {
+    it("mounts exactly once, inside the 2-up grid (issue #178), ahead of The Call Board", () => {
       const { container } = render(<ResultsPage />);
       const column = container.firstElementChild!;
       const cards = screen.getAllByRole("button", { name: /can you do better\?/i });
 
       expect(cards).toHaveLength(1);
       const section = cards[0]!.closest("section")!;
-      expect(section.parentElement).toBe(column);
+      // Issue #178 wrapped both game cards in a two-column grid container
+      // -- this section's own immediate parent is that grid, not the page
+      // column directly any more, but the grid itself is still a direct
+      // child of the column.
+      const grid = section.parentElement!;
+      expect(grid.parentElement).toBe(column);
+      const board = screen.getByRole("heading", { name: "The Call Board" }).closest("section")!;
+      // Both game cards share the same grid parent -- confirming this is
+      // genuinely the 2-up wrapper, not some other intervening element.
+      expect(board.parentElement).toBe(grid);
       // Issue #163 moved this section ahead of the header/range explorer/
       // ResultsPanel entirely (directly after DailyHero) -- still ahead
       // of The Call Board either way.
-      const board = screen.getByRole("heading", { name: "The Call Board" }).closest("section")!;
       expect(
         section.compareDocumentPosition(board) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();

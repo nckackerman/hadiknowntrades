@@ -181,21 +181,54 @@ export function ResultsPage() {
       <DailyHero mode={mode} />
 
       {/* Beat the Bench (issue #131; collapsed-by-default "Can you do
-          better?" card since issue #163) sits directly after the daily
-          hero -- an immediate call-to-action right under the "had you
-          known" statement, not a full always-rendered game further down
-          the page. Still per issue #122's standing "section, not a
-          route/branch inside ResultsPanel" decision -- it takes no
-          PrecomputedResult/range/mode/selectedDay props and renders
-          regardless of how /api/results goes, same reasoning DailyHero
-          above and CallBoard below already rely on. */}
-      <BeatTheBench />
+          better?" card since issue #163) and The Call Board (issue
+          #129/#164) render as a 2-up grid (issue #178), matching the
+          mockup's own `.game-row` (`docs/design/gamified-hero-2026-08/
+          mockup-gamified-hero.html`) -- two bold NYT-Games-style tiles
+          (issues #176/#177) side by side, directly below the daily hero,
+          rather than two full-width stacked siblings. Still per issue
+          #122's standing "section, not a route/branch inside
+          ResultsPanel" decision -- neither takes PrecomputedResult/range/
+          mode/selectedDay props, and both render regardless of how
+          /api/results goes, same reasoning DailyHero above relies on.
 
-      {/* The Call Board (issue #129/#164), the second CTA card, a direct
-          sibling of BeatTheBench per issue #122's standing decision --
-          see apps/web/CLAUDE.md's "Page structure" section. Takes no
-          props at all -- not a function of the hindsight result. */}
-      <CallBoard />
+          `has-[details[open]]:grid-cols-1` and
+          `has-[[data-bench-expanded]]:grid-cols-1` collapse the grid to
+          one column the instant either tile expands into its full real
+          game/board -- CallBoard's own expanded state is a native
+          `<details open>`, detectable directly via `:has()`; BeatTheBench
+          has no native disclosure element to key off (its "expanded"
+          flag is a plain useState, issue #163), so its own
+          `BeatTheBenchFrame` wrapper carries a `data-bench-expanded`
+          marker attribute for the identical purpose. Two independent
+          `has-*` variants rather than one comma-joined selector,
+          deliberately -- this app has already been bitten once by
+          Tailwind's own bracket-value class-name parsing choking on an
+          unexpected character inside `[...]` (see BeatTheBench.tsx's own
+          doc comment on why its amber gradient is an inline `style`, not
+          a bracket class), so two simple single-selector variants were
+          chosen over one compound selector as the safer bet, verified
+          live rather than assumed. Neither tile's own expanded content
+          (CallBoard's 3-slot picker/history strip, BeatTheBench's
+          playback controls) was ever designed to fit in a 50%-width
+          column -- both already rendered full-width, stacked, before
+          this issue; the two `has-*` rules just keep that true once
+          they're grid children too, instead of squeezing a fully
+          expanded game into an unreadably narrow half-column.
+
+          `game-row-grid` is a plain marker class (no styling of its
+          own) so `globals.css` can target this exact container with a
+          `@supports not selector(:has(a))` fallback rule -- a browser
+          with no `:has()` support at all would otherwise never match
+          either `has-*` rule above and could keep the grid at two
+          columns forever, permanently squeezing an expanded game into
+          an unreadably narrow half-column with no error or console
+          signal. See that rule's own doc comment for the full
+          reasoning. */}
+      <div className="game-row-grid grid grid-cols-2 gap-4 has-[[data-bench-expanded]]:grid-cols-1 has-[details[open]]:grid-cols-1">
+        <BeatTheBench />
+        <CallBoard />
+      </div>
 
       {/* The Daily Ritual (issue #133): the "today, so far" rail plus the
           shareable recap, the capstone on the daily hero + two mechanics
