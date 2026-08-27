@@ -197,16 +197,75 @@ describe("CallBoard: hydration safety", () => {
     freezeClock(WEDNESDAY_BEFORE_OPEN);
     saveResolvedCalls([resolvedCall({ date: "2026-08-25" })]);
 
-    render(<CallBoard />);
+    const { container } = render(<CallBoard />);
 
+    // The sr-only landmark heading is always present (issue #164), but
+    // nothing clock- or storage-derived renders yet.
+    expect(screen.getByRole("heading", { name: "The Call Board" })).toBeInTheDocument();
     expect(screen.queryAllByRole("group", { name: /^Your call for/ })).toHaveLength(0);
     expect(screen.queryByText(/Aug 2\d, 2026/)).toBeNull();
     expect(screen.queryByRole("list", { name: "Recently settled calls" })).toBeNull();
-    // The placeholders hold the section's height so nothing shifts when
-    // the real board lands, and none of them is focusable or announced.
-    const placeholders = screen.getAllByRole("button", { hidden: true });
-    expect(placeholders).toHaveLength(4 * 3);
-    expect(placeholders.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+
+    // No <details>/<summary> and no buttons exist yet -- nothing focusable
+    // or toggleable sits in the tree before there's anything real to show
+    // (issue #164's own inert-placeholder mechanism, mirroring the
+    // deleted PLACEHOLDER_SLOTS' same reasoning one level up).
+    expect(container.querySelector("details")).toBeNull();
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+
+    // The placeholder mirrors the real card's own title/subtitle -- so
+    // its size matches the real card and nothing shifts once hydration
+    // lands -- but the whole thing is out of the accessibility tree.
+    const placeholder = container.querySelector('[aria-hidden="true"]');
+    expect(placeholder).not.toBeNull();
+    expect(placeholder).toHaveTextContent("Think you know the future?");
+    expect(placeholder).toHaveTextContent(
+      "Call the next 3 sessions, up or down, before they open.",
+    );
+  });
+});
+
+describe("CallBoard: compact card (issue #164)", () => {
+  it("shows the CTA title, subtitle and a status line, collapsed by default once hydrated", async () => {
+    freezeClock(WEDNESDAY_BEFORE_OPEN);
+    await renderBoard();
+
+    expect(screen.getByText("Think you know the future?")).toBeInTheDocument();
+    expect(
+      screen.getByText("Call the next 3 sessions, up or down, before they open."),
+    ).toBeInTheDocument();
+    // No calls made yet -- see the next test for the count incrementing.
+    expect(screen.getByText("0 of 3 called this week")).toBeInTheDocument();
+
+    const details = document.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+    // The full board's own content (slots, stats, history) is still in
+    // the DOM -- jsdom doesn't hide a closed <details>' content the way a
+    // real browser does (see this file's own note on ResultsPage.test.tsx's
+    // "More options" disclosure for the identical, already-established
+    // discrepancy) -- but it is genuinely collapsed as far as the real
+    // `open` attribute goes, which is what a real browser keys off.
+    expect(screen.getAllByRole("group", { name: /^Your call for/ })).toHaveLength(3);
+  });
+
+  it("expands in place on a click, and the status line reflects a real pick made after expanding", async () => {
+    freezeClock(WEDNESDAY_BEFORE_OPEN);
+    const user = await renderBoard();
+
+    const details = document.querySelector("details")!;
+    expect(details).not.toHaveAttribute("open");
+
+    await user.click(screen.getByTestId("call-board-summary"));
+    expect(details).toHaveAttribute("open");
+
+    await user.click(slotButtons("Aug 27, 2026")[1]!);
+
+    await waitFor(() => {
+      expect(screen.getByText("1 of 3 called this week")).toBeInTheDocument();
+    });
+    // Still expanded -- making a pick doesn't collapse the card back.
+    expect(details).toHaveAttribute("open");
   });
 });
 
