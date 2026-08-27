@@ -278,15 +278,15 @@ function BeatTheBenchFrame({ headingId, children }: { headingId: string; childre
 }
 
 /**
- * The default, collapsed view (issue #163): an icon, the mockup's exact
- * copy ("Can you do better?" / "Play today's real session against the
- * market, live."), and a status line reusing
- * `beat-the-bench-storage.ts`'s existing `readPlayedSession` read --
- * the same read `ModeChooser`'s own recap paragraph already does, not a
- * new storage mechanism. Clicking the whole card is what expands this
- * section into the exact mode-chooser/game/settlement experience this
- * file always rendered -- see `BeatTheBench`'s own top-level `expanded`
- * flag.
+ * The default, collapsed view (issue #163, restyled to a bold
+ * NYT-Games-style tile by issue #176): an icon, the mockup's exact copy
+ * ("Can you do better?" / "Play today's real session against the market,
+ * live."), and a status line reusing `beat-the-bench-storage.ts`'s
+ * existing `readPlayedSession` read -- the same read `ModeChooser`'s own
+ * recap paragraph already does, not a new storage mechanism. Clicking the
+ * whole card is what expands this section into the exact mode-chooser/
+ * game/settlement experience this file always rendered -- see
+ * `BeatTheBench`'s own top-level `expanded` flag.
  *
  * Deliberately a plain `<button>`, not a native `<details>`: unlike this
  * app's other expand-in-place disclosures ("More options," "View chart
@@ -295,6 +295,40 @@ function BeatTheBenchFrame({ headingId, children }: { headingId: string; childre
  * already documents as "fetched on mount, always" -- expanding is a
  * one-way mount, with nothing here that needs to also collapse back
  * closed the way a plain content disclosure does.
+ *
+ * **Issue #176's restyle**: a thin-left-border-accent card became a
+ * solid-fill amber gradient tile (`linear-gradient(155deg, #f0b658 0%,
+ * #e8a33d 55%, #d88f28 100%)`, dark `#241a08` text), matching the design
+ * mockup's `.game-tile.bench` (`docs/design/gamified-hero-2026-08/
+ * mockup-gamified-hero.html`) as closely as this card's own layout
+ * constraint allows -- see the deviation note below. The gradient/text
+ * colors are hardcoded literals, not `--accent-reward`/other app tokens:
+ * the mockup itself hardcodes these exact values rather than referencing
+ * any CSS custom property, and this restyle is deliberately matching that
+ * specific design, not inventing a new token-backed amber. Set via inline
+ * `style` (not a Tailwind arbitrary-value class) for reliability -- a
+ * gradient background-image is easy to get subtly wrong through Tailwind's
+ * bracket-value parsing (space-to-underscore escaping, gradient- vs.
+ * color-detection heuristics), and there is no test/reuse reason here that
+ * needs it to be a class instead.
+ *
+ * **Contrast, computed (not eyeballed) against all three gradient stops**
+ * (the WCAG relative-luminance formula, the same bar issue #123's
+ * `--status-good`/`--status-critical` rebalance held itself to): `#241a08`
+ * on `#f0b658` is 9.41:1, on `#e8a33d` is 7.94:1, and on the darkest stop
+ * `#d88f28` -- the worst case, since a fixed dark foreground contrasts
+ * least against a background's own lightest end -- is still 6.43:1,
+ * comfortably clearing the 4.5:1 AA floor (and the 7:1 AAA floor for two
+ * of the three stops).
+ *
+ * **Deliberate deviation from the mockup: no `aspect-ratio: 1 / 0.82`
+ * (near-square) sizing.** The mockup's tile is designed for a future 2-up
+ * grid (issue #176's own Out of scope explicitly defers that layout) --
+ * forcing that aspect ratio onto today's still full-width, stacked
+ * placement would stretch the tile to several hundred pixels tall at this
+ * app's real `max-w-3xl` content width, which reads as broken, not bold.
+ * The tile keeps the mockup's padding/radius/shadow/hover-lift and its
+ * icon-title-subtitle-status layout, sized by its own content instead.
  */
 function CompactCard({
   headingId,
@@ -322,27 +356,28 @@ function CompactCard({
       <button
         type="button"
         onClick={onExpand}
-        className="surface-card flex w-full items-start gap-3 rounded-lg border border-[var(--gridline)] border-l-[3px] border-l-[var(--accent-reward)] bg-[var(--surface-1)] px-4 py-4 text-left"
+        style={{
+          backgroundImage: "linear-gradient(155deg, #f0b658 0%, #e8a33d 55%, #d88f28 100%)",
+          color: "#241a08",
+        }}
+        className="flex w-full flex-col gap-4 rounded-2xl px-[1.15rem] py-[1.1rem] text-left shadow-[0_6px_18px_rgba(0,0,0,0.35)] transition-transform duration-150 ease-out hover:-translate-y-0.5 hover:scale-[1.015] active:translate-y-0 active:scale-[0.99]"
       >
-        <span aria-hidden="true" className="text-xl leading-none">
-          🎯
-        </span>
-        <span className="flex flex-1 flex-col gap-1">
+        <div className="flex flex-col gap-1">
+          <span aria-hidden="true" className="text-[1.75rem] leading-none">
+            🎯
+          </span>
           <span
             id={headingId}
-            className="font-display text-base font-bold text-[var(--text-primary)]"
+            className="font-display text-[1.0625rem] font-extrabold tracking-[-0.01em] leading-[1.15]"
           >
             Can you do better?
           </span>
-          <span className="text-sm text-[var(--text-secondary)]">
+          <span className="text-xs font-medium opacity-85">
             Play today&apos;s real session against the market, live.
           </span>
-          <span className="text-xs text-[var(--text-muted)]">
-            {compactStatusLine(playedRecord)}
-          </span>
-        </span>
-        <span aria-hidden="true" className="self-center text-sm text-[var(--text-muted)]">
-          ▸
+        </div>
+        <span className="font-numeric self-start rounded-full bg-black/[14%] px-[0.55rem] py-[0.2rem] text-[0.6875rem] font-bold">
+          {compactStatusLine(playedRecord)}
         </span>
       </button>
     </section>

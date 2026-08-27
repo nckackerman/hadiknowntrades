@@ -221,6 +221,33 @@ describe("BeatTheBench", () => {
     });
   });
 
+  it("renders the compact card as a solid amber tile, not the old bordered-card treatment (issue #176)", async () => {
+    render(<BeatTheBench />);
+
+    const tile = screen.getByRole("button", { name: /can you do better\?/i });
+    // The amber gradient fill/dark text are the tile's whole visual
+    // identity (issue #176) -- asserted via the real inline style, not a
+    // class-name string, since the gradient is set that way specifically
+    // for reliability (see CompactCard's own doc comment). jsdom
+    // normalizes hex colors in inline styles to rgb(), so these assert
+    // against that normalized form (#f0b658/#e8a33d/#d88f28 respectively),
+    // not the literal hex string this component's own source writes.
+    expect(tile.style.backgroundImage).toContain("linear-gradient");
+    expect(tile.style.backgroundImage).toContain("rgb(240, 182, 88)");
+    expect(tile.style.backgroundImage).toContain("rgb(232, 163, 61)");
+    expect(tile.style.backgroundImage).toContain("rgb(216, 143, 40)");
+    expect(tile.style.color).toBe("rgb(36, 26, 8)"); // #241a08
+    // The old thin-left-border-accent card is gone, not just relabeled.
+    expect(tile.className).not.toContain("border-l");
+    expect(tile.className).not.toContain("surface-card");
+    // The large icon from the mockup's tile design.
+    expect(screen.getByText("🎯")).toBeInTheDocument();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+  });
+
   it("expands to the full game in place once the compact card is clicked", async () => {
     render(<BeatTheBench />);
     expandCompactCard();
