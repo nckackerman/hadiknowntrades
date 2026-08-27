@@ -9042,3 +9042,93 @@ Call Board" })` queries had no `level` constraint, and this issue's
   clarity fix, not a fix for a reachable production bug.
 - All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
   955 passing, `pnpm format:check`) re-ran green after both fixes.
+
+## Non-functional placeholder tiles for The Order / The Lineup (issue #197)
+
+Read issue #189 in full first -- both games were designed, mocked, then
+explicitly parked pending a daily-selection-mechanism design pass this
+issue does not attempt. `components/PlaceholderGameTile.tsx` exports
+`TheOrder`/`TheLineup`, two static tiles filling out the game grid's
+second row -- the grid `ResultsPage.tsx` already builds for
+`BeatTheBench`/`CallBoard` (issue #178) becomes the full 2x2 the
+daily-hub-condensed mockup was originally sketched with, purely by
+appending these two as its 3rd/4th children -- no grid restructuring
+needed, since `grid-cols-2` with 4 children already wraps into two rows
+for free.
+
+- **Deliberately a plain, non-interactive `<div role="group"
+aria-label="{title} - coming soon" aria-disabled="true">`, not a
+  focusable control with `aria-disabled` bolted on.** The issue's own
+  Scope wording ("not interactive... no `<details>`/expand behavior...
+  `aria-disabled` and no focus-trap/dead click target") reads as a list
+  of constraints on one control at first glance, but there is nothing
+  behind either tile to reveal -- unlike `BeatTheBench`'s `useState`
+  toggle or `CallBoard`'s `<details>`, both of which exist specifically
+  to expand into a real interactive experience. No `<button>`, no
+  `tabIndex`, no `onClick` at all is what actually satisfies "no
+  focus-trap/dead click target" -- `aria-disabled="true"` is added on
+  top for the issue's own explicit ask and to give assistive tech a
+  positive "this is disabled" signal, mirroring the
+  `aria-hidden`+`inert` "belt and suspenders" posture this file's own
+  "Trade replay" section already documents for `PortfolioChart`.
+- **Visually matches `BeatTheBench.tsx`'s/`CallBoard.tsx`'s own
+  collapsed-card tiles** (icon plate, gradient fill, rounded corners, a
+  status pill -- now reading "Coming soon" instead of a real status
+  line) via one shared internal `ComingSoonTile`, parameterized per game
+  by icon/title/subtitle/a literal Tailwind `gradientAndShadowClassName`
+  string.
+- **The gradient+shadow className is a fully static, per-tile literal
+  string (`CallBoard.tsx`'s own `bg-[linear-gradient(...)]`/
+  `shadow-[...]` approach), deliberately not threaded through a CSS
+  custom property referenced inside a `shadow-[...]` bracket.** An
+  earlier draft tried a shared `--tile-glow` custom property read from
+  inside the shadow's own arbitrary-value bracket -- exactly the shape
+  `BeatTheBench.tsx`'s own doc comment already warns is "easy to get
+  subtly wrong through Tailwind's bracket-value parsing," and this
+  codebase has been bitten by that once already (see that file's own
+  note on why its amber gradient is an inline `style`, not a bracket
+  class). Reverted before it needed live-testing to prove the concern
+  either way -- a static literal per tile is the cheaper, already-proven
+  shape, not a new mechanism.
+- **Colors are new, not reused from either real tile's palette** -- no
+  committed mockup exists for The Order/The Lineup to match pixel-for-
+  pixel (issue #189's own body says the interactive mockup that did
+  include them was a scratch artifact, never committed), only issue
+  #189's own purple/teal color assignment. Both three-stop 155deg
+  gradients (matching the real tiles' own sweep) were tuned the same way
+  issue #177 tuned CallBoard's own blue -- every stop's white-text
+  contrast independently computed via the WCAG relative-luminance
+  formula and verified >= 4.5:1 AA before being committed (The Order:
+  7.06:1 / 8.37:1 / 10.68:1; The Lineup: 5.10:1 / 6.25:1 / 8.64:1) -- see
+  `PlaceholderGameTile.tsx`'s own top-of-file comment for the exact hex
+  values and the computed numbers.
+- **No streak chips or other retention-mechanic badges, and no
+  `daily-ritual.ts` wiring** -- both explicitly out of scope per the
+  issue itself: issue #189 flags streak chips as a genuinely undecided
+  retention-mechanic question, and neither tile is "played," so the
+  daily ritual's recap is unaffected.
+- **Kept easy for the sibling play-history-ordering issue in this
+  milestone (#196) to extend, without building any of its own ordering
+  logic here**: the grid's four children are still plain, literal JSX in
+  document order (`<BeatTheBench />`, `<CallBoard />`, `<TheOrder />`,
+  `<TheLineup />`) -- #196 can reorder the first two by their own play
+  state with no change needed to how these two are rendered or
+  positioned; they simply stay the grid's last two children regardless
+  of what order the real tiles end up in.
+- **Live-verified against a real local pipeline run** (`local-run.ts`,
+  the default 20-ticker sample, real Yahoo network calls) plus `next
+build`/`next start` (not `next dev` -- see issue #123's own note above
+  on why headless Chromium can't hydrate a dev-mode page in this
+  sandbox) and the documented no-root headless-Chromium workaround
+  (Chromium launched directly here without needing the `apt-get
+download`/`dpkg-deb -x` shared-library extraction -- the cached
+  binary already had what it needed). Confirmed at 1280px and 390px:
+  both tiles render in the grid's second row, directly below
+  `BeatTheBench`/`CallBoard`; `getByRole("group", { name: "The Order -
+coming soon" })`/`"The Lineup - coming soon"` both resolve, each with
+  `aria-disabled="true"` and zero focusable descendants
+  (`button, a, details, summary, [tabindex]`); no horizontal overflow
+  at either width; zero console errors or `pageerror` events. The
+  temporary `playwright` devDependency was reverted before committing;
+  confirmed via `git status`/`git diff --stat` on
+  `package.json`/`pnpm-lock.yaml` showing no trace afterward.

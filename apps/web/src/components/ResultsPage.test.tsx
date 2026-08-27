@@ -500,6 +500,43 @@ describe("ResultsPage", () => {
     });
   });
 
+  describe("The Order / The Lineup placeholder tiles (issue #197)", () => {
+    it("render both placeholder tiles, positioned after Beat the Bench and The Call Board in the 2x2 grid", () => {
+      render(<ResultsPage />);
+
+      const bench = screen.getByRole("button", { name: /can you do better\?/i });
+      const board = screen.getByRole("heading", { name: "The Call Board" }).closest("section")!;
+      const order = screen.getByRole("group", { name: "The Order - coming soon" });
+      const lineup = screen.getByRole("group", { name: "The Lineup - coming soon" });
+
+      // Same grid parent as the two real tiles -- the full 2x2 grid the
+      // daily-hub-condensed mockup was originally sketched with, not a
+      // second, separate grid.
+      const grid = bench.closest("section")!.parentElement!;
+      expect(order.closest("section")!.parentElement).toBe(grid);
+      expect(lineup.closest("section")!.parentElement).toBe(grid);
+
+      // After both real, playable tiles -- per issue #197's own scope,
+      // these two are not ranked by the sibling play-history-ordering
+      // issue in this milestone (#196), and stay pinned in place.
+      expect(bench.compareDocumentPosition(order) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(board.compareDocumentPosition(order) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(order.compareDocumentPosition(lineup) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("render both tiles as clearly non-interactive: no button/link/details, aria-disabled set", () => {
+      render(<ResultsPage />);
+
+      const order = screen.getByRole("group", { name: "The Order - coming soon" });
+      const lineup = screen.getByRole("group", { name: "The Lineup - coming soon" });
+
+      expect(order).toHaveAttribute("aria-disabled", "true");
+      expect(lineup).toHaveAttribute("aria-disabled", "true");
+      expect(order.querySelector("button, a, details, summary, [tabindex]")).toBeNull();
+      expect(lineup.querySelector("button, a, details, summary, [tabindex]")).toBeNull();
+    });
+  });
+
   describe("Beat the Bench: collapsed by default, expands in place (issue #163)", () => {
     it("expands to the full mode-chooser experience on click, with no page navigation", async () => {
       render(<ResultsPage />);
