@@ -45,10 +45,16 @@
 // worse than the staleness the rest of this precomputed-nightly app
 // already accepts everywhere else.
 //
-// Scope (per the issue's own suggestion): only ranges using the
-// "window" result model (5Y, MAX today) get a card -- see
-// ../../../../lib/og-card.ts's own comment for why "intraday-daily"
-// (1M/3M/1Y) is out of scope here, not just unimplemented by oversight.
+// Scope: **every** preset range gets a card as of issue #134. This
+// route used to serve only the "window" model (5Y/MAX) and 404 the
+// "intraday-daily" ranges (1W/1M/3M/1Y) -- see
+// ../../../../lib/og-card.ts's own doc comment for why that restriction
+// was real when it shipped and why it's stale now (issues #84/#91's
+// whole-range capital chaining gave the intraday model a single
+// meaningful headline figure, the same one the page itself headlines).
+// The `buildOgCardContent(...) === null` 404 below stays for the one
+// case that genuinely has nothing to show: a result with no trading
+// days at all.
 //
 // Route-param validation (issue #33 follow-up, found in code review):
 // the raw `[range]` segment is checked against `isCanonicalRange`
@@ -100,9 +106,9 @@ import type { PrecomputedResult } from "@hadiknowntrades/core";
 import { PRESET_RANGES } from "@hadiknowntrades/core";
 
 import { renderOgCard } from "@/components/OgCard";
+import { createResultReader } from "@/lib/create-result-reader";
 import { buildOgCardContent } from "@/lib/og-card";
 import { getResultsResponse, isCanonicalRange } from "@/lib/results-api";
-import { S3ResultReader } from "@/lib/s3-result-reader";
 
 // Statically rendered per range, revalidated once a day -- see this
 // file's header comment. Without `dynamic = "force-static"`, a route
@@ -121,9 +127,20 @@ export const dynamic = "force-static";
 export const revalidate = 86400; // 24h -- matches the nightly pipeline cadence.
 
 // Built once per warm process and reused across requests, same reasoning
-// as ../../results/route.ts's own module-scope `reader`.
-const bucket = process.env.RESULTS_BUCKET;
-const reader = bucket ? new S3ResultReader(bucket) : null;
+// as ../../results/route.ts's own module-scope `reader`. Goes through
+// the shared `createResultReader` (issue #134) rather than constructing
+// an S3ResultReader from `RESULTS_BUCKET` directly the way this route
+// did when it shipped: that helper was extracted after this route
+// existed, so this file had silently drifted into being the one
+// results-reading route that didn't honor the committed
+// `LOCAL_RESULTS_DIR` local-dev workflow (see
+// ../../../../lib/create-result-reader.ts and apps/web/CLAUDE.md's
+// "Local development without AWS credentials") -- meaning a card could
+// never be rendered locally at all without real AWS credentials.
+// Production behavior is unchanged: with no LOCAL_RESULTS_DIR set,
+// `createResultReader` resolves to exactly the same
+// `RESULTS_BUCKET`-backed S3ResultReader (or `null`) as before.
+const reader = createResultReader();
 
 function errorResponse(status: number, message: string): Response {
   // no-store on our own explicit header is honored for *this* response,
@@ -162,9 +179,14 @@ export async function GET(
   const result = (await resultResponse.json()) as PrecomputedResult;
   const content = buildOgCardContent(result);
   if (!content) {
+    // Since issue #134 both result models produce a card, so this is no
+    // longer a "this model isn't supported" rejection -- it's the
+    // genuinely empty result (no trading days at all) case. `model` is
+    // still named in the message since it's the cheapest way to tell
+    // which shape came back when this ever does fire.
     return errorResponse(
       404,
-      `No shareable card is available yet for range "${rawRange}" (model "${result.model}").`,
+      `No shareable card could be built for range "${rawRange}" (model "${result.model}") -- it has no result to headline.`,
     );
   }
 

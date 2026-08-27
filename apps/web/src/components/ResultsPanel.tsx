@@ -27,6 +27,7 @@ import { BenchmarkStat } from "@/components/BenchmarkStat";
 import { DayOverview } from "@/components/DayOverview";
 import { HeroAndWorstCase } from "@/components/HeroAndWorstCase";
 import { IntradayTradeList } from "@/components/IntradayTradeList";
+import { ShareCardLink } from "@/components/ShareCardLink";
 import { StartingCapitalInput } from "@/components/StartingCapitalInput";
 import { TradeList } from "@/components/TradeList";
 import { TradeReplay } from "@/components/TradeReplay";
@@ -237,6 +238,15 @@ interface WindowResultBodyProps {
   mode: Mode;
   startingCapital?: number;
   onStartingCapitalChange?: (value: number) => void;
+  /**
+   * The preset range whose share card (issue #134) to offer a copy-link
+   * for, or `null` to offer none. Only the "window" branch passes a real
+   * range: a custom start-date anchor (issue #11) has no `/api/og/...`
+   * route of its own, so this body -- shared by both branches -- can't
+   * infer it from `data`, which deliberately carries neither `range` nor
+   * `anchorDate` (see WindowLikeResult's own doc comment).
+   */
+  shareRange?: PresetRange | null;
 }
 
 /**
@@ -272,6 +282,7 @@ function WindowResultBody({
   mode,
   startingCapital,
   onStartingCapitalChange,
+  shareRange,
 }: WindowResultBodyProps) {
   const variant = selectVariant<Trade>(data, data.longShort, mode);
   const isEmpty = variant.trades.length === 0;
@@ -319,6 +330,13 @@ function WindowResultBody({
           <TradeList trades={variant.trades} startingCapital={effectiveStartingCapital} />
         )}
       </div>
+
+      {/* The window model has no guess-then-reveal gate at all (issue
+          #91 scoped that to the intraday-daily model only), so the
+          figure this card headlines is already unconditionally on
+          screen above -- nothing to gate this on here, unlike the
+          intraday-daily branch below. */}
+      {shareRange && <ShareCardLink range={shareRange} />}
 
       <AboutSection
         viewDetails={`Best possible outcome ${descriptionPhrase}, with at most ${data.maxTrades} sequential all-in trades across the S&P 500, using only closed (EOD) prices. As of ${data.dataAsOf}.`}
@@ -802,6 +820,18 @@ export function ResultsPanel({
           )}
         </div>
 
+        {/* Gated on the whole-range guess (issue #91) exactly like
+            BenchmarkStat and the whole-range chart above it, and for the
+            same reason: this card headlines the very figure
+            WholeRangeBalance's guess-then-reveal protects (issue #134),
+            so offering a one-click link to it before the player has
+            answered would hand them the answer inside the game itself.
+            The card's URL is public and guessable either way -- see
+            ShareCardLink's own doc comment -- so this is about not
+            spoiling the game from inside the page, not about the number
+            being secret. */}
+        {rangeGuess !== null && <ShareCardLink range={range} />}
+
         <AboutSection
           viewDetails={`Best possible outcome on ${formatDate(activeDay.date)}, with at most ${data.maxTradesPerDay} same-day all-in trades across the S&P 500, using real 60-minute intraday prices. As of ${data.dataAsOf}.`}
         />
@@ -872,6 +902,10 @@ export function ResultsPanel({
       mode={mode}
       startingCapital={startingCapital}
       onStartingCapitalChange={onStartingCapitalChange}
+      // Only this branch has a preset range (and therefore an
+      // /api/og/{range} card) -- the "custom-window" branch above
+      // deliberately passes nothing. See ShareCardLink's own doc comment.
+      shareRange={range}
     />
   );
 }

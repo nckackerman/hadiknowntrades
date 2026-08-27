@@ -11,7 +11,6 @@
 import { ImageResponse } from "next/og";
 
 import type { OgCardContent } from "@/lib/og-card";
-import { rangeLabel } from "@/lib/og-card";
 
 export const OG_CARD_WIDTH = 1200;
 export const OG_CARD_HEIGHT = 630;
@@ -87,8 +86,14 @@ export function renderOgCard(content: OgCardContent): ImageResponse {
           <span style={{ display: "flex", fontSize: 44, fontWeight: 700, color: multiplierColor }}>
             ({content.multiplierLabel})
           </span>
+          {/* The whole sentence comes from ../lib/og-card.ts's
+              `subtitleLabel` since issue #134 -- it used to be
+              hardcoded here ("{range} range - best possible 3-trade
+              outcome"), which only described the window model and would
+              have been flatly wrong for a chained intraday-daily range's
+              card (hundreds of trades, not 3). */}
           <span style={{ display: "flex", fontSize: 32, color: TEXT_SECONDARY }}>
-            {rangeLabel(content.range)} range &middot; best possible 3-trade outcome
+            {content.subtitleLabel}
           </span>
         </div>
       </div>
