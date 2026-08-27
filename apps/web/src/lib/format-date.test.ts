@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatDate, formatDateTime, formatTime } from "./format-date";
+import { formatDate, formatDateTime, formatDateWithWeekday, formatTime } from "./format-date";
 
 describe("formatDate", () => {
   it("formats a plain calendar date without a timezone shift", () => {
@@ -11,6 +11,16 @@ describe("formatDate", () => {
     // A date near a month boundary is the case most likely to expose a
     // naive local-time parse rolling it back a day.
     expect(formatDate("2026-01-01")).toBe("Jan 1, 2026");
+  });
+});
+
+describe("formatDateWithWeekday", () => {
+  it("formats a plain calendar date with its full weekday name", () => {
+    expect(formatDateWithWeekday("2025-08-21")).toBe("Thursday, August 21, 2025");
+  });
+
+  it("doesn't roll the date back a day for zones west of UTC", () => {
+    expect(formatDateWithWeekday("2026-01-01")).toBe("Thursday, January 1, 2026");
   });
 });
 

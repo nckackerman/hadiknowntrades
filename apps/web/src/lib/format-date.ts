@@ -30,6 +30,26 @@ export function formatDate(isoDate: string): string {
 }
 
 /**
+ * Formats a plain calendar date ("2025-08-21") as "Tuesday, August 25,
+ * 2026" -- the daily hero's own eyebrow (issue #161), which leads with
+ * the weekday to reinforce that this is one specific, dated day's result,
+ * not a rolling window. A second, longer formatter rather than a flag on
+ * `formatDate` itself: every existing caller of that one wants the short
+ * form, and threading a boolean through all of them for a single new
+ * caller isn't worth it.
+ */
+export function formatDateWithWeekday(isoDate: string): string {
+  // Same UTC-parse convention as formatDate above, for the same reason.
+  return new Date(`${isoDate}T00:00:00Z`).toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+/**
  * Formats a bare local time-of-day ("14:30:00", no date) as "2:30 PM" --
  * for IntradayTrade's openTime/closeTime (issue #28), which don't carry a
  * date of their own since the day is already known from context (the
