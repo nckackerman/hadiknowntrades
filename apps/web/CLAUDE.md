@@ -6123,3 +6123,199 @@ left-1/2 -translate-x-1/2`, with `pb-3` reserving the room) keeps every
   end" + the chart-anchored callout bubble) was screenshotted mid-playback
   for both a gain and a loss fixture, since it consumes `heroMultiplierColor`
   directly. Zero console errors across the whole run.
+
+## The Call Board UI: board, history strip, stats (issue #129)
+
+`components/CallBoard.tsx` plus `lib/use-call-board.ts` -- the player-facing
+half of the mechanic whose engine issue #128 shipped. **Nothing here
+re-implements any of that engine**: buckets, the +/-0.5% threshold,
+scoring, resolution, the rolling lookahead, the after-the-open lock and
+every storage read/write are all reached through `syncCallBoard` /
+`saveCallBoardPick` / `exchangeClock` / `isTradingDay`. The one genuinely
+new piece of logic is `callOutcomeFor` (see "The history strip" below).
+
+Mounted per issue #122's standing decision -- a section in
+`ResultsPage.tsx`, a direct sibling **after** `<ResultsPanel>`, taking no
+props at all. `ResultsPage.test.tsx`'s own "The Call Board placement"
+describe block regression-tests both halves of that decision structurally
+(the board renders while `/api/results` is still unresolved, and it is not
+a descendant of the panel).
+
+### Where the SPY series comes from without a result prop
+
+`useCallBoardCloses()` (`lib/use-call-board.ts`) fetches
+`/api/results?range=1W` itself and reads only `benchmarkSeries.closes`
+(issue #126). The range is arbitrary -- that field is deliberately
+range-independent -- and 1W is picked because it's `ResultsPage`'s own
+`DEFAULT_RANGE`, so on a normal first load the board's request is for a URL
+the page already fetched and the browser can serve from cache.
+
+**An empty series is a fine degraded state, not an error**, and every
+non-success path returns one shared `NO_CLOSES` constant (a stable
+reference -- `useCallBoard`'s sync effect is keyed on it, so a fresh `[]`
+literal per render would re-sync forever). `syncCallBoard` still returns
+the whole board from localStorage plus the clock; only _newly settling_ a
+day needs closes at all, so the board stays fully playable offline or with
+`/api/results` 500ing. This is also the reason `ResultsPage.test.tsx`'s
+"does not also fetch a preset range" test had to change: it now asserts the
+only `range=` request in anchor mode is the board's own fixed one.
+
+### The first render reads neither the clock nor storage -- stricter than the usual pattern, on purpose
+
+`UNHYDRATED_VIEW` is a plain module constant (`openCalls: []`,
+`hydrated: false`), and `CallBoard` renders `PLACEHOLDER_SLOTS` -- three
+inert, `aria-hidden`, `disabled` slots of exactly the real size -- until
+the mount-time microtask corrects it.
+
+This goes further than `use-hydrated-local-storage-state.ts` (which only
+defers the _storage_ read) and further than `CustomRangeSelector`'s
+precedent of calling `new Date()` during render, and the reason is
+specific to this feature: **this board's clock-derived output changes at
+two boundaries a day** (midnight and 9:30 AM in New York), not once a
+month the way `customRangeAnchors`' does -- and 9:30 AM Eastern is a
+high-traffic moment for a stock-market page, not an obscure one. It also
+costs nothing visible: the correction runs in a microtask before the
+browser paints, and the placeholders reserve the same height.
+
+**This was a real, reproduced bug, not a theoretical one.** The first
+implementation did compute the lookahead during render. Faking _only_ the
+client's clock under headless Chromium (so the server genuinely rendered a
+different day) reproduced React's hydration-mismatch `pageerror` on the
+Saturday and Labor Day verification passes; after the fix the same two
+passes log zero errors. Worth reusing as the technique for any future
+clock-dependent component here: a same-clock screenshot pass will not
+catch this, because the server and client agree by coincidence.
+
+Placeholders are `disabled` _and_ the `<li>` is `aria-hidden` -- a disabled
+button isn't focusable, so nothing focusable ever sits inside an
+aria-hidden subtree (the ARIA violation issue #96's own review round two
+caught for the truncated replay chart).
+
+### The history strip: four outcomes, and where that fourth one comes from
+
+`callOutcomeFor` is the only new logic in this issue. It takes the
+engine's own `score` and splits its single `0` in two by how far apart the
+picked and actual buckets sit in `CALL_BUCKETS`' order:
+
+| outcome           | rule                          | glyph | colour              |
+| ----------------- | ----------------------------- | ----- | ------------------- |
+| `exact`           | `score === 2`                 | `★`   | `--accent-reward`   |
+| `right-direction` | `score === 1`                 | `✓`   | `--status-good`     |
+| `near-miss`       | `score === 0`, distance `1`   | `~`   | `--text-secondary`  |
+| `far-miss`        | `score === 0`, distance `>=2` | `✕`   | `--status-critical` |
+
+**Score is checked before distance, and that ordering is load-bearing**: a
+distance of 1 can mean either a right-direction confidence miss ("Up big"
+vs. "Up") or a wrong-direction near miss ("Up" vs. "Down"), so distance
+alone would conflate two genuinely different results. This is a _display_
+classification only -- it feeds nothing back into `computeCallBoardStats`,
+and the engine still scores a near miss and a far miss identically at 0.
+
+WCAG 1.4.1 is satisfied three ways over, deliberately not by colour plus a
+`title` (which assistive tech doesn't reliably announce): every cell
+carries a visible glyph, an `sr-only` sentence naming the date, the call,
+the real move and the outcome, and there's a visible legend repeating each
+glyph next to its meaning. `CallBoard.test.tsx` has one test per outcome
+asserting the glyph, the colour class and the sr-only wording.
+
+### Token application (issue #121)
+
+- `--accent-reward` (gold) on exactly two things: the **exact-match**
+  history cells and the **streak figures**. Always as a glyph/text colour,
+  never as a fill -- white on gold measures 2.16:1.
+- `--accent-selection` (blue) on a **selected bucket button**. A filled
+  slot means "you picked", not "you earned", so it deliberately matches
+  `RangeSelector`'s active pill rather than the gold.
+- `font-display` on the heading and the stat figures (big static figures).
+  Not `font-numeric` -- nothing here animates digit by digit.
+
+`globals.css`'s own token block warns against putting a gold element and a
+status-coloured element in the same legend where **hue is the only thing
+telling them apart**. The history strip's legend does put all three in one
+row, and that's fine here specifically because hue is never the only
+signal: each of the four outcomes carries its own distinct glyph
+(`★`/`✓`/`~`/`✕`) and its own sr-only wording. Keep that property if the
+legend ever changes -- it is what makes this an exception rather than a
+violation. (Issue #123's rebalance of `--status-good`/`--status-critical`
+needed no change here at all: everything references the tokens by name.)
+
+**A real trap, found by screenshot rather than by any DOM assertion**: an
+earlier `Stat` put `text-[var(--text-primary)]` in a shared base className
+and appended `text-[var(--accent-reward)]` per caller. Both classes really
+were on the element, so every DOM-level test passed -- but two
+arbitrary-value `text-[...]` utilities are the same property at the same
+specificity, so which wins comes down to Tailwind's own emitted source
+order, and the streak figures silently rendered white. `Stat` now takes a
+required `colorClassName` and the base carries no colour at all. Worth
+remembering for any future component that layers two arbitrary-value
+utilities of the same property.
+
+### The unspecified states, both decided here
+
+- **First visit**: three unset slots, `0 / 0% / 0 / 0`, and an explanatory
+  empty history ("Nothing has settled yet..."). `winRate` is genuinely
+  `null` in the engine when nothing has resolved; the display coerces it to
+  `0%` rather than a dash, per the issue's own literal `0/0%/0/0` spec --
+  a placeholder in one of four otherwise-numeric tiles reads as broken.
+- **Weekend/holiday**: no special board at all -- `upcomingCallDays`
+  already skips non-trading days, so the three slots are always real
+  trading sessions. The only addition is a one-line note ("Markets are
+  closed today, so the board is already looking ahead...") gated on
+  `!isTradingDay(exchangeClock(now).date)`, so a viewer isn't left
+  wondering why the first slot isn't today. Verified live on a Saturday
+  (slots roll to Mon/Tue/Wed) and on Labor Day 2026 (Sep 7 -> Sep 8/9/10).
+
+### The "not a predictor" disclaimer
+
+`AboutSection.tsx`'s existing "not a predictor" paragraph is **unchanged**;
+a second paragraph was added after it distinguishing the Call Board rather
+than softening it ("a separate practice game, not part of that hindsight
+analysis and not an exception to the line above"). A short form also sits
+in the board's own header, where the game actually is. The issue asked for
+this to be surfaced rather than resolved silently -- it's called out in
+#129's PR description as an open product-copy question.
+
+### Layout
+
+Slots are `grid-cols-1 sm:grid-cols-3`; each slot's four buckets are
+`grid-cols-2 sm:grid-cols-1`. That inversion is deliberate: at `sm` and up
+three slots share the row, leaving ~90px per button in a two-across grid --
+narrow enough that "Down big" wrapped onto a second line and made the 2x2
+grid visibly ragged. One button per row at that width is both un-wrapped
+and reads as a bullish-to-bearish ladder, matching `CALL_BUCKETS`' order.
+
+### Live verification
+
+The permanent `LOCAL_RESULTS_DIR` workflow (real `local-run.ts` pipeline
+pass, 8 real tickers, a real 62-entry SPY `benchmarkSeries`) plus `next
+dev` and the documented no-root headless-Chromium technique. Nine
+scenarios, **zero console errors and zero `pageerror` events in every
+one**:
+
+- First visit at 1280 / 375 / 390px; `documentElement.scrollWidth` equals
+  the viewport at both mobile widths (no horizontal overflow), and all
+  three slots share one `x` (genuinely one column) at both.
+- **Touch targets measured with real `getBoundingClientRect()`**, not
+  eyeballed: every bucket button is exactly `44px` tall at every width
+  (129.5x44 at 375px, 137x44 at 390px, 189.33x44 at 1280px). The jsdom
+  test can only assert the size contract -- no stylesheet is loaded in that
+  environment -- so the real pixels come from here.
+- A real pick: `aria-pressed` moves to the clicked bucket, the live region
+  reads "Called up big for Aug 27, 2026.", and
+  `hikt:call-board:pick:2026-08-27` is genuinely in localStorage.
+- Populated, from **real resolution against real closes** (12 picks seeded
+  across real trading days, then resolved by `syncCallBoard` on reload):
+  12 resolved, 33% win rate, best streak 2, and all four outcomes present
+  at once, each cell's computed colour read back off the live DOM and
+  matching its own token (`--accent-reward` / `--status-good` /
+  `--text-secondary` / `--status-critical`). **That run predates issue
+  #123's palette rebalance**, so the two status tokens' raw hexes have
+  since moved (`#0ca30c` -> `#4ab86f`, `#e66767` -> `#e46b64`) -- the
+  component references the tokens by name, so it followed the rebalance
+  for free, which is why this note cites token names rather than the
+  literal values that were measured.
+- Saturday and Labor Day, via an init script faking only the client's
+  clock (see the hydration note above).
+
+Playwright was added with `pnpm add -D -w playwright` for the session and
+reverted afterwards, per this file's own convention.

@@ -10,6 +10,7 @@ import { useCustomAnchors } from "@/lib/use-custom-anchors";
 import { useStartingCapital } from "@/lib/use-starting-capital";
 import { parseAnchorDate, parseRange } from "@/lib/results-api";
 import { DEFAULT_MODE, parseMode, type Mode } from "@/lib/mode";
+import { CallBoard } from "@/components/CallBoard";
 import { CustomRangeSelector } from "@/components/CustomRangeSelector";
 import { ModeToggle } from "@/components/ModeToggle";
 import { OnboardingIntro } from "@/components/OnboardingIntro";
@@ -170,6 +171,18 @@ export function ResultsPage() {
         startingCapital={startingCapital}
         onStartingCapitalChange={setStartingCapital}
       />
+
+      {/* The Call Board (issue #129) mounts here, as a direct sibling of
+          ResultsPanel rather than inside one of its model branches --
+          issue #122's standing decision, see apps/web/CLAUDE.md's "Page
+          structure" section. Two reasons it matters: ResultsPanel renders
+          nothing but a skeleton or an error box until /api/results
+          succeeds, and the daily ritual shouldn't disappear when that
+          fetch is slow or failing; and "inside" would mean duplicating
+          the mount into both WindowResultBody and the intraday-daily
+          branch, i.e. two state owners to keep in sync. It takes no props
+          at all -- it's not a function of the hindsight result. */}
+      <CallBoard />
     </div>
   );
 }
