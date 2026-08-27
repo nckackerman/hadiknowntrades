@@ -3,6 +3,8 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { CALL_BOARD_SERIES_RANGE } from "@/lib/use-call-board";
+
 const replace = vi.fn();
 let search = "";
 
@@ -197,12 +199,24 @@ describe("ResultsPage", () => {
       }
     });
 
-    it("does not also fetch a preset range while in anchor mode", () => {
+    it("does not also fetch a preset range's own result while in anchor mode", () => {
       const anchor = TEST_ANCHORS[0]!;
       search = `anchor=${anchor}`;
       render(<ResultsPage />);
 
-      expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("range="));
+      // The view's own result comes from exactly one of useResults /
+      // useCustomResults -- never both (see ResultsPage.tsx). The Call
+      // Board (issue #129) does fetch a preset range's result too, but
+      // for a completely unrelated reason: it reads only that result's
+      // range-independent `benchmarkSeries` (issue #126) and always asks
+      // for the same fixed range regardless of what the page is showing,
+      // so it can never be confused for the view's own result fetch.
+      const requested = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.map(
+        (call) => call[0] as string,
+      );
+      expect(requested.filter((url) => url.includes("range="))).toEqual([
+        `/api/results?range=${CALL_BOARD_SERIES_RANGE}`,
+      ]);
     });
 
     it("falls back to range mode for a malformed ?anchor= value", () => {
@@ -289,6 +303,38 @@ describe("ResultsPage", () => {
       expect(screen.getAllByTestId("controls-more")).toHaveLength(1);
       const summary = screen.getByText("More options");
       expect(summary.closest("details")).toContainElement(screen.getByTestId("controls-more"));
+    });
+  });
+
+  describe("The Call Board placement (issues #122/#129)", () => {
+    // Every /api/results request in this file never resolves (see the
+    // beforeEach stub), so ResultsPanel is stuck in its loading skeleton
+    // throughout -- which is exactly the state issue #122's decision is
+    // about: a mechanic section mounted at the page level stays playable
+    // when the hindsight result is slow or failing, and one mounted
+    // inside ResultsPanel's model branches would not.
+    it("renders the board even while the results fetch has not resolved", async () => {
+      render(<ResultsPage />);
+
+      expect(screen.getByRole("heading", { name: "The Call Board" })).toBeInTheDocument();
+      // The board's own three slots land after its mount-time hydration
+      // correction (see lib/use-call-board.ts), independently of the
+      // results fetch this test never resolves.
+      expect(await screen.findAllByRole("group", { name: /^Your call for/ })).toHaveLength(3);
+    });
+
+    it("mounts exactly one board, as a sibling after ResultsPanel rather than inside it", () => {
+      render(<ResultsPage />);
+
+      const board = screen.getByRole("heading", { name: "The Call Board" }).closest("section");
+      const skeleton = screen.getByText("Loading results…");
+      expect(board).not.toBeNull();
+      expect(board).not.toContainElement(skeleton);
+      expect(
+        // Node.DOCUMENT_POSITION_PRECEDING: the skeleton comes before the
+        // board in document order.
+        board!.compareDocumentPosition(skeleton) & Node.DOCUMENT_POSITION_PRECEDING,
+      ).toBeTruthy();
     });
   });
 });

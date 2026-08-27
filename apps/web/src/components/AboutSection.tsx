@@ -66,6 +66,21 @@ export function AboutSection({ viewDetails }: AboutSectionProps) {
               nothing about what will happen next. Past performance, especially perfect-hindsight
               past performance, does not indicate future results.
             </p>
+            {/* Issue #129 added The Call Board, a game about calling
+                *future* sessions, directly below the results on the same
+                page -- which sits awkwardly next to a flat "not a
+                predictor" line unless the two are told apart explicitly.
+                The disclaimer above is deliberately unchanged: this
+                paragraph adds the distinction rather than softening it.
+                Raised as an open product-copy question on issue #129's
+                own PR rather than resolved silently either way. */}
+            <p className="mt-3">
+              The Call Board on this page is a separate practice game, not part of that hindsight
+              analysis and not an exception to the line above. It scores your own guesses about the
+              next few trading sessions against what actually happened, so you can see for yourself
+              how hard short-term calls are. Nothing in it forecasts anything, and a good score is
+              not evidence that anyone -- this app or you -- can predict the market.
+            </p>
           </div>
 
           {/* Matches PortfolioChart's own nested details/summary
