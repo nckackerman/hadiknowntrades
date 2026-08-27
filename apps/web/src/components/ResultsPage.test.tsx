@@ -301,20 +301,22 @@ describe("ResultsPage", () => {
 
       // The view's own result comes from exactly one of useResults /
       // useCustomResults -- never both (see ResultsPage.tsx). The Call
-      // Board (issue #129) and the daily hero (issue #161) both
-      // independently fetch a preset range's result too, but for
-      // completely unrelated reasons -- the Call Board reads only that
-      // result's range-independent `benchmarkSeries` (issue #126); the
-      // daily hero reads only its `days` array for the most recently
-      // completed trading day (issue #161) -- and both always ask for
-      // the same fixed range (1W) regardless of what the page is
-      // showing, so neither can be confused for the view's own result
-      // fetch.
+      // Board (issue #129), the daily hero (issue #161), and the
+      // header's own date chip (issue #187) all independently fetch a
+      // preset range's result too, but for completely unrelated reasons
+      // -- the Call Board reads only that result's range-independent
+      // `benchmarkSeries` (issue #126); the daily hero and the header
+      // chip each read only its `days` array for the most recently
+      // completed trading day, via the same useDailyChallenge(mode) hook
+      // (issue #161/#187) -- and all three always ask for the same fixed
+      // range (1W) regardless of what the page is showing, so none of
+      // them can be confused for the view's own result fetch.
       const requested = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.map(
         (call) => call[0] as string,
       );
       expect(requested.filter((url) => url.includes("range="))).toEqual([
         `/api/results?range=${CALL_BOARD_SERIES_RANGE}`,
+        `/api/results?range=${DAILY_CHALLENGE_RANGE}`,
         `/api/results?range=${DAILY_CHALLENGE_RANGE}`,
       ]);
     });
@@ -704,17 +706,110 @@ describe("ResultsPage", () => {
     });
   });
 
-  describe("micro-header caption replaces the standalone onboarding banner (issue #165)", () => {
-    it("folds the onboarding sentence into the header caption, with no separate dismissible banner", () => {
+  describe("micro-header has no dismissible onboarding banner (issue #165)", () => {
+    it("renders the wordmark with no separate dismissible banner", () => {
       render(<ResultsPage />);
 
       expect(screen.getByRole("heading", { name: "Had I Known Trades" })).toBeInTheDocument();
-      expect(screen.getByText(/This is a hindsight toy: starting from \$20/)).toBeInTheDocument();
       // OnboardingIntro.tsx (issue #64) is deleted outright, not just
       // hidden -- its own role="note" wrapper and dismiss button no
       // longer exist anywhere on the page.
       expect(screen.queryByRole("note")).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Dismiss intro" })).not.toBeInTheDocument();
+    });
+  });
+
+  describe("date chip, tagline removal, and footer note (issue #187)", () => {
+    it("removes the issue #165 tagline paragraph from under the page title", () => {
+      render(<ResultsPage />);
+
+      expect(
+        screen.queryByText(/This is a hindsight toy: starting from \$20/),
+      ).not.toBeInTheDocument();
+    });
+
+    it("renders no date chip next to the title while the header's own fetch is unresolved", () => {
+      render(<ResultsPage />);
+
+      // The default beforeEach stub never resolves /api/results?range=1W
+      // (the header's own useDailyChallenge(mode) call, per issue #187) --
+      // the chip degrades to rendering nothing rather than a broken/empty
+      // pill while loading.
+      expect(screen.queryByText(/Yesterday ·/)).not.toBeInTheDocument();
+    });
+
+    it("renders the date chip next to the title once the header's own fetch resolves to a real day", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((input: RequestInfo | URL) => {
+          const url = typeof input === "string" ? input : input.toString();
+          if (url.startsWith("/api/custom-anchors")) {
+            return Promise.resolve(
+              new Response(
+                JSON.stringify({ schemaVersion: RESULTS_SCHEMA_VERSION, anchors: TEST_ANCHORS }),
+                { status: 200 },
+              ),
+            );
+          }
+          if (url.includes("range=")) {
+            return Promise.resolve(
+              new Response(
+                JSON.stringify({
+                  schemaVersion: RESULTS_SCHEMA_VERSION,
+                  model: "intraday-daily",
+                  range: "1W",
+                  generatedAt: "2026-08-27T00:00:00.000Z",
+                  dataAsOf: "2026-08-26",
+                  startDate: "2026-08-20",
+                  endDate: "2026-08-26",
+                  maxTradesPerDay: 3,
+                  startingCapital: 20,
+                  days: [
+                    {
+                      date: "2026-08-26",
+                      startingCapital: 20,
+                      endingBalance: 21,
+                      barIntervalMinutes: 60,
+                      trades: [],
+                      worstCase: { startingCapital: 20, endingBalance: 19, trades: [] },
+                    },
+                  ],
+                  benchmark: null,
+                  benchmarkSeries: null,
+                  universeSize: 503,
+                  skippedTickers: [],
+                }),
+                { status: 200 },
+              ),
+            );
+          }
+          return new Promise(() => {});
+        }),
+      );
+      render(<ResultsPage />);
+
+      const chip = await screen.findByText(/Yesterday · Aug 26, 2026/);
+      // Next to the h1, inside the header itself -- not inside the daily
+      // hero showcase box (see DailyHero.test.tsx's own coverage that no
+      // date text remains there).
+      const header = screen.getByRole("heading", { name: "Had I Known Trades" }).closest("header");
+      expect(header).toContainElement(chip);
+    });
+
+    it('adds a footer note as the page\'s last element, pointing at "Explore other windows"', () => {
+      const { container } = render(<ResultsPage />);
+
+      const column = container.firstElementChild!;
+      const footer = screen.getByText(/Hindsight only, from at most 3 trades/);
+      expect(footer.tagName).toBe("FOOTER");
+      // The very last element in the page's own top-level column -- after
+      // the "Explore other windows" <details>, not before it.
+      expect(column.lastElementChild).toBe(footer);
+      const explorer = screen.getByText("Explore other windows").closest("details")!;
+      expect(
+        explorer.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(footer).toHaveTextContent(/Explore other windows/);
     });
   });
 });
