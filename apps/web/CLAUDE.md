@@ -7285,3 +7285,97 @@ Board" }).closest("section")` keep passing completely unmodified --
   Zero console/page errors across every pass. The temporary `playwright`
   devDependency and all verification scripts were reverted before
   committing, per this file's own established convention.
+
+## Hide the replay chart until "Watch it happen" is clicked (issue #162)
+
+Two independent gates, one new (the daily hero, which had no chart at
+all before this issue -- see #161's own "Not verified live"/Scope notes
+above) and one added on top of existing behavior (`WholeRangeReplay`,
+whose chart used to render statically the moment the whole-range guess
+was revealed). `TradeReplay.tsx` (the window-model 5Y/MAX/custom-anchor
+chart) is untouched, per this issue's own explicit Out of scope --
+`use-trade-replay.ts`'s state machine, pacing constants, and
+`PortfolioChart.tsx`'s own `revealedCount`/`interactive`/`inert`
+mechanics all keep working exactly as issue #96's long review history
+already established; this issue only changes _whether/when_ a chart
+mounts, never how it behaves once mounted.
+
+- **`DailyHero.tsx` gained a plain local `chartRevealed` boolean**, not
+  `use-trade-replay.ts`'s `idle`/`rewinding`/`playing`/`done` machine --
+  there's no playback animation here at all (this component's own
+  "deliberately not animated" doc-comment note, issue #161), just a
+  single click that mounts `PortfolioChart`. Since the daily hero never
+  had a chart before this issue, the series it feeds that chart is new
+  too: `deriveWholeRangeIntradaySeries(dailyChallenge.startingCapital, [
+{ date: dailyChallenge.date, trades: dailyChallenge.trades }])` -- that
+  function already builds exactly the right shape (one leading boundary
+  point, then each trade's open/flat/close steps, datetime-labeled) for
+  any list of `{ date, trades }` days; a single-day array is a natural,
+  un-special-cased use of it, not a second series-builder invented for
+  this issue. The `<button>`/chart pair sits between the ticker sequence
+  and the "See the trades ↓" scroll cue, reusing `TradeReplay.tsx`'s
+  already-exported `buttonClassName` so this reads as the same control
+  the rest of the app already has, not a new visual pattern. The button
+  stays visible after being clicked (matching the mockup's own
+  `after-desktop-expanded.png` -- a native `<details>`'s `<summary>`
+  never disappears either), and clicking it again is a harmless no-op.
+- **`WholeRangeReplay.tsx` gained a `chartRevealed = phase !== "idle" ||
+!canReplay` derived value**, gating its own `<PortfolioChart>` render
+  on top of the pre-existing `guess !== null` gate -- previously, once
+  the whole-range guess was revealed, the chart rendered immediately and
+  statically in its idle phase, defeating the point of a click-to-reveal
+  replay. **The `!canReplay` half of that expression is deliberate, not
+  an oversight**: when there's no "Watch it happen" button to ever click
+  at all (`canReplay` is `false` -- zero trades, reduced motion, or an
+  unsupported range, i.e. `replaySupported` false), the chart still
+  renders immediately, unconditionally, the same "zero information
+  loss" precedent `TradeReplay.tsx`'s own reduced-motion note already
+  establishes for the window model. A permanently un-revealable chart
+  would be a real regression this issue never intended -- the existing
+  `WholeRangeReplay.test.tsx` tests for the zero-trade/reduced-motion/
+  unsupported-range cases (which already asserted the chart renders
+  immediately, pre-#162) needed **no changes** for this reason: those
+  are exactly the cases `!canReplay` covers.
+  - **A genuine `points`-identity reset (a mode/starting-capital edit
+    mid-playback) re-hides the chart, treated the same as a fresh,
+    not-yet-watched result.** `use-trade-replay.ts`'s own
+    `useResetWhenChanged` already resets `phase` back to `"idle"` on
+    such a change (issue #96's own established mechanism) -- since
+    `chartRevealed` derives from `phase`, this falls out for free with
+    no new reset logic of its own, and is regression-tested in
+    `WholeRangeReplay.test.tsx`.
+- **`ResultsPanel.test.tsx` needed several real updates, not just new
+  assertions** -- every existing test that asserted the whole-range
+  chart (`getByRole("img", { name: /portfolio value over time/i })`) was
+  present immediately after `submitWholeRangeGuess` (a shared test
+  helper covering the guess-then-reveal flow) now also needs an explicit
+  click on "Watch it happen" first. **A `getByRole("img")` query alone
+  isn't enough to confirm the chart mounted, though** -- right after
+  that click, `phase` is `"rewinding"`/`"playing"` (`showLive` false),
+  so `PortfolioChart`'s own `interactive={false}` sets `aria-hidden` on
+  its wrapper (issue #96 follow-up round two's `inert` fix), which
+  makes `getByRole("img")` return nothing even though the chart is
+  genuinely in the DOM -- exactly the same "role query can't see it
+  mid-animation" gap `WholeRangeReplay.test.tsx`'s own "clicking Watch
+  it happen swaps only the headline/worst-case-adjacent overlay..." test
+  already demonstrates. Fixed by asserting DOM presence directly
+  (`container.querySelector("svg")`) rather than the accessible role for
+  every post-click check in this file, matching this issue's own
+  acceptance criterion wording ("verify via a DOM query, not just visual
+  absence").
+- **Live-verified** via the documented no-root headless-Chromium
+  workaround against a real local pipeline run (`local-run.ts`, the
+  default 20-ticker sample, real Yahoo network calls) plus `next
+build`/`next start` (not `next dev` -- see issue #123's own note above
+  on why headless Chromium can't hydrate a dev-mode page in this
+  sandbox): confirmed a real page load has **zero** `<svg>` elements
+  anywhere before any click; clicking the daily hero's own "Watch it
+  happen" brings that count to one; submitting the whole-range guess for
+  the real 1W result leaves the count unchanged at one (the whole-range
+  chart still un-mounted); clicking that section's own "Watch it happen"
+  brings the count to two, with the real rewind beat ("Watching Aug 21,
+  2026") and gridlines visible mid-reveal. Zero console errors or
+  `pageerror` events across the whole run. The temporary `playwright`
+  devDependency and the `apt-get download`/`dpkg-deb -x`-extracted
+  shared libraries were both reverted before committing, per this file's
+  own established convention.

@@ -76,15 +76,26 @@ describe("WholeRangeReplay (issue #105)", () => {
       expect(container.querySelector("svg")).toBeNull();
     });
 
-    it("renders the button and chart once the guess is revealed", () => {
-      render(<WholeRangeReplay {...BASE_PROPS} />);
+    it("renders the button once the guess is revealed, but not the chart until it's clicked (issue #162)", async () => {
+      createRafPump();
+      const user = userEvent.setup();
+      const { container } = render(<WholeRangeReplay {...BASE_PROPS} />);
 
       expect(screen.getByRole("button", { name: "Watch it happen" })).toBeInTheDocument();
-      expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+      // Genuinely absent from the DOM, not just visually hidden -- same
+      // bar issue #162's own acceptance criteria set for the daily hero.
+      expect(screen.queryByRole("img", { name: /portfolio value over time/i })).toBeNull();
+      expect(container.querySelector("svg")).toBeNull();
       expect(statusRegion()).toHaveTextContent("");
+
+      await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+
+      expect(container.querySelector("svg")).not.toBeNull();
     });
 
-    it("renders children (issue #105 code review finding) only once revealed, between the button row and the chart -- mirroring TradeReplay.tsx's own children slot so BenchmarkStat/the methodology paragraph keep their pre-#105 relative position against the chart", () => {
+    it("renders children (issue #105 code review finding) only once revealed, between the button row and the chart -- mirroring TradeReplay.tsx's own children slot so BenchmarkStat/the methodology paragraph keep their pre-#105 relative position against the chart", async () => {
+      createRafPump();
+      const user = userEvent.setup();
       const { container, rerender } = render(
         <WholeRangeReplay {...BASE_PROPS} guess={null} guessStartingCapital={null} points={[]}>
           <p data-testid="probe">probe content</p>
@@ -101,12 +112,16 @@ describe("WholeRangeReplay (issue #105)", () => {
 
       const probe = screen.getByTestId("probe");
       expect(probe).toBeInTheDocument();
-      // The probe sits after the button row and before the chart's own
-      // <svg>, matching the real order BenchmarkStat/the paragraph had
-      // before this issue.
+      // The probe sits after the button row, before the chart's own
+      // <svg> even exists -- click "Watch it happen" (issue #162) to
+      // reveal it, matching the real order BenchmarkStat/the paragraph
+      // had before issue #105.
       const button = screen.getByRole("button", { name: "Watch it happen" });
-      const svg = container.querySelector("svg")!;
       expect(button.compareDocumentPosition(probe) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+      await user.click(button);
+
+      const svg = container.querySelector("svg")!;
       expect(probe.compareDocumentPosition(svg) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
   });
@@ -230,17 +245,19 @@ describe("WholeRangeReplay (issue #105)", () => {
     expect(screen.queryByRole("button", { name: /watch it happen/i })).not.toBeInTheDocument();
   });
 
-  it("a genuine points-identity change (a mode/starting-capital edit) resets playback back to idle", async () => {
+  it("a genuine points-identity change (a mode/starting-capital edit) resets playback back to idle, re-hiding the chart until it's watched again (issue #162)", async () => {
     createRafPump();
     const user = userEvent.setup();
-    const { rerender } = render(<WholeRangeReplay {...BASE_PROPS} />);
+    const { container, rerender } = render(<WholeRangeReplay {...BASE_PROPS} />);
 
     await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+    expect(container.querySelector("svg")).not.toBeNull();
 
     const RESCALED_POINTS: PortfolioPoint[] = POINTS.map((p) => ({ ...p, value: p.value * 2 }));
     rerender(<WholeRangeReplay {...BASE_PROPS} points={RESCALED_POINTS} />);
 
     expect(screen.getByRole("button", { name: "Watch it happen" })).toBeInTheDocument();
+    expect(container.querySelector("svg")).toBeNull();
   });
 
   it("the worst-case figure is rescaled from its own raw/native-root pair (issue #105's own contract, not a pre-rescaled one)", () => {

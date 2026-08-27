@@ -1,4 +1,5 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { IntradayDayResult, IntradayTrade } from "@hadiknowntrades/core";
@@ -104,6 +105,33 @@ describe("DailyHero", () => {
 
     const scrollCue = screen.getByRole("link", { name: "See the trades ↓" });
     expect(scrollCue).toHaveAttribute("href", "#daily-hero-trades");
+  });
+
+  it('hides the chart until "Watch it happen" is clicked (issue #162)', async () => {
+    const user = userEvent.setup();
+    stubResultsFetch({ model: "intraday-daily", days: [day()] });
+    const { container } = render(<DailyHero mode="long" />);
+
+    // Genuinely absent from the DOM, not just visually hidden -- the
+    // acceptance criterion is a DOM query, not a visual check.
+    await screen.findByText(/Yesterday · /);
+    expect(container.querySelector("svg")).toBeNull();
+    expect(screen.queryByRole("img", { name: /portfolio value over time/i })).toBeNull();
+
+    const button = screen.getByRole("button", { name: "Watch it happen" });
+    await user.click(button);
+
+    expect(container.querySelector("svg")).not.toBeNull();
+    expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+  });
+
+  it('does not render a "Watch it happen" button or chart for a zero-trade day', async () => {
+    stubResultsFetch({ model: "intraday-daily", days: [day({ trades: [] })] });
+    const { container } = render(<DailyHero mode="long" />);
+
+    await screen.findByText(/No trade would have beaten holding cash on/);
+    expect(screen.queryByRole("button", { name: "Watch it happen" })).toBeNull();
+    expect(container.querySelector("svg")).toBeNull();
   });
 
   it('renders a "Yesterday\'s trades" section narrating each trade in past tense, by time of day', async () => {

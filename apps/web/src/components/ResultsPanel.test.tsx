@@ -833,17 +833,24 @@ describe("ResultsPanel", () => {
         expect(screen.queryByText(/starting from \$20\.00/i)).not.toBeInTheDocument();
       });
 
-      it("reveals the whole-range figure, benchmark, and chart once the user submits a guess, and shows their guess alongside it", async () => {
+      it("reveals the whole-range figure and benchmark once the user submits a guess, and shows their guess alongside it -- but not the chart, until 'Watch it happen' is also clicked (issue #162)", async () => {
         const user = userEvent.setup();
         const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
-        render(<ResultsPanel range="1M" state={state} />);
+        const { container } = render(<ResultsPanel range="1M" state={state} />);
 
         await user.type(screen.getByLabelText(/what do you think it became/i), "30");
         await user.click(screen.getByRole("button", { name: "Reveal the answer" }));
 
         expect(screen.queryByRole("button", { name: "Reveal the answer" })).not.toBeInTheDocument();
-        expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+        expect(container.querySelector("svg")).toBeNull();
         expect(screen.getByText(/you guessed \$30\.00/i)).toBeInTheDocument();
+
+        // Clicking "Watch it happen" mounts the chart -- checked via a DOM
+        // query rather than its accessible role, since the chart is
+        // deliberately `aria-hidden`/`inert` (not queryable by role)
+        // while its own rewind/playing animation is in flight.
+        await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+        expect(container.querySelector("svg")).not.toBeNull();
       });
 
       it("rescales the 'You guessed' figure when starting capital changes after the reveal, instead of leaving it stuck at the value guessed under the old capital", async () => {
@@ -868,40 +875,48 @@ describe("ResultsPanel", () => {
       it("persists the guess across a simulated reload (re-mount with the same localStorage) and skips straight to the reveal", async () => {
         const user = userEvent.setup();
         const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
-        const { unmount } = render(<ResultsPanel range="1M" state={state} />);
+        const { container, unmount } = render(<ResultsPanel range="1M" state={state} />);
 
         await submitWholeRangeGuess(user);
-        expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+        expect(container.querySelector("svg")).not.toBeNull();
 
         unmount();
-        render(<ResultsPanel range="1M" state={state} />);
+        const { container: container2 } = render(<ResultsPanel range="1M" state={state} />);
 
         // No guess prompt on the "reload" -- straight to the revealed result.
         expect(screen.queryByRole("button", { name: "Reveal the answer" })).not.toBeInTheDocument();
-        expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+        // The chart itself needs its own fresh click (issue #162) -- a
+        // remount is a genuinely new, not-yet-watched replay, even though
+        // the underlying guess is already unlocked.
+        expect(container2.querySelector("svg")).toBeNull();
+        await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+        expect(container2.querySelector("svg")).not.toBeNull();
       });
 
       it("keeps the whole-range reveal in place when switching the selected day (guessing is range-scoped, not per-day)", async () => {
         const user = userEvent.setup();
         const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
-        const { rerender } = render(
+        const { container, rerender } = render(
           <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />,
         );
         await submitWholeRangeGuess(user);
-        expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+        expect(container.querySelector("svg")).not.toBeNull();
 
         rerender(<ResultsPanel range="1M" state={state} selectedDay="2026-08-20" />);
 
         expect(screen.queryByRole("button", { name: "Reveal the answer" })).not.toBeInTheDocument();
-        expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+        expect(container.querySelector("svg")).not.toBeNull();
       });
 
       it("re-prompts for a guess when the range changes, instead of skipping straight to reveal (a guess for one range must not satisfy another)", async () => {
         const user = userEvent.setup();
         const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
-        const { rerender } = render(<ResultsPanel range="1M" state={state} />);
+        const { container, rerender } = render(<ResultsPanel range="1M" state={state} />);
         await submitWholeRangeGuess(user);
-        expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+        expect(container.querySelector("svg")).not.toBeNull();
 
         rerender(<ResultsPanel range="3M" state={state} />);
         expect(screen.getByRole("button", { name: "Reveal the answer" })).toBeInTheDocument();
@@ -971,9 +986,10 @@ describe("ResultsPanel", () => {
     it("keeps the whole-range guess-gate independent per mode -- a guess made under long-only doesn't unlock the reveal for long-short (issue #91)", async () => {
       const user = userEvent.setup();
       const state: ResultsState = { status: "success", data: fixtureIntradayResult() };
-      const { rerender } = render(<ResultsPanel range="1M" state={state} mode="long" />);
+      const { container, rerender } = render(<ResultsPanel range="1M" state={state} mode="long" />);
       await submitWholeRangeGuess(user);
-      expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+      expect(container.querySelector("svg")).not.toBeNull();
 
       rerender(<ResultsPanel range="1M" state={state} mode="long-short" />);
       expect(screen.getByRole("button", { name: "Reveal the answer" })).toBeInTheDocument();
@@ -1198,24 +1214,33 @@ describe("ResultsPanel", () => {
         expect(within(headline).queryByText("$100.00")).not.toBeInTheDocument();
       });
 
-      it("renders WholeRangeReplay (not a bare PortfolioChart) once revealed on 1W -- a 'Watch it happen' button now exists there, which the old bare chart call never had", async () => {
+      it("renders WholeRangeReplay (not a bare PortfolioChart) once revealed on 1W -- a 'Watch it happen' button now exists there, which the old bare chart call never had, and the chart itself stays unmounted until it's clicked (issue #162)", async () => {
         const user = userEvent.setup();
         const state: ResultsState = { status: "success", data: fixtureChainedResult() };
-        render(<ResultsPanel range="1W" state={state} selectedDay="2026-08-21" />);
+        const { container } = render(
+          <ResultsPanel range="1W" state={state} selectedDay="2026-08-21" />,
+        );
         await submitWholeRangeGuess(user);
 
-        expect(screen.getByRole("button", { name: "Watch it happen" })).toBeInTheDocument();
-        expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+        const watchButton = screen.getByRole("button", { name: "Watch it happen" });
+        expect(watchButton).toBeInTheDocument();
+        expect(container.querySelector("svg")).toBeNull();
+
+        await user.click(watchButton);
+        expect(container.querySelector("svg")).not.toBeNull();
       });
 
       it("renders WholeRangeReplay's 'Watch it happen' button and its own whole-range worst-case stat on 1M too (issue #118 widened both from 1W-only to every intraday-daily range -- the per-day WorstCaseStat elsewhere on the page, issue #84, is unrelated and unaffected)", async () => {
         const user = userEvent.setup();
         const state: ResultsState = { status: "success", data: fixtureChainedResult() };
-        render(<ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />);
+        const { container } = render(
+          <ResultsPanel range="1M" state={state} selectedDay="2026-08-21" />,
+        );
         await submitWholeRangeGuess(user);
 
         expect(screen.getByRole("button", { name: "Watch it happen" })).toBeInTheDocument();
-        expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+        expect(container.querySelector("svg")).not.toBeNull();
 
         // Scoped to the whole-range headline's own row -- the per-day
         // detail view (issue #84) renders its own independent

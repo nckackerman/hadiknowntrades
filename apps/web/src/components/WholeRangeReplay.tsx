@@ -302,6 +302,19 @@ export const CHUNKED_WHOLE_RANGE_REPLAY_PACING: ReplayPacing = {
  * comment), so it renders as a plain visible callout line below the
  * button row instead, alongside the identical sentence already reaching
  * the sr-only status region.
+ *
+ * **The chart doesn't mount at all until "Watch it happen" is clicked
+ * (issue #162), on top of the pre-existing `guess !== null` gate.**
+ * Before this issue, once the whole-range guess was revealed, the chart
+ * still rendered immediately and statically in its idle phase -- this
+ * issue adds a second gate (`chartRevealed`, below) so there's nothing
+ * to scroll past until the user actually opts in, matching the same
+ * treatment the new daily-hero chart (`DailyHero.tsx`) got from the
+ * start. The one case that still shows the chart immediately: no
+ * "Watch it happen" button exists to click at all (`canReplay` false --
+ * zero trades, reduced motion, or `replaySupported` false) -- the same
+ * "zero information loss" precedent `TradeReplay.tsx`'s own reduced-
+ * motion note already establishes.
  */
 export function WholeRangeReplay({
   rangeLabel,
@@ -338,6 +351,21 @@ export function WholeRangeReplay({
   // regardless (see the button row below).
   const canReplay = canReplayFor(tradeCount, reducedMotionAtMount) && replaySupported;
   const showLive = isReplayLive(phase);
+
+  // Issue #162: the chart itself doesn't mount at all until "Watch it
+  // happen" is clicked (i.e. once `phase` leaves "idle") -- before this
+  // issue it rendered statically the moment the guess was revealed,
+  // defeating the point of a click-to-reveal replay. When there's no
+  // button to ever click at all (`canReplay` false: zero trades,
+  // reduced motion, or an unsupported range), the chart still renders
+  // immediately, unconditionally -- the same "zero information loss"
+  // precedent TradeReplay.tsx's own reduced-motion note already
+  // establishes for the window model; a chart with no possible way to
+  // reveal it would be a real regression, not this issue's intent. A
+  // genuine `points`-identity reset (a mode/capital edit) takes `phase`
+  // back to "idle", so the chart re-hides until watched again -- treated
+  // the same as a fresh, not-yet-revealed result.
+  const chartRevealed = phase !== "idle" || !canReplay;
 
   // Two mutually-exclusive callout voices (issue #118) -- see this
   // component's own doc comment for the full "why two" reasoning.
@@ -545,13 +573,15 @@ export function WholeRangeReplay({
 
           {children}
 
-          <PortfolioChart
-            key={chartKey}
-            points={points}
-            revealedCount={showLive ? undefined : frame.revealedCount}
-            interactive={showLive}
-            landing={landing}
-          />
+          {chartRevealed && (
+            <PortfolioChart
+              key={chartKey}
+              points={points}
+              revealedCount={showLive ? undefined : frame.revealedCount}
+              interactive={showLive}
+              landing={landing}
+            />
+          )}
         </>
       )}
     </>

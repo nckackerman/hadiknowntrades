@@ -33,16 +33,36 @@
 // own Scope asks for -- consistent with this app's other static figures
 // (`WorstCaseStat`, `BenchmarkStat`, the trade narration below), which
 // stay unanimated for the same reason.
+//
+// **Issue #162 adds the chart, hidden until "Watch it happen" is
+// clicked** -- issue #161 shipped this component with no chart at all
+// (see its own Scope), so the click-to-reveal behavior is built in from
+// the start rather than retrofitted onto an already-visible one. A
+// plain local `chartRevealed` boolean, not `use-trade-replay.ts`'s
+// idle/rewinding/playing/done state machine -- there is no playback
+// animation here at all (see the "deliberately not animated" note
+// above), just a single click that mounts the chart. Reuses
+// `PortfolioChart.tsx` (the same component the rest of the app uses),
+// fed by `deriveWholeRangeIntradaySeries` -- that function already
+// builds exactly this shape (one leading boundary point, then each
+// trade's open/flat/close steps, datetime-labeled) for any list of
+// `{ date, trades }` days; a single-day array is a natural, un-special-
+// cased use of it, not a second series-builder.
+
+import { useMemo, useState } from "react";
 
 import {
   heroMultiplierClassName,
   heroMultiplierColor,
   heroValueRowClassName,
 } from "@/components/HeroStat";
+import { PortfolioChart } from "@/components/PortfolioChart";
+import { buttonClassName } from "@/components/TradeReplay";
 import { formatHeroCurrency, formatMultiplier, formatPercent } from "@/lib/format-currency";
 import { formatDateWithWeekday, formatTime } from "@/lib/format-date";
 import type { Mode } from "@/lib/mode";
 import { narrateTrades, type TradeNarration } from "@/lib/narrate-trades";
+import { deriveWholeRangeIntradaySeries, type PortfolioPoint } from "@/lib/portfolio-series";
 import { useDailyChallenge } from "@/lib/use-daily-challenge";
 
 interface DailyHeroProps {
@@ -124,6 +144,19 @@ function TradeNarrationList({ narrations }: { narrations: TradeNarration[] }) {
  */
 export function DailyHero({ mode }: DailyHeroProps) {
   const { dailyChallenge, loading } = useDailyChallenge(mode);
+  // Called unconditionally, before the early returns below, per the
+  // Rules of Hooks -- `dailyChallenge` can be `null` (still loading, or
+  // nothing to show) on plenty of renders, so this can't wait until
+  // after those checks.
+  const [chartRevealed, setChartRevealed] = useState(false);
+  const points: PortfolioPoint[] = useMemo(() => {
+    if (dailyChallenge === null || dailyChallenge.trades.length === 0) {
+      return [];
+    }
+    return deriveWholeRangeIntradaySeries(dailyChallenge.startingCapital, [
+      { date: dailyChallenge.date, trades: dailyChallenge.trades },
+    ]);
+  }, [dailyChallenge]);
 
   if (loading) {
     return <LoadingCard />;
@@ -214,6 +247,12 @@ export function DailyHero({ mode }: DailyHeroProps) {
             </span>
           ))}
         </p>
+        <div className="flex flex-col items-start gap-3">
+          <button type="button" onClick={() => setChartRevealed(true)} className={buttonClassName}>
+            Watch it happen
+          </button>
+          {chartRevealed && <PortfolioChart points={points} />}
+        </div>
         <a
           href={`#${TRADES_SECTION_ID}`}
           className="text-sm text-[var(--text-secondary)] underline underline-offset-2"
