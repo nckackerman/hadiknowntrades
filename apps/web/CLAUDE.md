@@ -8534,3 +8534,59 @@ real design decision this issue made on its own was the `:has()`-based
 grid-collapse mechanism for the expanded state, which the mockup itself
 doesn't cover at all (it only shows the two tiles collapsed side by
 side, never expanded) -- documented above, not silently invented.
+
+### `high` code review, two findings, both addressed
+
+A `high` review of the PR above found the diff itself small, well-scoped
+and well-verified, with two lower-severity, plausible-risk findings --
+both about the new `:has()` mechanism specifically, since it's genuinely
+novel to this codebase:
+
+- **No fallback for a browser with zero `:has()` support at all**, which
+  would leave the grid permanently at two columns and squeeze an
+  expanded game into an unreadably narrow half-column with no error or
+  console signal. Fixed with a plain-CSS answer, not a JS one:
+  `globals.css` gained a `@supports not selector(:has(a))` block
+  targeting a new `.game-row-grid` marker class on the container (no
+  styling of its own -- purely a `@supports` target), forcing
+  `grid-template-columns: 1fr` whenever `:has()` itself isn't
+  understood. `@supports selector()` shipped in the same browser
+  releases as `:has()` itself (Chrome 105, Firefox 121, Safari 15.4), so
+  a browser that fails this specific `@supports` check reliably has no
+  `:has()` support either -- the same reasoning that makes it a safe
+  feature-detection gate here. **Verified two ways, since no
+  `:has()`-lacking browser engine was available to test against
+  directly**: (1) an isolated single-file HTML repro (two rules, one
+  base and one inside the exact `@supports not selector(:has(a))`
+  block, differing only in `grid-template-columns`) loaded directly in
+  this sandbox's real Chromium, confirming `CSS.supports("selector(:has(a))")`
+  reads `true` and the fallback rule's own `1fr` value is correctly
+  **not** applied -- i.e. the rule is syntactically valid CSS a real
+  engine understands, and inert (no accidental regression) in the
+  primary, `:has()`-supporting case every real visitor to this app hits
+  today. (2) The full real app re-verified afterward at 320/360/375/
+  1440px with real stress-test content (a played Beat the Bench session,
+  real Call Board picks) and through a real expand/collapse cycle --
+  identical results to the pre-fix pass, byte-for-byte
+  (`grid-template-columns: "344px 344px"` collapsed, `"704px"` expanded,
+  zero horizontal overflow, zero console/`pageerror` events), confirming
+  the new marker class and `@supports` block introduced no regression to
+  the primary mechanism.
+- **Only 390px and 1440px had been checked, not anything narrower.**
+  Re-verified live at 320px and 360px too (the practical floor for any
+  real device today), with the same real stress-test status-line
+  content ("0.13% ahead of the bench today", "2 of 3 called this week")
+  as the original 390px pass, not just first-visit placeholder-length
+  text. Both tiles still measured with zero horizontal overflow at every
+  width (`scrollWidth === clientWidth` exactly, 320/360/375px all
+  checked) and remained legible -- longer status lines wrap to more
+  lines at the narrowest width (up to 3, at 320px) but never overflow or
+  clip. No stacking deviation from the mockup's own side-by-side layout
+  was needed at any tested width, confirming the original finding: the
+  2-up grid holds up down to the realistic floor, not just the two
+  widths originally checked.
+
+All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
+931 passing, `pnpm format:check`) re-ran green after both fixes, on a
+tree confirmed clean of the temporary `playwright` devDependency
+(`git status`/`git diff package.json pnpm-lock.yaml` showing no trace).

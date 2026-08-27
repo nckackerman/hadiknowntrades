@@ -214,8 +214,18 @@ export function ResultsPage() {
           column -- both already rendered full-width, stacked, before
           this issue; the two `has-*` rules just keep that true once
           they're grid children too, instead of squeezing a fully
-          expanded game into an unreadably narrow half-column. */}
-      <div className="grid grid-cols-2 gap-4 has-[[data-bench-expanded]]:grid-cols-1 has-[details[open]]:grid-cols-1">
+          expanded game into an unreadably narrow half-column.
+
+          `game-row-grid` is a plain marker class (no styling of its
+          own) so `globals.css` can target this exact container with a
+          `@supports not selector(:has(a))` fallback rule -- a browser
+          with no `:has()` support at all would otherwise never match
+          either `has-*` rule above and could keep the grid at two
+          columns forever, permanently squeezing an expanded game into
+          an unreadably narrow half-column with no error or console
+          signal. See that rule's own doc comment for the full
+          reasoning. */}
+      <div className="game-row-grid grid grid-cols-2 gap-4 has-[[data-bench-expanded]]:grid-cols-1 has-[details[open]]:grid-cols-1">
         <BeatTheBench />
         <CallBoard />
       </div>

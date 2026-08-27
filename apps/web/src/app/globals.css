@@ -802,3 +802,37 @@ body {
     animation: none;
   }
 }
+
+/*
+ * Fallback for a browser with no :has() support at all (issue #178's
+ * own code-review finding). ResultsPage.tsx's 2-up game-tile grid
+ * (`.game-row-grid`) collapses itself to one column via
+ * has-[[data-bench-expanded]]/has-[details[open]] Tailwind variants the
+ * instant either tile expands into its full real game/board, since
+ * neither tile's own expanded content (Beat the Bench's playback
+ * controls, The Call Board's 3-slot picker) was ever designed to fit a
+ * 50%-width column. In a browser that doesn't understand :has() at all,
+ * those two rules simply never match anything, so the grid would stay
+ * at two columns forever, permanently squeezing an expanded game into
+ * an unreadably narrow half-column -- exactly the failure mode the
+ * has()-based mechanism exists to prevent, silently reappearing for
+ * exactly the browsers least likely to get a console warning about it.
+ *
+ * This block is the plain-CSS answer: `@supports not selector(:has(a))`
+ * is itself well-supported everywhere :has() is (both landed in the
+ * same browser releases -- Chrome 105, Firefox 121, Safari 15.4), so a
+ * browser that fails this check reliably has no :has() support either.
+ * In that case, skip the 2-up layout entirely and always stack full
+ * width -- the same layout both tiles already had before issue #178,
+ * just applied unconditionally instead of only pre-expand. Losing the
+ * 2-up arrangement while both tiles are collapsed is a real, accepted
+ * cosmetic cost in an essentially unreachable case today; never leaving
+ * a tile unreadably squeezed is the actual invariant worth protecting
+ * unconditionally, and this preserves it with zero JS and zero risk to
+ * the has()-based mechanism used everywhere else.
+ */
+@supports not selector(:has(a)) {
+  .game-row-grid {
+    grid-template-columns: 1fr;
+  }
+}
