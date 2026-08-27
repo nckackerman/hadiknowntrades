@@ -7188,3 +7188,100 @@ mockup-simplified.html` (added by issue #160, already on `main` before
   PR's own CI red for a reason this issue didn't cause) and per this
   repo's standing engineering-excellence convention of fixing a found
   issue rather than routing around it.
+
+## The Call Board becomes an immediate "Think you know the future?" CTA (issue #164)
+
+Second build issue in the same UI-simplification pass as #161 above.
+`CallBoard.tsx` used to render the full 3-slot picker, history strip and
+stats row unconditionally, full-size (issue #129). It now renders a
+compact card by default -- an icon, "Think you know the future?", a
+subtitle, and a status line ("N of 3 called this week") -- that expands
+in place to the exact same board on click. **`lib/call-board-scoring.ts`
+/ `call-board-storage.ts` / `market-calendar.ts` / `use-call-board.ts`
+are all completely untouched** -- purely presentational, per the issue's
+own Scope; confirmed via `git diff --stat` that this PR touches only
+`CallBoard.tsx` and its own test file.
+
+- **Mount point in `ResultsPage.tsx` needed no change at all.** The
+  issue asked for `CallBoard` to become a direct sibling immediately
+  after the "Beat the Bench" CTA (issue #163, built in parallel) -- and
+  `<CallBoard />` already sits directly after `<BeatTheBench />` there
+  (both post-`<ResultsPanel>`, per issue #122's standing decision), so
+  this issue's own diff to `ResultsPage.tsx` is empty. Worth knowing for
+  a future reader diffing this PR and expecting a `ResultsPage.tsx`
+  change that isn't there.
+- **The collapse/expand mechanism is a plain native `<details>`/
+  `<summary>`** -- the same disclosure idiom "More options"/
+  "Methodology & assumptions"/"View chart data as a table" already use
+  elsewhere in this app, not a hand-rolled `useState<boolean>`. The
+  summary's own content (icon, title, subtitle, status line) is a shared
+  `CallBoardSummaryRow` component, used both by the real interactive
+  `<summary>` and by the pre-hydration placeholder below -- the two can
+  never drift in size, which is what makes swapping one for the other
+  free of layout shift.
+- **The outer `<section>` + its sr-only `<h2 id="call-board-heading">The
+Call Board</h2>` render unconditionally, before the hydration branch**
+  -- this section's own placement/landmark identity never depends on
+  `useCallBoard`'s state, only the card content inside it does. This is
+  also what let every pre-existing `ResultsPage.test.tsx` assertion that
+  locates the board via `screen.getByRole("heading", { name: "The Call
+Board" }).closest("section")` keep passing completely unmodified --
+  the visible CTA title ("Think you know the future?") is new, but the
+  accessible landmark name a test (or a screen-reader user navigating by
+  heading) finds is unchanged.
+- **Pre-hydration inert placeholder, mirroring the deleted
+  `PLACEHOLDER_SLOTS`' own reasoning one level up.** Before
+  `useCallBoard`'s mount-time correction, `CallBoard` renders a plain
+  `aria-hidden` `<div>` -- not a `<details>`/`<summary>` -- with the
+  identical `CallBoardSummaryRow` markup as the real card, except the
+  status line is a non-breaking space rather than a real "0 of 3 called"
+  figure. Two reasons this is stricter than "just show the real card
+  early": (1) `board.openCalls` is genuinely `[]` in `UNHYDRATED_VIEW`
+  (see `use-call-board.ts`'s own doc comment) -- the lookahead itself is
+  clock-derived, so there is nothing real to report yet; (2) a plain
+  `<div>` means there is no focusable/toggleable element in the tree
+  before there's anything real to show, matching the same
+  belt-and-suspenders posture `PLACEHOLDER_SLOTS`' own disabled buttons
+  established. Title and subtitle are constant strings (not
+  clock/storage-derived), so showing them early is safe and is what
+  makes the placeholder actually look like the real card rather than an
+  empty box -- reserving its exact footprint so nothing shifts once
+  hydration lands.
+- **This dramatically simplified the full board's own slot rendering**:
+  since the picker only ever renders once `useCallBoard` has genuinely
+  hydrated (the placeholder branch handles the "not yet" case one level
+  up), `board.openCalls` is always real, non-null dates by the time the
+  `<ul>` map runs -- no more `isPlaceholder`/null-date branching inside
+  each `<li>`, and the old `BoardSlot`/`PLACEHOLDER_SLOTS` types are
+  gone outright, not just superseded.
+- **Live-verified, not just unit-tested, that this is a real, reproduced
+  hydration-safety story, not a theoretical one** -- the same
+  fake-only-the-client's-clock technique issue #129's own verification
+  (and issue #96's) established: a headless-Chromium pass with the
+  client's `Date` faked to a Wednesday before 9:30 ET (so the server and
+  the faked client clock can genuinely disagree) logged zero console/
+  page errors, confirming no hydration mismatch survived the
+  restructuring. A same-clock screenshot pass would not catch this class
+  of bug -- server and client happen to agree by coincidence whenever
+  their clocks match.
+- **Live-verified end to end against a real local pipeline run**
+  (`local-run.ts`, the default 20-ticker sample, real Yahoo network
+  calls) plus `next build`/`next start` (not `next dev` -- see issue
+  #123's own note on hydration failing there) and the documented
+  no-root headless-Chromium workaround: the collapsed card renders
+  "🔮 Think you know the future? / Call the next 3 sessions, up or down,
+  before they open. / 0 of 3 called this week" with the real `<details>`
+  genuinely closed (`open` attribute absent); clicking the summary sets
+  `open` and reveals the real 3-slot picker/stats/history unchanged from
+  before this issue; making a real pick ("Up" on the first open slot)
+  updates the status line to "1 of 3 called this week" live; reloading
+  the page shows the card collapsed again by default with the pick still
+  reflected in the status line, confirming the localStorage-backed pick
+  genuinely persists and locks correctly through the new compact-card
+  wrapper, not just inside a still-expanded session. Screenshotted at
+  1280px and 375px -- zero horizontal overflow at either width, and
+  `<h2>` document order confirms `CallBoard` still sits directly after
+  `BeatTheBench` and directly before `DailyRitual`'s "Today, so far".
+  Zero console/page errors across every pass. The temporary `playwright`
+  devDependency and all verification scripts were reverted before
+  committing, per this file's own established convention.
