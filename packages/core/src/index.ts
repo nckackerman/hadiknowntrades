@@ -65,14 +65,26 @@ export {
 } from "./custom-range-anchors";
 export type { AnchorDate } from "./custom-range-anchors";
 
+export { buildIntradaySessions, MIN_CLOSED_SESSION_SPAN_MINUTES } from "./intraday-sessions";
+export type { IntradaySession } from "./intraday-sessions";
+
 export {
   resultKey,
   customResultKey,
   CUSTOM_ANCHORS_MANIFEST_KEY,
+  MYSTERY_INDEX_KEY,
+  MYSTERY_POOL_MANIFEST_KEY,
+  MYSTERY_SESSION_IDS,
+  mysterySessionKey,
   RESULTS_SCHEMA_VERSION,
+  TODAYS_CLOSE_SESSION_KEY,
   validatePrecomputedResult,
   validateCustomWindowResult,
   validateCustomAnchorsManifest,
+  validateMysteryIndex,
+  validateMysteryPoolManifest,
+  validateMysterySession,
+  validateTodaysCloseSession,
   ResultValidationError,
 } from "./results-schema";
 export type {
@@ -81,7 +93,13 @@ export type {
   IntradayResult,
   CustomWindowResult,
   CustomAnchorsManifest,
+  MysteryIndex,
+  MysteryIndexEntry,
+  MysteryPoolManifest,
+  MysterySession,
   ResultModel,
+  SessionBar,
+  TodaysCloseSession,
   WorstCaseResult,
   LongShortResult,
   BenchmarkResult,

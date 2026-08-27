@@ -83,6 +83,55 @@ export function customResultKey(anchorDate: AnchorDate): string {
  */
 export const CUSTOM_ANCHORS_MANIFEST_KEY = "results/custom/index.json";
 
+/**
+ * The S3 key Beat the Bench's Today's Close session (TodaysCloseSession,
+ * below) is stored/read under (issue #127) -- one fixed key, overwritten
+ * each nightly run, the same idempotent "fixed key per object, not dated
+ * copies" property every other key in this file already has.
+ */
+export const TODAYS_CLOSE_SESSION_KEY = "results/beat-the-bench/today.json";
+
+/**
+ * The S3 key Beat the Bench's mystery-day pool manifest
+ * (MysteryPoolManifest, below) is stored/read under (issue #127) -- the
+ * *only* pool-wide object a client is allowed to fetch before Final
+ * Settlement. It publishes opaque session ids and nothing else: no dates,
+ * and no ordering that correlates with dates (see MysteryPoolManifest's
+ * own doc comment).
+ */
+export const MYSTERY_POOL_MANIFEST_KEY = "results/beat-the-bench/pool/index.json";
+
+/**
+ * The S3 key one pooled mystery session (MysterySession, below) is
+ * stored/read under (issue #127), addressed by its opaque session id --
+ * never by its real date, which is exactly the point.
+ *
+ * `sessionId` comes from MYSTERY_SESSION_IDS (a fixed, bounded slot list
+ * -- see that constant) rather than being freshly generated per run, so
+ * this key set stays fixed and every run simply overwrites it. A
+ * random-id-per-run scheme would instead orphan the whole previous run's
+ * objects every night, growing S3 without bound with no cleanup path --
+ * the exact accumulation this repo's "fixed key per range, overwritten
+ * each run, not accumulated as dated copies" rule exists to avoid.
+ */
+export function mysterySessionKey(sessionId: string): string {
+  return `results/beat-the-bench/pool/${sessionId}.json`;
+}
+
+/**
+ * The S3 key the mystery-day id -> real-date lookup (MysteryIndex, below)
+ * is stored/read under (issue #127). **This is the one object a client
+ * must not fetch until Final Settlement** -- it is deliberately the only
+ * place the pool's real dates exist at all.
+ *
+ * Kept at the top level of `results/` rather than under the
+ * `results/beat-the-bench/pool/` prefix the sessions it describes live
+ * under, on purpose: the secrecy-sensitive object shouldn't be something
+ * a client stumbles onto by walking the same prefix it already fetches
+ * from. Key name fixed by issue #127's own specification.
+ */
+export const MYSTERY_INDEX_KEY = "results/mystery-index.json";
+
 /** Which trading model produced a given PrecomputedResult -- see the module header comment. */
 export type ResultModel = "window" | "intraday-daily";
 
@@ -385,6 +434,187 @@ export interface CustomAnchorsManifest {
   /** Every currently-published anchor, ascending (oldest first) -- deliberately NOT customRangeAnchors' own newest-first order, since a calendar UI wants to walk forward through months. */
   anchors: AnchorDate[];
 }
+
+// --- Beat the Bench session payloads (issue #127) ---------------------
+//
+// Three stored object families, all written by apps/pipeline from one
+// SPY 5-minute fetch, all reusing RESULTS_SCHEMA_VERSION rather than
+// inventing a parallel version number (same writer/reader-drift risk,
+// same reasoning CustomAnchorsManifest's own doc comment already spells
+// out). **No version bump was needed to add them**: these are brand-new
+// objects at brand-new keys, not a shape change to anything an existing
+// reader already parses -- see that constant's own "bump when a shape
+// change is one a reader needs to know about" criterion.
+//
+// The mystery-day secrecy mechanism, specified by issue #127 rather than
+// left open, and why it takes this exact shape:
+//
+// This app has no live backend. Everything is precomputed nightly to S3
+// and served by a thin passthrough API, so "the server picks a random day
+// and only reveals it at the end" isn't available -- a client-side pick
+// would have to fetch the whole candidate pool, leaking every date in it.
+// And hiding a *label* isn't enough on its own either: IntradayBar.date
+// is a full local datetime per bar, so the bar data itself fingerprints
+// the day even with the label stripped.
+//
+// So the split is:
+//   - Each pooled day is written under an **opaque id** (MysterySession),
+//     with **time-of-day-only bar labels** -- no date component anywhere
+//     in the payload (see intraday-sessions.ts, which does the split).
+//   - The pool's ids are published on their own (MysteryPoolManifest),
+//     in an order uncorrelated with date, so a client can pick one at
+//     random without learning anything about any of them.
+//   - The id -> real date mapping lives alone in a separate small object
+//     (MysteryIndex) that issue #132's client fetches **only at Final
+//     Settlement**.
+//
+// **The accepted, explicitly out-of-scope limitation** (issue #127's own
+// wording): a technically-sophisticated user can correlate a session's
+// published prices against public SPY history and identify the day
+// anyway. Nothing short of not publishing real prices defends against
+// that, and this is a stakes-free toy. Two smaller variants of the same
+// class, worth naming rather than pretending don't exist: a
+// holiday-shortened session's distinctive bar count/end time narrows the
+// candidate set to a day or two on its own, and a session from the far
+// side of a DST transition carries hour-shifted labels (see
+// intraday-sessions.ts) that visibly separate it from the rest of the
+// pool.
+
+/**
+ * One bar of a Beat the Bench session -- **time-of-day only, no date
+ * component**, which is the entire point (see this section's header
+ * comment). `time` is "HH:MM:SS" in exchange-local time, matching
+ * IntradayTrade.openTime/closeTime's existing format so apps/web has one
+ * time-of-day convention rather than two.
+ */
+export interface SessionBar {
+  time: string;
+  close: number;
+}
+
+/**
+ * Fields every Beat the Bench session payload carries, whatever its mode.
+ *
+ * **Deliberately no `generatedAt` here**, unlike every other stored
+ * object in this file. An ISO run timestamp contains a YYYY-MM-DD
+ * substring, and keeping one on MysterySession would mean the
+ * "no date anywhere in this payload" guarantee could only ever be
+ * checked as "no date anywhere *except* this one field" -- a materially
+ * weaker, easier-to-erode contract than the mechanical, whole-payload
+ * scan validateMysterySession actually runs. The run timestamp is a
+ * pool-level property anyway, and MysteryPoolManifest still carries it.
+ */
+interface SessionBase {
+  schemaVersion: number;
+  /** Always "SPY" today (issue #127 scopes Beat the Bench to the benchmark ticker) -- a real field rather than an assumption baked into every reader, same posture as BenchmarkResult.ticker. */
+  ticker: string;
+  /** Bar granularity in minutes (5 today) -- same "stamped, not inferred" reasoning as IntradayDayResult.barIntervalMinutes. */
+  barIntervalMinutes: number;
+  /** This session's bars, ascending by time-of-day. Deliberately no assumed length: a regular session has ~78 five-minute bars and a real holiday half day ~39, and both are valid. */
+  bars: SessionBar[];
+}
+
+/**
+ * The most recently closed trading day, published transparently (issue
+ * #127's Today's Close mode). The real `date` is right here in the
+ * payload on purpose -- this mode has nothing to hide, and the player is
+ * told up front which day they're replaying.
+ */
+export interface TodaysCloseSession extends SessionBase {
+  /** ISO timestamp of the pipeline run that produced this session. */
+  generatedAt: string;
+  /** The real exchange-local trading date, YYYY-MM-DD. */
+  date: string;
+}
+
+/**
+ * One pooled candidate day for Mystery Day mode (issue #127), published
+ * under an opaque id with **no date field at all** -- not a nulled-out or
+ * redacted one, simply absent, so there's nothing for a future refactor
+ * to accidentally start populating.
+ */
+export interface MysterySession extends SessionBase {
+  /** This session's opaque pool-slot id -- see MYSTERY_SESSION_IDS. Carries no date information. */
+  sessionId: string;
+}
+
+/**
+ * The pool's published id list (issue #127) -- the only pool-wide object
+ * a client may fetch before Final Settlement.
+ *
+ * **`sessionIds` is sorted lexicographically by id, never by date, and
+ * that isn't cosmetic.** The pool is "the last N trading days," so if
+ * this list were in date order (or in any order derived from it), a
+ * client could recover every session's exact real date from its position
+ * alone -- defeating the whole mechanism without ever fetching
+ * MysteryIndex. Ids are assigned to dates by a fresh random permutation
+ * on every run (see apps/pipeline's buildBeatTheBenchSessions), so
+ * sorting by id is sorting by noise.
+ */
+export interface MysteryPoolManifest {
+  schemaVersion: number;
+  /**
+   * ISO timestamp of the pipeline run that published this pool.
+   *
+   * **This is the one place a date-shaped substring legitimately appears
+   * in a pre-settlement payload**, and it's safe for the same reason
+   * MysterySession drops its own copy: it's the *run* timestamp, identical
+   * for every session in the pool, so it says nothing about which real day
+   * any individual id maps to -- and the run date is something a client
+   * already knows from its own clock. It earns its place by giving issue
+   * #132 a way to notice pool rotation: slots are re-permuted every run
+   * (see MYSTERY_SESSION_IDS), so a session id picked from one run's
+   * manifest resolves to a *different* date against a later run's
+   * MysteryIndex. Comparing this against MysteryIndex.generatedAt at
+   * settlement is how a client detects that rather than silently
+   * revealing the wrong day.
+   */
+  generatedAt: string;
+  /** Every currently-published mystery session id, ascending by id (i.e. in no date-correlated order at all). */
+  sessionIds: string[];
+}
+
+/**
+ * The mystery-day id -> real-date lookup (issue #127), stored alone at
+ * MYSTERY_INDEX_KEY. **Fetched only at Final Settlement** -- issue #132
+ * owns that client-side discipline; this issue's job is to make sure the
+ * date lives *only* here, so "don't fetch this yet" is the single rule
+ * that has to hold rather than one of several.
+ */
+export interface MysteryIndex {
+  schemaVersion: number;
+  generatedAt: string;
+  /** One entry per published mystery session, ascending by sessionId -- matching MysteryPoolManifest.sessionIds' own order so the two are trivially diffable. */
+  entries: MysteryIndexEntry[];
+}
+
+/** One id -> real-date mapping in a MysteryIndex. */
+export interface MysteryIndexEntry {
+  sessionId: string;
+  /** The real exchange-local trading date this session came from, YYYY-MM-DD. */
+  date: string;
+}
+
+/**
+ * The fixed set of opaque mystery-session slot ids (issue #127).
+ *
+ * **A slot's number is NOT a chronological position** -- which real
+ * trading day lands in which slot is re-randomized on every pipeline run
+ * (see apps/pipeline's buildBeatTheBenchSessions). A stable
+ * date-to-slot assignment would make the id itself a date oracle, which
+ * is exactly what this scheme exists to prevent.
+ *
+ * Fixed and bounded rather than freshly generated per run so the S3 key
+ * set is fixed too -- see mysterySessionKey's own doc comment. 48 slots
+ * comfortably covers the most trading days that can fall inside the
+ * 59-calendar-day retention wall interval=5m imposes (at most ~43), with
+ * headroom, and a run that finds fewer eligible days simply uses fewer
+ * slots and publishes only those in the manifest.
+ */
+export const MYSTERY_SESSION_IDS: readonly string[] = Array.from(
+  { length: 48 },
+  (_, i) => `s${String(i + 1).padStart(2, "0")}`,
+);
 
 // --- Write-time self-validation (issue #47) ---------------------------
 //
@@ -1325,6 +1555,289 @@ export function validateCustomAnchorsManifest(result: CustomAnchorsManifest): vo
   if (problems.length > 0) {
     throw new ResultValidationError(
       `CustomAnchorsManifest failed schema self-validation (${problems.length} problem${problems.length === 1 ? "" : "s"}):\n` +
+        problems.map((p) => `  - ${p}`).join("\n"),
+    );
+  }
+}
+
+// --- Beat the Bench session validators (issue #127) -------------------
+
+/** A YYYY-MM-DD calendar date, anchored so it only matches a whole, well-formed date. */
+const DATE_STRING_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * A YYYY-MM-DD date *anywhere inside* a larger string -- deliberately
+ * unanchored, unlike DATE_STRING_PATTERN. This is what
+ * assertNoDateAnywhere scans a serialized MysterySession with, so it
+ * catches a date embedded in a field that isn't supposed to be a date at
+ * all ("2026-08-21T14:30:00" left in a bar's `time`, a date appended to
+ * a session id, a future field nobody thought about) rather than only a
+ * field that is exactly a date.
+ */
+const EMBEDDED_DATE_PATTERN = /\d{4}-\d{2}-\d{2}/;
+
+/** An exchange-local time-of-day, "HH:MM:SS" -- SessionBar.time's whole permitted vocabulary. */
+const TIME_OF_DAY_PATTERN = /^\d{2}:\d{2}:\d{2}$/;
+
+/**
+ * Validates the fields every Beat the Bench session payload shares
+ * (SessionBase), appending to `problems` -- the same "collect every
+ * problem, don't stop at the first" discipline every other validator in
+ * this file follows.
+ *
+ * `bars` is checked for well-formedness but deliberately **not** for
+ * length: a regular session and a real holiday-shortened half day have
+ * very different bar counts (~78 vs ~39 at five-minute granularity) and
+ * both are legitimate. The only cardinality rule is "at least two bars,"
+ * without which there's no price movement to play through at all.
+ */
+function validateSessionBase(s: Record<string, unknown>, problems: string[]): void {
+  if (s.schemaVersion !== RESULTS_SCHEMA_VERSION) {
+    problems.push(
+      `schemaVersion must be exactly ${RESULTS_SCHEMA_VERSION}, got ${describe(s.schemaVersion)}`,
+    );
+  }
+  if (!isNonEmptyString(s.ticker))
+    problems.push(`ticker must be a non-empty string, got ${describe(s.ticker)}`);
+  if (!isPositiveFiniteNumber(s.barIntervalMinutes))
+    problems.push(
+      `barIntervalMinutes must be a positive finite number, got ${describe(s.barIntervalMinutes)}`,
+    );
+
+  if (!Array.isArray(s.bars) || s.bars.length < 2) {
+    problems.push(`bars must be an array of at least 2 bars, got ${describe(s.bars)}`);
+    return;
+  }
+  s.bars.forEach((bar, i) => {
+    if (bar === null || typeof bar !== "object") {
+      problems.push(`bars[${i}] must be an object, got ${describe(bar)}`);
+      return;
+    }
+    const b = bar as Record<string, unknown>;
+    // The time-of-day format is checked as a real pattern, not just
+    // "non-empty string": SessionBar.time is the one field a full
+    // datetime could plausibly get written into by a future refactor
+    // (IntradayBar.date, its own source, IS a full datetime), and that
+    // would silently reintroduce a per-bar date fingerprint into every
+    // mystery payload.
+    if (typeof b.time !== "string" || !TIME_OF_DAY_PATTERN.test(b.time)) {
+      problems.push(`bars[${i}].time must be an "HH:MM:SS" string, got ${describe(b.time)}`);
+    }
+    if (!isPositiveFiniteNumber(b.close)) {
+      problems.push(`bars[${i}].close must be a positive finite number, got ${describe(b.close)}`);
+    }
+  });
+}
+
+/**
+ * Validates a TodaysCloseSession (issue #127) immediately before its own
+ * putObject, same write-time self-validation gate (issue #47) every other
+ * stored object in this file gets.
+ *
+ * This mode is intentionally transparent -- `date` is required to be
+ * present and well-formed, the exact opposite of what
+ * validateMysterySession enforces.
+ */
+export function validateTodaysCloseSession(session: TodaysCloseSession): void {
+  if (session === null || typeof session !== "object") {
+    throw new ResultValidationError(`session must be an object, got ${describe(session)}`);
+  }
+  const s = session as unknown as Record<string, unknown>;
+  const problems: string[] = [];
+
+  validateSessionBase(s, problems);
+  if (!isNonEmptyString(s.generatedAt))
+    problems.push(`generatedAt must be a non-empty string, got ${describe(s.generatedAt)}`);
+  if (typeof s.date !== "string" || !DATE_STRING_PATTERN.test(s.date)) {
+    problems.push(`date must be a "YYYY-MM-DD" string, got ${describe(s.date)}`);
+  }
+
+  throwIfProblems("TodaysCloseSession", problems);
+}
+
+/**
+ * Validates a MysterySession (issue #127) immediately before its own
+ * putObject.
+ *
+ * Beyond the ordinary shape checks, this is the write-time gate that
+ * enforces the mystery-day data contract itself: **no YYYY-MM-DD
+ * substring may appear anywhere in the serialized payload.** That's a
+ * whole-payload scan of the actual JSON, not a per-field allowlist, so it
+ * holds for fields that don't exist yet -- a future refactor that adds a
+ * `date`, or that starts writing IntradayBar's full datetime into
+ * `bars[].time`, fails this run loudly instead of silently publishing the
+ * answer. See this file's "Beat the Bench session payloads" section for
+ * why the payload has no `generatedAt` field, which is what lets the
+ * scan be unconditional rather than "except that one field."
+ */
+export function validateMysterySession(session: MysterySession): void {
+  if (session === null || typeof session !== "object") {
+    throw new ResultValidationError(`session must be an object, got ${describe(session)}`);
+  }
+  const s = session as unknown as Record<string, unknown>;
+  const problems: string[] = [];
+
+  validateSessionBase(s, problems);
+  if (!isNonEmptyString(s.sessionId))
+    problems.push(`sessionId must be a non-empty string, got ${describe(s.sessionId)}`);
+
+  let serialized: string | null = null;
+  try {
+    serialized = JSON.stringify(session);
+  } catch (error) {
+    problems.push(
+      `session must be JSON-serializable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (serialized !== null) {
+    const leak = EMBEDDED_DATE_PATTERN.exec(serialized);
+    if (leak) {
+      problems.push(
+        `a MysterySession must contain no calendar date anywhere in its payload, but found "${leak[0]}" ` +
+          `-- the real date belongs only in the MysteryIndex (${MYSTERY_INDEX_KEY}), fetched at Final Settlement`,
+      );
+    }
+  }
+
+  throwIfProblems("MysterySession", problems);
+}
+
+/**
+ * Validates a MysteryPoolManifest (issue #127).
+ *
+ * Checks `sessionIds` is a non-empty, strictly-ascending, duplicate-free
+ * list of ids drawn from MYSTERY_SESSION_IDS -- and, like
+ * validateMysterySession, that no calendar date has found its way into an
+ * id. Strict ascending order is the manifest's own documented contract
+ * (see MysteryPoolManifest): it's what guarantees the published order
+ * carries no date information.
+ */
+export function validateMysteryPoolManifest(manifest: MysteryPoolManifest): void {
+  if (manifest === null || typeof manifest !== "object") {
+    throw new ResultValidationError(`manifest must be an object, got ${describe(manifest)}`);
+  }
+  const m = manifest as unknown as Record<string, unknown>;
+  const problems: string[] = [];
+
+  if (m.schemaVersion !== RESULTS_SCHEMA_VERSION) {
+    problems.push(
+      `schemaVersion must be exactly ${RESULTS_SCHEMA_VERSION}, got ${describe(m.schemaVersion)}`,
+    );
+  }
+  if (!isNonEmptyString(m.generatedAt))
+    problems.push(`generatedAt must be a non-empty string, got ${describe(m.generatedAt)}`);
+
+  if (!Array.isArray(m.sessionIds) || m.sessionIds.length === 0) {
+    problems.push(`sessionIds must be a non-empty array, got ${describe(m.sessionIds)}`);
+  } else {
+    validateSessionIdList(m.sessionIds, "sessionIds", (entry) => entry, problems);
+  }
+
+  throwIfProblems("MysteryPoolManifest", problems);
+}
+
+/**
+ * Validates a MysteryIndex (issue #127) -- the one object that is
+ * *supposed* to carry the real dates, so this validator is the mirror
+ * image of validateMysterySession: every entry must have a well-formed
+ * date, not none.
+ *
+ * Entries are required to be strictly ascending by `sessionId` (matching
+ * MysteryPoolManifest's own order) with no duplicate id, so a settlement
+ * lookup can't silently resolve to whichever duplicate came first.
+ */
+export function validateMysteryIndex(index: MysteryIndex): void {
+  if (index === null || typeof index !== "object") {
+    throw new ResultValidationError(`index must be an object, got ${describe(index)}`);
+  }
+  const idx = index as unknown as Record<string, unknown>;
+  const problems: string[] = [];
+
+  if (idx.schemaVersion !== RESULTS_SCHEMA_VERSION) {
+    problems.push(
+      `schemaVersion must be exactly ${RESULTS_SCHEMA_VERSION}, got ${describe(idx.schemaVersion)}`,
+    );
+  }
+  if (!isNonEmptyString(idx.generatedAt))
+    problems.push(`generatedAt must be a non-empty string, got ${describe(idx.generatedAt)}`);
+
+  if (!Array.isArray(idx.entries) || idx.entries.length === 0) {
+    problems.push(`entries must be a non-empty array, got ${describe(idx.entries)}`);
+  } else {
+    idx.entries.forEach((entry, i) => {
+      if (entry === null || typeof entry !== "object") {
+        problems.push(`entries[${i}] must be an object, got ${describe(entry)}`);
+        return;
+      }
+      const e = entry as Record<string, unknown>;
+      if (typeof e.date !== "string" || !DATE_STRING_PATTERN.test(e.date)) {
+        problems.push(`entries[${i}].date must be a "YYYY-MM-DD" string, got ${describe(e.date)}`);
+      }
+    });
+    validateSessionIdList(
+      idx.entries,
+      "entries",
+      (entry) =>
+        entry !== null && typeof entry === "object"
+          ? (entry as Record<string, unknown>).sessionId
+          : entry,
+      problems,
+    );
+  }
+
+  throwIfProblems("MysteryIndex", problems);
+}
+
+/**
+ * Shared "these are real, known, strictly-ascending, date-free session
+ * ids" check behind both validateMysteryPoolManifest and
+ * validateMysteryIndex -- the two publish the same id list in the same
+ * order, just wrapped differently, so `idOf` is the only thing that
+ * differs between the two call sites.
+ */
+function validateSessionIdList(
+  entries: readonly unknown[],
+  path: string,
+  idOf: (entry: unknown) => unknown,
+  problems: string[],
+): void {
+  let previous: string | null = null;
+  let previousIndex: number | null = null;
+  entries.forEach((entry, i) => {
+    const id = idOf(entry);
+    if (!isNonEmptyString(id)) {
+      problems.push(`${path}[${i}].sessionId must be a non-empty string, got ${describe(id)}`);
+      return;
+    }
+    if (!MYSTERY_SESSION_IDS.includes(id)) {
+      problems.push(`${path}[${i}].sessionId "${id}" is not one of the known MYSTERY_SESSION_IDS`);
+    }
+    // Belt and braces against the id itself ever becoming date-derived --
+    // MYSTERY_SESSION_IDS makes that impossible today, but this list is
+    // published pre-settlement and an id that encoded its date would leak
+    // the entire pool at once.
+    if (EMBEDDED_DATE_PATTERN.test(id)) {
+      problems.push(`${path}[${i}].sessionId "${id}" must not contain a calendar date`);
+    }
+    if (previous !== null && previousIndex !== null) {
+      if (id === previous) {
+        problems.push(`${path}[${i}].sessionId ("${id}") duplicates ${path}[${previousIndex}]`);
+      } else if (id < previous) {
+        problems.push(
+          `${path}[${i}].sessionId ("${id}") is out of order -- must be strictly ascending, but comes before ${path}[${previousIndex}] ("${previous}")`,
+        );
+      }
+    }
+    previous = id;
+    previousIndex = i;
+  });
+}
+
+/** Shared throw-if-anything-went-wrong tail for the four validators above, matching every other validator's message shape in this file. */
+function throwIfProblems(typeName: string, problems: string[]): void {
+  if (problems.length > 0) {
+    throw new ResultValidationError(
+      `${typeName} failed schema self-validation (${problems.length} problem${problems.length === 1 ? "" : "s"}):\n` +
         problems.map((p) => `  - ${p}`).join("\n"),
     );
   }

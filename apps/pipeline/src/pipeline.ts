@@ -69,6 +69,7 @@
 import {
   anchorDateToDate,
   BlockedError,
+  buildIntradaySessions,
   collectTradingDates,
   customRangeAnchors,
   optimizeIntradayDays,
@@ -79,12 +80,21 @@ import {
   customResultKey,
   CUSTOM_ANCHORS_MANIFEST_KEY,
   daysBeforeUtc,
+  MYSTERY_INDEX_KEY,
+  MYSTERY_POOL_MANIFEST_KEY,
+  MYSTERY_SESSION_IDS,
+  mysterySessionKey,
   RESULTS_SCHEMA_VERSION,
+  TODAYS_CLOSE_SESSION_KEY,
   toDateString,
   UnexpectedResponseError,
   validatePrecomputedResult,
   validateCustomWindowResult,
   validateCustomAnchorsManifest,
+  validateMysteryIndex,
+  validateMysteryPoolManifest,
+  validateMysterySession,
+  validateTodaysCloseSession,
   type AnchorDate,
   type BenchmarkResult,
   type BenchmarkSeries,
@@ -94,9 +104,13 @@ import {
   type IntradayBar,
   type IntradayDayResult,
   type IntradayResult,
+  type MysteryIndex,
+  type MysteryPoolManifest,
+  type MysterySession,
   type OptimizationResult,
   type PrecomputedResult,
   type PresetRange,
+  type TodaysCloseSession,
   type WindowResult,
 } from "@hadiknowntrades/core";
 
@@ -136,6 +150,12 @@ const DEFAULT_WRITE_CONCURRENCY = 10;
 // months/years, and this needs a plain days-back offset instead (see
 // the imported daysBeforeUtc from @hadiknowntrades/core).
 const FIVE_MINUTE_LOOKBACK_DAYS = 59;
+// The bar granularity, in minutes, of everything fetchFiveMinuteBars
+// returns -- stamped onto every IntradayDayResult the 3M override
+// produces and onto every Beat the Bench session (issue #127). One named
+// constant rather than a `5` literal at each of those two call sites,
+// which is what "5 minutes" would otherwise be.
+const FIVE_MINUTE_BAR_INTERVAL_MINUTES = 5;
 // How far back to fetch 1-minute bars for (issue #29, upgrading 1M --
 // see packages/core/CLAUDE.md's "1-minute intraday bars" section). Same
 // "N-1, not N" reasoning as FIVE_MINUTE_LOOKBACK_DAYS above: Yahoo's
@@ -236,6 +256,19 @@ export interface RunPipelineOptions {
    * `buildCustomWindowResults` is called, not passed in from outside.
    */
   computeCustomAnchors?: boolean;
+  /**
+   * Uniform [0, 1) source used for exactly one thing: shuffling which
+   * real trading day lands in which opaque Beat the Bench mystery slot
+   * (issue #127 -- see buildBeatTheBenchSessions). Defaults to
+   * `Math.random`.
+   *
+   * Injectable rather than calling `Math.random` inline so a test can pin
+   * the permutation and assert on a specific id -> date assignment; a
+   * bare `Math.random()` would make any such assertion flaky by
+   * construction, which this repo treats as a bug to fix rather than
+   * tolerate.
+   */
+  random?: () => number;
 }
 
 interface UniverseFetchResult<TBar> {
@@ -816,6 +849,177 @@ async function fetchBenchmarkHistory(
     );
     return { closes: [], error: message };
   }
+}
+
+// --- Beat the Bench session data (issue #127) -------------------------
+
+/**
+ * Fetches SPY's 5-minute bars for Beat the Bench's two daily modes
+ * (issue #127) -- one request for one ticker, covering the whole
+ * FIVE_MINUTE_LOOKBACK_DAYS window, serving *both* Today's Close (the
+ * newest complete session) and the Mystery Day pool (everything older
+ * that's still inside the retention wall).
+ *
+ * Deliberately the same shape as fetchBenchmarkHistory above, not
+ * fetchUniverseHistory: one ticker means there is no "skip this one, keep
+ * going" decision to make, so the worker-pool-plus-abort-classification
+ * machinery buys nothing (see that function's own doc comment for the
+ * full argument). It reuses `options.fetchFiveMinuteBars` -- the same
+ * fetch function the 3M granularity override already carries -- rather
+ * than adding a fifth `fetch*Bars` field to RunPipelineOptions for the
+ * identical call.
+ *
+ * **Non-fatal, and this is a real judgment call rather than an obvious
+ * one.** A fetch failure here writes no session objects at all, which
+ * leaves the *previous* run's sessions in place -- so a persistent
+ * failure means Beat the Bench quietly replays an increasingly stale pool
+ * rather than visibly breaking, which is the shape of failure this
+ * pipeline's "must still fail the run" alerting normally exists to catch
+ * (see apps/pipeline/CLAUDE.md's "Two independent paths" section). It's
+ * treated as non-fatal anyway, for the same reason the benchmark fetch
+ * is: this is one extra ticker on an unofficial endpoint feeding a
+ * bonus game, and failing the whole nightly run over it would also throw
+ * away the freshness signal for all six real ranges. The fetch's status
+ * is always reported in runPipeline's aggregated error message for
+ * visibility, exactly like a granularity override's. Revisit if Beat the
+ * Bench ever becomes something the product depends on.
+ */
+async function fetchSessionBars(
+  fetchFn: RunPipelineOptions["fetchFiveMinuteBars"],
+  from: Date,
+  to: Date,
+): Promise<{ bars: IntradayBar[]; error: string | null }> {
+  try {
+    const bars = await fetchFn(BENCHMARK_TICKER, from, to);
+    return { bars, error: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `[pipeline] Beat the Bench session (${BENCHMARK_TICKER}) fetch failed, no session data written this run: ${message}`,
+    );
+    return { bars: [], error: message };
+  }
+}
+
+/** Everything one run publishes for Beat the Bench (issue #127) -- see buildBeatTheBenchSessions. */
+interface BeatTheBenchBuild {
+  /** The most recently closed session, published with its real date. */
+  today: TodaysCloseSession;
+  /** One opaque, date-free session per pooled candidate day. Empty when there was only one complete session to begin with. */
+  mysterySessions: MysterySession[];
+  /** The published id list, or null when there's no pool to publish (an empty manifest would fail its own validator's non-empty check, same as the custom-anchors manifest). */
+  poolManifest: MysteryPoolManifest | null;
+  /** The settlement-time id -> date lookup, or null under the same condition as poolManifest. */
+  mysteryIndex: MysteryIndex | null;
+}
+
+/**
+ * Turns one SPY 5-minute fetch into Beat the Bench's published session
+ * objects (issue #127).
+ *
+ * The split, and why each half looks the way it does:
+ *
+ * - **Today's Close** is the newest complete session, published verbatim
+ *   with its real date. This mode is meant to be transparent.
+ * - **Mystery Day** is every *older* complete session in the window,
+ *   published under an opaque slot id with no date anywhere in the
+ *   payload, plus a separate id -> date lookup a client only fetches at
+ *   Final Settlement. See results-schema.ts's "Beat the Bench session
+ *   payloads" section for the full mechanism and its accepted limits.
+ *
+ * **The newest session is excluded from the mystery pool**, not just
+ * duplicated into it: a player who has already played Today's Close would
+ * recognize the same price path instantly, which is both a poor
+ * experience and a free de-anonymization of one pool member.
+ *
+ * **Date-to-slot assignment is a fresh random permutation every run**,
+ * via the injected `random` (defaulting to Math.random, overridable for
+ * deterministic tests). This is the part that actually earns the word
+ * "opaque": the slot ids themselves are a fixed, published list, so if a
+ * date always landed in the same slot -- or even just in
+ * recency order -- the id would be a date oracle and the manifest alone
+ * would leak the whole pool without anyone fetching the index.
+ */
+function buildBeatTheBenchSessions(options: {
+  bars: readonly IntradayBar[];
+  generatedAt: string;
+  endDateString: string;
+  random: () => number;
+}): { build: BeatTheBenchBuild | null; failureReason: string | null } {
+  const { bars, generatedAt, endDateString, random } = options;
+
+  // Capped at the run's own requested end date the same way every fetch
+  // path's history already is (see fetchPathHistory) -- fetchFiveMinuteBars
+  // pads period2 by a day internally, so without this a run could publish
+  // a session from past its own asOf.
+  const sessions = buildIntradaySessions(bars).filter((s) => s.date <= endDateString);
+  if (sessions.length === 0) {
+    const reason = `no complete ${BENCHMARK_TICKER} session found in the 5-minute window (${bars.length} bar(s) fetched)`;
+    console.warn(`[pipeline] ${reason} -- no Beat the Bench data written this run`);
+    return { build: null, failureReason: reason };
+  }
+
+  const newest = sessions[sessions.length - 1]!;
+  const today: TodaysCloseSession = {
+    schemaVersion: RESULTS_SCHEMA_VERSION,
+    generatedAt,
+    ticker: BENCHMARK_TICKER,
+    date: newest.date,
+    barIntervalMinutes: FIVE_MINUTE_BAR_INTERVAL_MINUTES,
+    bars: newest.bars,
+  };
+
+  // Newest-first, then capped to the fixed slot count -- so if there are
+  // ever more eligible sessions than slots, it's the oldest ones that
+  // drop out rather than an arbitrary slice.
+  const poolCandidates = sessions.slice(0, -1).slice(-MYSTERY_SESSION_IDS.length);
+  if (poolCandidates.length === 0) {
+    return {
+      build: { today, mysterySessions: [], poolManifest: null, mysteryIndex: null },
+      failureReason: null,
+    };
+  }
+
+  const slotIds = MYSTERY_SESSION_IDS.slice(0, poolCandidates.length);
+  const shuffled = shuffleInPlace([...poolCandidates], random);
+  // slotIds is already ascending, so mapping over it yields sessions,
+  // manifest, and index all in the same ascending-by-id order every one
+  // of their validators requires -- no separate sort needed, and no
+  // chance of the three drifting into different orders.
+  const assignments = slotIds.map((sessionId, i) => ({ sessionId, session: shuffled[i]! }));
+
+  return {
+    build: {
+      today,
+      mysterySessions: assignments.map(({ sessionId, session }) => ({
+        schemaVersion: RESULTS_SCHEMA_VERSION,
+        ticker: BENCHMARK_TICKER,
+        sessionId,
+        barIntervalMinutes: FIVE_MINUTE_BAR_INTERVAL_MINUTES,
+        bars: session.bars,
+      })),
+      poolManifest: {
+        schemaVersion: RESULTS_SCHEMA_VERSION,
+        generatedAt,
+        sessionIds: assignments.map(({ sessionId }) => sessionId),
+      },
+      mysteryIndex: {
+        schemaVersion: RESULTS_SCHEMA_VERSION,
+        generatedAt,
+        entries: assignments.map(({ sessionId, session }) => ({ sessionId, date: session.date })),
+      },
+    },
+    failureReason: null,
+  };
+}
+
+/** Fisher-Yates, using an injected uniform [0, 1) source so a test can pin the permutation instead of asserting on Math.random. */
+function shuffleInPlace<T>(items: T[], random: () => number): T[] {
+  for (let i = items.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [items[i], items[j]] = [items[j]!, items[i]!];
+  }
+  return items;
 }
 
 /**
@@ -1508,7 +1712,7 @@ function buildGranularityOverrideSpecs(
     {
       ranges: ["3M"],
       label: "5-minute",
-      barIntervalMinutes: 5,
+      barIntervalMinutes: FIVE_MINUTE_BAR_INTERVAL_MINUTES,
       from: daysBeforeUtc(asOf, FIVE_MINUTE_LOOKBACK_DAYS),
       fetchBars: options.fetchFiveMinuteBars,
     },
@@ -1935,6 +2139,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   const earliestDate = options.earliestDate ?? DEFAULT_EARLIEST_DATE;
   const fetchConcurrency = options.fetchConcurrency ?? DEFAULT_FETCH_CONCURRENCY;
   const writeConcurrency = options.writeConcurrency ?? DEFAULT_WRITE_CONCURRENCY;
+  const random = options.random ?? Math.random;
   const endDateString = toDateString(asOf);
   // The intraday fetch covers exactly the widest intraday range (1Y),
   // then gets sliced locally for 3M/1M below -- same "fetch once, slice
@@ -1954,57 +2159,69 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // array (in `granularityOverrideSpecs` order) instead of separate named
   // bindings, since the whole point of that list is that its length
   // isn't hardcoded here.
-  const [windowFetch, intradayFetch, overrideOutcomes, benchmarkFetch] = await Promise.all([
-    fetchPathHistory(
-      "daily-close",
-      options.tickers,
-      earliestDate,
-      asOf,
-      options.fetchDailyCloses,
-      fetchConcurrency,
-      endDateString,
-      (p: DailyClose) => p.date,
-    ),
-    fetchPathHistory(
-      "intraday",
-      options.tickers,
-      intradayFrom,
-      asOf,
-      options.fetchIntradayBars,
-      fetchConcurrency,
-      endDateString,
-      (bar: IntradayBar) => localDatePart(bar.date),
-    ),
-    // Each override reuses fetchConcurrency rather than a separate,
-    // lower knob -- true even for issue #29's 1-minute override, whose
-    // fetchIntraday1mBars chunks each ticker's request internally: those
-    // chunks are issued *sequentially* per ticker, not concurrently, so
-    // peak simultaneous connections stays bounded by fetchConcurrency
-    // exactly like every other path regardless of an override's own
-    // request volume per ticker -- there's no burst-risk reason to lower
-    // it further, just a longer wall-clock time for that override's pool
-    // to finish.
-    Promise.all(
-      granularityOverrideSpecs.map((spec) =>
-        fetchPathHistory(
-          spec.label,
-          options.tickers,
-          spec.from,
-          asOf,
-          spec.fetchBars,
-          fetchConcurrency,
-          endDateString,
-          (bar: IntradayBar) => localDatePart(bar.date),
+  const [windowFetch, intradayFetch, overrideOutcomes, benchmarkFetch, sessionFetch] =
+    await Promise.all([
+      fetchPathHistory(
+        "daily-close",
+        options.tickers,
+        earliestDate,
+        asOf,
+        options.fetchDailyCloses,
+        fetchConcurrency,
+        endDateString,
+        (p: DailyClose) => p.date,
+      ),
+      fetchPathHistory(
+        "intraday",
+        options.tickers,
+        intradayFrom,
+        asOf,
+        options.fetchIntradayBars,
+        fetchConcurrency,
+        endDateString,
+        (bar: IntradayBar) => localDatePart(bar.date),
+      ),
+      // Each override reuses fetchConcurrency rather than a separate,
+      // lower knob -- true even for issue #29's 1-minute override, whose
+      // fetchIntraday1mBars chunks each ticker's request internally: those
+      // chunks are issued *sequentially* per ticker, not concurrently, so
+      // peak simultaneous connections stays bounded by fetchConcurrency
+      // exactly like every other path regardless of an override's own
+      // request volume per ticker -- there's no burst-risk reason to lower
+      // it further, just a longer wall-clock time for that override's pool
+      // to finish.
+      Promise.all(
+        granularityOverrideSpecs.map((spec) =>
+          fetchPathHistory(
+            spec.label,
+            options.tickers,
+            spec.from,
+            asOf,
+            spec.fetchBars,
+            fetchConcurrency,
+            endDateString,
+            (bar: IntradayBar) => localDatePart(bar.date),
+          ),
         ),
       ),
-    ),
-    // The buy-and-hold benchmark (issue #12) -- a single extra HTTP
-    // request per run (one ticker, not a ~503-ticker pool), negligible
-    // next to the paths above; see fetchBenchmarkHistory's own doc
-    // comment for why it deliberately skips fetchUniverseHistory's
-    // heavier machinery.
-    fetchBenchmarkHistory(options.fetchDailyCloses, earliestDate, asOf),
-  ]);
+      // The buy-and-hold benchmark (issue #12) -- a single extra HTTP
+      // request per run (one ticker, not a ~503-ticker pool), negligible
+      // next to the paths above; see fetchBenchmarkHistory's own doc
+      // comment for why it deliberately skips fetchUniverseHistory's
+      // heavier machinery.
+      fetchBenchmarkHistory(options.fetchDailyCloses, earliestDate, asOf),
+      // Beat the Bench's SPY session bars (issue #127) -- like the
+      // benchmark above, one extra request for one ticker, and non-fatal;
+      // see fetchSessionBars' own doc comment. Scoped to the same
+      // FIVE_MINUTE_LOOKBACK_DAYS window the 3M granularity override
+      // already uses, for the same reason: interval=5m's retention wall
+      // bites at exactly 60 days back, so 59 stays a full day inside it.
+      fetchSessionBars(
+        options.fetchFiveMinuteBars,
+        daysBeforeUtc(asOf, FIVE_MINUTE_LOOKBACK_DAYS),
+        asOf,
+      ),
+    ]);
   const overrideInputs: GranularityOverrideInput[] = granularityOverrideSpecs.map((spec, i) => ({
     spec,
     outcome: overrideOutcomes[i]!,
@@ -2160,6 +2377,21 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     ...customBuild.failures,
   ];
 
+  // Beat the Bench's session objects (issue #127) -- purely derived from
+  // the one extra SPY 5-minute fetch above, with no optimizer involvement
+  // at all, so there's nothing here to fold into computeFailures: the
+  // only way this comes back null is the fetch itself having failed or
+  // returned nothing playable, which is deliberately non-fatal (see
+  // fetchSessionBars' own doc comment) and is reported through
+  // `sessionStatus` in the aggregated error message instead.
+  const sessionBuild = buildBeatTheBenchSessions({
+    bars: sessionFetch.bars,
+    generatedAt,
+    endDateString,
+    random,
+  });
+  const sessionStatus = sessionFetch.error ?? sessionBuild.failureReason ?? "ok";
+
   // The published anchors manifest (issue #75) is computed further
   // below, once the actual per-anchor S3 write outcomes are known --
   // NOT here from customBuild.results (compute success alone) -- see
@@ -2260,7 +2492,56 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     validate: () => validateCustomWindowResult(result),
     body: JSON.stringify(result, null, 2),
   }));
-  const primaryWriteJobs = [...presetWriteJobs, ...customWriteJobs];
+  // Beat the Bench's session objects (issue #127). Deliberately appended
+  // *after* customWriteJobs, not interleaved: the anchors-manifest logic
+  // below correlates customResults[i] with
+  // primaryWriteOutcomes[presetWriteJobs.length + i] by shared index, so
+  // anything inserted ahead of customWriteJobs would silently break that
+  // correlation.
+  //
+  // Held to the same "must fail the run" write standard as every preset
+  // range and custom anchor, even though the *fetch* that produced them
+  // is non-fatal -- the two are genuinely different failures. A fetch
+  // failure means there was never any session data to store this run; a
+  // write failure means real, already-computed, already-validated data
+  // couldn't be stored, which is exactly the case this pipeline's only
+  // alerting mechanism exists for. Same split the granularity overrides
+  // already draw between a non-fatal fetch failure and a fatal solve
+  // failure (see BuildIntradayResultsOutcome's own doc comment).
+  const sessionWriteJobs: WriteJob[] = [];
+  if (sessionBuild.build) {
+    const { today, mysterySessions, poolManifest, mysteryIndex } = sessionBuild.build;
+    sessionWriteJobs.push({
+      key: TODAYS_CLOSE_SESSION_KEY,
+      label: "beat-the-bench:today",
+      validate: () => validateTodaysCloseSession(today),
+      body: JSON.stringify(today, null, 2),
+    });
+    for (const session of mysterySessions) {
+      sessionWriteJobs.push({
+        key: mysterySessionKey(session.sessionId),
+        label: `beat-the-bench:mystery:${session.sessionId}`,
+        validate: () => validateMysterySession(session),
+        body: JSON.stringify(session, null, 2),
+      });
+    }
+    if (poolManifest && mysteryIndex) {
+      sessionWriteJobs.push({
+        key: MYSTERY_POOL_MANIFEST_KEY,
+        label: "beat-the-bench:pool-manifest",
+        validate: () => validateMysteryPoolManifest(poolManifest),
+        body: JSON.stringify(poolManifest, null, 2),
+      });
+      sessionWriteJobs.push({
+        key: MYSTERY_INDEX_KEY,
+        label: "beat-the-bench:mystery-index",
+        validate: () => validateMysteryIndex(mysteryIndex),
+        body: JSON.stringify(mysteryIndex, null, 2),
+      });
+    }
+  }
+
+  const primaryWriteJobs = [...presetWriteJobs, ...customWriteJobs, ...sessionWriteJobs];
 
   const primaryWriteOutcomes = await mapWithConcurrency(
     primaryWriteJobs,
@@ -2442,6 +2723,11 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
       )
       .join(" ");
     const benchmarkStatusLine = `Benchmark (${BENCHMARK_TICKER}, non-fatal): ${benchmarkFetch.error ?? "ok"}.`;
+    // Reported for visibility even though it can't itself trigger this
+    // throw -- same posture as the granularity-override and benchmark
+    // status lines above; see fetchSessionBars' own doc comment for why
+    // this path is non-fatal.
+    const sessionStatusLine = `Beat the Bench sessions (${BENCHMARK_TICKER}, non-fatal): ${sessionStatus}.`;
     const writeFailureLines =
       failedWrites.length > 0
         ? ` Write failures (${failedWrites.length} of ${writeJobs.length} computed result(s)):\n` +
@@ -2474,11 +2760,20 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     // since the manifest is skipped entirely (no write attempted) when
     // there were zero custom-anchor results to publish -- see that
     // constant's own comment above.
+    //
+    // Beat the Bench's own objects (issue #127) are counted by how many
+    // were actually built, not by an "ideal" count -- unlike a preset
+    // range or a requested anchor, there is no fixed ideal here: the pool
+    // is however many complete sessions the rolling retention window
+    // happens to contain, and zero is a legitimate outcome of a
+    // deliberately non-fatal fetch failure rather than a gap worth
+    // counting against the run.
     const expectedResultCount =
       PRESET_RANGES.length +
       customAnchors.length -
       customBuild.validlySkippedCount +
-      (customAnchorsManifest ? 1 : 0);
+      (customAnchorsManifest ? 1 : 0) +
+      sessionWriteJobs.length;
     throw new Error(
       `pipeline: wrote ${writtenCount} of ${expectedResultCount} expected result(s) (${PRESET_RANGES.length} preset range(s), ${customAnchors.length} custom anchor(s) requested; ${writeJobs.length} actually computed), but at least one path or write failed -- ` +
         `failing this run so it doesn't silently succeed while that path goes stale. ` +
@@ -2486,6 +2781,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         `Intraday (1W/1M/3M/1Y) path: ${intradayFetch.failureReason ?? "ok"}. ` +
         `${overrideStatusLines} ` +
         `${benchmarkStatusLine} ` +
+        `${sessionStatusLine} ` +
         `Skipped tickers: ${skippedTickers.length > 0 ? skippedTickers.join(", ") : "(none)"}.` +
         writeFailureLines +
         computeFailureLines,

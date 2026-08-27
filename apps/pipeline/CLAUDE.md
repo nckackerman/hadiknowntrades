@@ -1351,3 +1351,86 @@ worst`) and **0 chain-invariant violations** (every day N's own
   the fix and why this is the _third_ time this exact class of mistake
   (a component reading the wrong-track/un-threaded field instead of the
   correct one) has bitten this codebase.
+
+## Beat the Bench session data (issue #127) -- SPY intraday bars + the mystery-day mechanism
+
+`pipeline.ts`'s `fetchSessionBars`/`buildBeatTheBenchSessions` add a
+**fifth** concurrent fetch and four new families of stored object, for
+Beat the Bench's two daily modes (issues #131/#132). See
+`packages/core/CLAUDE.md`'s "Beat the Bench sessions and the mystery-day
+mechanism" section for the session-building and schema side; this section
+is the pipeline wiring.
+
+- **One extra request for one ticker, not a fifth worker pool.**
+  `fetchSessionBars` reuses `options.fetchFiveMinuteBars` (the same fetch
+  function 3M's granularity override already carries -- no new
+  `RunPipelineOptions.fetch*Bars` field) and calls it once for `SPY`,
+  scoped to the same `FIVE_MINUTE_LOOKBACK_DAYS` (**59**, not 60 -- see
+  that constant) window. Deliberately shaped like
+  `fetchBenchmarkHistory`, not `fetchUniverseHistory`: with exactly one
+  ticker there's no "skip this one, keep going" decision for the worker
+  pool/abort classification to make. One consequence worth knowing:
+  `fetchFiveMinuteBars` now has **two** callers per run, so
+  `pipeline.test.ts`'s lookback test asserts on both calls (`AAPL` +
+  `SPY`) rather than expecting exactly one.
+- **SPY was genuinely not in the fetch universe before this**
+  (`sp500-constituents.ts` has zero occurrences of it) -- issue #12's
+  benchmark and this both fetch it as a one-off by symbol.
+- **The fetch is non-fatal; the writes are fatal.** A fetch failure
+  writes no session objects, so the _previous_ run's pool stays in place
+  -- which is the "silently stale" shape this pipeline's alerting
+  normally exists to catch, so this is a real judgment call rather than
+  an obvious one, and it's flagged as such in `fetchSessionBars`' own doc
+  comment. It's treated as non-fatal anyway for the same reason the
+  benchmark fetch is: one extra ticker on an unofficial endpoint feeding
+  a bonus game shouldn't fail a run and throw away the freshness signal
+  for all six real ranges. The status is always reported in the
+  aggregated error message (`Beat the Bench sessions (SPY, non-fatal):
+...`), same visibility posture as a granularity override's. A _write_
+  failure is a different thing entirely -- real, already-validated data
+  that couldn't be stored -- and folds into `failedWrites` like every
+  other write job. Same non-fatal-fetch/fatal-solve split the granularity
+  overrides already draw. **Revisit the fetch side if Beat the Bench ever
+  becomes something the product depends on.**
+- **`sessionWriteJobs` is appended after `customWriteJobs`, and that
+  ordering is load-bearing**: the anchors-manifest logic correlates
+  `customResults[i]` with
+  `primaryWriteOutcomes[presetWriteJobs.length + i]` by shared index, so
+  anything inserted _ahead_ of `customWriteJobs` silently breaks it.
+- **Today's Close is the newest complete session; the mystery pool is
+  every older one, and the newest is excluded from it** rather than
+  duplicated in -- a player who just played Today's Close would recognize
+  the same price path instantly, which is both a poor experience and a
+  free de-anonymization of one pool member.
+- **Date -> slot assignment is a fresh Fisher-Yates permutation every
+  run**, from `RunPipelineOptions.random` (defaults to `Math.random`,
+  injectable so tests can pin a permutation instead of asserting against
+  a bare `Math.random()`, which would be flaky by construction). This is
+  what makes the ids opaque: `MYSTERY_SESSION_IDS` is a _fixed, published_
+  slot list, so if a date always landed in the same slot -- or even just
+  in recency order -- the id would be a date oracle and the manifest
+  alone would leak the whole pool without anyone fetching the index.
+- **Fixed slot ids rather than random-per-run ids, on purpose.** Random
+  ids would orphan the entire previous run's objects every night, growing
+  S3 without bound with no cleanup path -- the exact accumulation this
+  file's own "fixed key per range, overwritten each run, not accumulated
+  as dated copies" rule exists to avoid. A fixed slot set keeps the key
+  set fixed and every run simply overwrites it, while the per-run
+  permutation supplies the opacity the random ids would have.
+- **Live-verified via a real local pipeline run** (`LOCAL_RESULTS_DIR`,
+  6 real tickers, real Yahoo network calls, `asOf` 2026-08-26, no S3
+  write), then cross-checked against an **independent** direct fetch of
+  the same 59-day SPY window:
+  - 42 complete sessions found -> 1 Today's Close (`2026-08-26`, 79 bars)
+    - **41 pooled mystery sessions** (`s01`..`s41`), plus the manifest
+      and the index.
+  - `today.json`'s bars matched the independent fetch **exactly**, bar
+    for bar (time + close), as did 3 spot-checked pooled sessions
+    resolved through the index -- i.e. exactly what a settlement-time
+    client would do.
+  - **0 date-shaped substrings** across all 41 pooled session payloads
+    and the manifest (its own `generatedAt` stamp excepted, see
+    `packages/core/CLAUDE.md`), while every real date _was_ present in
+    `results/mystery-index.json`.
+  - The published id order was confirmed non-chronological, and Today's
+    Close was confirmed absent from the pool.

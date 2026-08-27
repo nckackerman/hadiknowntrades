@@ -568,16 +568,16 @@ describe("runPipeline", () => {
       }
     });
 
-    it("requests the 5-minute fetch from exactly FIVE_MINUTE_LOOKBACK_DAYS (59) days before asOf", async () => {
-      const froms: Date[] = [];
+    it("requests every 5-minute fetch -- the 3M override's and Beat the Bench's SPY one -- from exactly FIVE_MINUTE_LOOKBACK_DAYS (59) days before asOf", async () => {
+      const calls: { symbol: string; from: Date }[] = [];
       const store = memoryStore();
 
       await runPipeline({
         tickers: ["AAPL"],
         fetchDailyCloses: noDailyData,
         fetchIntradayBars: noIntradayData,
-        fetchFiveMinuteBars: async (_symbol, from) => {
-          froms.push(from);
+        fetchFiveMinuteBars: async (symbol, from) => {
+          calls.push({ symbol, from });
           return [];
         },
         fetchIntraday1mBars: noIntradayData,
@@ -585,8 +585,15 @@ describe("runPipeline", () => {
         asOf,
       }).catch(() => {});
 
-      expect(froms).toHaveLength(1);
-      expect(toDateString(froms[0]!)).toBe(toDateString(daysBack(59)(asOf)));
+      // Two callers share this one fetch function (issue #127 added the
+      // second): the 3M granularity override, once per universe ticker,
+      // and Beat the Bench's own SPY session fetch, once per run
+      // regardless of the universe. Both are bounded by the same
+      // interval=5m retention wall, so both must ask for the same window.
+      expect(calls.map((c) => c.symbol).sort()).toEqual(["AAPL", "SPY"]);
+      for (const call of calls) {
+        expect(toDateString(call.from)).toBe(toDateString(daysBack(59)(asOf)));
+      }
     });
 
     it("gracefully degrades when the 5-minute fetch aborts (BlockedError): does NOT fail the run over it, and 3M falls back to 60-minute bars for every day, identical to 3M's pre-#30 behavior", async () => {

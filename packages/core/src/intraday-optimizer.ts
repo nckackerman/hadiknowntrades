@@ -170,8 +170,19 @@ export interface OptimizeIntradayOptions {
   barIntervalMinutes: number;
 }
 
-/** Splits an IntradayBar's `date` field ("2026-08-21T14:30:00") into its calendar-date and time-of-day parts. */
-function splitLocalDateTime(datetime: string): { date: string; time: string } {
+/**
+ * Splits an IntradayBar's `date` field ("2026-08-21T14:30:00") into its
+ * calendar-date and time-of-day parts.
+ *
+ * Exported at module level -- but deliberately NOT re-exported from
+ * `index.ts`, so this package's public API is unchanged -- so
+ * `intraday-sessions.ts` (issue #127) can reuse the exact same parse
+ * instead of hand-rolling a second `.split("T")` with its own idea of
+ * what a malformed datetime looks like. Separating a bar's date from its
+ * time-of-day is the entire mechanism behind that file's mystery-day
+ * secrecy guarantee, so it needs precisely this split and nothing more.
+ */
+export function splitLocalDateTime(datetime: string): { date: string; time: string } {
   const [date, time] = datetime.split("T");
   if (!date || !time) {
     throw new Error(
