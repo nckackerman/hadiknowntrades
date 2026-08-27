@@ -160,17 +160,42 @@ interface DailyHeroProps {
  * A CSS `min-height` floor, not a fixed `height` -- shared by every
  * top-level, chart-hidden render this section can produce (loading, a
  * 0-trade day, and a real day before "Watch it happen" is clicked), so
- * those states never visibly resize against each other. About half the
- * box's old (issue #175) fixed height, per a later design pass; the box
- * grows past this floor on its own once the chart's own slot mounts.
- * See this file's own header comment.
+ * those states never visibly resize against each other. The box grows
+ * past this floor on its own once the chart's own slot mounts.
+ *
+ * **Issue #198 shrunk this again, against a precise live measurement of
+ * the design reference (`docs/design/daily-hub-condensed-2026-08/
+ * mockup-daily-hub-condensed.html`'s own `.showcase.collapsed` --
+ * chart-hidden/"Fresh day" state), not the earlier design pass's rough
+ * "about half" eyeball.** Measured live via `next build && next start`
+ * plus a headless-Chromium pass against the reference file directly, at
+ * a 1280px viewport, chart-hidden state: the reference box's own real
+ * rendered `getBoundingClientRect().height` is `234.46875px`
+ * (`14.654...rem`) -- not the reference's own `min-height: 12.5rem` CSS
+ * value alone, since its real content (the statement, figures, and
+ * button) pushes it taller than that floor. Per this issue's own
+ * acceptance criteria, the shipped target is that reference height minus
+ * a further 5% (`234.46875 * 0.95 = 222.745px = 13.9216rem`), rounded
+ * down slightly to `13.9rem` (`222.4px`) to stay safely under that
+ * ceiling rather than right at its edge. This is meaningfully below the
+ * previous `min-h-[20rem]` (320px) value, which measured live at very
+ * close to its own floor -- i.e. the pre-#198 box really was rendering
+ * ~30% taller than the reference it was meant to match, not just
+ * "roughly" taller.
  */
-const SHOWCASE_MIN_HEIGHT_CLASSNAME = "min-h-[20rem]";
+const SHOWCASE_MIN_HEIGHT_CLASSNAME = "min-h-[13.9rem]";
 /**
  * Height of the slot holding the revealed, real PortfolioChart --
  * applied only while `chartRevealed` is true (see this file's own header
  * comment on why this is much taller than the mockup's own tiny
  * decorative chart, and why it's no longer reserved upfront).
+ *
+ * **Deliberately untouched by issue #198**, which is scoped to the
+ * chart-hidden default height only (see `SHOWCASE_MIN_HEIGHT_CLASSNAME`'s
+ * own doc comment above) -- the revealed state renders the real
+ * `PortfolioChart`, a separate, larger design pass filed as its own
+ * issue, not the mockup's tiny decorative chart this constant was ever
+ * meant to approximate.
  */
 const CHART_SLOT_HEIGHT_CLASSNAME = "h-[24rem]";
 
@@ -202,7 +227,32 @@ const WATCH_BUTTON_CLASSNAME =
   "inline-flex min-h-11 items-center justify-center rounded-[0.65rem] bg-[var(--surface-2)] px-[1.15rem] py-2 text-sm font-bold text-[var(--text-primary)] shadow-[0_4px_0_0_#0d0d0c] transition duration-75 ease-out active:translate-y-[3px] active:shadow-[0_1px_0_0_#0d0d0c]";
 
 const SHOWCASE_CLASSNAME =
-  "surface-card relative flex flex-col items-center justify-center gap-3 overflow-hidden rounded-xl border border-[var(--gridline)] bg-[var(--surface-1)] px-6 py-8 text-center";
+  "surface-card relative flex flex-col items-center justify-center gap-3 overflow-hidden rounded-xl border border-[var(--gridline)] px-6 py-8 text-center";
+
+/**
+ * The showcase box's subtle top-to-bottom wash, restored by issue #198 --
+ * the box had regressed to a flat `bg-[var(--surface-1)]` fill (no
+ * gradient at all), which is what read as "the mocks have a gradient
+ * that's missing locally" in that issue's own live-vs-mock comparison
+ * pass. Matches the design reference's own `.showcase` rule
+ * (`docs/design/daily-hub-condensed-2026-08/
+ * mockup-daily-hub-condensed.html`) byte-for-byte: `#1d1d1b` at the top
+ * fading into `--surface-1` by the 55% mark.
+ *
+ * Set via inline `style` (not a Tailwind arbitrary-value background
+ * class), following `BeatTheBench.tsx`'s own `CompactCard` gradient doc
+ * comment's established reasoning for this exact choice: a gradient
+ * `background-image` is easy to get subtly wrong through Tailwind's
+ * bracket-value parsing (space-to-underscore escaping, gradient- vs.
+ * color-detection heuristics), and there's no test/reuse reason here
+ * that needs it to be a class instead. Shared as one constant (not
+ * hand-copied per call site) since this component renders the showcase
+ * box from three different branches (loading, zero-trade, and the real
+ * result) that must never visually drift from one another.
+ */
+const SHOWCASE_GRADIENT_STYLE = {
+  backgroundImage: "linear-gradient(180deg, #1d1d1b 0%, var(--surface-1) 55%)",
+};
 
 const STATEMENT_CLASSNAME = "min-h-[2.6em] max-w-md text-sm text-[var(--text-secondary)]";
 
@@ -216,6 +266,7 @@ function LoadingCard() {
     <div
       aria-hidden="true"
       className={`${SHOWCASE_CLASSNAME} ${SHOWCASE_MIN_HEIGHT_CLASSNAME} animate-pulse`}
+      style={SHOWCASE_GRADIENT_STYLE}
     >
       <div className="h-3 w-48 rounded bg-[var(--surface-2)]" />
       <div className="h-12 w-72 rounded bg-[var(--surface-2)]" />
@@ -279,6 +330,7 @@ export function DailyHero({ mode }: DailyHeroProps) {
       <section
         aria-label="Yesterday's result"
         className={`${SHOWCASE_CLASSNAME} ${SHOWCASE_MIN_HEIGHT_CLASSNAME}`}
+        style={SHOWCASE_GRADIENT_STYLE}
       >
         <p className="text-sm text-[var(--text-secondary)]">
           No trade would have beaten holding cash yesterday.
@@ -293,6 +345,7 @@ export function DailyHero({ mode }: DailyHeroProps) {
     <section
       aria-label="Yesterday's result"
       className={`${SHOWCASE_CLASSNAME} ${SHOWCASE_MIN_HEIGHT_CLASSNAME}`}
+      style={SHOWCASE_GRADIENT_STYLE}
     >
       <p
         className={entranceClassName(

@@ -69,7 +69,7 @@ describe("DailyHero", () => {
 
     const placeholder = container.querySelector('[aria-hidden="true"].animate-pulse');
     expect(placeholder).not.toBeNull();
-    expect(placeholder).toHaveClass("min-h-[20rem]");
+    expect(placeholder).toHaveClass("min-h-[13.9rem]");
   });
 
   it("renders nothing once loaded if the range has no trading days (a fetch error, or nothing published yet)", async () => {
@@ -108,7 +108,7 @@ describe("DailyHero", () => {
     expect(screen.queryByText("$28.12")).toBeNull();
 
     const section = screen.getByLabelText("Yesterday's result");
-    expect(section).toHaveClass("min-h-[20rem]");
+    expect(section).toHaveClass("min-h-[13.9rem]");
     expect(container.children).toHaveLength(1);
   });
 
@@ -125,7 +125,7 @@ describe("DailyHero", () => {
     // Before the reveal, the box only carries its half-height default
     // floor -- the tall chart-slot height class isn't applied yet, since
     // the chart hasn't mounted to grow the box into it.
-    expect(section).toHaveClass("min-h-[20rem]");
+    expect(section).toHaveClass("min-h-[13.9rem]");
     expect(section).not.toHaveClass("h-[24rem]");
 
     const button = screen.getByRole("button", { name: "Watch it happen" });
@@ -145,7 +145,7 @@ describe("DailyHero", () => {
     const section = await screen.findByText(/No trade would have beaten holding cash/);
     expect(screen.queryByRole("button", { name: "Watch it happen" })).toBeNull();
     expect(container.querySelector("svg")).toBeNull();
-    expect(section.closest("section")).toHaveClass("min-h-[20rem]");
+    expect(section.closest("section")).toHaveClass("min-h-[13.9rem]");
     // No date text remains inside the box -- the eyebrow's own inline
     // date reference moved to ResultsPage.tsx's own header (issue #187).
     expect(screen.queryByText(/2026/)).toBeNull();
