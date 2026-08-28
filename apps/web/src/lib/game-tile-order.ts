@@ -80,13 +80,10 @@ export function orderGameTiles(
   tileIds: readonly GameTileId[] = GAME_TILE_IDS,
 ): GameTileId[] {
   const scores = preferenceScores(history);
-  const playedToday = new Set(
-    history.find((day) => day.date === today)?.order.filter((id) => tileIds.includes(id)) ?? [],
-  );
 
   return [...tileIds].sort((a, b) => {
-    const aPlayed = playedToday.has(a);
-    const bPlayed = playedToday.has(b);
+    const aPlayed = wasPlayedOn(history, today, a);
+    const bPlayed = wasPlayedOn(history, today, b);
     if (aPlayed !== bPlayed) return aPlayed ? 1 : -1;
 
     const scoreDiff = scores[b] - scores[a];

@@ -39,7 +39,19 @@ import { useHydratedLocalStorageState } from "./use-hydrated-local-storage-state
 export function useGameTileOrder(): readonly GameTileId[] {
   const [order] = useHydratedLocalStorageState<readonly GameTileId[]>(
     GAME_TILE_IDS,
-    () => orderGameTiles(getTileOrderHistory(), localDateKey(new Date())),
+    () => {
+      // No recorded history at all (a brand-new viewer, or one whose
+      // storage has been cleared) -- `null` per useHydratedLocalStorageState's
+      // own contract, so the hook skips re-applying a value that's
+      // already identical to the default GAME_TILE_IDS order
+      // orderGameTiles would compute anyway (every score neutral,
+      // nothing played today, falls through to the same fixed
+      // tie-break). Only a genuine history entry is worth the
+      // re-application.
+      const history = getTileOrderHistory();
+      if (history.length === 0) return null;
+      return orderGameTiles(history, localDateKey(new Date()));
+    },
     () => {
       // No-op setter: this hook never writes. Recording a tile as played
       // is each tile's own responsibility, via

@@ -9339,3 +9339,36 @@ order: GameTileId[] }`), not the simpler `{date, gameId}` "just the
   before committing, per this file's own established convention;
   confirmed via `git status`/`git diff --stat` on
   `package.json`/`pnpm-lock.yaml` showing no trace afterward.
+
+### `high` code review: two findings, both fixed before merge
+
+- **`orderGameTiles`'s "played today" check reimplemented
+  `game-tile-order.ts`'s own already-exported, already-tested
+  `wasPlayedOn` helper inline**, via a `playedToday` `Set` built from
+  `history.find(...).order.filter(...)` -- a real duplication-drift
+  risk matching this file's own documented history of getting bitten by
+  exactly this class of bug once already (see
+  `use-hydrated-local-storage-state.ts`'s own extraction note above).
+  Fixed by calling `wasPlayedOn(history, today, a)`/
+  `wasPlayedOn(history, today, b)` directly inside the sort comparator
+  instead of precomputing the Set.
+- **`use-game-tile-order.ts`'s `readStored` callback never returned
+  `null`, violating `useHydratedLocalStorageState`'s own documented
+  contract** (`null` means "nothing usable stored, keep the default,"
+  skipping an unnecessary re-application; a concrete value always
+  forces a `setValueState` call) -- it always computed
+  `orderGameTiles(getTileOrderHistory(), today)`, which itself always
+  returns a concrete `GameTileId[]` (falling back to `GAME_TILE_IDS`'
+  own fixed tie-break order when there's no history at all), so a
+  brand-new viewer with zero recorded history forced an unnecessary
+  extra state update/re-render of both game tiles right after
+  hydration, for a value identical to the default it was replacing.
+  Fixed: `readStored` now checks `getTileOrderHistory().length === 0`
+  first and returns `null` in that case, only calling `orderGameTiles`
+  once real history exists.
+- All five routine checks (lint, typecheck, `pnpm build`, `pnpm test`
+  -- 993 passing, `pnpm format:check`) re-ran green after both fixes;
+  no new live-browser verification pass, since neither fix changes any
+  end-state rendered output (a pure sort-comparator refactor, and a
+  hydration-timing/render-count optimization with no visible
+  difference once the microtask resolves).
