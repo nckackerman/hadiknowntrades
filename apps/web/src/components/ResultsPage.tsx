@@ -17,6 +17,7 @@ import { BeatTheBench } from "@/components/BeatTheBench";
 import { CallBoard } from "@/components/CallBoard";
 import { DailyHero } from "@/components/DailyHero";
 import { DailyRitual } from "@/components/DailyRitual";
+import { TheLineup, TheOrder } from "@/components/PlaceholderGameTile";
 import { CustomRangeSelector } from "@/components/CustomRangeSelector";
 import { ModeToggle } from "@/components/ModeToggle";
 import { RangeSelector } from "@/components/RangeSelector";
@@ -211,9 +212,24 @@ export function ResultsPage() {
           mode/selectedDay props, and both render regardless of how
           /api/results goes, same reasoning DailyHero above relies on.
 
+          **The Order / The Lineup (issue #197) fill out the same
+          container's second row, after the two real tiles -- making this
+          the full 2x2 grid the daily-hub-condensed mockup was originally
+          sketched with, not a new grid of its own.** Both are
+          non-functional "coming soon" placeholders (read issue #189 in
+          full before touching either -- both games were designed, mocked,
+          then explicitly parked pending a daily-selection-mechanism design
+          pass neither this issue nor #197 attempts). They render
+          unconditionally as the grid's 3rd/4th children, always after
+          BeatTheBench/CallBoard: the sibling play-history-ordering issue
+          in this milestone (#196) is scoped to reordering only the two
+          real, playable tiles by their own play state -- these two have no
+          play state to rank by, and stay pinned in place regardless of
+          whatever order #196 puts the first two in.
+
           `has-[details[open]]:grid-cols-1` and
           `has-[[data-bench-expanded]]:grid-cols-1` collapse the grid to
-          one column the instant either tile expands into its full real
+          one column the instant either real tile expands into its full
           game/board -- CallBoard's own expanded state is a native
           `<details open>`, detectable directly via `:has()`; BeatTheBench
           has no native disclosure element to key off (its "expanded"
@@ -227,13 +243,17 @@ export function ResultsPage() {
           doc comment on why its amber gradient is an inline `style`, not
           a bracket class), so two simple single-selector variants were
           chosen over one compound selector as the safer bet, verified
-          live rather than assumed. Neither tile's own expanded content
-          (CallBoard's 3-slot picker/history strip, BeatTheBench's
+          live rather than assumed. Neither real tile's own expanded
+          content (CallBoard's 3-slot picker/history strip, BeatTheBench's
           playback controls) was ever designed to fit in a 50%-width
           column -- both already rendered full-width, stacked, before
-          this issue; the two `has-*` rules just keep that true once
+          issue #178; the two `has-*` rules just keep that true once
           they're grid children too, instead of squeezing a fully
-          expanded game into an unreadably narrow half-column.
+          expanded game into an unreadably narrow half-column. The Order/
+          The Lineup have no expanded state of their own to worry about
+          here -- when the grid collapses to one column (either real tile
+          expanded), they simply stack full-width below it like any other
+          grid child, which is harmless since neither is interactive.
 
           `game-row-grid` is a plain marker class (no styling of its
           own) so `globals.css` can target this exact container with a
@@ -247,6 +267,8 @@ export function ResultsPage() {
       <div className="game-row-grid grid grid-cols-2 gap-4 has-[[data-bench-expanded]]:grid-cols-1 has-[details[open]]:grid-cols-1">
         <BeatTheBench />
         <CallBoard />
+        <TheOrder />
+        <TheLineup />
       </div>
 
       {/* The Daily Ritual (issue #133): the "today, so far" rail plus the
