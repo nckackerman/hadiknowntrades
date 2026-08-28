@@ -8878,3 +8878,167 @@ combination.
   own follow-up if the "scrolls to the most recent day on first load"
   experience is ever considered worth restoring for a visitor who
   expands the explorer.
+
+## Connecting each game tile's expanded panel to the tile that opened it (issue #195)
+
+Before this issue, clicking either compact tile (issue #163/#176's Beat
+the Bench, issue #164/#177's The Call Board) swapped its bold
+gradient-fill card out for a plain flat `bg-[var(--surface-1)]` panel
+with no shared border, accent color, or icon -- the two states read as
+unrelated components. Two devices, applied to both tiles, using each
+tile's own darkest gradient stop as a shared accent:
+
+1. **A 4px accent-colored top border** on the expanded panel (`#d88f28`
+   for Beat the Bench, `#2a58ab` for The Call Board), via inline
+   `style={{ borderTopColor: ... }}` -- not a Tailwind bracket-value
+   class, the same reasoning `CompactCard`'s own doc comment already
+   gives for why its gradient is inline. The other three sides keep
+   their original `border-[var(--gridline)]` color/width unchanged; only
+   `border-t-4`'s width and the inline `borderTopColor` override the top
+   edge.
+2. **A small persistent icon plate** (🎯 / 🔮) at the top of the
+   expanded panel, tinted with a ~15% wash of the same accent
+   (`${CONNECTOR_ACCENT}26`, an 8-digit hex alpha), sitting beside a
+   visible heading naming the mechanic.
+3. **The Call Board's `<details>` additionally gets flush corners**,
+   since its tile stays mounted as the (still-clickable) `<summary>`
+   while open, unlike Beat the Bench's tile, which fully unmounts on
+   expand (a plain `useState` toggle, not a `<details>`) -- see the two
+   files' own top-of-file notes. `<details className="group">`, the
+   `<summary>` gains `group-open:rounded-b-none`, and the body wrapper
+   drops its `mt-3` gap and `surface-card` shadow, flips to
+   `rounded-t-none rounded-b-2xl`, and swaps its uniform `border` for
+   `border-x border-b` (no top) plus the new `border-t-4` accent -- so
+   it reads as unfolding directly out of the tile rather than a separate
+   floating card.
+4. No transition/animation on either device, per the issue's own scope.
+
+**`CONNECTOR_ACCENT` is derived from each file's own existing gradient
+definition, not hand-copied as a fresh third literal.** The two files
+needed different mechanisms, since only one of them can genuinely
+_derive_ the value at all:
+
+- `CallBoard.tsx`'s `CARD_CLASSNAME` is a Tailwind arbitrary-value
+  class (`bg-[linear-gradient(...)]`) -- its utility name has to appear
+  in the source as a literal, scanner-visible string for the build-time
+  content scan to find it (the same class of gotcha
+  `apps/web/CLAUDE.md`'s own "surface elevation" note already
+  documents), so the gradient can't be _built from_ a JS constant. It
+  can still be _read from_, one-way: `CONNECTOR_ACCENT` is
+  `CARD_CLASSNAME.match(/,(#[0-9a-f]{6})_100%\)\]/i)![1]!` -- a genuine
+  regex extraction of the darkest stop, not a second literal, so the two
+  can't silently drift on a future edit to the gradient string.
+- `BeatTheBench.tsx`'s tile gradient was already a plain inline `style`
+  string (set that way specifically for reliability, per `CompactCard`'s
+  own pre-existing doc comment on Tailwind's bracket-value parsing
+  risk), so there's no such constraint -- its three stops were promoted
+  to named constants (`BENCH_TILE_GRADIENT_STOPS`), the gradient string
+  itself is now built from them via template literal, and
+  `CONNECTOR_ACCENT` just reads the last array element directly.
+
+**Hover-lift vs. the flush seam (The Call Board only).** `<summary>`
+already had `hover:-translate-y-0.5 hover:scale-[1.015]
+active:translate-y-0 active:scale-[0.99]` (issue #177/#186) -- once open
+and flush against the body below (device #3), that lift would visibly
+tear the seam on hover. Fixed by adding
+`group-open:hover:translate-y-0 group-open:hover:scale-100`, relying on
+Tailwind's own variant-count-based rule ordering (a two-variant rule
+like `group-open:hover:` is always emitted after a one-variant rule
+targeting the same property, regardless of source order in the
+`className` string, which is exactly why "the order of classes in your
+HTML never matters" holds in Tailwind generally) to make the
+more-specific suppression win while both rules are simultaneously
+active. **Live-verified, not just asserted**: a real Playwright hover
+against the running production server read `getComputedStyle(el)`'s
+`translate`/`scale` longhands (Tailwind v4's transform utilities set
+these, not the `transform` shorthand, so asserting `transform` alone
+reads `"none"` regardless of state and proves nothing) -- collapsed +
+hover genuinely applies `translate: 0px -2px; scale: 1.015`, expanded +
+hover genuinely settles at `translate: 0px; scale: 1`, and the
+summary's own `border-bottom-left-radius` reads `0px` once open,
+confirming the flush-seam device too.
+
+**Factual correction to the original plan, confirmed by reading the
+component before touching it**: the plan claimed The Call Board's
+expanded body "has no heading at all visible today." False -- it
+already had two visible `<h3>` headings, "Your record" and "Recent
+calls." The new icon+heading row (device #2) matches that same
+`text-sm font-medium text-[var(--text-primary)]` h3 level/weight for
+consistency, rather than inventing a new heading style, and its visible
+text ("The Call Board") duplicates the pre-existing sr-only `<h2
+id="call-board-heading">`'s own accessible name once expanded --
+`ResultsPage.test.tsx`'s own `sectionFor` helper (which locates a
+top-level section via `getByRole("heading", { name })`) needed a
+`level: 2` constraint added so it keeps resolving the landmark heading
+specifically, not either of the two same-named headings ambiguously,
+once the board is expanded in a test.
+
+**The visual-symmetry question (Beat the Bench's thinner treatment --
+border + icon only, no flush seam, since its tile fully unmounts)** was
+explicitly checked live, not assumed: both tiles' expanded panels were
+screenshotted side by side (1280px and 375px) after this fix. Beat the
+Bench's rounded, floating panel -- carrying the identical accent-colored
+border and icon the collapsed tile itself uses, positioned immediately
+adjacent to it -- reads as clearly connected to its own tile, not
+meaningfully weaker than The Call Board's flush-seam treatment; the two
+devices (border + icon) alone were judged sufficient without adding a
+third (e.g. a colored ambient glow) specifically to compensate. Beat the
+Bench keeps `rounded-lg` on every corner (not `rounded-t-none`) since,
+unlike The Call Board, there is no tile left mounted above it once
+expanded to flush against -- forcing square top corners there would just
+look like an accidental rounding bug, not a connector device.
+
+`CallBoard.test.tsx`/`BeatTheBench.test.tsx` both gained a dedicated
+test for the new border-color/icon/heading (and, for The Call Board, the
+`group`/flush-corner/no-`surface-card` structure) -- see each file's own
+"issue #195" test. Live-verified via `next build`/`next start` (this
+sandbox's headless Chromium can't hydrate `next dev`, per this file's
+own established note) against a real `LOCAL_RESULTS_DIR` pipeline run:
+screenshotted both tiles collapsed/expanded at 1280px and 375px,
+confirmed keyboard nav (`Tab` to the summary, `Enter` toggles it closed
+again -- native `<details>`/`<summary>` behavior, untouched by this
+issue), and zero console/`pageerror` events across every pass.
+
+### `high` code review: two findings, both fixed before merge
+
+An 8-angle `high` review of the PR above found two real issues -- one
+reproduced directly by actually rendering the component under a
+hydration-timing probe, not just reasoned about.
+
+- **`ResultsPage.test.tsx`'s three `getByRole("heading", { name: "The
+Call Board" })` queries had no `level` constraint, and this issue's
+  own new visible `<h3>The Call Board</h3>` (device #2, at the top of
+  the expanded panel) now shares that exact accessible name with the
+  pre-existing sr-only `<h2 id="call-board-heading">` landmark.**
+  Reproduced live: rendering `<CallBoard />`, awaiting a microtask (so
+  `useCallBoard`'s mount-time hydration correction lands, the same
+  boundary `use-call-board.ts`'s own doc comment already documents),
+  then calling the unconstrained query throws
+  `@testing-library/dom`'s `getMultipleElementsFoundError` -- both
+  headings genuinely match. The sibling `sectionFor` test helper (added
+  earlier in this same PR, for a different describe block) already
+  carries `level: 2` and was never at risk; these three call sites, in
+  an _earlier_ describe block in the same file, were the ones missed.
+  Fixed by adding `level: 2` to all three, matching `sectionFor`'s own
+  precedent -- confirmed this is exactly the "unique landmark, not the
+  visible in-panel heading" query every one of these three tests
+  actually means, since none of them expand the board first.
+- **`CallBoard.tsx`'s `CONNECTOR_ACCENT` regex-derived it from
+  `CARD_CLASSNAME` via two bare non-null assertions
+  (`.match(...)![1]!`), evaluated at module load time.** A future edit
+  to `CARD_CLASSNAME`'s gradient string (a new stop count, different
+  spacing/format) that no longer matches this exact pattern would throw
+  an unhelpful `TypeError` at import time -- and since `CallBoard`
+  mounts unconditionally at the `ResultsPage` level (issue #122), that
+  would crash the whole page, not just this tile. Fixed by replacing
+  the bare assertions with an explicit `null` check that throws a
+  named, descriptive `Error` naming exactly what broke and pointing at
+  the regex to fix -- the module still fails fast on a genuine mismatch
+  (preserving the "single source of truth, no duplicate literal"
+  property the constant's own doc comment already argues for), but the
+  failure is now debuggable instead of a cryptic crash. In practice
+  `next build`/`pnpm test` would catch a real mismatch on the very next
+  CI run before it could ever reach production -- this is a robustness/
+  clarity fix, not a fix for a reachable production bug.
+- All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
+  955 passing, `pnpm format:check`) re-ran green after both fixes.

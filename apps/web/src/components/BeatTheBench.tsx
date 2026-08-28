@@ -119,6 +119,32 @@ const CONTROL_CLASS =
   "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md border border-[var(--gridline)] px-3 text-sm font-medium";
 
 /**
+ * The compact tile's own gradient stops (issue #176), named as constants
+ * rather than left as literals inline in `CompactCard`'s own `style`
+ * prop -- so `CONNECTOR_ACCENT` below (issue #195's expanded-panel
+ * connector) can read the real darkest stop directly instead of a
+ * hand-copied second literal that could drift from it. Safe to build the
+ * gradient string *from* these constants (unlike CallBoard.tsx's own
+ * `CARD_CLASSNAME`, a Tailwind bracket-value class): this gradient was
+ * already a plain inline `style` string, not a Tailwind utility, so
+ * there's no build-time content-scanner constraint here.
+ */
+const BENCH_TILE_GRADIENT_STOPS = ["#f0b658", "#e8a33d", "#d88f28"] as const;
+const BENCH_TILE_GRADIENT = `linear-gradient(155deg, ${BENCH_TILE_GRADIENT_STOPS[0]} 0%, ${BENCH_TILE_GRADIENT_STOPS[1]} 55%, ${BENCH_TILE_GRADIENT_STOPS[2]} 100%)`;
+
+/**
+ * Connecting the expanded frame back to the tile that opened it (issue
+ * #195): the same darkest gradient stop the collapsed tile fills with,
+ * reused for the expanded panel's own 4px top border and icon-plate
+ * wash. Beat the Bench's tile fully unmounts on expand (see
+ * `BeatTheBench`'s own top-of-file note -- a plain `useState` toggle,
+ * not a `<details>`), so unlike CallBoard.tsx there's no flush-seam
+ * device to add here -- just the border + icon plate, applied to
+ * `BeatTheBenchFrame`'s own root below.
+ */
+const CONNECTOR_ACCENT = BENCH_TILE_GRADIENT_STOPS[2];
+
+/**
  * One session the game can actually be played on, whichever mode
  * produced it -- the shape `SessionGame` works from, so the mechanic
  * itself has no idea which mode it is running.
@@ -303,23 +329,52 @@ function BeatTheBenchFrame({
       // equivalent marker -- its own expanded state is already a native
       // `<details open>`, directly selectable on its own.
       data-bench-expanded="true"
-      className="surface-card flex flex-col gap-4 rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-4"
+      // Connecting this expanded panel back to the tile that opened it
+      // (issue #195, device #1): a 4px CONNECTOR_ACCENT-colored top
+      // border, replacing the uniform 1px border on that one edge --
+      // `border-x border-b` keeps the original `border-[var(--gridline)]`
+      // color/width on the other three sides unchanged (review finding
+      // #5), while `border-t-4` plus the inline `borderTopColor` below
+      // override just the top edge. `rounded-lg` is kept on every
+      // corner, including the top -- unlike CallBoard.tsx's own flush-
+      // seam treatment, there's no tile left mounted above this panel to
+      // flush against (see this file's own top-of-file note: the
+      // compact tile fully unmounts on expand), so a fully-rounded panel
+      // is the correct shape here, not a bug.
+      className="surface-card flex flex-col gap-4 rounded-lg border-x border-b border-t-4 border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-4"
+      style={{ borderTopColor: CONNECTOR_ACCENT }}
     >
       <div className="flex flex-col gap-2">
         <div className="flex items-start justify-between gap-2">
-          {/* font-display, matching CallBoard's and DailyRitual's own
-              section headings (and this file's own settlement headline
-              below) -- issue #121's type roles put headings on
-              --font-display. It resolves to the same Geist Sans the body
-              already inherits today, so this is a same-pixels consistency
-              fix, not a visual change; it stops being a no-op the moment
-              --font-display is ever pointed at a real display face. */}
-          <h2
-            id={headingId}
-            className="font-display text-lg font-semibold text-[var(--text-primary)]"
-          >
-            Beat the Bench
-          </h2>
+          {/* Icon plate + heading (issue #195, device #2): grouped into
+              one sub-row so the pre-existing two-child `justify-between`
+              layout (heading, "Collapse" button) is preserved -- this
+              whole div is now the first child, the Collapse button stays
+              the second (review finding #4). The icon echoes the
+              collapsed tile's own 🎯, tinted with a ~15% wash of the
+              same CONNECTOR_ACCENT the top border above uses. */}
+          <div className="flex items-center gap-2">
+            <span
+              aria-hidden="true"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-base"
+              style={{ backgroundColor: `${CONNECTOR_ACCENT}26` }}
+            >
+              🎯
+            </span>
+            {/* font-display, matching CallBoard's and DailyRitual's own
+                section headings (and this file's own settlement headline
+                below) -- issue #121's type roles put headings on
+                --font-display. It resolves to the same Geist Sans the body
+                already inherits today, so this is a same-pixels consistency
+                fix, not a visual change; it stops being a no-op the moment
+                --font-display is ever pointed at a real display face. */}
+            <h2
+              id={headingId}
+              className="font-display text-lg font-semibold text-[var(--text-primary)]"
+            >
+              Beat the Bench
+            </h2>
+          </div>
           {/* Collapses back to the compact card -- present at every
               expanded state (the mode chooser, mid-game, settlement),
               mirroring The Call Board's own always-clickable, collapsible
@@ -454,7 +509,7 @@ function CompactCard({
         type="button"
         onClick={onExpand}
         style={{
-          backgroundImage: "linear-gradient(155deg, #f0b658 0%, #e8a33d 55%, #d88f28 100%)",
+          backgroundImage: BENCH_TILE_GRADIENT,
           color: "#241a08",
         }}
         className="relative flex w-full flex-col gap-4 rounded-2xl px-[1.15rem] py-[1.1rem] text-left shadow-[0_8px_22px_rgba(232,163,61,0.35),0_6px_18px_rgba(0,0,0,0.35)] transition-transform duration-150 ease-out hover:-translate-y-0.5 hover:scale-[1.015] active:translate-y-0 active:scale-[0.99]"

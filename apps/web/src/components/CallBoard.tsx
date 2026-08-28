@@ -397,6 +397,46 @@ const CARD_CLASSNAME =
   "min-h-28 rounded-2xl bg-[linear-gradient(155deg,#4374cf_0%,#3568c2_55%,#2a58ab_100%)] text-white shadow-[0_8px_22px_rgba(57,135,229,0.35),0_6px_18px_rgba(0,0,0,0.35)]";
 
 /**
+ * Connecting the expanded board back to the tile that opened it (issue
+ * #195): a 4px accent-colored top border plus a small icon-plate/heading
+ * row at the top of the expanded panel, both keyed off this tile's own
+ * darkest (100%) gradient stop.
+ *
+ * **Derived from `CARD_CLASSNAME`'s own literal text, not hand-copied as
+ * a fresh third literal** -- so the two can never silently drift apart on
+ * a future edit to the gradient above. This can only run one direction:
+ * a Tailwind arbitrary-value utility's name has to appear in the source
+ * as a literal, scanner-visible string for the build-time content scan
+ * to find it (see apps/web/CLAUDE.md's "surface elevation" note for a
+ * similar Tailwind content-scanner gotcha), so the gradient itself can't
+ * be *built* from this constant the way BeatTheBench.tsx's own gradient
+ * can (its is a plain inline `style` string, not a Tailwind class, so it
+ * has no such constraint) -- only read from it, one-way, via this regex.
+ *
+ * **Throws a clear, named error at module load if the regex ever stops
+ * matching**, rather than a bare non-null-assertion crash (`Cannot read
+ * properties of null`) -- found in `high` code review on issue #195's
+ * own PR: a future edit to `CARD_CLASSNAME`'s gradient (a new stop count,
+ * different spacing/format) that no longer matches this exact pattern
+ * would otherwise throw an unhelpful `TypeError` at import time, and
+ * since this module is mounted unconditionally at the `ResultsPage`
+ * level (issue #122), that would crash the whole page, not just this
+ * tile. In practice `next build`/`pnpm test` would catch this
+ * immediately on the very next CI run before it could ever reach
+ * production -- but a debuggable error naming exactly what broke and
+ * where to fix it is strictly better than a cryptic crash either way.
+ */
+const CONNECTOR_ACCENT_MATCH = CARD_CLASSNAME.match(/,(#[0-9a-f]{6})_100%\)\]/i);
+if (CONNECTOR_ACCENT_MATCH === null) {
+  throw new Error(
+    "CallBoard.tsx: CONNECTOR_ACCENT could not extract the darkest gradient " +
+      "stop from CARD_CLASSNAME -- update the regex above to match " +
+      "CARD_CLASSNAME's new gradient format.",
+  );
+}
+const CONNECTOR_ACCENT = CONNECTOR_ACCENT_MATCH[1]!;
+
+/**
  * What renders before `useCallBoard`'s mount-time correction: the same
  * summary row, sized identically to the real card, but genuinely inert --
  * a plain `<div>`, not a `<details>`/`<summary>`, so there is no
@@ -515,10 +555,29 @@ export function CallBoard() {
       {!hydrated ? (
         <CallBoardPlaceholder />
       ) : (
-        <details>
+        // `group`: lets the expanded body's own connector devices below
+        // (the flush bottom corners on <summary>, the hover-lift
+        // suppression) key off this <details>' own `open` state via
+        // Tailwind's `group-open:` variant.
+        <details className="group">
           <summary
             data-testid="call-board-summary"
-            className={`${CARD_CLASSNAME} cursor-pointer list-none transition-transform duration-150 hover:-translate-y-0.5 hover:scale-[1.015] active:translate-y-0 active:scale-[0.99]`}
+            // `group-open:rounded-b-none` (issue #195): once open, the
+            // summary's own bottom corners go square so it reads as
+            // unfolding directly into the body below, which itself has
+            // no top rounding (see the body wrapper's own comment).
+            // `group-open:hover:translate-y-0 group-open:hover:scale-100`
+            // (issue #195, review finding #2): the pre-existing hover-lift
+            // transform (`hover:-translate-y-0.5 hover:scale-[1.015]`)
+            // would visibly tear the seam between the now-flush summary
+            // and body on hover while open, since the two are meant to
+            // read as one continuous surface at that moment -- suppressed
+            // only while open; the collapsed tile keeps its lift. Tailwind
+            // emits a two-variant rule (`group-open:hover:`) after a
+            // single-variant one (`hover:`) targeting the same property,
+            // so the more specific rule wins regardless of source order
+            // in this className string.
+            className={`${CARD_CLASSNAME} cursor-pointer list-none transition-transform duration-150 group-open:rounded-b-none hover:-translate-y-0.5 hover:scale-[1.015] group-open:hover:translate-y-0 group-open:hover:scale-100 active:translate-y-0 active:scale-[0.99]`}
           >
             <CallBoardSummaryRow
               statusLine={statusLine}
@@ -533,8 +592,28 @@ export function CallBoard() {
               (see CARD_CLASSNAME's own doc comment above for why this
               isn't blue too) -- the same border/background treatment the
               collapsed tile used pre-#177, just now scoped to the body
-              alone instead of the whole <details>. */}
-          <div className="surface-card mt-3 flex flex-col gap-6 rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] px-4 pt-4 pb-5">
+              alone instead of the whole <details>.
+
+              **Issue #195's connector devices**: no `mt-3` gap and no
+              `surface-card` shadow (so it reads as unfolding directly out
+              of the tile above, not a separate floating card); rounding
+              flips to `rounded-t-none rounded-b-2xl` (flush against the
+              now-square-cornered summary); the border drops its top edge
+              (`border-x border-b`, not a uniform `border`) in favor of a
+              4px `CONNECTOR_ACCENT`-colored `border-t-4`, applied via
+              inline `style` rather than a Tailwind bracket-value class --
+              this codebase already avoids that for gradient-adjacent
+              colors (see CompactCard's own doc comment,
+              BeatTheBench.tsx, on why its gradient is inline). The other
+              three sides keep their original `border-[var(--gridline)]`
+              color/width unchanged (review finding #5) -- only the top
+              edge's color/width is overridden, via the more specific
+              inline `borderTopColor`. */}
+          <div
+            data-testid="call-board-panel"
+            className="flex flex-col gap-6 rounded-t-none rounded-b-2xl border-x border-b border-t-4 border-[var(--gridline)] bg-[var(--surface-1)] px-4 pt-4 pb-5"
+            style={{ borderTopColor: CONNECTOR_ACCENT }}
+          >
             {/* Always mounted, never conditionally rendered alongside the
                 thing it announces -- the same idiom issue #67 established
                 for the reveal announcement in ResultsPanel.tsx and
@@ -549,6 +628,29 @@ export function CallBoard() {
               className="sr-only"
             >
               {announcement}
+            </div>
+
+            {/* Icon plate + heading (issue #195, device #2): a small,
+                persistent visual echo of the collapsed tile's own icon,
+                tinted with a ~15% wash of CONNECTOR_ACCENT, sitting
+                beside a visible heading naming the mechanic -- so the
+                expanded panel doesn't read as plain neutral chrome. The
+                sr-only <h2> above already names this section "The Call
+                Board" for landmark purposes; this is the first *visible*
+                instance of that name, styled at the same h3 level/weight
+                this panel's own "Your record"/"Recent calls" headings
+                already use below, for consistency (review finding #1:
+                this panel already had visible headings, so this isn't
+                introducing a new pattern). */}
+            <div className="flex items-center gap-2">
+              <span
+                aria-hidden="true"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-lg"
+                style={{ backgroundColor: `${CONNECTOR_ACCENT}26` }}
+              >
+                {CTA_ICON}
+              </span>
+              <h3 className="text-sm font-medium text-[var(--text-primary)]">The Call Board</h3>
             </div>
 
             <p className="text-sm text-[var(--text-secondary)]">

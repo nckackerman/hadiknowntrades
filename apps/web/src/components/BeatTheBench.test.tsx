@@ -319,6 +319,29 @@ describe("BeatTheBench", () => {
     expect(screen.queryByRole("button", { name: /can you do better\?/i })).not.toBeInTheDocument();
   });
 
+  it("connects the expanded frame back to the tile that opened it (issue #195)", async () => {
+    render(<BeatTheBench />);
+    expandCompactCard();
+
+    const heading = await screen.findByRole("heading", { name: "Beat the Bench" });
+    const frame = heading.closest("section")!;
+
+    // A 4px top border colored with the tile's own darkest gradient
+    // stop (#d88f28), plus the other three sides keeping their original
+    // border color/width (mirroring CallBoard's identical review
+    // finding #5) -- jsdom normalizes the hex to rgb().
+    expect(frame.className).toContain("border-t-4");
+    expect(frame.className).toContain("border-x");
+    expect(frame.className).toContain("border-b");
+    expect(frame.style.borderTopColor).toBe("rgb(216, 143, 40)"); // #d88f28
+
+    // The header row's own two-child justify-between layout (icon+
+    // heading group, "Collapse" button) is preserved -- the heading is
+    // still directly reachable by role/name (review finding #4), and the
+    // icon plate sits immediately beside it.
+    expect(screen.getByRole("button", { name: /collapse/i })).toBeInTheDocument();
+  });
+
   it("collapses back to the compact card, and resets mode so a re-expand starts at the chooser", async () => {
     render(<BeatTheBench />);
     expandCompactCard();

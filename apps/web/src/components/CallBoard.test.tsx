@@ -394,18 +394,45 @@ describe("CallBoard: bold blue-gradient tile (issue #177)", () => {
     // The blue gradient chrome lives on the <summary> only, not the
     // <details> -- so the expanded board's own wrapper stays the app's
     // ordinary dark surface-card style, not blue (see CARD_CLASSNAME's
-    // own doc comment for why).
-    expect(details.className).toBe("");
+    // own doc comment for why). `"group"` (issue #195) is purely a
+    // Tailwind `group-open:` hook for the summary/body connector devices
+    // below -- it carries no chrome of its own.
+    expect(details.className).toBe("group");
 
     await user.click(screen.getByTestId("call-board-summary"));
     expect(details).toHaveAttribute("open");
     expect(screen.getAllByRole("group", { name: /^Your call for/ })).toHaveLength(3);
 
-    const board = screen
-      .getByRole("group", { name: "Your call for Aug 26, 2026" })
-      .closest("div.surface-card");
-    expect(board).not.toBeNull();
-    expect(board!.className).not.toContain("linear-gradient");
+    const board = screen.getByTestId("call-board-panel");
+    expect(board.className).not.toContain("linear-gradient");
+    expect(board.className).not.toContain("surface-card");
+  });
+
+  it("connects the expanded panel back to the tile that opened it (issue #195)", async () => {
+    freezeClock(WEDNESDAY_BEFORE_OPEN);
+    const user = await renderBoard();
+
+    await user.click(screen.getByTestId("call-board-summary"));
+
+    const panel = screen.getByTestId("call-board-panel");
+    // A 4px top border colored with the tile's own darkest gradient stop
+    // (#2a58ab), plus the other three sides keeping their original
+    // border color/width (review finding #5) -- jsdom normalizes the hex
+    // to rgb().
+    expect(panel.className).toContain("border-t-4");
+    expect(panel.className).toContain("border-x");
+    expect(panel.className).toContain("border-b");
+    expect(panel.style.borderTopColor).toBe("rgb(42, 88, 171)"); // #2a58ab
+    // No top rounding, no gap, no shadow -- reads as unfolding directly
+    // out of the tile above rather than a separate floating card.
+    expect(panel.className).toContain("rounded-t-none");
+    expect(panel.className).toContain("rounded-b-2xl");
+    expect(panel.className).not.toContain("mt-3");
+
+    // A visible icon + heading naming the mechanic sits at the top of
+    // the panel -- the sr-only landmark heading already said "The Call
+    // Board"; this is the first visible instance of that name.
+    expect(screen.getByRole("heading", { name: "The Call Board", level: 3 })).toBeInTheDocument();
   });
 });
 
