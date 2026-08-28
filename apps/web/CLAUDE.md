@@ -9176,3 +9176,199 @@ bg-white/[0.16]`) is now genuinely duplicated a third time. That
   950 passing, `pnpm format:check`) re-ran green after both fixes; no
   new live-browser verification pass, since neither fix changes any
   rendered output (doc comments only).
+
+## Ordering the two game tiles by play history (issue #196)
+
+Before this issue, `ResultsPage.tsx`'s 2-up game-tile grid (issue #178)
+always rendered `<BeatTheBench /><CallBoard />` in that literal, fixed
+order. Two new modules plus a thin hook now let a viewer's own play
+habits decide which tile renders first:
+
+| module                           | owns                                                                                                   |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `lib/game-tile-order-storage.ts` | the localStorage-backed, date-keyed rolling history of which tile a viewer touches first each day      |
+| `lib/game-tile-order.ts`         | the pure ranking/sort function (`orderGameTiles`), independently unit-tested against synthetic history |
+| `lib/use-game-tile-order.ts`     | the SSR-safe hook wiring the two together for `ResultsPage.tsx`                                        |
+
+- **Storage shape: one entry per viewer-local day, holding an ordered
+  array of every tile touched that day** (`TileOrderDay = { date,
+order: GameTileId[] }`), not the simpler `{date, gameId}` "just the
+  first one" shape the issue's own Background section offered as
+  sufficient. The richer shape is what lets one history double as the
+  answer to _both_ questions this ranking needs: `order[0]` is "which
+  tile was opened first" (feeds `preferenceScores`), and
+  `order.includes(gameId)` is "was this specific tile played today at
+  all" (feeds the played-today-sinks rule) -- including for whichever
+  tile was touched _second_ that day, which a bare `firstGameId` field
+  couldn't answer. `recordGameTileOpened(gameId, date)` is idempotent
+  per (day, tile): the first tile touched on a day claims the front of
+  that day's `order`; a later same-day play of the other tile is
+  appended; a same-day replay of a tile already recorded is a no-op --
+  today's order is decided the moment each tile is first touched, not
+  re-decided on every subsequent play.
+- **Keyed by the viewer's own local calendar date
+  (`localDateKey(new Date())`), deliberately not either game's own
+  trading-day concept.** This is a real, considered departure from both
+  existing storage modules' own keying: `beat-the-bench-storage.ts`
+  keys by the session's own trading date (a prior Friday on a weekend),
+  and `call-board-storage.ts` keys by the _called_, always-future
+  trading day. Neither is "today" in the sense this ranking needs --
+  "in what order did this browser touch the two tiles on its own
+  calendar day" is a fact about the viewer's wall clock, not about any
+  trading calendar. `localDateKey` uses the browser's local
+  `getFullYear`/`getMonth`/`getDate`, not UTC and not
+  `market-calendar.ts`'s own `America/New_York`-zoned `exchangeClock`.
+- **History length: 30 days, matching `call-board-storage.ts`'s own
+  `MAX_STORED_RESOLVED_CALLS` order of magnitude** -- roughly a month of
+  typical daily use. This mechanic only ever needs a _stable_ fractional
+  preference signal, not a long memory: 30 recent days is already enough
+  to smooth over a handful of atypical mornings while staying a couple
+  hundred bytes and cheap to re-derive a score from on every mount.
+  Oldest days are dropped first, same trimming posture as every other
+  bounded history in this app.
+- **Preference score: neutral 0.5 for "no data yet," genuinely 0 for
+  "played but never first," not the same thing.** A tile with **no
+  recorded appearance at all** in the history (a brand-new viewer, or
+  one who has only ever played the _other_ tile) scores 0.5 -- the same
+  "don't let an early, thin signal look confidently wrong" reasoning
+  `daily-guess-storage.ts`'s own key-migration note and this file's
+  general silent-degradation posture already establish elsewhere. A
+  tile that _has_ appeared but was never `order[0]` legitimately scores
+  0 -- that's a real, earned signal, not an absence of one, and treating
+  it as neutral would blur "I've never seen you play this" into "you
+  always play this second."
+- **Tie-break: deterministic, by `GAME_TILE_IDS`' own fixed order
+  (Beat the Bench, then The Call Board -- this app's pre-#196 order),
+  not by `Array.prototype.sort`'s incidental stability or by whatever
+  order the caller happens to pass tiles in.** A brand-new viewer (both
+  scores neutral 0.5) and a viewer with a genuinely tied history both
+  hit this path and see the exact same order this app always showed
+  before this issue -- the issue's own "don't let a brand-new viewer
+  see an arbitrary order that looks broken" acceptance criterion, made
+  concrete.
+- **The sort is pure and re-derived fresh on every mount, never
+  re-computed mid-session.** `use-game-tile-order.ts`'s hook reads
+  storage exactly once, in its own mount-time hydration-correction
+  microtask (see below) -- there's no `subscribeToLocalStorage`
+  subscription the way `use-daily-ritual.ts` has for its own rail. This
+  is deliberate, not a missed wiring: the issue's own Design section 4
+  explicitly requires that today's play only move the _played_ tile to
+  the bottom of _today's_ render (already true the instant either write
+  path's `recordGameTileOpened` call lands, since the played-today rule
+  reads the same day's `order` the write just updated), and must **not**
+  retroactively change the _preference_ ranking used for future sorting
+  until the next visit. A live subscription would risk exactly the
+  wrong thing: re-deriving `orderGameTiles` mid-session off a history
+  that now includes today's own just-written entry could shuffle the
+  two tiles' relative position for reasons unrelated to "did you play
+  this tile today" (e.g. a `preferenceScores` shift from a fresh data
+  point), which the issue's own "not something that jumps mid-session"
+  requirement rules out. One read at mount, held for the component's
+  whole lifetime, is what keeps that guarantee true by construction
+  rather than by a special-cased check.
+- **Hydration safety follows `use-hydrated-local-storage-state.ts`'s
+  deferred-correction shape (`useHydratedLocalStorageState`), not
+  `use-daily-guess.ts`'s synchronous-read shortcut** -- the same call
+  used consistently in this app when the mounting component _can_
+  render during SSR (see `use-call-board.ts`'s own `UNHYDRATED_VIEW`,
+  and the deleted `use-onboarding-dismissed.ts`, both at this identical
+  `ResultsPage.tsx` level). Default value is `GAME_TILE_IDS`' own fixed
+  order -- both on the server and on the client's very first render
+  during hydration -- corrected to the real, history-derived order from
+  the hook's mount-time microtask. No `writeStored`/setter of its own:
+  this hook is a pure reader, matching `use-daily-ritual.ts`'s own
+  precedent of never owning a write path for state another feature
+  already owns and writes.
+- **Wiring each tile's "played" write path (issue's own Scope item 4)**:
+  `BeatTheBench.tsx`'s settlement `useEffect` (the one that already
+  calls `savePlayedSession` once `settled` goes true) now also calls
+  `recordGameTileOpened("beat-the-bench", localDateKey(new Date()))`
+  unconditionally alongside it -- unconditionally because
+  `savePlayedSession` itself is called the same way there, with no
+  return-value check. `use-call-board.ts`'s `makeCall` calls
+  `recordGameTileOpened("call-board", localDateKey(now))` **only when
+  `saveCallBoardPick` actually returns `true`** -- a refused write (the
+  called day is already locked, past its own market open) isn't really
+  "playing" this tile today any more than it's a real accepted call,
+  and shouldn't count toward "usually played first" either.
+- **The `:has()`-based 2-up grid mechanism (issue #178) needed zero CSS
+  changes, and this was verified, not assumed.** That mechanism's two
+  `has-[[data-bench-expanded]]:grid-cols-1`/`has-[details[open]]:grid-cols-1`
+  rules collapse the grid to one column the instant either tile expands,
+  by matching on the _presence_ of a marker descendant anywhere inside
+  the grid container -- `:has()` selectors are position-independent by
+  their own CSS semantics, so which of the two tiles happens to render
+  first in the DOM has no bearing on whether either rule fires. This
+  was confirmed live (see below), not just reasoned about from the
+  spec. `ResultsPage.tsx` now renders `gameTileOrder.map(...)` instead
+  of the two components literally, each keyed by its own `GameTileId`
+  (`key={tileId}`) so a same-set, different-order re-render (the
+  default-to-hydrated-order correction right after mount) moves each
+  component via React's ordinary keyed reconciliation rather than
+  unmounting/remounting it -- relevant in principle if a tile ever
+  accumulates real in-progress state that fast, though in practice the
+  hydration correction lands well before either tile's own game state
+  could exist. Swapping which tile renders first is, by construction,
+  the entire visible effect of this issue: CSS grid auto-placement fills
+  column 1 (or, at a stacked mobile width, the top row) with whichever
+  child comes first in the DOM.
+- **Live-verified against a real local pipeline run**
+  (`local-run.ts`, the default 20-ticker sample, real Yahoo network
+  calls, no S3 write -- including a real `results/beat-the-bench/`
+  session) plus `next build`/`next start` (not `next dev` -- see this
+  file's own repeatedly-documented note on why headless Chromium can't
+  hydrate a dev-mode page in this sandbox) and the documented no-root
+  headless-Chromium Playwright workaround. On a fresh browser context
+  (no prior history), the grid rendered Beat the Bench first, The Call
+  Board second -- the fixed default order. Expanding Beat the Bench and
+  playing a full real session to genuine settlement (77 real "Step
+  forward one bar" clicks, the always-present, reduced-motion-safe
+  control, reaching "bar 79 of 79" and a real "Along for the ride"
+  settlement) wrote both `hikt:beat-the-bench:2026-08-27:todays-close`
+  and `hikt:game-tile-order:history` (`{"days":[{"date":"2026-08-27",
+"order":["beat-the-bench"]}]}`) to real localStorage. Reloading the
+  page (a fresh mount, exercising the real hydration-correction path
+  end to end, not a simulated re-render) showed the grid re-rendered
+  with **The Call Board first and Beat the Bench second** -- the exact
+  played-today-sinks behavior this issue's own acceptance criteria
+  name, with Beat the Bench's own compact card additionally showing its
+  real `✓` "done" status badge (issue #186) confirming the played state
+  itself round-tripped correctly too. Zero console errors or
+  `pageerror` events across the whole run. The temporary `playwright`
+  devDependency and the verification script were both reverted/deleted
+  before committing, per this file's own established convention;
+  confirmed via `git status`/`git diff --stat` on
+  `package.json`/`pnpm-lock.yaml` showing no trace afterward.
+
+### `high` code review: two findings, both fixed before merge
+
+- **`orderGameTiles`'s "played today" check reimplemented
+  `game-tile-order.ts`'s own already-exported, already-tested
+  `wasPlayedOn` helper inline**, via a `playedToday` `Set` built from
+  `history.find(...).order.filter(...)` -- a real duplication-drift
+  risk matching this file's own documented history of getting bitten by
+  exactly this class of bug once already (see
+  `use-hydrated-local-storage-state.ts`'s own extraction note above).
+  Fixed by calling `wasPlayedOn(history, today, a)`/
+  `wasPlayedOn(history, today, b)` directly inside the sort comparator
+  instead of precomputing the Set.
+- **`use-game-tile-order.ts`'s `readStored` callback never returned
+  `null`, violating `useHydratedLocalStorageState`'s own documented
+  contract** (`null` means "nothing usable stored, keep the default,"
+  skipping an unnecessary re-application; a concrete value always
+  forces a `setValueState` call) -- it always computed
+  `orderGameTiles(getTileOrderHistory(), today)`, which itself always
+  returns a concrete `GameTileId[]` (falling back to `GAME_TILE_IDS`'
+  own fixed tie-break order when there's no history at all), so a
+  brand-new viewer with zero recorded history forced an unnecessary
+  extra state update/re-render of both game tiles right after
+  hydration, for a value identical to the default it was replacing.
+  Fixed: `readStored` now checks `getTileOrderHistory().length === 0`
+  first and returns `null` in that case, only calling `orderGameTiles`
+  once real history exists.
+- All five routine checks (lint, typecheck, `pnpm build`, `pnpm test`
+  -- 993 passing, `pnpm format:check`) re-ran green after both fixes;
+  no new live-browser verification pass, since neither fix changes any
+  end-state rendered output (a pure sort-comparator refactor, and a
+  hydration-timing/render-count optimization with no visible
+  difference once the microtask resolves).

@@ -9,6 +9,7 @@ import { useCustomResults } from "@/lib/use-custom-results";
 import { useCustomAnchors } from "@/lib/use-custom-anchors";
 import { useStartingCapital } from "@/lib/use-starting-capital";
 import { useDailyChallenge } from "@/lib/use-daily-challenge";
+import { useGameTileOrder } from "@/lib/use-game-tile-order";
 import { formatDate } from "@/lib/format-date";
 import { parseAnchorDate, parseRange } from "@/lib/results-api";
 import { headlineFigureFor } from "@/lib/headline-figure";
@@ -104,6 +105,14 @@ export function ResultsPage() {
   // cleared on range change) since "how much money to start with" isn't
   // tied to which window of data is being viewed.
   const [startingCapital, setStartingCapital] = useStartingCapital();
+
+  // Which order to render the two game tiles in (issue #196) -- a viewer's
+  // own play history, ranked by game-tile-order.ts's pure sort function,
+  // with whichever tile is already played today sunk to the bottom. See
+  // use-game-tile-order.ts's own doc comment for why this is safe to read
+  // here (the same "can render during SSR" defensive posture every other
+  // localStorage-backed value mounted at this level already gets).
+  const gameTileOrder = useGameTileOrder();
 
   // The header's own date chip (issue #187) -- reads only `.dailyChallenge?.date`
   // to show "YESTERDAY · AUG 27, 2026" next to the `<h1>`. `<header>` has
@@ -212,20 +221,37 @@ export function ResultsPage() {
           mode/selectedDay props, and both render regardless of how
           /api/results goes, same reasoning DailyHero above relies on.
 
+          **The first two children are `gameTileOrder` (issue #196), not
+          always literally `<BeatTheBench /><CallBoard />`** -- a
+          viewer's own play-order preference, with whichever real tile is
+          already played today sunk to the bottom, see
+          use-game-tile-order.ts. This is safe for the `:has()` mechanism
+          just below: both `has-*` selectors match on the *presence* of a
+          descendant (`[data-bench-expanded]`/`details[open]`) anywhere
+          inside this grid, not on which DOM position it occupies, so
+          which real tile renders in column 1 vs. column 2 is irrelevant
+          to whether either rule fires -- confirmed live (see this
+          issue's own apps/web/CLAUDE.md entry), not just reasoned about.
+          Swapping which real tile renders first is the entire visible
+          effect of this issue: CSS grid auto-placement fills column 1
+          with whichever child comes first in the DOM, so a viewer who
+          usually opens The Call Board first sees it on the left (or on
+          top, at a stacked mobile width) instead of Beat the Bench.
+
           **The Order / The Lineup (issue #197) fill out the same
-          container's second row, after the two real tiles -- making this
-          the full 2x2 grid the daily-hub-condensed mockup was originally
-          sketched with, not a new grid of its own.** Both are
-          non-functional "coming soon" placeholders (read issue #189 in
-          full before touching either -- both games were designed, mocked,
-          then explicitly parked pending a daily-selection-mechanism design
-          pass neither this issue nor #197 attempts). They render
-          unconditionally as the grid's 3rd/4th children, always after
-          BeatTheBench/CallBoard: the sibling play-history-ordering issue
-          in this milestone (#196) is scoped to reordering only the two
-          real, playable tiles by their own play state -- these two have no
-          play state to rank by, and stay pinned in place regardless of
-          whatever order #196 puts the first two in.
+          container's second row, always after the two real, ordered
+          tiles -- making this the full 2x2 grid the daily-hub-condensed
+          mockup was originally sketched with, not a new grid of its
+          own.** Both are non-functional "coming soon" placeholders (read
+          issue #189 in full before touching either -- both games were
+          designed, mocked, then explicitly parked pending a
+          daily-selection-mechanism design pass neither #196 nor #197
+          attempts). They render unconditionally as the grid's 3rd/4th
+          children, after whatever `gameTileOrder` puts first: issue #196
+          is scoped to reordering only the two real, playable tiles by
+          their own play state -- these two have no play state to rank
+          by, and stay pinned in place regardless of whatever order #196
+          puts the first two in.
 
           `has-[details[open]]:grid-cols-1` and
           `has-[[data-bench-expanded]]:grid-cols-1` collapse the grid to
@@ -265,8 +291,9 @@ export function ResultsPage() {
           signal. See that rule's own doc comment for the full
           reasoning. */}
       <div className="game-row-grid grid grid-cols-2 gap-4 has-[[data-bench-expanded]]:grid-cols-1 has-[details[open]]:grid-cols-1">
-        <BeatTheBench />
-        <CallBoard />
+        {gameTileOrder.map((tileId) =>
+          tileId === "beat-the-bench" ? <BeatTheBench key={tileId} /> : <CallBoard key={tileId} />,
+        )}
         <TheOrder />
         <TheLineup />
       </div>
