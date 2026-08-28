@@ -8998,3 +8998,47 @@ screenshotted both tiles collapsed/expanded at 1280px and 375px,
 confirmed keyboard nav (`Tab` to the summary, `Enter` toggles it closed
 again -- native `<details>`/`<summary>` behavior, untouched by this
 issue), and zero console/`pageerror` events across every pass.
+
+### `high` code review: two findings, both fixed before merge
+
+An 8-angle `high` review of the PR above found two real issues -- one
+reproduced directly by actually rendering the component under a
+hydration-timing probe, not just reasoned about.
+
+- **`ResultsPage.test.tsx`'s three `getByRole("heading", { name: "The
+Call Board" })` queries had no `level` constraint, and this issue's
+  own new visible `<h3>The Call Board</h3>` (device #2, at the top of
+  the expanded panel) now shares that exact accessible name with the
+  pre-existing sr-only `<h2 id="call-board-heading">` landmark.**
+  Reproduced live: rendering `<CallBoard />`, awaiting a microtask (so
+  `useCallBoard`'s mount-time hydration correction lands, the same
+  boundary `use-call-board.ts`'s own doc comment already documents),
+  then calling the unconstrained query throws
+  `@testing-library/dom`'s `getMultipleElementsFoundError` -- both
+  headings genuinely match. The sibling `sectionFor` test helper (added
+  earlier in this same PR, for a different describe block) already
+  carries `level: 2` and was never at risk; these three call sites, in
+  an _earlier_ describe block in the same file, were the ones missed.
+  Fixed by adding `level: 2` to all three, matching `sectionFor`'s own
+  precedent -- confirmed this is exactly the "unique landmark, not the
+  visible in-panel heading" query every one of these three tests
+  actually means, since none of them expand the board first.
+- **`CallBoard.tsx`'s `CONNECTOR_ACCENT` regex-derived it from
+  `CARD_CLASSNAME` via two bare non-null assertions
+  (`.match(...)![1]!`), evaluated at module load time.** A future edit
+  to `CARD_CLASSNAME`'s gradient string (a new stop count, different
+  spacing/format) that no longer matches this exact pattern would throw
+  an unhelpful `TypeError` at import time -- and since `CallBoard`
+  mounts unconditionally at the `ResultsPage` level (issue #122), that
+  would crash the whole page, not just this tile. Fixed by replacing
+  the bare assertions with an explicit `null` check that throws a
+  named, descriptive `Error` naming exactly what broke and pointing at
+  the regex to fix -- the module still fails fast on a genuine mismatch
+  (preserving the "single source of truth, no duplicate literal"
+  property the constant's own doc comment already argues for), but the
+  failure is now debuggable instead of a cryptic crash. In practice
+  `next build`/`pnpm test` would catch a real mismatch on the very next
+  CI run before it could ever reach production -- this is a robustness/
+  clarity fix, not a fix for a reachable production bug.
+- All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
+  955 passing, `pnpm format:check`) re-ran green after both fixes.

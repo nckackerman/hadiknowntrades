@@ -418,7 +418,13 @@ describe("ResultsPage", () => {
     it("renders the board even while the results fetch has not resolved", async () => {
       render(<ResultsPage />);
 
-      expect(screen.getByRole("heading", { name: "The Call Board" })).toBeInTheDocument();
+      // level: 2 (issue #195): The Call Board's own expanded panel now
+      // has a second, visible heading with the identical accessible
+      // name -- see sectionFor's own comment below for the full
+      // reasoning. This test never expands the board, but the
+      // constraint costs nothing and keeps this query's own contract
+      // consistent with every other same-name query in this file.
+      expect(screen.getByRole("heading", { name: "The Call Board", level: 2 })).toBeInTheDocument();
       // The board's own three slots land after its mount-time hydration
       // correction (see lib/use-call-board.ts), independently of the
       // results fetch this test never resolves.
@@ -428,7 +434,10 @@ describe("ResultsPage", () => {
     it("mounts exactly one board, as a sibling of (not nested inside) ResultsPanel", () => {
       render(<ResultsPage />);
 
-      const board = screen.getByRole("heading", { name: "The Call Board" }).closest("section");
+      // level: 2 (issue #195): see the comment on the test above.
+      const board = screen
+        .getByRole("heading", { name: "The Call Board", level: 2 })
+        .closest("section");
       const skeleton = screen.getByText("Loading results…");
       expect(board).not.toBeNull();
       expect(board).not.toContainElement(skeleton);
@@ -475,7 +484,10 @@ describe("ResultsPage", () => {
       // child of the column.
       const grid = section.parentElement!;
       expect(grid.parentElement).toBe(column);
-      const board = screen.getByRole("heading", { name: "The Call Board" }).closest("section")!;
+      // level: 2 (issue #195): see the comment on the earlier test above.
+      const board = screen
+        .getByRole("heading", { name: "The Call Board", level: 2 })
+        .closest("section")!;
       // Both game cards share the same grid parent -- confirming this is
       // genuinely the 2-up wrapper, not some other intervening element.
       expect(board.parentElement).toBe(grid);

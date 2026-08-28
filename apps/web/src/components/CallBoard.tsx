@@ -412,8 +412,29 @@ const CARD_CLASSNAME =
  * be *built* from this constant the way BeatTheBench.tsx's own gradient
  * can (its is a plain inline `style` string, not a Tailwind class, so it
  * has no such constraint) -- only read from it, one-way, via this regex.
+ *
+ * **Throws a clear, named error at module load if the regex ever stops
+ * matching**, rather than a bare non-null-assertion crash (`Cannot read
+ * properties of null`) -- found in `high` code review on issue #195's
+ * own PR: a future edit to `CARD_CLASSNAME`'s gradient (a new stop count,
+ * different spacing/format) that no longer matches this exact pattern
+ * would otherwise throw an unhelpful `TypeError` at import time, and
+ * since this module is mounted unconditionally at the `ResultsPage`
+ * level (issue #122), that would crash the whole page, not just this
+ * tile. In practice `next build`/`pnpm test` would catch this
+ * immediately on the very next CI run before it could ever reach
+ * production -- but a debuggable error naming exactly what broke and
+ * where to fix it is strictly better than a cryptic crash either way.
  */
-const CONNECTOR_ACCENT = CARD_CLASSNAME.match(/,(#[0-9a-f]{6})_100%\)\]/i)![1]!;
+const CONNECTOR_ACCENT_MATCH = CARD_CLASSNAME.match(/,(#[0-9a-f]{6})_100%\)\]/i);
+if (CONNECTOR_ACCENT_MATCH === null) {
+  throw new Error(
+    "CallBoard.tsx: CONNECTOR_ACCENT could not extract the darkest gradient " +
+      "stop from CARD_CLASSNAME -- update the regex above to match " +
+      "CARD_CLASSNAME's new gradient format.",
+  );
+}
+const CONNECTOR_ACCENT = CONNECTOR_ACCENT_MATCH[1]!;
 
 /**
  * What renders before `useCallBoard`'s mount-time correction: the same
