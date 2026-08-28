@@ -9132,3 +9132,47 @@ coming soon" })`/`"The Lineup - coming soon"` both resolve, each with
   temporary `playwright` devDependency was reverted before committing;
   confirmed via `git status`/`git diff --stat` on
   `package.json`/`pnpm-lock.yaml` showing no trace afterward.
+
+### `high` code review: two doc-accuracy fixes, one extraction deliberately deferred
+
+An 8-angle `high` review of the PR above found two real doc-comment
+inaccuracies and flagged (but this session chose not to act on) a
+larger reuse opportunity -- worth recording why each landed where it did.
+
+- **`PlaceholderGameTile.tsx`'s own top-of-file doc comment claimed
+  `min-h-28` "is the same defensive floor those two [real] tiles use" --
+  false for `BeatTheBench.tsx`'s `CompactCard`, which carries no
+  `min-h-*` class at all** (confirmed by reading its source directly,
+  not assumed). It matches `CallBoard.tsx`'s own `CARD_CLASSNAME`
+  exactly (`min-h-28`), but only that one. Fixed to say so explicitly.
+- **The status-pill doc comment made the identical "both tiles" claim,
+  also false**: `CallBoard.tsx`'s pill is `bg-white/20 px-2.5 py-1
+text-[0.6875rem]`, matching `PlaceholderGameTile.tsx`'s own pill
+  byte-for-byte; `BeatTheBench.tsx`'s pill is `bg-black/[14%]
+px-[0.55rem] py-[0.2rem]` -- a different background alpha/color
+  entirely, with different padding. Fixed the same way -- names
+  `CallBoard` as the actual source of the borrowed treatment, notes
+  `BeatTheBench`'s own pill differs. (The icon-plate comment right above
+  it -- "matching BeatTheBench's/CallBoard's own 44px circular
+  translucent backdrop" -- was checked too and left alone: both real
+  tiles' icon plates genuinely are `h-11 w-11 bg-white/[0.16]`,
+  identically; only the glyph size inside the plate differs between them
+  (`text-3xl` for CallBoard/this file, `text-[1.75rem]` for BeatTheBench
+  -- a difference the comment never claimed to match in the first
+  place).
+- **Deliberately NOT done: extracting a shared `IconPlate`/tile-summary
+  component out of `BeatTheBench.tsx`, `CallBoard.tsx`, and this file**,
+  even though the icon-plate markup (`h-11 w-11 rounded-full
+bg-white/[0.16]`) is now genuinely duplicated a third time. That
+  refactor would mean touching two already-shipped, heavily-tested,
+  unrelated components (`BeatTheBench.tsx`/`CallBoard.tsx`) for a scope
+  issue #197 never asked for -- exactly the class of undisclosed scope
+  expansion this file's own issue #105 post-PR review history already
+  flags as release-blocking when it happens silently (see that
+  section's own "WholeRangeBalance's new... stat was forwarded
+  unconditionally" finding). Worth a real follow-up issue if a fourth
+  caller of this exact markup ever shows up -- not attempted here.
+- All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
+  950 passing, `pnpm format:check`) re-ran green after both fixes; no
+  new live-browser verification pass, since neither fix changes any
+  rendered output (doc comments only).

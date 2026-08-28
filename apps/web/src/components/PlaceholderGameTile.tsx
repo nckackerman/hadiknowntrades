@@ -74,11 +74,14 @@
  * inline `style`, not a bracket class) -- a literal, fully-static bracket
  * value per tile is the safer, already-proven shape (`CallBoard.tsx`'s own
  * `CARD_CLASSNAME`), not a new mechanism invented here. `min-h-28`
- * (7rem/112px) is the same defensive floor those two tiles use -- comfortably
- * clears the 44px touch-target size this app's real controls hold themselves
- * to, even though nothing here is a control to begin with. No hover-lift
- * transform and no `cursor-pointer` -- unlike the two real tiles, there's
- * nothing to click here.
+ * (7rem/112px) matches `CallBoard.tsx`'s own `CARD_CLASSNAME` floor --
+ * `BeatTheBench.tsx`'s `CompactCard` carries no `min-h-*` class at all, so
+ * this is a floor borrowed from one of the two real tiles, not something
+ * both already share. Comfortably clears the 44px touch-target size this
+ * app's real controls hold themselves to regardless, even though nothing
+ * here is a control to begin with. No hover-lift transform and no
+ * `cursor-pointer` -- unlike the two real tiles, there's nothing to click
+ * here.
  */
 const TILE_BASE_CLASSNAME = "min-h-28 rounded-2xl text-white px-[1.15rem] py-[1.1rem]";
 
@@ -133,11 +136,14 @@ function ComingSoonTile({
           <span className="text-xs font-medium text-white/85">{subtitle}</span>
         </span>
       </span>
-      {/* Same status-pill treatment BeatTheBench's/CallBoard's own tiles
-          use for "N of 3 called this week"/"Not played yet today" -- full
-          white text, not a dimmed variant, so this reuses those tiles'
-          already-verified >= 4.5:1 contrast rather than needing its own
-          separate check for a lower-alpha label. */}
+      {/* Same status-pill treatment as CallBoard.tsx's own tiles use for
+          "N of 3 called this week" (bg-white/20, same padding/text size) --
+          BeatTheBench.tsx's own pill differs (bg-black/[14%], different
+          padding), so this borrows from CallBoard specifically, not from
+          "both" real tiles at once. Full white text, not a dimmed variant,
+          so this reuses CallBoard's own already-verified >= 4.5:1 contrast
+          rather than needing its own separate check for a lower-alpha
+          label. */}
       <span className="font-numeric self-start rounded-full bg-white/20 px-2.5 py-1 text-[0.6875rem] font-bold">
         Coming soon
       </span>
