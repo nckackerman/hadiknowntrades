@@ -6,9 +6,11 @@
 // every question it answers is delegated: `syncCallBoard` for the board
 // itself (including the rolling lookahead), `saveCallBoardPick` for a
 // write (which is also where the after-the-open lock lives, see
-// call-board-storage.ts), and `exchangeClock`/`isTradingDay` for "what day
-// is it in New York, and does the market trade today?". If something here
-// looks like it's re-deriving one of those, it's a bug.
+// call-board-storage.ts), `exchangeClock`/`isTradingDay` for "what day
+// is it in New York, and does the market trade today?", and
+// `recordGameTileOpened` (issue #196) for this tile's own cross-day
+// play-order history, entirely owned by game-tile-order-storage.ts. If
+// something here looks like it's re-deriving one of those, it's a bug.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -16,6 +18,7 @@ import type { DailyClose, PrecomputedResult } from "@hadiknowntrades/core";
 
 import { computeCallBoardStats, type CallBucket } from "./call-board-scoring";
 import { saveCallBoardPick, syncCallBoard, type CallBoardState } from "./call-board-storage";
+import { localDateKey, recordGameTileOpened } from "./game-tile-order-storage";
 import { exchangeClock, isTradingDay } from "./market-calendar";
 import { useFetchResultsState } from "./use-results";
 
@@ -182,6 +185,15 @@ export function useCallBoard(closes: readonly DailyClose[]): UseCallBoardResult 
     (date: string, bucket: CallBucket): boolean => {
       const now = new Date();
       const saved = saveCallBoardPick(date, bucket, now);
+      // Only record a genuinely accepted pick into issue #196's cross-day
+      // tile-order history -- a refused write (the day's already locked)
+      // isn't really "playing" this tile today, and shouldn't count
+      // toward "usually played first" any more than a refused pick counts
+      // as a real call above. Keyed by the viewer's own local calendar
+      // day (localDateKey(now)), not `date` (the *called*, always-future
+      // trading day) -- see game-tile-order-storage.ts's own header
+      // comment on why those are different things.
+      if (saved) recordGameTileOpened("call-board", localDateKey(now));
       // Re-read rather than patching `view` in place: a refused write must
       // not leave a pick on screen, and a re-read also picks up the
       // lookahead having rolled forward since the last sync.

@@ -108,6 +108,7 @@ import {
 } from "@/lib/beat-the-bench-storage";
 import { STATUS_BADGE_CLASSNAME, STEP_STYLES } from "@/lib/daily-ritual";
 import { formatDate, formatTime } from "@/lib/format-date";
+import { localDateKey, recordGameTileOpened } from "@/lib/game-tile-order-storage";
 import { formatHeroCurrency, formatSessionPercent } from "@/lib/format-currency";
 import { useReducedMotionAfterMount } from "@/lib/use-reduced-motion-after-mount";
 import { useMysteryReveal, useMysterySession } from "@/lib/use-mystery-session";
@@ -795,6 +796,14 @@ function SessionGame({
       benchmarkBalance: settlement.benchmarkBalance,
       moves: settlement.moves,
     });
+    // Also records this settlement into issue #196's cross-day tile-order
+    // history -- deliberately keyed by the *viewer's own local calendar
+    // day* (localDateKey(new Date())), not `recordDate` (the session's
+    // own trading date, which can be a prior Friday on a weekend). The
+    // tile-order ranking asks "which tile does this browser tend to open
+    // first on its own day," not anything about a trading calendar -- see
+    // game-tile-order-storage.ts's own header comment.
+    recordGameTileOpened("beat-the-bench", localDateKey(new Date()));
     // Keyed on the primitives that define this settlement, not on a
     // freshly-built object (a new identity every render, which would
     // rewrite storage on every one).
