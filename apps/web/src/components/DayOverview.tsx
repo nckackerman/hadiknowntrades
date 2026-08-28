@@ -1,10 +1,44 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
+import type { PresetRange } from "@hadiknowntrades/core";
 
 import { formatDate, formatDayOfMonth, formatShortWeekday } from "@/lib/format-date";
 import { formatHeroCurrency } from "@/lib/format-currency";
 import { prefersReducedMotion } from "@/lib/prefers-reduced-motion";
+import { heroMultiplierColor } from "@/components/HeroStat";
+
+export type DayOverviewLayout = "strip" | "list";
+
+/**
+ * Which layout each preset range gets (issue #193) -- a lookup table, not
+ * an inline ternary at the one call site, matching this app's own
+ * established convention for per-range config (`lib/range-copy.ts`'s
+ * `RANGE_COPY`). Colocated with the component that owns the `layout`
+ * concept itself, not `range-copy.ts` (a generic-phrase module with no
+ * notion of layout), so a future range gaining its own distinct layout
+ * (1Y's own ~252-day case, tracked as issue #140) is a one-line edit here.
+ */
+// `PresetRange` also covers 5Y/MAX, which never reach this component at
+// all (they're the window model, not intraday-daily -- see
+// ResultsPanel.tsx's own model branch) -- included here only because
+// `Record<PresetRange, ...>` must be exhaustive; their value is never
+// actually read.
+export const DAY_OVERVIEW_LAYOUT_BY_RANGE: Record<PresetRange, DayOverviewLayout> = {
+  "1W": "strip",
+  "1M": "strip",
+  "3M": "strip",
+  "1Y": "list",
+  "5Y": "strip",
+  MAX: "strip",
+};
+
+/** "1 trade" / "2 trades" -- the one pluralization rule this component
+ * needs, shared by both layouts (the list's own visible text and the
+ * strip's chip aria-label) rather than each re-deriving the same ternary. */
+function tradeCountLabel(tradeCount: number): string {
+  return `${tradeCount} trade${tradeCount === 1 ? "" : "s"}`;
+}
 
 export interface DayOverviewRow {
   /** YYYY-MM-DD. */
@@ -55,10 +89,10 @@ interface DayOverviewProps {
    * case needs a different design tracked separately as issue #140) or
    * "strip" (a horizontally-scrollable row of compact day chips --
    * 1W/1M/3M, issue #193, every day short enough to fit on screen at
-   * once). `ResultsPanel` computes this from its own `range` prop
-   * (`range === "1Y" ? "list" : "strip"`).
+   * once). `ResultsPanel` computes this via this file's own
+   * `DAY_OVERVIEW_LAYOUT_BY_RANGE` lookup table.
    */
-  layout: "strip" | "list";
+  layout: DayOverviewLayout;
 }
 
 /**
@@ -158,7 +192,7 @@ interface DayOverviewProps {
  * `inline: "nearest"` for the horizontal strip) -- everything else about
  * the call is identical.
  */
-export function DayOverview({
+export const DayOverview = memo(function DayOverview({
   rows,
   selected,
   onSelect,
@@ -176,6 +210,30 @@ export function DayOverview({
     );
   }, [selected, layout]);
 
+  // Per-row derivation (selection state, the "carried over from" previous
+  // row, the shared pluralized trade-count label) computed once and shared
+  // by both layout branches below, rather than each independently
+  // re-deriving `isSelected`/`previousRow` off the same `rows`/`selected`
+  // pair -- a real duplication risk (found in code review) now closed by
+  // construction: there's only one place that logic can drift.
+  const rowsMeta = useMemo(
+    () =>
+      rows.map((row, i) => ({
+        row,
+        isSelected: row.date === selected,
+        // "Carried over from {date}" (issue #84) -- a purely structural,
+        // non-numeric note communicating that chaining happened, without
+        // leaking any dollar amount: the previous row's own *date* is
+        // already fully visible, ungated information (every row shows
+        // its date regardless of guess status), so naming it here
+        // reveals nothing new. Every row but the range's own first one
+        // gets this note.
+        previousRow: i > 0 ? rows[i - 1] : null,
+        tradeCountLabel: tradeCountLabel(row.tradeCount),
+      })),
+    [rows, selected],
+  );
+
   return (
     <div className="flex flex-col gap-1.5">
       <p className="text-sm text-[var(--text-secondary)]">
@@ -185,71 +243,58 @@ export function DayOverview({
       </p>
       {layout === "list" ? (
         <ul className="flex max-h-72 flex-col gap-1 overflow-y-auto rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] p-1">
-          {rows.map((row, i) => {
-            const isSelected = row.date === selected;
-            // "Carried over from {date}" (issue #84) -- a purely structural,
-            // non-numeric note communicating that chaining happened, without
-            // leaking any dollar amount: the previous row's own *date* is
-            // already fully visible, ungated information (every row shows
-            // its date regardless of guess status), so naming it here
-            // reveals nothing new. Every row but the range's own first one
-            // gets this note.
-            const previousRow = i > 0 ? rows[i - 1] : null;
-            return (
-              <li key={row.date}>
-                <button
-                  type="button"
-                  ref={isSelected ? selectedRef : undefined}
-                  aria-current={isSelected ? "true" : undefined}
-                  onClick={() => onSelect(row.date)}
-                  className={`grid w-full grid-cols-[1fr_auto_auto] items-center gap-x-3 rounded-md px-3 py-2 text-left text-sm transition-colors ${
-                    isSelected
-                      ? "bg-[var(--accent-selection)]/15 text-[var(--text-primary)]"
-                      : "text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)]"
-                  }`}
-                >
-                  <span className="flex flex-col">
-                    <span className="font-medium">{formatDate(row.date)}</span>
-                    {previousRow && (
-                      // aria-hidden: purely a visual affordance -- each
-                      // row's own date is already independently accessible
-                      // (read in DOM order), so a screen reader user
-                      // tabbing through rows already hears the sequence of
-                      // consecutive dates without this note; including it
-                      // in this button's own accessible name would instead
-                      // fold a *different* row's date into it, breaking
-                      // exact-match accessible-name queries (this file's
-                      // own DayOverview.test.tsx and ResultsPanel.test.tsx
-                      // both rely on `getByRole("button", { name: ... })`
-                      // uniquely identifying one row by its own date).
-                      <span
-                        aria-hidden="true"
-                        className="text-xs font-normal text-[var(--text-muted)]"
-                      >
-                        carried over from {formatDate(previousRow.date)}
-                      </span>
-                    )}
-                  </span>
-                  <span className="text-[var(--text-muted)]">
-                    {row.tradeCount} trade{row.tradeCount === 1 ? "" : "s"}
-                  </span>
-                  <span className="tabular-nums font-semibold">
-                    {formatHeroCurrency(row.endingBalance)}
-                  </span>
-                </button>
-              </li>
-            );
-          })}
+          {rowsMeta.map(({ row, isSelected, previousRow, tradeCountLabel }) => (
+            <li key={row.date}>
+              <button
+                type="button"
+                ref={isSelected ? selectedRef : undefined}
+                aria-current={isSelected ? "true" : undefined}
+                onClick={() => onSelect(row.date)}
+                className={`grid w-full grid-cols-[1fr_auto_auto] items-center gap-x-3 rounded-md px-3 py-2 text-left text-sm transition-colors ${
+                  isSelected
+                    ? "bg-[var(--accent-selection)]/15 text-[var(--text-primary)]"
+                    : "text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)]"
+                }`}
+              >
+                <span className="flex flex-col">
+                  <span className="font-medium">{formatDate(row.date)}</span>
+                  {previousRow && (
+                    // aria-hidden: purely a visual affordance -- each
+                    // row's own date is already independently accessible
+                    // (read in DOM order), so a screen reader user
+                    // tabbing through rows already hears the sequence of
+                    // consecutive dates without this note; including it
+                    // in this button's own accessible name would instead
+                    // fold a *different* row's date into it, breaking
+                    // exact-match accessible-name queries (this file's
+                    // own DayOverview.test.tsx and ResultsPanel.test.tsx
+                    // both rely on `getByRole("button", { name: ... })`
+                    // uniquely identifying one row by its own date).
+                    <span
+                      aria-hidden="true"
+                      className="text-xs font-normal text-[var(--text-muted)]"
+                    >
+                      carried over from {formatDate(previousRow.date)}
+                    </span>
+                  )}
+                </span>
+                <span className="text-[var(--text-muted)]">{tradeCountLabel}</span>
+                <span className="tabular-nums font-semibold">
+                  {formatHeroCurrency(row.endingBalance)}
+                </span>
+              </button>
+            </li>
+          ))}
         </ul>
       ) : (
         <ul className="flex gap-1.5 overflow-x-auto rounded-lg border border-[var(--gridline)] bg-[var(--surface-1)] p-1.5">
-          {rows.map((row, i) => {
-            const isSelected = row.date === selected;
-            const previousRow = i > 0 ? rows[i - 1] : null;
-            const isGain = row.endingBalance >= row.startingCapital;
-            const ariaLabel = `${formatDate(row.date)}, ${row.tradeCount} trade${
-              row.tradeCount === 1 ? "" : "s"
-            }, ${formatHeroCurrency(row.startingCapital)} to ${formatHeroCurrency(row.endingBalance)}`;
+          {rowsMeta.map(({ row, isSelected, previousRow, tradeCountLabel }) => {
+            // Reuses HeroStat's own `>= 1` gain/loss threshold rather than
+            // re-deriving it a third time (found in code review) -- see
+            // that function's own doc comment for why the two badges (and
+            // now this bar) must never drift apart.
+            const barColor = heroMultiplierColor(row.endingBalance / row.startingCapital);
+            const ariaLabel = `${formatDate(row.date)}, ${tradeCountLabel}, ${formatHeroCurrency(row.startingCapital)} to ${formatHeroCurrency(row.endingBalance)}`;
             return (
               <li key={row.date} className="shrink-0">
                 <button
@@ -282,11 +327,7 @@ export function DayOverview({
                   )}
                   <span className="text-xs font-medium">{formatShortWeekday(row.date)}</span>
                   <span className="text-sm font-semibold">{formatDayOfMonth(row.date)}</span>
-                  <span
-                    className={`h-1 w-6 rounded-full ${
-                      isGain ? "bg-[var(--status-good)]" : "bg-[var(--status-critical)]"
-                    }`}
-                  />
+                  <span className="h-1 w-6 rounded-full" style={{ backgroundColor: barColor }} />
                 </button>
               </li>
             );
@@ -295,4 +336,4 @@ export function DayOverview({
       )}
     </div>
   );
-}
+});

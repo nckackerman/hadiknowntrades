@@ -363,11 +363,16 @@ describe("DayOverview", () => {
       const gainChip = screen.getByRole("button", { name: /Aug 19, 2026/ });
       const lossChip = screen.getByRole("button", { name: /Aug 20, 2026/ });
       // The color bar is a bare <span>, no accessible role of its own --
-      // it's the chip's own last child element.
-      const gainBar = gainChip.lastElementChild;
-      const lossBar = lossChip.lastElementChild;
-      expect(gainBar?.className).toContain("--status-good");
-      expect(lossBar?.className).toContain("--status-critical");
+      // it's the chip's own last child element. Colored via an inline
+      // `style` (heroMultiplierColor's own return value), not a Tailwind
+      // class -- this bar reuses HeroStat's own gain/loss threshold
+      // function directly (code review, issue #193) rather than a second
+      // copy of the `>= 1` check, so the color arrives as a CSS value, not
+      // a class name.
+      const gainBar = gainChip.lastElementChild as HTMLElement | null;
+      const lossBar = lossChip.lastElementChild as HTMLElement | null;
+      expect(gainBar?.style.backgroundColor).toBe("var(--status-good)");
+      expect(lossBar?.style.backgroundColor).toBe("var(--status-critical)");
     });
 
     it("marks every chip but the range's own first day with an aria-hidden '↩' corner glyph, communicating chaining without adding any text to the accessible name (issue #84/#193)", () => {
@@ -449,6 +454,43 @@ describe("DayOverview", () => {
         expect(scrollIntoView.mock.instances[0]).toBe(
           screen.getByRole("button", { name: /Aug 19, 2026/ }),
         );
+      });
+
+      it("re-scrolls, on the new axis, when `layout` changes while `selected` stays the same -- the exact case that motivated keying this effect on `[selected, layout]`, not `[selected]` alone", () => {
+        const scrollIntoView = vi.fn();
+        Element.prototype.scrollIntoView = scrollIntoView;
+
+        const { rerender } = render(
+          <DayOverview
+            rows={ROWS}
+            selected="2026-08-21"
+            onSelect={vi.fn()}
+            maxTradesPerDay={3}
+            layout="strip"
+          />,
+        );
+        scrollIntoView.mockClear();
+
+        // Same `selected` day, only `layout` changes -- e.g. a range switch
+        // (1M -> 1Y) that leaves the selected day valid in both. A `[selected]`-
+        // only dependency array would not re-run this effect at all here.
+        rerender(
+          <DayOverview
+            rows={ROWS}
+            selected="2026-08-21"
+            onSelect={vi.fn()}
+            maxTradesPerDay={3}
+            layout="list"
+          />,
+        );
+
+        expect(scrollIntoView).toHaveBeenCalledTimes(1);
+        expect(scrollIntoView.mock.instances[0]).toBe(
+          screen.getByRole("button", { name: /Aug 21, 2026/ }),
+        );
+        // The list layout's vertical axis now, not the strip's horizontal one.
+        expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: "nearest" }));
+        expect(scrollIntoView.mock.calls[0]?.[0]).not.toHaveProperty("inline");
       });
 
       it("never throws when scrollIntoView isn't implemented at all (jsdom's real default -- no stub in this test)", () => {

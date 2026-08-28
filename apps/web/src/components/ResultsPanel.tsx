@@ -27,7 +27,7 @@ import { useRangeGuess } from "@/lib/use-range-guess";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
 import { AboutSection } from "@/components/AboutSection";
 import { BenchmarkStat } from "@/components/BenchmarkStat";
-import { DayOverview } from "@/components/DayOverview";
+import { DAY_OVERVIEW_LAYOUT_BY_RANGE, DayOverview } from "@/components/DayOverview";
 import { HeroAndWorstCase } from "@/components/HeroAndWorstCase";
 import { IntradayTradeList } from "@/components/IntradayTradeList";
 import { ShareCardLink } from "@/components/ShareCardLink";
@@ -714,7 +714,7 @@ export function ResultsPanel({
           // more), tracked separately as issue #140 -- this issue
           // (#193) must not touch its rendering, so it's the one
           // range that keeps the original vertical list.
-          layout={range === "1Y" ? "list" : "strip"}
+          layout={DAY_OVERVIEW_LAYOUT_BY_RANGE[range]}
         />
 
         {/* Announces which day/mode's content is now showing (issue #67,
