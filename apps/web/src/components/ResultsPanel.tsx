@@ -27,7 +27,7 @@ import { useRangeGuess } from "@/lib/use-range-guess";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
 import { AboutSection } from "@/components/AboutSection";
 import { BenchmarkStat } from "@/components/BenchmarkStat";
-import { DayOverview } from "@/components/DayOverview";
+import { DAY_OVERVIEW_LAYOUT_BY_RANGE, DayOverview } from "@/components/DayOverview";
 import { HeroAndWorstCase } from "@/components/HeroAndWorstCase";
 import { IntradayTradeList } from "@/components/IntradayTradeList";
 import { ShareCardLink } from "@/components/ShareCardLink";
@@ -513,6 +513,13 @@ export function ResultsPanel({
           variantStartingCapital,
           effectiveStartingCapital,
         ),
+        // Issue #193's strip layout needs a gain/loss direction per row
+        // (its color bar) -- every row shares this same value today
+        // (every row is rescaled to the same effectiveStartingCapital
+        // above), but it's carried per-row so a row is a self-contained
+        // unit rather than needing a second prop threaded alongside
+        // `rows`. See DayOverviewRow's own doc comment.
+        startingCapital: effectiveStartingCapital,
       };
     });
   }, [state, activeDay, startingCapital, mode]);
@@ -702,6 +709,12 @@ export function ResultsPanel({
           // the list itself disappears.
           onSelect={onSelectDay ?? (() => {})}
           maxTradesPerDay={data.maxTradesPerDay}
+          // 1Y's own ~252-day case needs a different design (a strip
+          // that wide isn't "every day fits on screen at once" any
+          // more), tracked separately as issue #140 -- this issue
+          // (#193) must not touch its rendering, so it's the one
+          // range that keeps the original vertical list.
+          layout={DAY_OVERVIEW_LAYOUT_BY_RANGE[range]}
         />
 
         {/* Announces which day/mode's content is now showing (issue #67,
