@@ -107,6 +107,42 @@ describe("computeOrderSelection", () => {
     expect(keptTickers.includes("AAPL") && keptTickers.includes("MSFT")).toBe(false);
   });
 
+  it("widens among ALL spread-tied candidates, not just the first by tie-break -- the review's exact counterexample", () => {
+    // 7 tickers with returns -10, -6, -3, 0, 5.00, 5.01, 10. The primary
+    // rule excludes the two smallest-abs-return tickers (0 and -3),
+    // leaving [-10, -6, 5.00, 5.01, 10] -- a 0.01pp adjacent gap between
+    // 5.00 and 5.01 that fails MIN_ADJACENT_GAP_PP (0.02).
+    //
+    // The widen search's max spread (20pp) is achieved by many different
+    // 2-ticker exclusions. The lexicographically-first one by excluded-
+    // ticker-set ("B,C", i.e. excluding the -6 and -3 tickers) recreates
+    // the exact same 5.00/5.01 near-tie pair and *also* fails the
+    // adjacent-gap guardrail -- the old code checked only that single
+    // candidate and wrongly returned null. A different, equally
+    // max-spread exclusion (e.g. excluding the -6 and 5.00 tickers)
+    // drops one side of the near-tie pair and clears both guardrails --
+    // the fixed widen search must find it instead of giving up.
+    const returns = new Map([
+      ["A", -10],
+      ["B", -6],
+      ["C", -3],
+      ["D", 0],
+      ["E", 5.0],
+      ["F", 5.01],
+      ["G", 10],
+    ]);
+    const result = computeOrderSelection(returns);
+    expect(result).not.toBeNull();
+    expect(result!.widened).toBe(true);
+    expect(result!.spreadPp).toBeCloseTo(20);
+    expect(result!.spreadPp).toBeGreaterThanOrEqual(MIN_TOTAL_SPREAD_PP);
+    expect(result!.minAdjacentGapPp).toBeGreaterThanOrEqual(MIN_ADJACENT_GAP_PP);
+    // The near-tie pair (E:5.00, F:5.01) must not both survive into the
+    // widened result -- that would recreate the failing 0.01pp gap.
+    const keptTickers = result!.picks.map((p) => p.ticker);
+    expect(keptTickers.includes("E") && keptTickers.includes("F")).toBe(false);
+  });
+
   it("returns null when no exclusion (primary or widened) clears the guardrails", () => {
     // All 7 returns packed into a span far too narrow to ever clear
     // MIN_TOTAL_SPREAD_PP (1.5pp) for any 5-of-7 subset.

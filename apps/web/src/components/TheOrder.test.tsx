@@ -66,6 +66,37 @@ describe("TheOrder", () => {
     stubPuzzleFetch(null); // never resolves
     render(<TheOrder />);
     expect(screen.getByRole("heading", { name: "The Order", level: 2 })).toBeInTheDocument();
+    // Still just the pending placeholder -- no error message yet, and it's
+    // aria-hidden (there's nothing here for assistive tech to read while
+    // genuinely pending).
+    expect(screen.queryByTestId("the-order-error")).not.toBeInTheDocument();
+  });
+
+  it("renders a distinguishable, visible error state for a genuine fetch failure -- not the same aria-hidden placeholder a pending fetch shows", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(new Response("Internal Server Error", { status: 500 }))),
+    );
+    render(<TheOrder />);
+
+    const errorState = await screen.findByTestId("the-order-error");
+    expect(errorState).not.toHaveAttribute("aria-hidden");
+    expect(screen.getByText(/couldn't load today's puzzle/i)).toBeInTheDocument();
+    // Only one top-level tile-shaped element renders -- the pending
+    // placeholder and the error state are mutually exclusive, not layered.
+    expect(screen.queryByTestId("the-order-summary")).not.toBeInTheDocument();
+  });
+
+  it("also treats a 200 response with a malformed puzzle body as a genuine failure, not an eternal pending state", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(new Response(JSON.stringify({ not: "a real puzzle" }), { status: 200 })),
+      ),
+    );
+    render(<TheOrder />);
+
+    expect(await screen.findByTestId("the-order-error")).toBeInTheDocument();
   });
 
   it("expands to show all 5 real tickers with their real company names, once the puzzle loads", async () => {

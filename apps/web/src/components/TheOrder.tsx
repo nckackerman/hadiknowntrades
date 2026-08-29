@@ -176,6 +176,14 @@ function TileSummaryRow({ headingId, statusLine }: TileSummaryProps) {
  * (use-results.ts) always starts every render, server and the client's
  * own hydration render alike, at `{status: "loading"}`, so this branch is
  * what both of those renders take regardless of anything storage-derived.
+ *
+ * `aria-hidden` on purpose -- there is nothing here yet for assistive tech
+ * to read, and the same content, in the same shape, will replace it the
+ * moment the fetch actually resolves. **Only ever rendered for a genuinely
+ * pending fetch** (see `TheOrder`'s own `puzzleFetchFailed` branch, which
+ * renders `OrderErrorState` -- a real, visible message -- instead of this
+ * for an actual failure, so a real error is never silently indistinguishable
+ * from "still loading" the way it used to be).
  */
 function OrderPlaceholder() {
   return (
@@ -185,6 +193,48 @@ function OrderPlaceholder() {
       className={`${CARD_BASE_CLASSNAME} ${TILE_SHADOW_CLASSNAME}`}
     >
       <TileSummaryRow headingId="the-order-placeholder-heading" statusLine=" " />
+    </div>
+  );
+}
+
+/**
+ * What renders for a genuine fetch failure (a real HTTP/network error, or
+ * a 200 response whose body doesn't actually satisfy `isValidOrderPuzzle`)
+ * -- deliberately NOT `aria-hidden` and NOT the same element as
+ * `OrderPlaceholder`, so a real failure is distinguishable both visually
+ * (a visible message, not a silent shell) and for a screen-reader user
+ * (who would otherwise get nothing at all from an `aria-hidden` node on a
+ * real error). Mirrors BeatTheBench.tsx's own mystery-pool error branch
+ * (`mysteryState.status === "error"`) -- same "no session to play right
+ * now, published by the nightly run" framing, no retry button (there is
+ * no refetch mechanism on `useFetchResultsState` to wire one to; a page
+ * reload is the same recovery path BeatTheBench's own sibling error state
+ * relies on too).
+ */
+function OrderErrorState() {
+  return (
+    <div
+      data-testid="the-order-error"
+      style={TILE_GRADIENT_STYLE}
+      className={`${CARD_BASE_CLASSNAME} ${TILE_SHADOW_CLASSNAME} flex flex-col gap-2 p-5`}
+    >
+      <div className="flex items-center gap-3">
+        <span
+          aria-hidden="true"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/[0.16]"
+        >
+          <span className="text-3xl leading-none drop-shadow-[0_2px_4px_rgba(0,0,0,0.25)]">
+            {ICON}
+          </span>
+        </span>
+        <span className="font-display text-lg leading-tight font-extrabold tracking-tight">
+          {TITLE}
+        </span>
+      </div>
+      <p className="text-xs font-medium text-white/85">
+        Couldn&apos;t load today&apos;s puzzle. The Order is published by the nightly run, shortly
+        after the close -- try reloading in a bit.
+      </p>
     </div>
   );
 }
@@ -483,6 +533,17 @@ export function TheOrder() {
   const { view, move, shuffle, submit, reveal } = useOrderGame(puzzle);
 
   const ready = puzzle !== null && view.hydrated;
+  // A genuine fetch failure (a real HTTP/network error) or a 200 that came
+  // back with a malformed/wrong-shaped body (caught by isValidOrderPuzzle
+  // above, which is why `puzzle` alone can't distinguish "still pending"
+  // from "resolved to garbage") -- either way, this is not a fetch that
+  // will ever resolve into a real puzzle on its own, so it must not render
+  // the same aria-hidden, indefinitely-pending OrderPlaceholder a genuinely
+  // in-flight fetch shows.
+  const puzzleFetchFailed =
+    puzzleState !== null &&
+    puzzleState.status !== "loading" &&
+    !(puzzleState.status === "success" && isValidOrderPuzzle(puzzleState.data));
 
   return (
     <section aria-labelledby={headingId}>
@@ -490,7 +551,9 @@ export function TheOrder() {
         {TITLE}
       </h2>
 
-      {!ready ? (
+      {puzzleFetchFailed ? (
+        <OrderErrorState />
+      ) : !ready ? (
         <OrderPlaceholder />
       ) : (
         <details className="group">

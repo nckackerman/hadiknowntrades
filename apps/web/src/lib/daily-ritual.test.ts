@@ -137,6 +137,7 @@ function orderState(overrides: Partial<RitualOrder> = {}): RitualOrder {
     maxAttempts: 4,
     solved: false,
     bestExactCount: 3,
+    done: true,
     ...overrides,
   };
 }
@@ -144,7 +145,9 @@ function orderState(overrides: Partial<RitualOrder> = {}): RitualOrder {
 describe("orderRecapClause", () => {
   it("renders an honest fallback when nothing has been submitted yet today", () => {
     expect(orderRecapClause(null)).toBe("not played yet today");
-    expect(orderRecapClause(orderState({ attemptsUsed: 0 }))).toBe("not played yet today");
+    expect(orderRecapClause(orderState({ attemptsUsed: 0, done: false }))).toBe(
+      "not played yet today",
+    );
   });
 
   it("reports the attempt count on a solve, never a ticker or the real order", () => {
@@ -157,6 +160,15 @@ describe("orderRecapClause", () => {
     expect(
       orderRecapClause(orderState({ solved: false, attemptsUsed: 4, bestExactCount: 3 })),
     ).toBe("3 of 5 exact after 4 guesses");
+  });
+
+  it("does not misreport a bailed-out reveal (zero guesses, done) as unplayed", () => {
+    // reveal() sets done: true, won: false with history.length === 0 --
+    // attemptsUsed alone can't tell this apart from never having opened
+    // the game at all, so `done` has to be checked first.
+    expect(orderRecapClause(orderState({ attemptsUsed: 0, solved: false, done: true }))).toBe(
+      "revealed without guessing",
+    );
   });
 });
 

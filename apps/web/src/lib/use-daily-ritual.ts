@@ -141,6 +141,7 @@ export function useDailyRitual({
                 attemptsUsed: dayState.history.length,
                 maxAttempts: ORDER_MAX_ATTEMPTS,
                 solved: dayState.won,
+                done: dayState.done,
                 bestExactCount: dayState.history.reduce(
                   (best, entry) =>
                     Math.max(best, entry.feedback.filter((f) => f === "exact").length),

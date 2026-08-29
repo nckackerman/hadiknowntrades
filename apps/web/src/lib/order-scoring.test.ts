@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { ORDER_POOL_SIZE, THE_ORDER_TICKER_COUNT } from "@hadiknowntrades/core";
+
 import {
   initialOrderGuess,
+  isValidOrderPuzzle,
   isWinningFeedback,
   moveOrderGuess,
   nextOpenSlot,
@@ -14,10 +17,34 @@ import {
 
 const ANSWER = ["TSLA", "AAPL", "MSFT", "META", "NVDA"];
 
+function validPuzzlePayload(): unknown {
+  return {
+    date: "2026-08-26",
+    tickers: [
+      { ticker: "TSLA", companyName: "Tesla, Inc.", pctReturn: -3.1 },
+      { ticker: "AAPL", companyName: "Apple Inc.", pctReturn: -0.42 },
+      { ticker: "MSFT", companyName: "Microsoft", pctReturn: 0.55 },
+      { ticker: "META", companyName: "Meta Platforms", pctReturn: 1.85 },
+      { ticker: "NVDA", companyName: "Nvidia", pctReturn: 3.2 },
+    ],
+  };
+}
+
 describe("constants", () => {
   it("has the expected values", () => {
     expect(ORDER_MAX_ATTEMPTS).toBe(4);
     expect(ORDER_SLOT_COUNT).toBe(5);
+  });
+
+  // The puzzle's slot count used to be hardcoded independently in three
+  // places (ORDER_POOL_SIZE in packages/core's order-selection.ts,
+  // THE_ORDER_TICKER_COUNT in results-schema.ts, ORDER_SLOT_COUNT here) --
+  // now all three derive from the same single source of truth
+  // (order-selection.ts's ORDER_POOL_SIZE), so this asserts the real
+  // import link rather than three literals that just happen to agree.
+  it("derives from @hadiknowntrades/core's ORDER_POOL_SIZE, the single source of truth", () => {
+    expect(ORDER_SLOT_COUNT).toBe(ORDER_POOL_SIZE);
+    expect(THE_ORDER_TICKER_COUNT).toBe(ORDER_POOL_SIZE);
   });
 });
 
@@ -165,5 +192,44 @@ describe("initialOrderGuess", () => {
       const guess = initialOrderGuess(ANSWER, Math.random, 10);
       expect(guess.join(",")).not.toBe(ANSWER.join(","));
     }
+  });
+});
+
+describe("isValidOrderPuzzle", () => {
+  it("accepts a real, correctly-shaped, ascending puzzle", () => {
+    expect(isValidOrderPuzzle(validPuzzlePayload())).toBe(true);
+  });
+
+  it("rejects a malformed shape (missing/wrong-typed fields)", () => {
+    expect(isValidOrderPuzzle(null)).toBe(false);
+    expect(isValidOrderPuzzle({})).toBe(false);
+    expect(isValidOrderPuzzle({ date: "2026-08-26", tickers: "not an array" })).toBe(false);
+  });
+
+  it("rejects a puzzle with the wrong number of tickers", () => {
+    const payload = validPuzzlePayload() as { tickers: unknown[] };
+    payload.tickers = payload.tickers.slice(0, 4);
+    expect(isValidOrderPuzzle(payload)).toBe(false);
+  });
+
+  // The same strict-ascending-by-pctReturn check the server-side
+  // validateTheOrderPuzzle (packages/core's results-schema.ts) already
+  // enforces at write time -- a right-shaped-but-out-of-order puzzle
+  // would otherwise silently grade every guess against the wrong answer.
+  it("rejects a right-shaped puzzle whose tickers are not strictly ascending by pctReturn", () => {
+    const payload = validPuzzlePayload() as {
+      tickers: { ticker: string; companyName: string; pctReturn: number }[];
+    };
+    // Swap two entries so pctReturn is no longer ascending.
+    [payload.tickers[0], payload.tickers[1]] = [payload.tickers[1]!, payload.tickers[0]!];
+    expect(isValidOrderPuzzle(payload)).toBe(false);
+  });
+
+  it("rejects a puzzle with a real tie (not strictly ascending)", () => {
+    const payload = validPuzzlePayload() as {
+      tickers: { ticker: string; companyName: string; pctReturn: number }[];
+    };
+    payload.tickers[1]!.pctReturn = payload.tickers[0]!.pctReturn;
+    expect(isValidOrderPuzzle(payload)).toBe(false);
   });
 });

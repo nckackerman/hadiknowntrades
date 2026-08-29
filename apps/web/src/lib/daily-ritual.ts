@@ -99,6 +99,15 @@ export interface RitualOrder {
   solved: boolean;
   /** The most exact-matches any single submitted attempt scored -- shown when the day wasn't solved. */
   bestExactCount: number;
+  /**
+   * Whether today's puzzle is finished -- solved, out of guesses, *or*
+   * bailed out via reveal with zero guesses submitted. Distinct from
+   * `attemptsUsed === 0` alone: a player can bail out via reveal
+   * (use-order-game.ts's own `reveal`) without ever submitting a guess,
+   * which also leaves `attemptsUsed` at 0 -- `done` is what tells that
+   * apart from "genuinely never opened today" (see orderRecapClause).
+   */
+  done: boolean;
 }
 
 /** Everything the rail renders and the recap is written from, taken against one instant. */
@@ -224,14 +233,26 @@ export function callsRecapClause(calls: { filled: number; total: number }): stri
  *
  * **Follows `callsRecapClause`'s always-render shape, not
  * `benchRecapClause`'s whole-recap-blocking one** (per spec-the-order.md's
- * own "Inclusion rule"): `order === null` (or `attemptsUsed === 0`, the
- * same "nothing submitted" fact) renders an honest "not played yet
- * today" fallback rather than gating the entire recap on a second
+ * own "Inclusion rule"): `order === null` renders an honest "not played
+ * yet today" fallback rather than gating the entire recap on a second
  * required mechanic -- Beat the Bench alone stays the recap's one lock
  * (see isRecapUnlocked above), unchanged by this issue.
+ *
+ * **`attemptsUsed === 0` alone does NOT mean "not played" -- `done` is
+ * what actually distinguishes the two real zero-guess cases.** A player
+ * can bail out via reveal (use-order-game.ts's own `reveal`) without
+ * ever submitting a guess, leaving `attemptsUsed` at 0 but `done` at
+ * `true` -- genuinely different from never having opened the game at
+ * all (`order === null`, or `done === false` with zero guesses, e.g.
+ * mid-move/shuffle with nothing submitted yet). Checking `done` first is
+ * what a real fix here needs; checking `attemptsUsed` alone previously
+ * misreported the bailed-out case as unplayed.
  */
 export function orderRecapClause(order: RitualOrder | null): string {
-  if (order === null || order.attemptsUsed === 0) return "not played yet today";
+  if (order === null) return "not played yet today";
+  if (order.attemptsUsed === 0) {
+    return order.done ? "revealed without guessing" : "not played yet today";
+  }
   return order.solved
     ? `solved in ${order.attemptsUsed} of ${order.maxAttempts}`
     : `${order.bestExactCount} of 5 exact after ${order.attemptsUsed} guesses`;

@@ -518,6 +518,17 @@ describe("ResultsPage", () => {
       // with, not a second, separate grid.
       const grid = bench.closest("section")!.parentElement!;
       expect(order.parentElement).toBe(grid);
+      // The Lineup's own placeholder shares that exact same grid parent
+      // too -- a same-parent assertion, not just a document-order check.
+      // Document order alone (below) would still pass even if The Lineup
+      // were relocated outside the grid entirely, as long as it stayed
+      // later in the DOM; this is the real guarantee that it's genuinely
+      // the grid's 4th child, not just "somewhere further down the page."
+      // `lineup` is the inner role="group" tile, not the <section> itself
+      // (TheLineup wraps ComingSoonTile in its own <section>, matching
+      // The Order's own section) -- climb to that <section> first, the
+      // same element the grid actually parents.
+      expect(lineup.closest("section")!.parentElement).toBe(grid);
 
       // After both real, playable tiles -- per issue #207's own scope,
       // this game has no play state to rank by (see #196's own Out of

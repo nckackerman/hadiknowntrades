@@ -232,30 +232,53 @@ export function computeOrderSelection(
     return toResult(primaryKept, primaryExcluded, primaryStats, false);
   }
 
-  // Widen: try every possible `excludeCount`-ticker exclusion and keep
-  // whichever maximizes the resulting spread (ties broken by the
-  // lexicographically-smallest excluded-ticker set, purely for
-  // determinism -- there is no principled preference between two
-  // candidates with an identical spread).
-  let best: { kept: (readonly [string, number])[]; excluded: string[]; stats: SpreadStats } | null =
-    null;
-  for (const excluded of combinationsOf(
+  // Widen: try every possible `excludeCount`-ticker exclusion, find
+  // whichever spread value the best of them achieves, then -- among ALL
+  // exclusions tied for that maximum spread, not just the first one
+  // found -- search for one that actually clears both guardrails.
+  //
+  // A single spread-maximizing candidate is not necessarily the *only*
+  // one: several different `excludeCount`-ticker exclusions can tie for
+  // the exact same maximum spread while producing very different
+  // adjacent-gap profiles (excluding two tickers that happen to leave a
+  // near-tie pair behind vs. excluding two others that don't). Checking
+  // only the first spread-tied candidate by tie-break (as this used to)
+  // can pick exactly the one that recreates a failing near-tie and wrongly
+  // return `null`, even when a different, equally-spread-maximizing
+  // exclusion would have passed both guardrails. See order-selection.test.ts's
+  // "widens among all spread-tied candidates" test for a concrete
+  // counterexample this exact bug produced.
+  interface WidenCandidate {
+    kept: (readonly [string, number])[];
+    excluded: string[];
+    stats: SpreadStats;
+    excludedKey: string;
+  }
+  const candidates: WidenCandidate[] = combinationsOf(
     entries.map(([ticker]) => ticker),
     excludeCount,
-  )) {
+  ).map((excluded) => {
     const excludedSet = new Set(excluded);
     const kept = entries.filter(([ticker]) => !excludedSet.has(ticker)).sort((a, b) => a[1] - b[1]);
-    const stats = evaluateSpread(kept);
-    const excludedKey = [...excluded].sort().join(",");
-    const bestKey = best ? [...best.excluded].sort().join(",") : null;
-    if (
-      best === null ||
-      stats.spreadPp > best.stats.spreadPp ||
-      (stats.spreadPp === best.stats.spreadPp && excludedKey < bestKey!)
-    ) {
-      best = { kept, excluded: [...excluded], stats };
-    }
-  }
-  if (best === null || !passesGuardrails(best.stats)) return null;
+    return {
+      kept,
+      excluded: [...excluded],
+      stats: evaluateSpread(kept),
+      excludedKey: [...excluded].sort().join(","),
+    };
+  });
+  if (candidates.length === 0) return null;
+
+  const maxSpreadPp = Math.max(...candidates.map((c) => c.stats.spreadPp));
+  // Ties (both "which candidates count as spread-maximizing" and "which
+  // of those to prefer once more than one passes both guardrails") are
+  // broken by the lexicographically-smallest excluded-ticker set, purely
+  // for determinism -- there is no principled preference between two
+  // candidates with an identical spread.
+  const passing = candidates
+    .filter((c) => c.stats.spreadPp === maxSpreadPp && passesGuardrails(c.stats))
+    .sort((a, b) => (a.excludedKey < b.excludedKey ? -1 : a.excludedKey > b.excludedKey ? 1 : 0));
+  if (passing.length === 0) return null;
+  const best = passing[0]!;
   return toResult(best.kept, best.excluded, best.stats, true);
 }

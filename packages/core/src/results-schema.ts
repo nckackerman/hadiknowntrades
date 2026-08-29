@@ -22,6 +22,7 @@ import type { IntradayDayResult, IntradayLongShortResult } from "./intraday-opti
 import type { DailyClose } from "./yahoo-client";
 import { isValidPrice } from "./is-valid-price";
 import { anchorDateToDate, type AnchorDate } from "./custom-range-anchors";
+import { ORDER_POOL_SIZE } from "./order-selection";
 
 /**
  * Bumped whenever the shape of PrecomputedResult changes in a way a reader needs to know about.
@@ -147,8 +148,18 @@ export const MYSTERY_INDEX_KEY = "results/mystery-index.json";
  */
 export const THE_ORDER_KEY = "results/the-order.json";
 
-/** How many tickers TheOrderPuzzle.tickers always holds -- matches order-selection.ts's own ORDER_POOL_SIZE (not imported here, see validateTheOrderPuzzle's own doc comment for why). */
-export const THE_ORDER_TICKER_COUNT = 5;
+/**
+ * How many tickers TheOrderPuzzle.tickers always holds -- a re-export of
+ * order-selection.ts's own ORDER_POOL_SIZE, not a second independently
+ * hardcoded `5` (code review, issue #210: this file and order-selection.ts
+ * live in the same package with no import cycle between them, so there
+ * was no real reason for this to be its own literal in the first place --
+ * apps/web's own order-scoring.ts ORDER_SLOT_COUNT is the third,
+ * separately-fixed spot this same number used to live, now also derived
+ * from this same constant rather than a third hardcoded copy; see that
+ * file's own doc comment).
+ */
+export const THE_ORDER_TICKER_COUNT = ORDER_POOL_SIZE;
 
 /** Which trading model produced a given PrecomputedResult -- see the module header comment. */
 export type ResultModel = "window" | "intraday-daily";
@@ -1853,12 +1864,10 @@ export function validateMysteryIndex(index: MysteryIndex): void {
  * putObject, same write-time self-validation gate (issue #47) every
  * other stored object in this file gets.
  *
- * `tickers` must have exactly `THE_ORDER_TICKER_COUNT` (5) entries --
- * matching `computeOrderSelection`'s own `ORDER_POOL_SIZE`, checked here
- * as a plain literal rather than importing that constant (this module
- * has no dependency on order-selection.ts today, and a validator's job
- * is to check the *shape actually written*, not to re-derive it from the
- * algorithm that produced it) -- and must be genuinely sorted
+ * `tickers` must have exactly `THE_ORDER_TICKER_COUNT` entries -- which
+ * is itself just `order-selection.ts`'s own `ORDER_POOL_SIZE`
+ * re-exported (see that constant's own doc comment), not an
+ * independently hardcoded number -- and must be genuinely sorted
  * worst-to-best (strictly ascending by `pctReturn`), since an
  * out-of-order `tickers` array would silently make apps/web's scoring
  * grade every guess against the wrong answer.

@@ -9,11 +9,22 @@
 // split from call-board-storage.ts) so this can be unit-tested against
 // synthetic guesses with no `window`/localStorage involved at all.
 
+import { ORDER_POOL_SIZE } from "@hadiknowntrades/core";
+
 /** How many attempts the player gets before the puzzle reveals as "out of guesses" -- see spec-the-order.md's own "Attempt limit & pacing" section for the reasoning behind 4. */
 export const ORDER_MAX_ATTEMPTS = 4;
 
-/** How many tickers a puzzle always shows -- matches packages/core's own ORDER_POOL_SIZE. */
-export const ORDER_SLOT_COUNT = 5;
+/**
+ * How many tickers a puzzle always shows -- a re-export of
+ * `@hadiknowntrades/core`'s own `ORDER_POOL_SIZE`, not a third
+ * independently hardcoded `5` (code review, issue #210:
+ * `packages/core/src/order-selection.ts`'s own `ORDER_POOL_SIZE` and
+ * `results-schema.ts`'s own `THE_ORDER_TICKER_COUNT` -- itself now also
+ * derived from `ORDER_POOL_SIZE`, see that file's own doc comment --
+ * used to have this exact same number defined a third, separate time
+ * here, with nothing but a comment claiming the three matched).
+ */
+export const ORDER_SLOT_COUNT = ORDER_POOL_SIZE;
 
 /**
  * One slot's per-attempt feedback -- WCAG 1.4.1-compliant glyph system,
@@ -150,6 +161,19 @@ export function shuffleUnlockedGuess(
  * `useOrderGame`'s own `puzzle.tickers.map(...)` with an uncaught
  * `TypeError` instead of falling back to the same "still loading"
  * placeholder state a genuinely pending fetch already shows.
+ *
+ * **Also enforces the same strict-ascending-by-`pctReturn` check the
+ * server-side `validateTheOrderPuzzle` (`packages/core`'s
+ * `results-schema.ts`) already enforces at write time** (code review,
+ * issue #210) -- this used to check shape/types only, which meant a
+ * malformed-but-right-shaped puzzle (e.g. `tickers` in the wrong order,
+ * from a hand-crafted test double or a corrupted cache entry) would pass
+ * here even though the equivalent object would fail server-side
+ * validation before ever being written. Grading a guess against an
+ * out-of-order `tickers` array would silently score every guess against
+ * the wrong answer -- the exact failure this check exists to catch
+ * before a puzzle is ever trusted client-side, matching the server's own
+ * rejection instead of accepting a shape the server never would have.
  */
 export function isValidOrderPuzzle(value: unknown): value is {
   date: string;
@@ -159,17 +183,23 @@ export function isValidOrderPuzzle(value: unknown): value is {
   const { date, tickers } = value as Record<string, unknown>;
   if (typeof date !== "string" || date.length === 0) return false;
   if (!Array.isArray(tickers) || tickers.length !== ORDER_SLOT_COUNT) return false;
+  let previousReturn: number | null = null;
   return tickers.every((entry) => {
     if (typeof entry !== "object" || entry === null) return false;
     const { ticker, companyName, pctReturn } = entry as Record<string, unknown>;
-    return (
-      typeof ticker === "string" &&
-      ticker.length > 0 &&
-      typeof companyName === "string" &&
-      companyName.length > 0 &&
-      typeof pctReturn === "number" &&
-      Number.isFinite(pctReturn)
-    );
+    if (
+      typeof ticker !== "string" ||
+      ticker.length === 0 ||
+      typeof companyName !== "string" ||
+      companyName.length === 0 ||
+      typeof pctReturn !== "number" ||
+      !Number.isFinite(pctReturn)
+    ) {
+      return false;
+    }
+    if (previousReturn !== null && pctReturn <= previousReturn) return false;
+    previousReturn = pctReturn;
+    return true;
   });
 }
 
@@ -177,6 +207,24 @@ export function isValidOrderPuzzle(value: unknown): value is {
 export function formatOrderPctReturn(pctReturn: number): string {
   const sign = pctReturn >= 0 ? "+" : "";
   return `${sign}${pctReturn.toFixed(2)}%`;
+}
+
+/**
+ * Whether `guess` is genuinely a permutation of `answer` -- same length,
+ * same multiset of tickers, just possibly reordered. Used to defend
+ * against stale persisted state (use-order-game.ts's own mount-time read)
+ * that no longer matches the current puzzle's own tickers, e.g. if the
+ * pipeline ever rewrites the same date's puzzle with a different 5-ticker
+ * set (a manual backfill). Tickers are unique within one puzzle (see
+ * order-selection.ts's own `computeOrderSelection`, which never repeats a
+ * ticker across `picks`), so a straightforward sorted-array comparison is
+ * enough -- no need to count duplicates.
+ */
+export function isPermutationOf(guess: readonly string[], answer: readonly string[]): boolean {
+  if (guess.length !== answer.length) return false;
+  const sortedGuess = [...guess].sort();
+  const sortedAnswer = [...answer].sort();
+  return sortedGuess.every((ticker, i) => ticker === sortedAnswer[i]);
 }
 
 export function initialOrderGuess(

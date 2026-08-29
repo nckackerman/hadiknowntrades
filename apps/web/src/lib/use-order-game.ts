@@ -11,6 +11,7 @@ import type { TheOrderPuzzle } from "@hadiknowntrades/core";
 
 import {
   initialOrderGuess,
+  isPermutationOf,
   isWinningFeedback,
   moveOrderGuess,
   scoreOrderGuess,
@@ -102,7 +103,21 @@ export function useOrderGame(puzzle: TheOrderPuzzle | null): UseOrderGameResult 
     queueMicrotask(() => {
       const answer = puzzle.tickers.map((t) => t.ticker);
       const existing = getOrderDayState(puzzle.date, ORDER_SLOT_COUNT);
-      const state = existing ?? freshDayState(answer, Math.random);
+      // A stored OrderDayState is only trusted if its own guess is
+      // actually a permutation of *this* puzzle's tickers -- matched by
+      // date+slot-count alone (getOrderDayState's own check) isn't
+      // enough, since a nightly rewrite of the same date's puzzle (e.g.
+      // a manual backfill) with a different 5-ticker set would otherwise
+      // leave stale persisted state silently misscoring against the new
+      // answer array. Falling back to a fresh state here is the same
+      // "treat unrecognized/inconsistent stored data as nothing stored"
+      // discipline order-storage.ts's own malformed-shape handling
+      // already applies -- just for a consistency check that shape
+      // validation alone can't catch.
+      const state =
+        existing !== null && isPermutationOf(existing.guess, answer)
+          ? existing
+          : freshDayState(answer, Math.random);
       setView(viewFor(state, getOrderStreakHistory()));
     });
   }, [puzzle]);
@@ -110,14 +125,28 @@ export function useOrderGame(puzzle: TheOrderPuzzle | null): UseOrderGameResult 
   // Every action funnels through this: writes the next state through to
   // storage, records a streak-history entry the instant `done` first
   // goes true (recordOrderCompletion is idempotent per date, so calling
-  // it again later on the same finished day is harmless), then re-reads
-  // the streak so the view reflects it immediately.
+  // it again later on the same finished day is harmless).
+  //
+  // **`getOrderStreakHistory()` (a full localStorage read + JSON.parse +
+  // filter over up to MAX_STORED_ORDER_DAYS stored days) is only called
+  // on the `done` transition, not on every move/shuffle/submit** --
+  // `currentStreak`/`bestStreak` can only actually change once, at that
+  // transition (see OrderStreakStats/computeOrderStreak's own doc
+  // comment), so re-reading it on every intermediate interaction was
+  // unconditional wasted work. Every other call keeps the already-known
+  // streak from `view` untouched via a functional setView update, rather
+  // than re-deriving it from storage for a value that provably hasn't
+  // changed.
   const persist = useCallback(
     (nextState: OrderDayState) => {
       if (puzzle === null) return;
       saveOrderDayState(puzzle.date, nextState);
-      if (nextState.done) recordOrderCompletion(puzzle.date, nextState.won);
-      setView(viewFor(nextState, getOrderStreakHistory()));
+      if (nextState.done) {
+        recordOrderCompletion(puzzle.date, nextState.won);
+        setView(viewFor(nextState, getOrderStreakHistory()));
+        return;
+      }
+      setView((current) => ({ hydrated: true, state: nextState, streak: current.streak }));
     },
     [puzzle],
   );
