@@ -521,34 +521,46 @@ describe("ResultsPage", () => {
     });
   });
 
-  describe("The Order placeholder tile (issue #197)", () => {
-    it("renders after Beat the Bench and The Call Board in the 2x2 grid", () => {
+  describe("The Order (issue #207): a real game, positioned after Beat the Bench and The Call Board", () => {
+    it("mounts as its own section in the 2x2 grid, ahead of The Lineup's own real tile", async () => {
       render(<ResultsPage />);
 
       const bench = screen.getByRole("button", { name: /can you do better\?/i });
-      const board = screen.getByRole("heading", { name: "The Call Board" }).closest("section")!;
-      const order = screen.getByRole("group", { name: "The Order - coming soon" });
+      const board = screen
+        .getByRole("heading", { name: "The Call Board", level: 2 })
+        .closest("section")!;
+      const order = screen
+        .getByRole("heading", { name: "The Order", level: 2 })
+        .closest("section")!;
+      const lineupSummary = await screen.findByTestId("the-lineup-summary");
 
-      // Same grid parent as the two real tiles -- the full 2x2 grid the
-      // daily-hub-condensed mockup was originally sketched with, not a
-      // second, separate grid.
+      // Same grid parent as the two real, playable tiles -- the full
+      // 2x2 grid the daily-hub-condensed mockup was originally sketched
+      // with, not a second, separate grid.
       const grid = bench.closest("section")!.parentElement!;
-      expect(order.closest("section")!.parentElement).toBe(grid);
+      expect(order.parentElement).toBe(grid);
+      // The Lineup's own real tile shares that exact same grid parent
+      // too -- a same-parent assertion, not just a document-order check.
+      // Document order alone (below) would still pass even if The Lineup
+      // were relocated outside the grid entirely, as long as it stayed
+      // later in the DOM; this is the real guarantee that it's genuinely
+      // the grid's 4th child, not just "somewhere further down the page."
+      expect(lineupSummary.closest("section")!.parentElement).toBe(grid);
 
-      // After both real, playable tiles -- per issue #197's own scope,
-      // this is not ranked by the sibling play-history-ordering issue in
-      // this milestone (#196), and stays pinned in place.
+      // After both real, playable tiles -- per issue #207's own scope,
+      // this game has no play state to rank by (see #196's own Out of
+      // scope) and stays pinned in place. The Lineup's own real tile
+      // stays pinned after it too.
       expect(bench.compareDocumentPosition(order) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(board.compareDocumentPosition(order) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
-    it("renders as clearly non-interactive: no button/link/details, aria-disabled set", () => {
+    it("renders the collapsed tile before the puzzle fetch resolves, with no crash", () => {
+      // The default beforeEach stub never resolves /api/the-order, the
+      // same "stuck in loading" treatment every other unmocked fetch in
+      // this file gets -- the collapsed placeholder must still render.
       render(<ResultsPage />);
-
-      const order = screen.getByRole("group", { name: "The Order - coming soon" });
-
-      expect(order).toHaveAttribute("aria-disabled", "true");
-      expect(order.querySelector("button, a, details, summary, [tabindex]")).toBeNull();
+      expect(screen.getByRole("heading", { name: "The Order", level: 2 })).toBeInTheDocument();
     });
   });
 
@@ -556,18 +568,20 @@ describe("ResultsPage", () => {
     it("renders after The Order in the same 2x2 grid, and is a real, interactive tile", async () => {
       render(<ResultsPage />);
 
-      const order = screen.getByRole("group", { name: "The Order - coming soon" });
+      const order = screen
+        .getByRole("heading", { name: "The Order", level: 2 })
+        .closest("section")!;
       const lineupSummary = await screen.findByTestId("the-lineup-summary");
 
-      const grid = order.closest("section")!.parentElement!;
+      const grid = order.parentElement!;
       expect(lineupSummary.closest("section")!.parentElement).toBe(grid);
       expect(
         order.compareDocumentPosition(lineupSummary) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
 
-      // Unlike The Order, this is a real <details>/<summary> disclosure,
-      // not an inert placeholder -- issue #208 replaced its own
-      // placeholder export with the real, playable component.
+      // A real <details>/<summary> disclosure, not an inert placeholder
+      // -- issue #208 replaced its own placeholder export with the
+      // real, playable component.
       expect(lineupSummary.tagName).toBe("SUMMARY");
       expect(lineupSummary.closest("details")).not.toBeNull();
     });
@@ -577,7 +591,7 @@ describe("ResultsPage", () => {
       // both siblings' positions relative to Beat the Bench and The Call
       // Board; the split above only asserts Lineup's position relative
       // to The Order, relying transitively on a separate test
-      // ("The Order placeholder tile" describe block) for Order-after-
+      // ("The Order (issue #207)" describe block) for Order-after-
       // Bench/Board. Restoring a direct assertion here so a future
       // regression in Order's own placement can't silently mask a real
       // Lineup-placement regression that transitive coverage alone would

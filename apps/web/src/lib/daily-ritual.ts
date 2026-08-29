@@ -87,6 +87,30 @@ export interface RitualBench {
   session: PlayedSession;
 }
 
+/**
+ * Today's Order state for the recap line (issue #207) -- `null` means
+ * nothing has been submitted yet today, distinct from "played but not
+ * solved" (`attemptsUsed > 0`, `solved: false`). Mirrors `RitualBench`'s
+ * own shape: the smallest slice of order-storage.ts's own OrderDayState
+ * this file's copy actually needs, not the whole stored shape.
+ */
+export interface RitualOrder {
+  attemptsUsed: number;
+  maxAttempts: number;
+  solved: boolean;
+  /** The most exact-matches any single submitted attempt scored -- shown when the day wasn't solved. */
+  bestExactCount: number;
+  /**
+   * Whether today's puzzle is finished -- solved, out of guesses, *or*
+   * bailed out via reveal with zero guesses submitted. Distinct from
+   * `attemptsUsed === 0` alone: a player can bail out via reveal
+   * (use-order-game.ts's own `reveal`) without ever submitting a guess,
+   * which also leaves `attemptsUsed` at 0 -- `done` is what tells that
+   * apart from "genuinely never opened today" (see orderRecapClause).
+   */
+  done: boolean;
+}
+
 /** Everything the rail renders and the recap is written from, taken against one instant. */
 export interface DailyRitualSnapshot {
   /**
@@ -104,6 +128,8 @@ export interface DailyRitualSnapshot {
   bench: RitualBench | null;
   /** How many of the board's open sessions the viewer has called, and how many there are. */
   calls: { filled: number; total: number };
+  /** Today's Order state, or `null` if nothing has been submitted yet today (issue #207). */
+  order: RitualOrder | null;
   /**
    * Today's published Lineup, played to completion -- or `null` if it
    * hasn't been played yet (or hasn't been published yet, or storage is
@@ -235,6 +261,38 @@ export function lineupRecapClause(result: LineupPlayedResult): string {
   );
 }
 
+/**
+ * The recap's Order line, minus its label -- spec-the-order.md's own
+ * proposed copy verbatim ("Recap-line copy proposal"), never leaking a
+ * ticker, a real return figure, or the real order itself.
+ *
+ * **Follows `callsRecapClause`'s always-render shape, not
+ * `benchRecapClause`'s whole-recap-blocking one** (per spec-the-order.md's
+ * own "Inclusion rule"): `order === null` renders an honest "not played
+ * yet today" fallback rather than gating the entire recap on a second
+ * required mechanic -- Beat the Bench alone stays the recap's one lock
+ * (see isRecapUnlocked above), unchanged by this issue.
+ *
+ * **`attemptsUsed === 0` alone does NOT mean "not played" -- `done` is
+ * what actually distinguishes the two real zero-guess cases.** A player
+ * can bail out via reveal (use-order-game.ts's own `reveal`) without
+ * ever submitting a guess, leaving `attemptsUsed` at 0 but `done` at
+ * `true` -- genuinely different from never having opened the game at
+ * all (`order === null`, or `done === false` with zero guesses, e.g.
+ * mid-move/shuffle with nothing submitted yet). Checking `done` first is
+ * what a real fix here needs; checking `attemptsUsed` alone previously
+ * misreported the bailed-out case as unplayed.
+ */
+export function orderRecapClause(order: RitualOrder | null): string {
+  if (order === null) return "not played yet today";
+  if (order.attemptsUsed === 0) {
+    return order.done ? "revealed without guessing" : "not played yet today";
+  }
+  return order.solved
+    ? `solved in ${order.attemptsUsed} of ${order.maxAttempts}`
+    : `${order.bestExactCount} of 5 exact after ${order.attemptsUsed} guesses`;
+}
+
 /** The recap's hindsight line, minus its label -- "$20.00 became $2.4K (122x)". */
 export function headlineRecapClause(headline: HeadlineFigure): string {
   const multiple = formatMultiplier(headline.endingBalance / headline.startingCapital);
@@ -265,6 +323,7 @@ export function buildRecapText(snapshot: DailyRitualSnapshot): string | null {
   }
   lines.push(`Beat the Bench: ${benchRecapClause(bench.session)}`);
   lines.push(`The Call Board: ${callsRecapClause(snapshot.calls)}`);
+  lines.push(`The Order: ${orderRecapClause(snapshot.order)}`);
   if (snapshot.lineup !== null) {
     lines.push(`The Lineup: ${lineupRecapClause(snapshot.lineup)}`);
   }

@@ -18,7 +18,7 @@ import { BeatTheBench } from "@/components/BeatTheBench";
 import { CallBoard } from "@/components/CallBoard";
 import { DailyHero } from "@/components/DailyHero";
 import { DailyRitual } from "@/components/DailyRitual";
-import { TheOrder } from "@/components/PlaceholderGameTile";
+import { TheOrder } from "@/components/TheOrder";
 import { TheLineup } from "@/components/TheLineup";
 import { CustomRangeSelector } from "@/components/CustomRangeSelector";
 import { ModeToggle } from "@/components/ModeToggle";
@@ -239,54 +239,50 @@ export function ResultsPage() {
           usually opens The Call Board first sees it on the left (or on
           top, at a stacked mobile width) instead of Beat the Bench.
 
-          **The Order / The Lineup fill out the same container's second
-          row, always after the two real, ordered tiles -- making this
-          the full 2x2 grid the daily-hub-condensed mockup was originally
-          sketched with, not a new grid of its own.** They render
-          unconditionally as the grid's 3rd/4th children, after whatever
-          `gameTileOrder` puts first: issue #196 is scoped to reordering
-          only the two real, playable tiles by their own play state --
-          these two have no play state to rank by, and stay pinned in
-          place regardless of whatever order #196 puts the first two in
-          (see issue #208's own Background section, which explicitly
-          carries this rule forward for The Lineup once it shipped for
-          real). **The Order remains a non-functional "coming soon"
-          placeholder (issue #197)** -- read issue #189 before touching
-          it, its own daily-selection-mechanism design pass is still
-          undone. **The Lineup shipped for real in issue #208** -- see
-          components/TheLineup.tsx.
+          **The Order (issue #207) and The Lineup (issue #208) fill out
+          the same container's second row, always after the two real,
+          ordered tiles -- making this the full 2x2 grid the
+          daily-hub-condensed mockup was originally sketched with, not a
+          new grid of its own.** Both are real, playable games now (The
+          Order as of issue #207, see
+          docs/design/order-lineup-2026-08/README.md; The Lineup as of
+          issue #208, see components/TheLineup.tsx) -- neither is a
+          "coming soon" placeholder any more. Both render unconditionally
+          as the grid's 3rd/4th children, after whatever `gameTileOrder`
+          puts first: issue #196 is scoped to reordering only the two
+          real, ordered tiles (Beat the Bench / The Call Board) by their
+          own play state -- The Order and The Lineup have no play state
+          #196's own ranking reads (see game-tile-order-storage.ts's own
+          `GameTileId` doc comment), and both stay pinned in place
+          regardless of whatever order #196 puts the first two in.
 
           `has-[details[open]]:grid-cols-1` and
           `has-[[data-bench-expanded]]:grid-cols-1` collapse the grid to
-          one column the instant any expandable tile opens into its full
-          game/board -- CallBoard's and (since issue #208) The Lineup's
-          own expanded states are both a native `<details open>`,
-          detectable directly via `:has()` with no scoping needed to
-          which specific tile opened (the selector matches *any*
-          `details[open]` descendant of this grid); BeatTheBench has no
-          native disclosure element to key off (its "expanded" flag is a
-          plain useState, issue #163), so its own `BeatTheBenchFrame`
-          wrapper carries a `data-bench-expanded` marker attribute for
-          the identical purpose. Two independent `has-*` variants rather
-          than one comma-joined selector, deliberately -- this app has
-          already been bitten once by Tailwind's own bracket-value
-          class-name parsing choking on an unexpected character inside
-          `[...]` (see BeatTheBench.tsx's own doc comment on why its
-          amber gradient is an inline `style`, not a bracket class), so
-          two simple single-selector variants were chosen over one
-          compound selector as the safer bet, verified live rather than
-          assumed. None of the three real tiles' own expanded content
-          (CallBoard's 3-slot picker/history strip, BeatTheBench's
-          playback controls, The Lineup's 5-column guess grid + form) was
-          ever designed to fit in a 50%-width column -- all three already
-          render full-width, stacked, once expanded; the two `has-*`
-          rules just keep that true once they're grid children too,
-          instead of squeezing a fully expanded game into an unreadably
-          narrow half-column. The Order (still a placeholder, issue #197)
-          has no expanded state of its own to worry about here -- when
-          the grid collapses to one column, it simply stacks full-width
-          below like any other grid child, which is harmless since it
-          isn't interactive.
+          one column the instant any tile that has one expands into its
+          full game/board -- CallBoard's, The Order's, and The Lineup's
+          own expanded states are all a native `<details open>`,
+          detectable directly via `:has()` with no per-tile distinction
+          needed (the selector matches the *presence* of an open
+          `<details>` anywhere in the grid, not which one); BeatTheBench
+          has no native disclosure element to key off (its "expanded"
+          flag is a plain useState, issue #163), so its own
+          `BeatTheBenchFrame` wrapper carries a `data-bench-expanded`
+          marker attribute for the identical purpose. Two independent
+          `has-*` variants rather than one comma-joined selector,
+          deliberately -- this app has already been bitten once by
+          Tailwind's own bracket-value class-name parsing choking on an
+          unexpected character inside `[...]` (see BeatTheBench.tsx's own
+          doc comment on why its amber gradient is an inline `style`, not
+          a bracket class), so two simple single-selector variants were
+          chosen over one compound selector as the safer bet, verified
+          live rather than assumed. None of the four real tiles' own
+          expanded content (CallBoard's 3-slot picker/history strip,
+          BeatTheBench's playback controls, The Order's own row list/
+          history strip, The Lineup's 5-column guess grid + form) was
+          ever designed to fit in a 50%-width column -- all four render
+          full-width, stacked, once expanded; the two `has-*` rules keep
+          that true once they're grid children too, instead of squeezing
+          a fully expanded game into an unreadably narrow half-column.
 
           `game-row-grid` is a plain marker class (no styling of its
           own) so `globals.css` can target this exact container with a

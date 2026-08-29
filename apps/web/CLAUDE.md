@@ -9541,3 +9541,111 @@ ADI, AKAM, ADM` -- plus a populated 9-letter tracker and one locked/
     asserting the live recap text picks it up via the same
     `subscribeToLocalStorage` notification path every other ritual
     input already uses -- no reload, no re-mount).
+
+## The Order: a real, playable game replacing its placeholder tile (issue #207)
+
+`components/TheOrder.tsx` replaces `PlaceholderGameTile.tsx`'s own
+`TheOrder` export in place -- same grid position, same purple gradient/🏁
+icon (issue #197's own choices, unchanged). Read
+`docs/design/order-lineup-2026-08/{README.md,spec-the-order.md}` and the
+mock's own `<script>` first; `packages/core/CLAUDE.md`'s own "The
+Order's daily-selection algorithm" section covers the pipeline/algorithm
+side. This section covers what wasn't obvious building the frontend.
+
+- **Collapse mechanism is `<details>`/`<summary>`, matching
+  `CallBoard.tsx`'s pattern exactly** (not `BeatTheBench.tsx`'s
+  `useState` toggle) -- there's no running interval to stop on collapse,
+  so leaving this game's React state mounted-but-hidden while collapsed
+  is fine, and `local-storage.ts` already persists progress across a
+  real unmount/remount regardless. This is also what makes the existing
+  `has-[details[open]]:grid-cols-1` 2-up-grid-collapse selector
+  (issue #178) cover The Order for free the moment it's added as a grid
+  child -- `:has()` matches the _presence_ of an open `<details>`
+  anywhere in the grid, with no per-tile distinction needed, confirmed
+  in `ResultsPage.tsx`'s own updated doc comment and live (see below).
+- **The collapsed tile's own status pill deliberately does NOT match the
+  design mock's pill behavior, and this is a real, considered
+  deviation, not silent drift.** The mock's own `<script>`
+  (`order-status-pill`) only ever sets its pill text at reset ("Not
+  played yet") and at completion ("Solved"/"Out of guesses") -- it never
+  shows an in-progress "Attempt N of 4" state at all, because the mock
+  never modeled a collapsed CTA tile in the first place (every one of
+  its own screenshots shows the panel already expanded; there is no
+  mock reference for what a collapsed tile's pill should say
+  mid-game). `TheOrder.tsx`'s own `tileStatusLine` instead mirrors
+  `BeatTheBench.tsx`'s `compactStatusLine`/`CallBoard.tsx`'s own
+  "N of 3 called this week" convention -- a live, informative status on
+  the collapsed tile, not a static placeholder -- since that's this
+  app's own established pattern for every other collapsed-CTA-tile
+  status line, and the mock's own pill logic was never written with a
+  collapsed tile in mind to begin with. The **expanded panel's own
+  content** (the actual acceptance-criteria target for visual fidelity)
+  matches the mock closely -- see the live-verification screenshots
+  below.
+- **`useOrderGame` eagerly creates a fresh `OrderDayState` (attempt 1,
+  no history) the instant the puzzle loads and no stored state exists**
+  -- there's no third "not played yet, no state object at all" state
+  once hydrated; `getOrderDayState` returning `null` is a mount-time
+  implementation detail (`freshDayState` immediately fills it in), not
+  something `TheOrder.tsx`'s own render branches ever see. Worth knowing
+  before assuming `tileStatusLine`'s `state === null` branch ("Not
+  played yet") is reachable post-hydration -- in practice it never is;
+  it only guards the type, not a real runtime state.
+- **The daily-selection algorithm's real thresholds, independently
+  re-validated during this issue's own finishing pass**: 0 of 32 real
+  trading days (2026-07-16..2026-08-28, live Yahoo data) produced a
+  `null` puzzle, 2 of 32 needed the widened-exclusion rescue, real
+  spread ranged 1.61-23.46pp (median 4.89pp), real minimum adjacent gap
+  ranged 0.04-1.12pp (median 0.22pp) -- see
+  `packages/core/CLAUDE.md`'s own section and `order-selection.ts`'s
+  own `MIN_ADJACENT_GAP_PP` doc comment for the full numbers and why
+  0.02pp (not `spec-the-order.md`'s own n=210 value of 0.15pp) is the
+  right threshold at n=7.
+- **Live-verified end to end against a real local pipeline run**
+  (`LOCAL_RESULTS_DIR`, `local-run.ts`'s default 20-ticker sample, real
+  Yahoo network calls, no S3 write) plus `next build`/`next start` (not
+  `next dev` -- see this file's own repeatedly-documented note on why
+  headless Chromium can't hydrate a dev-mode page in this sandbox) and
+  the documented no-root headless-Chromium workaround. Confirmed `GET
+/api/the-order` served the real pipeline-written puzzle
+  (`results/the-order.json`, date 2026-08-28: NVDA -4.57%, TSLA -1.71%,
+  MSFT +1.68%, GOOGL +1.74%, AMZN +3.97% -- the same real answer
+  `apps/pipeline/CLAUDE.md`'s own live-verification note independently
+  confirmed) byte-for-byte, and that the real `TheOrder.tsx` component
+  reads it through the real fetch/hydration path, not a hardcoded
+  fixture. Drove all four states through real UI interaction (button
+  clicks, not injected state): **idle** (fresh puzzle, no guesses),
+  **in-progress** with a genuine mix of locked (gold, "★ Locked" badge)/
+  close (~)/far (✕) feedback in the same submitted attempt, **win**
+  (solved in 2 of 4, all five slots locked gold, the real reveal list
+  with real percent returns colored by gain/loss, streak stats), and
+  **lose** (4 attempts exhausted, one partial lock, the full reveal
+  list, streak reset to 0) -- at both a 1280px desktop viewport and a
+  390px mobile viewport, all eight screenshots. Zero console errors and
+  zero `pageerror` events across every run; zero horizontal overflow at
+  390px (`document.documentElement.scrollWidth === clientWidth`
+  exactly); every move/shuffle/submit/reveal button measured a real
+  44x44px touch target.
+- **Visual fidelity against the design reference, compared directly**:
+  the expanded panel's layout, spacing, type, and the WCAG glyph/color
+  feedback language (★ gold-on-wash for exact, ~ muted for close, ✕
+  status-critical for far, plus the visible legend) match
+  `docs/design/order-lineup-2026-08/screenshots/order-{idle,inprogress,
+win,lose}.png` closely -- comfortably at the folder's own stated ~99%
+  fidelity bar, not just approximately. One minor, expected cosmetic
+  difference, not a bug: at 390px, a long real company name
+  (`"Alphabet Inc. (Class A)"`) truncates in the reveal list
+  (`truncate` on that span, an existing, deliberate choice this
+  component inherits from every other reveal-list-shaped element in
+  this app) -- the mock's own sample data happened to use only short
+  company names, so this never showed up there; it's a real-data
+  artifact of longer real company names, not a layout regression.
+- **The locking/scoring/attempt logic is independently unit-tested**
+  (`lib/order-scoring.test.ts`) against a genuine range of synthetic
+  guesses: all-exact, all-far (a fully reversed guess), a realistic
+  mix, an adjacent-swap close case, `nextOpenSlot`/`moveOrderGuess`
+  hopping over one and multiple consecutive locked slots, a locked slot
+  never itself moving, and `shuffleUnlockedGuess` leaving every locked
+  slot's ticker and position untouched (including the all-locked
+  no-op case) -- matching the issue's own acceptance criterion
+  literally, not just covering the happy path.

@@ -30,8 +30,11 @@ import type { HeadlineFigure } from "./headline-figure";
 import { getLineupPlayedResult } from "./lineup-storage";
 import { subscribeToLocalStorage } from "./local-storage";
 import type { Mode } from "./mode";
+import { ORDER_MAX_ATTEMPTS, ORDER_SLOT_COUNT } from "./order-scoring";
+import { getOrderDayState } from "./order-storage";
 import { getRangeGuess } from "./range-guess-storage";
 import { useLineupResult } from "./use-lineup-result";
+import { useTheOrderPuzzle } from "./use-the-order";
 import { useTodaysCloseSession } from "./use-todays-close-session";
 
 export interface UseDailyRitualOptions {
@@ -61,6 +64,7 @@ const UNHYDRATED_SNAPSHOT: DailyRitualSnapshot = {
   heroSeen: true,
   bench: null,
   calls: { filled: 0, total: MAX_OPEN_CALLS },
+  order: null,
   headline: null,
   lineup: null,
 };
@@ -95,9 +99,13 @@ export function useDailyRitual({
   const lineupResult = useLineupResult();
   const lineupDate = lineupResult?.status === "success" ? lineupResult.data.date : null;
 
+  const orderState = useTheOrderPuzzle();
+  const orderDate = orderState?.status === "success" ? orderState.data.date : null;
+
   const [stored, setStored] = useState<{
     bench: DailyRitualSnapshot["bench"];
     calls: DailyRitualSnapshot["calls"];
+    order: DailyRitualSnapshot["order"];
     guessed: boolean;
     lineup: DailyRitualSnapshot["lineup"];
   } | null>(null);
@@ -107,6 +115,14 @@ export function useDailyRitual({
       const now = new Date();
       const openDays = upcomingCallDays(now);
       const played = benchDate === null ? null : readAnyPlayedSession(benchDate);
+      // Read straight from order-storage.ts rather than through any
+      // resolving/writing function -- there is none here, unlike The Call
+      // Board's own picks: today's Order state is written directly by
+      // TheOrder.tsx itself as the player moves/submits/reveals, and this
+      // is a pure reader over that, the same "no second copy of a flag
+      // another feature already owns" discipline this hook's own header
+      // comment establishes for bench/calls above.
+      const dayState = orderDate === null ? null : getOrderDayState(orderDate, ORDER_SLOT_COUNT);
       setStored({
         bench:
           played === null || benchDate === null
@@ -121,6 +137,27 @@ export function useDailyRitual({
           filled: openDays.filter((date) => getCallBoardPick(date) !== null).length,
           total: openDays.length === 0 ? MAX_OPEN_CALLS : openDays.length,
         },
+        order:
+          dayState === null
+            ? null
+            : {
+                // dayState.history is every attempt genuinely *submitted*
+                // so far -- a more direct source of truth than dayState's
+                // own `attempt` counter (which tracks the *next* row being
+                // edited, off by one depending on whether the day is
+                // done -- see order-storage.ts's own OrderDayState doc
+                // comment) and correctly reads 0 for a bail-out reveal
+                // with no guesses submitted at all.
+                attemptsUsed: dayState.history.length,
+                maxAttempts: ORDER_MAX_ATTEMPTS,
+                solved: dayState.won,
+                done: dayState.done,
+                bestExactCount: dayState.history.reduce(
+                  (best, entry) =>
+                    Math.max(best, entry.feedback.filter((f) => f === "exact").length),
+                  0,
+                ),
+              },
         guessed: range !== null && getRangeGuess(range, mode) !== null,
         lineup: lineupDate === null ? null : getLineupPlayedResult(lineupDate),
       });
@@ -131,7 +168,7 @@ export function useDailyRitual({
     // stay clear of react-hooks/set-state-in-effect.
     queueMicrotask(read);
     return subscribeToLocalStorage(read);
-  }, [benchDate, range, mode, lineupDate]);
+  }, [benchDate, orderDate, range, mode, lineupDate]);
 
   if (stored === null) return { snapshot: UNHYDRATED_SNAPSHOT, hydrated: false };
 
@@ -140,6 +177,7 @@ export function useDailyRitual({
       heroSeen: true,
       bench: stored.bench,
       calls: stored.calls,
+      order: stored.order,
       // **The one spoiler gate this app has** (issue #91) applies to the
       // recap exactly as it applies to the share-card link: the
       // intraday-daily model's headline figure is the very number the
