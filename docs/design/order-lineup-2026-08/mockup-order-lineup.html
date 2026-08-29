@@ -1,0 +1,2085 @@
+<title>The Order &amp; The Lineup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link
+  href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600;700&display=swap"
+  rel="stylesheet"
+/>
+
+<style>
+  /* ============================================================
+     Tokens -- lifted verbatim from apps/web/src/app/globals.css
+     (this app is dark-mode-only since issue #76, so this mock
+     commits to that single palette rather than inventing a light
+     variant that the real product would never actually show).
+     ============================================================ */
+  :root {
+    --background: #0a0a0a;
+    --surface-1: #1a1a19;
+    --surface-2: #262624;
+    --surface-3: #302f2c;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --gridline: #2c2c2a;
+    --status-good: #4ab86f;
+    --status-good-wash: rgb(74 184 111 / 14%);
+    --status-critical: #e46b64;
+    --status-critical-wash: rgb(228 107 100 / 14%);
+    --series-1: #3987e5;
+    --series-1-wash: rgb(57 135 229 / 12%);
+    --accent-reward: #e8a33d;
+    --accent-reward-wash: rgb(232 163 61 / 14%);
+
+    /* The two placeholder-tile gradients already committed in
+       PlaceholderGameTile.tsx -- reused verbatim, not reinvented. */
+    --order-1: #6a3db8;
+    --order-2: #5d36a1;
+    --order-3: #4b2b82;
+    --lineup-1: #297a72;
+    --lineup-2: #246b64;
+    --lineup-3: #1c544f;
+
+    --font-display: "Geist", "Segoe UI", system-ui, sans-serif;
+    --font-numeric: "Geist Mono", "SF Mono", ui-monospace, monospace;
+
+    --radius-lg: 1rem;
+    --radius-md: 0.75rem;
+    --radius-sm: 0.5rem;
+    --shadow-surface: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 20px rgb(0 0 0 / 35%);
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    background: var(--background);
+    color: var(--text-primary);
+    font-family: var(--font-display);
+    font-size: 16px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background: var(--series-1-wash);
+  }
+
+  .shell {
+    max-width: 46rem;
+    margin: 0 auto;
+    padding: 2.75rem 1.25rem 5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 3rem;
+  }
+
+  a {
+    color: var(--series-1);
+  }
+
+  /* ---------- Header ---------- */
+  .masthead {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+  }
+  .eyebrow {
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  h1 {
+    margin: 0;
+    font-size: clamp(1.9rem, 4.4vw, 2.6rem);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+  .dek {
+    margin: 0;
+    max-width: 42rem;
+    color: var(--text-secondary);
+    font-size: 1rem;
+  }
+  .dek code {
+    font-family: var(--font-numeric);
+    font-size: 0.9em;
+    background: var(--surface-2);
+    padding: 0.1em 0.4em;
+    border-radius: 0.3em;
+    color: var(--text-primary);
+  }
+
+  /* ---------- Context grid: where these two land in the real app ---------- */
+  .context-card {
+    background: var(--surface-1);
+    border: 1px solid var(--gridline);
+    border-radius: var(--radius-lg);
+    padding: 1.25rem;
+    box-shadow: var(--shadow-surface);
+  }
+  .context-card__label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 0 0 0.9rem;
+  }
+  .context-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.7rem;
+  }
+  .ghost-tile {
+    border-radius: var(--radius-md);
+    padding: 0.85rem 0.9rem;
+    min-height: 5.5rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    color: #fff;
+    font-size: 0.78rem;
+    font-weight: 700;
+  }
+  .ghost-tile.dim {
+    opacity: 0.42;
+  }
+  .ghost-tile__icon {
+    font-size: 1.4rem;
+    line-height: 1;
+  }
+  .ghost-tile.bench {
+    background: linear-gradient(155deg, #d99a3f 0%, #c07f24 60%, #a5691a 100%);
+  }
+  .ghost-tile.board {
+    background: linear-gradient(155deg, #4374cf 0%, #3568c2 55%, #2a58ab 100%);
+  }
+  .ghost-tile.order {
+    background: linear-gradient(155deg, var(--order-1) 0%, var(--order-2) 55%, var(--order-3) 100%);
+    outline: 2px solid rgba(255, 255, 255, 0.5);
+    outline-offset: 2px;
+  }
+  .ghost-tile.lineup {
+    background: linear-gradient(
+      155deg,
+      var(--lineup-1) 0%,
+      var(--lineup-2) 55%,
+      var(--lineup-3) 100%
+    );
+    outline: 2px solid rgba(255, 255, 255, 0.5);
+    outline-offset: 2px;
+  }
+
+  /* ---------- Section shell ---------- */
+  section.game {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+  }
+
+  .game-head {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+  }
+  .game-head__plate {
+    width: 3rem;
+    height: 3rem;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+    color: #fff;
+    flex-shrink: 0;
+  }
+  .game-head__plate.order {
+    background: linear-gradient(155deg, var(--order-1), var(--order-3));
+  }
+  .game-head__plate.lineup {
+    background: linear-gradient(155deg, var(--lineup-1), var(--lineup-3));
+  }
+  .game-head h2 {
+    margin: 0;
+    font-size: 1.45rem;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+  }
+  .game-head p {
+    margin: 0.15rem 0 0;
+    color: var(--text-secondary);
+    font-size: 0.92rem;
+  }
+
+  /* ---------- Spec highlight strip ---------- */
+  .highlights {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+    gap: 0.65rem;
+  }
+  .highlight {
+    background: var(--surface-1);
+    border: 1px solid var(--gridline);
+    border-radius: var(--radius-md);
+    padding: 0.75rem 0.85rem;
+  }
+  .highlight__label {
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 0 0 0.3rem;
+  }
+  .highlight__value {
+    font-family: var(--font-numeric);
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .highlight__note {
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+    margin-top: 0.2rem;
+  }
+
+  /* ---------- Demo panel ---------- */
+  .panel {
+    background: var(--surface-1);
+    border: 1px solid var(--gridline);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-surface);
+    overflow: hidden;
+  }
+  .panel__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.9rem 1.1rem;
+    border-bottom: 1px solid var(--gridline);
+    background: var(--surface-2);
+  }
+  .panel__title {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+  }
+  .pill {
+    font-family: var(--font-numeric);
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 0.28rem 0.6rem;
+    border-radius: 999px;
+    background: var(--surface-3);
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+  .pill.tight {
+    color: var(--text-primary);
+    background: var(--surface-3);
+  }
+  .panel__body {
+    padding: 1.15rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  /* --- The Order rows --- */
+  .order-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    background: var(--surface-2);
+    border: 1px solid var(--gridline);
+    border-radius: var(--radius-sm);
+    padding: 0.55rem 0.7rem;
+    transition:
+      background 0.15s ease,
+      border-color 0.15s ease;
+  }
+  .order-row.locked {
+    background: var(--accent-reward-wash);
+    border-color: var(--accent-reward);
+  }
+  .order-row__locked-badge {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex-shrink: 0;
+    font-size: 0.74rem;
+    font-weight: 700;
+    color: var(--accent-reward);
+  }
+  .order-row__rank {
+    font-family: var(--font-numeric);
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    width: 1.1rem;
+    flex-shrink: 0;
+  }
+  .order-row__ticker {
+    font-family: var(--font-numeric);
+    font-weight: 700;
+    font-size: 0.92rem;
+    color: var(--text-primary);
+    width: 3.4rem;
+    flex-shrink: 0;
+  }
+  .order-row__name {
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    flex: 1;
+  }
+  .order-row__moves {
+    display: flex;
+    gap: 0.3rem;
+    flex-shrink: 0;
+  }
+  .btn-move {
+    width: 1.9rem;
+    height: 1.9rem;
+    border-radius: 0.4rem;
+    border: 1px solid var(--gridline);
+    background: var(--surface-3);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.12s ease;
+  }
+  .btn-move:hover:not(:disabled) {
+    background: #3a3a37;
+  }
+  .btn-move:disabled {
+    opacity: 0.28;
+    cursor: not-allowed;
+  }
+  .btn-move:focus-visible,
+  .btn-primary:focus-visible,
+  .btn-secondary:focus-visible,
+  .lineup-tile:focus-visible,
+  input:focus-visible,
+  .col-head:focus-visible {
+    outline: 2px solid var(--series-1);
+    outline-offset: 2px;
+  }
+
+  .actions-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+  .btn-primary {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 0.88rem;
+    padding: 0.6rem 1.15rem;
+    border-radius: 999px;
+    border: none;
+    background: var(--series-1);
+    color: #fff;
+    cursor: pointer;
+  }
+  .btn-primary:hover {
+    background: #2f78d1;
+  }
+  .btn-primary:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .btn-secondary {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 0.82rem;
+    padding: 0.55rem 1rem;
+    border-radius: 999px;
+    border: 1px solid var(--gridline);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .btn-secondary:hover {
+    color: var(--text-primary);
+    border-color: var(--text-muted);
+  }
+
+  .attempts-readout {
+    font-family: var(--font-numeric);
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+  }
+  .attempts-readout b {
+    color: var(--text-primary);
+  }
+
+  /* --- feedback glyph cells (shared visual language for both games) --- */
+  .glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.7rem;
+    height: 1.7rem;
+    border-radius: 0.4rem;
+    font-size: 0.85rem;
+    font-weight: 800;
+    flex-shrink: 0;
+  }
+  .glyph.exact,
+  .glyph.correct {
+    color: var(--accent-reward);
+    background: var(--accent-reward-wash);
+  }
+  .glyph.close {
+    color: var(--text-secondary);
+    background: var(--surface-3);
+    border: 1px dashed var(--text-muted);
+  }
+  .glyph.far,
+  .glyph.absent {
+    color: var(--status-critical);
+    background: var(--status-critical-wash);
+  }
+  .glyph.mystery {
+    color: var(--text-muted);
+    background: var(--surface-2);
+    border: 1px dashed var(--gridline);
+  }
+  .glyph.rowmatch {
+    color: var(--series-1);
+    background: var(--series-1-wash);
+    border: 1px dashed var(--series-1);
+  }
+  .glyph.empty {
+    color: var(--text-muted);
+    background: var(--surface-1);
+    border: 1px solid var(--gridline);
+    opacity: 0.7;
+  }
+
+  .history-strip {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+  }
+  .history-strip__label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .history-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .history-row__attempt {
+    font-family: var(--font-numeric);
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    width: 1.4rem;
+    flex-shrink: 0;
+  }
+  .history-row__glyphs {
+    display: flex;
+    gap: 0.3rem;
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.9rem;
+    padding-top: 0.4rem;
+    border-top: 1px solid var(--gridline);
+  }
+  .legend__item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+  }
+
+  .result-banner {
+    border-radius: var(--radius-md);
+    padding: 0.9rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+  }
+  .result-banner.win {
+    background: var(--accent-reward-wash);
+    border: 1px solid rgba(232, 163, 61, 0.4);
+  }
+  .result-banner.lose {
+    background: var(--surface-2);
+    border: 1px solid var(--gridline);
+  }
+  .result-banner__icon {
+    font-size: 1.4rem;
+  }
+  .result-banner__text {
+    font-size: 0.86rem;
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+  .result-banner__sub {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    font-weight: 400;
+    margin-top: 0.1rem;
+  }
+
+  .reveal-row {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: 0.86rem;
+    padding: 0.4rem 0;
+  }
+  .reveal-row__rank {
+    width: 1.1rem;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+  }
+  .reveal-row__ticker {
+    width: 3.4rem;
+    font-weight: 700;
+  }
+  .reveal-row__name {
+    font-family: var(--font-display);
+    color: var(--text-secondary);
+    flex: 1;
+    font-size: 0.82rem;
+  }
+  .reveal-row__pct {
+    font-weight: 700;
+  }
+  .reveal-row__pct.good {
+    color: var(--status-good);
+  }
+  .reveal-row__pct.bad {
+    color: var(--status-critical);
+  }
+
+  .stat-row {
+    display: flex;
+    gap: 1.4rem;
+    padding-top: 0.2rem;
+  }
+  .stat {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .stat__label {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+  }
+  .stat__value {
+    font-family: var(--font-numeric);
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--accent-reward);
+  }
+
+  /* --- The Lineup grid --- */
+  .lineup-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 0.55rem;
+  }
+  .lineup-col {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    align-items: center;
+  }
+  .col-head {
+    width: 100%;
+    font-family: var(--font-numeric);
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid var(--gridline);
+    padding-bottom: 0.35rem;
+    cursor: pointer;
+    text-align: center;
+  }
+  .col-head.selected {
+    color: var(--series-1);
+    border-bottom-color: var(--series-1);
+  }
+  .col-head.solved {
+    color: var(--accent-reward);
+    border-bottom-color: var(--accent-reward);
+  }
+  .lineup-tile {
+    width: 100%;
+    aspect-ratio: 1;
+    border-radius: 0.45rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-numeric);
+    font-weight: 800;
+    font-size: clamp(0.85rem, 3vw, 1.05rem);
+    color: var(--text-primary);
+    background: var(--surface-2);
+    border: 1px solid var(--gridline);
+  }
+  .lineup-tile.correct {
+    background: var(--status-good-wash);
+    border-color: var(--status-good);
+    color: var(--status-good);
+  }
+  .lineup-tile.present {
+    background: var(--surface-3);
+    border: 1px dashed var(--text-muted);
+    color: var(--text-secondary);
+  }
+  .lineup-tile.rowmatch {
+    background: var(--series-1-wash);
+    border: 1px dashed var(--series-1);
+    color: var(--series-1);
+  }
+  .lineup-tile.absent {
+    background: var(--status-critical-wash);
+    border-color: rgba(228, 107, 100, 0.35);
+    color: var(--text-muted);
+    text-decoration: line-through;
+    text-decoration-color: rgba(228, 107, 100, 0.5);
+  }
+  .lineup-tile.mystery {
+    color: var(--text-muted);
+    border-style: dashed;
+  }
+  .lineup-tile.empty {
+    background: var(--surface-1);
+    border: 1px solid var(--gridline);
+    color: var(--text-muted);
+    opacity: 0.55;
+    font-weight: 400;
+  }
+
+  .guess-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .guess-form__field {
+    position: relative;
+  }
+  .lineup-inputs {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 0.55rem;
+  }
+  .lineup-inputs input {
+    text-align: center;
+    padding: 0.55rem 0.3rem;
+    font-size: 0.82rem;
+  }
+  .guess-form input.locked {
+    border-color: var(--status-good);
+    color: var(--status-good);
+    background: var(--status-good-wash);
+  }
+  @keyframes lineup-shake {
+    10%,
+    90% {
+      transform: translateX(-2px);
+    }
+    20%,
+    80% {
+      transform: translateX(3px);
+    }
+    30%,
+    50%,
+    70% {
+      transform: translateX(-5px);
+    }
+    40%,
+    60% {
+      transform: translateX(5px);
+    }
+  }
+  .lineup-inputs.shake {
+    animation: lineup-shake 0.3s;
+  }
+  .guess-form input {
+    width: 100%;
+    font-family: var(--font-numeric);
+    font-size: 0.95rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    background: var(--surface-2);
+    border: 1px solid var(--gridline);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    padding: 0.62rem 0.8rem;
+  }
+  .guess-form input::placeholder {
+    color: var(--text-muted);
+    text-transform: none;
+    letter-spacing: normal;
+    font-family: var(--font-display);
+  }
+  .autocomplete-list {
+    position: absolute;
+    top: calc(100% + 0.3rem);
+    left: 0;
+    right: 0;
+    background: var(--surface-2);
+    border: 1px solid var(--gridline);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-surface);
+    max-height: 11rem;
+    overflow-y: auto;
+    z-index: 5;
+    display: none;
+  }
+  .autocomplete-list.open {
+    display: block;
+  }
+  .autocomplete-list button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-family: var(--font-numeric);
+    font-size: 0.85rem;
+    padding: 0.5rem 0.75rem;
+    cursor: pointer;
+  }
+  .autocomplete-list button:hover,
+  .autocomplete-list button.active {
+    background: var(--surface-3);
+  }
+  .autocomplete-list__empty {
+    padding: 0.5rem 0.75rem;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    font-family: var(--font-display);
+  }
+
+  .lineup-explainer {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    line-height: 1.55;
+  }
+  .lineup-explainer b {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .keyboard-tracker-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .keyboard-tracker__label {
+    margin: 0;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .keyboard-tracker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+  .keyboard-tracker__key {
+    width: 1.7rem;
+    height: 1.7rem;
+    border-radius: 0.35rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-numeric);
+    font-size: 0.72rem;
+    font-weight: 700;
+    background: var(--surface-2);
+    color: var(--text-muted);
+    border: 1px solid var(--gridline);
+  }
+  .keyboard-tracker__key.correct {
+    background: var(--status-good-wash);
+    border-color: var(--status-good);
+    color: var(--status-good);
+  }
+  .keyboard-tracker__key.rowmatch {
+    background: var(--series-1-wash);
+    border-color: var(--series-1);
+    color: var(--series-1);
+  }
+  .keyboard-tracker__key.present {
+    background: var(--surface-3);
+    border: 1px dashed var(--text-muted);
+    color: var(--text-secondary);
+  }
+  .keyboard-tracker__key.absent {
+    background: var(--status-critical-wash);
+    border-color: rgba(228, 107, 100, 0.3);
+    color: var(--text-muted);
+    opacity: 0.6;
+  }
+
+  .length-recap {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+  }
+
+  .history-log {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    max-height: 8rem;
+    overflow-y: auto;
+    padding-top: 0.3rem;
+  }
+  .history-log__row {
+    display: flex;
+    gap: 0.5rem;
+  }
+  .history-log__row b {
+    font-family: var(--font-numeric);
+    color: var(--text-primary);
+    width: 2.6rem;
+    flex-shrink: 0;
+  }
+
+  details.log-toggle summary {
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    list-style: none;
+  }
+  details.log-toggle summary::-webkit-details-marker {
+    display: none;
+  }
+  details.log-toggle summary::before {
+    content: "▸ ";
+  }
+  details.log-toggle[open] summary::before {
+    content: "▾ ";
+  }
+  details.log-toggle summary:hover {
+    color: var(--text-primary);
+  }
+
+  /* ---------- Callouts / footer ---------- */
+  .callout {
+    background: var(--surface-1);
+    border: 1px solid var(--gridline);
+    border-left: 3px solid var(--series-1);
+    border-radius: var(--radius-md);
+    padding: 1.1rem 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .callout h3 {
+    margin: 0;
+    font-size: 0.95rem;
+    font-weight: 700;
+  }
+  .callout ol {
+    margin: 0;
+    padding-left: 1.15rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+  .callout li {
+    font-size: 0.86rem;
+    color: var(--text-secondary);
+  }
+  .callout li b {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+  .callout li .resolved {
+    color: var(--status-good);
+    font-weight: 600;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  footer.note {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    padding-top: 0.5rem;
+  }
+
+  @media (max-width: 30rem) {
+    .highlights {
+      grid-template-columns: 1fr;
+    }
+    .stat-row {
+      gap: 1rem;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * {
+      transition: none !important;
+      animation: none !important;
+    }
+  }
+</style>
+
+<div class="shell">
+  <header class="masthead">
+    <p class="eyebrow">Design review &middot; daily check-in games &middot; resolving issue #189</p>
+    <h1>The Order &amp; The Lineup</h1>
+    <p class="dek">
+      Both placeholder tiles in the game grid today (<code>PlaceholderGameTile.tsx</code>, issue
+      #197) are specced out below and playable with sample data &mdash; not the real live pipeline
+      yet, just enough to feel the pacing and the feedback loop. Everything on this page reflects a
+      concrete answer to every gap issue #189's staff review flagged: the daily-selection algorithm,
+      the attempt/guess budget, the accessible feedback glyphs, and the streak-chip call. Play
+      through both, then see the open questions at the bottom.
+    </p>
+  </header>
+
+  <div class="context-card">
+    <p class="context-card__label">Where these land in the real 2&times;2 grid</p>
+    <div class="context-grid">
+      <div class="ghost-tile bench dim">
+        <span class="ghost-tile__icon">&#127919;</span><span>Beat the Bench</span>
+      </div>
+      <div class="ghost-tile board dim">
+        <span class="ghost-tile__icon">&#128302;</span><span>The Call Board</span>
+      </div>
+      <div class="ghost-tile order">
+        <span class="ghost-tile__icon">&#127937;</span><span>The Order</span>
+      </div>
+      <div class="ghost-tile lineup">
+        <span class="ghost-tile__icon">&#129513;</span><span>The Lineup</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================= THE ORDER ============================= -->
+  <section class="game" id="order-section">
+    <div class="game-head">
+      <div class="game-head__plate order">&#127937;</div>
+      <div>
+        <h2>The Order</h2>
+        <p>Rearrange 5 real stocks into yesterday's actual worst-to-best order.</p>
+      </div>
+    </div>
+
+    <div class="highlights">
+      <div class="highlight">
+        <p class="highlight__label">Daily selection</p>
+        <p class="highlight__value">Mag 7 only</p>
+        <p class="highlight__note">
+          5 of the 7 Magnificent Seven each day, rotating which two sit out &mdash; no curated
+          allowlist needed, everyone already knows these seven.
+        </p>
+      </div>
+      <div class="highlight">
+        <p class="highlight__label">Attempts</p>
+        <p class="highlight__value">4 guesses</p>
+        <p class="highlight__note">
+          Sized against a ~2 min session; a bail-out reveal is always available.
+        </p>
+      </div>
+      <div class="highlight">
+        <p class="highlight__label">Streak</p>
+        <p class="highlight__value">Inside panel only</p>
+        <p class="highlight__note">
+          Gold stat next to attempts used &mdash; never a badge on the collapsed tile.
+        </p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__header">
+        <span class="panel__title"
+          >Sample day &middot; Magnificent Seven, illustrative returns</span
+        >
+        <span class="pill" id="order-status-pill">Not played yet</span>
+      </div>
+
+      <div class="panel__body">
+        <p class="lineup-explainer">
+          A slot that scores exact stays put for every attempt after that &mdash; locked and
+          highlighted gold, so each remaining guess only reorders what's still actually unresolved.
+        </p>
+
+        <div id="order-rows"></div>
+
+        <div class="actions-row">
+          <span class="attempts-readout">Attempt <b id="order-attempt-num">1</b> of <b>4</b></span>
+          <div style="display: flex; gap: 0.5rem">
+            <button class="btn-secondary" id="order-shuffle">Shuffle</button>
+            <button class="btn-primary" id="order-submit">Submit guess</button>
+          </div>
+        </div>
+
+        <div class="history-strip" id="order-history" hidden>
+          <p class="history-strip__label">Past guesses</p>
+          <div id="order-history-rows"></div>
+        </div>
+
+        <div class="legend">
+          <span class="legend__item"
+            ><span class="glyph exact" aria-hidden="true">&#9733;</span> Exact position</span
+          >
+          <span class="legend__item"
+            ><span class="glyph close" aria-hidden="true">~</span> Close &mdash; off by one</span
+          >
+          <span class="legend__item"
+            ><span class="glyph far" aria-hidden="true">&#10005;</span> Far off</span
+          >
+        </div>
+
+        <div id="order-result" hidden></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= THE LINEUP ============================= -->
+  <section class="game" id="lineup-section">
+    <div class="game-head">
+      <div class="game-head__plate lineup">&#129513;</div>
+      <div>
+        <h2>The Lineup</h2>
+        <p>
+          Fill in all 5 mystery tickers each round &mdash; some are 3 letters, some are 4, and you
+          won't know which until play tells you.
+        </p>
+      </div>
+    </div>
+
+    <div class="highlights">
+      <div class="highlight">
+        <p class="highlight__label">Daily selection</p>
+        <p class="highlight__value">Biggest movers</p>
+        <p class="highlight__note">
+          Top-5 by |return| across both 3- and 4-letter S&amp;P 500 tickers &mdash; a real,
+          checkable stat, not a random draw.
+        </p>
+      </div>
+      <div class="highlight">
+        <p class="highlight__label">Ticker length</p>
+        <p class="highlight__value">Hidden &mdash; 3 or 4</p>
+        <p class="highlight__note">
+          Every column shows 4 slots up front. A slot that never turns green no matter what you try
+          is how you find out it isn't really there.
+        </p>
+      </div>
+      <div class="highlight">
+        <p class="highlight__label">Guess budget</p>
+        <p class="highlight__value">7 full-board rounds</p>
+        <p class="highlight__note">
+          Up from an initial 6 &mdash; hidden length adds real ambiguity the letter tracker below
+          only partly resolves.
+        </p>
+      </div>
+      <div class="highlight">
+        <p class="highlight__label">Legal guesses</p>
+        <p class="highlight__value">S&amp;P 500 pool</p>
+        <p class="highlight__note">
+          Any real 3- or 4-letter ticker, autocompleted &mdash; never free text, and never labeled
+          with its own length.
+        </p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__header">
+        <span class="panel__title"
+          >Sample day &middot; illustrative lineup, mixed ticker lengths</span
+        >
+        <span class="pill" id="lineup-status-pill">7 guesses left</span>
+      </div>
+
+      <div class="panel__body">
+        <p class="lineup-explainer">
+          Each column hides a real ticker &mdash; 3 letters or 4, and you won't know which until
+          play tells you. Guess all 5 at once each round: a letter can be
+          <b>right for this exact spot</b>, <b>right for this ticker but the wrong spot</b>,
+          <b>right for this spot but a different ticker</b>, or just not there. A slot that refuses
+          to turn green no matter what you try is how you find out a ticker was shorter than you
+          thought.
+        </p>
+
+        <div class="lineup-grid" id="lineup-grid"></div>
+
+        <form class="guess-form" id="lineup-form" autocomplete="off">
+          <div class="lineup-inputs" id="lineup-inputs">
+            <div class="guess-form__field">
+              <label for="lineup-input-0" class="sr-only">Column 1 guess</label>
+              <input maxlength="4" id="lineup-input-0" data-col="0" placeholder="Col 1" />
+              <div class="autocomplete-list" id="lineup-autocomplete-0"></div>
+            </div>
+            <div class="guess-form__field">
+              <label for="lineup-input-1" class="sr-only">Column 2 guess</label>
+              <input maxlength="4" id="lineup-input-1" data-col="1" placeholder="Col 2" />
+              <div class="autocomplete-list" id="lineup-autocomplete-1"></div>
+            </div>
+            <div class="guess-form__field">
+              <label for="lineup-input-2" class="sr-only">Column 3 guess</label>
+              <input maxlength="4" id="lineup-input-2" data-col="2" placeholder="Col 3" />
+              <div class="autocomplete-list" id="lineup-autocomplete-2"></div>
+            </div>
+            <div class="guess-form__field">
+              <label for="lineup-input-3" class="sr-only">Column 4 guess</label>
+              <input maxlength="4" id="lineup-input-3" data-col="3" placeholder="Col 4" />
+              <div class="autocomplete-list" id="lineup-autocomplete-3"></div>
+            </div>
+            <div class="guess-form__field">
+              <label for="lineup-input-4" class="sr-only">Column 5 guess</label>
+              <input maxlength="4" id="lineup-input-4" data-col="4" placeholder="Col 5" />
+              <div class="autocomplete-list" id="lineup-autocomplete-4"></div>
+            </div>
+          </div>
+          <div class="actions-row">
+            <span class="attempts-readout"
+              >Attempt <b id="lineup-attempt-num">1</b> of <b>7</b></span
+            >
+            <button class="btn-primary" type="submit" id="lineup-submit">Submit guess</button>
+          </div>
+        </form>
+
+        <div class="legend">
+          <span class="legend__item"
+            ><span class="glyph correct" aria-hidden="true">&#10003;</span> Right ticker, right
+            spot</span
+          >
+          <span class="legend__item"
+            ><span class="glyph rowmatch" aria-hidden="true">&#8596;</span> Right spot, wrong
+            ticker</span
+          >
+          <span class="legend__item"
+            ><span class="glyph close" aria-hidden="true">~</span> Right ticker, wrong spot</span
+          >
+          <span class="legend__item"
+            ><span class="glyph absent" aria-hidden="true">&#10005;</span> Not in today's
+            lineup</span
+          >
+          <span class="legend__item"
+            ><span class="glyph empty" aria-hidden="true">&#8211;</span> No letter here &mdash;
+            solved, and shorter than 4</span
+          >
+        </div>
+
+        <div class="keyboard-tracker-wrap">
+          <p class="keyboard-tracker__label">
+            Letters tried &mdash; best result seen anywhere on the board
+          </p>
+          <div class="keyboard-tracker" id="lineup-keyboard"></div>
+        </div>
+
+        <details class="log-toggle" id="lineup-log-toggle">
+          <summary>Guess history</summary>
+          <div class="history-log" id="lineup-log"></div>
+        </details>
+
+        <div id="lineup-result" hidden></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= OPEN QUESTIONS ============================= -->
+  <div class="callout">
+    <h3>Open questions for you</h3>
+    <ol>
+      <li>
+        <b>Streak chips:</b>
+        <span class="resolved">both specs independently landed on the same answer</span> &mdash; a
+        small gold streak stat, shown only once a card is expanded/played (matching The Call Board's
+        own shipped precedent), never a badge on the collapsed tile. Ready to lock in unless you
+        want it off entirely.
+      </li>
+      <li>
+        <b>The Order's 4-attempt limit</b> is a reasoned estimate (search-space math + ~30s/attempt
+        pacing), not playtested. Feels right after playing it above, or too tight/loose?
+      </li>
+      <li>
+        <b>The Lineup's 7-round whole-board budget</b> (bumped from an initial 6 once hidden length
+        raised the difficulty) is likewise reasoned, not measured. After playing above, with the
+        letter tracker in hand: still too tight, or does 7 leave room to spare?
+      </li>
+      <li>
+        <b>The Order's Mag 7-only pool</b> trades daily variety for guaranteed recognizability
+        &mdash; 5-of-7 gives 21 possible day-lineups, which may get repetitive within a couple of
+        weeks. Worth widening the pool later (e.g. Mag 7 plus a rotating 8th "wildcard" slot), or is
+        a small, totally-familiar pool actually the point?
+      </li>
+      <li>
+        <b>The Lineup's colmatch/rowmatch tile treatments</b> (dashed neutral vs. dashed blue,
+        above) are a first pass &mdash; telling them apart at a glance is now load-bearing for
+        solving efficiently, not just decorative, so this deserves closer scrutiny than a typical
+        color pass.
+      </li>
+      <li>
+        <b>New this round &mdash; the letter tracker</b> (below the legend): showing only the single
+        best-ever result per letter is a real simplification when a letter is exact in one column
+        and absent in another. Does it help enough to keep, or does the simplification actually
+        mislead?
+      </li>
+      <li>
+        <b>Win celebration:</b> neither spec commits to full <code>CelebrationBurst</code> confetti
+        reuse for either game &mdash; both propose a simple settled/earnest state for now (the
+        length recap line is as far as this pass went). Worth revisiting once these are real?
+      </li>
+    </ol>
+  </div>
+
+  <footer class="note">
+    Sample data only &mdash; not connected to the live pipeline. Reload the page to reset either
+    demo.
+  </footer>
+</div>
+
+<script>
+  (function () {
+    "use strict";
+
+    /* ============================= THE ORDER ============================= */
+    // Mag 7 only, per request -- 5 of the 7 shown each day (GOOGL and AMZN
+    // sit this sample day out; returns are illustrative, not live).
+    var orderPool = [
+      { t: "TSLA", n: "Tesla", pct: -3.1 },
+      { t: "AAPL", n: "Apple", pct: -0.42 },
+      { t: "MSFT", n: "Microsoft", pct: 0.55 },
+      { t: "META", n: "Meta Platforms", pct: 1.85 },
+      { t: "NVDA", n: "NVIDIA", pct: 3.2 },
+    ];
+    // worst-to-best order for this sample day
+    var orderAnswer = ["TSLA", "AAPL", "MSFT", "META", "NVDA"];
+    var ORDER_MAX_ATTEMPTS = 4;
+    var orderGuess = [];
+    var orderAttempt = 1;
+    var orderHistory = [];
+    var orderDone = false;
+    // One flag per slot -- true once that slot has scored "exact" on some
+    // submitted guess. A locked slot is highlighted gold (this app's own
+    // --accent-reward "earned state" token) and can no longer be moved,
+    // so a player's remaining attempts/reorders only ever touch what's
+    // still genuinely unresolved.
+    var orderLocked = [];
+
+    function shuffle(arr) {
+      var a = arr.slice();
+      for (var i = a.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1));
+        var tmp = a[i];
+        a[i] = a[j];
+        a[j] = tmp;
+      }
+      return a;
+    }
+
+    function tickerByCode(code) {
+      for (var i = 0; i < orderPool.length; i++) if (orderPool[i].t === code) return orderPool[i];
+      return null;
+    }
+
+    function resetOrder() {
+      var startShuffled = shuffle(
+        orderPool.map(function (x) {
+          return x.t;
+        }),
+      );
+      // avoid an accidental already-solved shuffle for demo purposes
+      var tries = 0;
+      while (startShuffled.join(",") === orderAnswer.join(",") && tries < 10) {
+        startShuffled = shuffle(
+          orderPool.map(function (x) {
+            return x.t;
+          }),
+        );
+        tries++;
+      }
+      orderGuess = startShuffled;
+      orderAttempt = 1;
+      orderHistory = [];
+      orderLocked = orderPool.map(function () {
+        return false;
+      });
+      orderDone = false;
+      document.getElementById("order-history").hidden = true;
+      document.getElementById("order-history-rows").innerHTML = "";
+      document.getElementById("order-result").hidden = true;
+      document.getElementById("order-status-pill").textContent = "Not played yet";
+      document.getElementById("order-submit").disabled = false;
+      renderOrder();
+    }
+
+    // Locked slots are fixed; an unlocked slot's "move" hops OVER any locked
+    // slot in its way rather than stopping at it, so the still-unresolved
+    // tickers keep shuffling freely among themselves around the ones already
+    // pinned in place -- the same "pegs you've placed stay put" feel this
+    // mechanic is modeled on.
+    function nextOpenSlot(index, dir) {
+      var target = index + dir;
+      while (target >= 0 && target < orderGuess.length && orderLocked[target]) target += dir;
+      return target >= 0 && target < orderGuess.length ? target : -1;
+    }
+
+    function moveOrder(index, dir) {
+      if (orderDone || orderLocked[index]) return;
+      var target = nextOpenSlot(index, dir);
+      if (target === -1) return;
+      var tmp = orderGuess[index];
+      orderGuess[index] = orderGuess[target];
+      orderGuess[target] = tmp;
+      renderOrder();
+    }
+
+    function renderOrder() {
+      var container = document.getElementById("order-rows");
+      container.innerHTML = "";
+      orderGuess.forEach(function (code, i) {
+        var stock = tickerByCode(code);
+        var locked = orderLocked[i];
+        var row = document.createElement("div");
+        row.className = "order-row" + (locked ? " locked" : "");
+        row.innerHTML =
+          '<span class="order-row__rank">' +
+          (i + 1) +
+          "</span>" +
+          '<span class="order-row__ticker">' +
+          stock.t +
+          "</span>" +
+          '<span class="order-row__name">' +
+          stock.n +
+          "</span>" +
+          (locked
+            ? '<span class="order-row__locked-badge"><span aria-hidden="true">&#9733;</span> Locked</span>'
+            : '<span class="order-row__moves">' +
+              '<button class="btn-move" data-dir="-1" data-i="' +
+              i +
+              '" ' +
+              (orderDone || nextOpenSlot(i, -1) === -1 ? "disabled" : "") +
+              ' aria-label="Move ' +
+              stock.t +
+              ' toward worst">&#8593;</button>' +
+              '<button class="btn-move" data-dir="1" data-i="' +
+              i +
+              '" ' +
+              (orderDone || nextOpenSlot(i, 1) === -1 ? "disabled" : "") +
+              ' aria-label="Move ' +
+              stock.t +
+              ' toward best">&#8595;</button>' +
+              "</span>");
+        container.appendChild(row);
+      });
+      container.querySelectorAll(".btn-move").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          moveOrder(parseInt(btn.dataset.i, 10), parseInt(btn.dataset.dir, 10));
+        });
+      });
+      document.getElementById("order-attempt-num").textContent = String(
+        Math.min(orderAttempt, ORDER_MAX_ATTEMPTS),
+      );
+    }
+
+    function scoreOrder(guess) {
+      return guess.map(function (code, i) {
+        var actualIndex = orderAnswer.indexOf(code);
+        var distance = Math.abs(i - actualIndex);
+        if (distance === 0) return "exact";
+        if (distance === 1) return "close";
+        return "far";
+      });
+    }
+
+    function glyphFor(kind) {
+      if (kind === "exact" || kind === "correct") return "&#9733;";
+      if (kind === "close") return "~";
+      return "&#10005;";
+    }
+
+    function submitOrder() {
+      if (orderDone) return;
+      var feedback = scoreOrder(orderGuess);
+      orderHistory.push({ guess: orderGuess.slice(), feedback: feedback });
+
+      var histWrap = document.getElementById("order-history");
+      histWrap.hidden = false;
+      var rows = document.getElementById("order-history-rows");
+      var row = document.createElement("div");
+      row.className = "history-row";
+      row.innerHTML =
+        '<span class="history-row__attempt">#' +
+        orderAttempt +
+        "</span>" +
+        '<span class="history-row__glyphs">' +
+        feedback
+          .map(function (f) {
+            return '<span class="glyph ' + f + '" aria-hidden="true">' + glyphFor(f) + "</span>";
+          })
+          .join("") +
+        "</span>";
+      var sr = document.createElement("span");
+      sr.className = "sr-only";
+      sr.textContent =
+        "Attempt " +
+        orderAttempt +
+        ": " +
+        orderGuess
+          .map(function (code, i) {
+            return code + " " + feedback[i];
+          })
+          .join(", ");
+      row.appendChild(sr);
+      rows.appendChild(row);
+
+      feedback.forEach(function (f, i) {
+        if (f === "exact") orderLocked[i] = true;
+      });
+
+      var won = feedback.every(function (f) {
+        return f === "exact";
+      });
+      var outOfAttempts = orderAttempt >= ORDER_MAX_ATTEMPTS;
+
+      if (won || outOfAttempts) {
+        finishOrder(won);
+      } else {
+        orderAttempt++;
+      }
+      renderOrder(); // always re-render, so a win/loss shows every slot's final lock state too
+    }
+
+    function finishOrder(won) {
+      orderDone = true;
+      document.getElementById("order-submit").disabled = true;
+      document.getElementById("order-status-pill").textContent = won ? "Solved" : "Out of guesses";
+
+      var result = document.getElementById("order-result");
+      result.hidden = false;
+
+      var banner = document.createElement("div");
+      banner.className = "result-banner " + (won ? "win" : "lose");
+      banner.innerHTML = won
+        ? '<span class="result-banner__icon" aria-hidden="true">&#9733;</span><span><span class="result-banner__text">Solved in ' +
+          orderAttempt +
+          " of " +
+          ORDER_MAX_ATTEMPTS +
+          '.</span><br/><span class="result-banner__sub">Here\'s how yesterday actually ranked, worst to best.</span></span>'
+        : '<span class="result-banner__icon" aria-hidden="true">&#128337;</span><span><span class="result-banner__text">Out of guesses.</span><br/><span class="result-banner__sub">Here\'s how yesterday actually ranked, worst to best.</span></span>';
+
+      var revealList = document.createElement("div");
+      orderAnswer.forEach(function (code, i) {
+        var stock = tickerByCode(code);
+        var pctClass = stock.pct >= 0 ? "good" : "bad";
+        var pctText = (stock.pct >= 0 ? "+" : "") + stock.pct.toFixed(2) + "%";
+        var r = document.createElement("div");
+        r.className = "reveal-row";
+        r.innerHTML =
+          '<span class="reveal-row__rank">' +
+          (i + 1) +
+          "</span>" +
+          '<span class="reveal-row__ticker">' +
+          stock.t +
+          "</span>" +
+          '<span class="reveal-row__name">' +
+          stock.n +
+          "</span>" +
+          '<span class="reveal-row__pct ' +
+          pctClass +
+          '">' +
+          pctText +
+          "</span>";
+        revealList.appendChild(r);
+      });
+
+      var stats = document.createElement("div");
+      stats.className = "stat-row";
+      stats.innerHTML =
+        '<div class="stat"><span class="stat__label">Current streak</span><span class="stat__value">' +
+        (won ? "1" : "0") +
+        "</span></div>" +
+        '<div class="stat"><span class="stat__label">Best streak</span><span class="stat__value">' +
+        (won ? "1" : "0") +
+        "</span></div>";
+
+      result.innerHTML = "";
+      result.appendChild(banner);
+      result.appendChild(revealList);
+      result.appendChild(stats);
+
+      var replay = document.createElement("button");
+      replay.className = "btn-secondary";
+      replay.style.marginTop = "0.3rem";
+      replay.textContent = "Try another shuffle";
+      replay.addEventListener("click", resetOrder);
+      result.appendChild(replay);
+    }
+
+    document.getElementById("order-submit").addEventListener("click", submitOrder);
+    document.getElementById("order-shuffle").addEventListener("click", function () {
+      if (orderDone) return;
+      // shuffle only the still-unresolved slots -- a locked, correct slot
+      // never gets shuffled back out of place
+      var openIndices = [],
+        openCodes = [];
+      orderGuess.forEach(function (code, i) {
+        if (!orderLocked[i]) {
+          openIndices.push(i);
+          openCodes.push(code);
+        }
+      });
+      var shuffledCodes = shuffle(openCodes);
+      openIndices.forEach(function (idx, k) {
+        orderGuess[idx] = shuffledCodes[k];
+      });
+      renderOrder();
+    });
+    resetOrder();
+
+    /* ============================= THE LINEUP =============================
+     Whole-board guessing, now over MIXED-LENGTH tickers: each of the 5
+     columns' real answer is a 3- or 4-letter S&P 500 ticker, and which
+     length a given column is is never told to the player up front -- every
+     column always renders 4 slots, so a 3-letter and a 4-letter column
+     look identical until play reveals otherwise. There is deliberately no
+     separate "reveal the length" signal: it falls straight out of the
+     ordinary per-letter classification --
+       - exact:     right ticker AND right position (impossible at a
+                    position past a shorter answer's own real length, so a
+                    slot that can never go green no matter what you try
+                    IS the discovery mechanism)
+       - rowmatch:  the letter is correct for this same position (row) in
+                    a DIFFERENT column's real ticker -- "right spot, wrong
+                    ticker" (only checked against columns that actually
+                    have a letter at that row)
+       - colmatch:  the letter appears elsewhere within THIS column's own
+                    real ticker (a different position, same ticker)
+       - absent:    neither of the above
+       - empty:     a solved column's own confirmation that it never had a
+                    letter at this slot -- the one place the true length
+                    is ever stated outright, and only once you've already
+                    earned it by solving the column.
+  ========================================================================= */
+    var lineupAnswers = ["IBM", "TSLA", "DIS", "MSFT", "CAT"];
+    var lineupPool = [
+      "IBM",
+      "NKE",
+      "DIS",
+      "CAT",
+      "WFC",
+      "GEV",
+      "JPM",
+      "PFE",
+      "CVS",
+      "UPS",
+      "BAC",
+      "TGT",
+      "LOW",
+      "MCD",
+      "XOM",
+      "HON",
+      "EMR",
+      "DOW",
+      "HAL",
+      "KEY",
+      "AIG",
+      "AON",
+      "APA",
+      "AJG",
+      "RTX",
+      "CRM",
+      "PNC",
+      "USB",
+      "UAL",
+      "TJX",
+      "SYY",
+      "LYB",
+      "MAR",
+      "LEN",
+      "DAL",
+      "CCL",
+      "GIS",
+      "HAS",
+      "ADP",
+      "AZO",
+      "AME",
+      "AMT",
+      "AWK",
+      "AMP",
+      "AAPL",
+      "MSFT",
+      "AMZN",
+      "TSLA",
+      "META",
+      "NVDA",
+      "COST",
+      "AVGO",
+      "ORCL",
+      "CSCO",
+      "INTC",
+      "QCOM",
+      "ADBE",
+      "PYPL",
+      "SBUX",
+      "GILD",
+      "VRTX",
+      "REGN",
+      "LULU",
+      "ROST",
+    ];
+    var LINEUP_MAX_ATTEMPTS = 7;
+    var LINEUP_SLOTS = 4; // every column always shows this many slots, regardless of true length
+    var lineupAttempt = 1;
+    var lineupLocked = [false, false, false, false, false];
+    var lineupLastGuess = ["", "", "", "", ""];
+    var lineupCellState = lineupAnswers.map(function () {
+      return ["mystery", "mystery", "mystery", "mystery"];
+    });
+    var lineupCellLetter = lineupAnswers.map(function () {
+      return ["", "", "", ""];
+    });
+    var lineupDone = false;
+    var lineupLog = [];
+
+    // Best-result-per-letter tracker (the genre's usual on-screen keyboard,
+    // adapted for 5 boards at once): a letter's shown state is the single
+    // strongest signal seen for it ANYWHERE on the board so far, ranked
+    // exact > rowmatch > colmatch > absent. This is a deliberate
+    // simplification -- a letter can genuinely be exact in one column and
+    // absent in another -- but showing only the best case still answers the
+    // one question that matters for deciding whether a guess is worth it:
+    // "have I already learned everything useful about this letter?"
+    var LETTER_RANK = { exact: 4, rowmatch: 3, colmatch: 2, absent: 1 };
+    var lineupLetterBest = {};
+
+    function noteLetterResult(letter, state) {
+      var rank = LETTER_RANK[state];
+      if (!rank) return;
+      var prevRank = lineupLetterBest[letter] ? LETTER_RANK[lineupLetterBest[letter]] : 0;
+      if (rank > prevRank) lineupLetterBest[letter] = state;
+    }
+
+    function renderLineupKeyboard() {
+      var wrap = document.getElementById("lineup-keyboard");
+      wrap.innerHTML = "";
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").forEach(function (letter) {
+        var state = lineupLetterBest[letter];
+        var key = document.createElement("span");
+        key.className = "keyboard-tracker__key" + (state ? " " + tileClassFor(state) : "");
+        key.textContent = letter;
+        var label = !state
+          ? "Letter " + letter + ": not tried yet."
+          : "Letter " +
+            letter +
+            ", best result so far: " +
+            (state === "exact"
+              ? "right ticker, right spot."
+              : state === "rowmatch"
+                ? "right spot, wrong ticker."
+                : state === "colmatch"
+                  ? "right ticker, wrong spot."
+                  : "not in today's lineup.");
+        key.setAttribute("aria-label", label);
+        key.title = label;
+        wrap.appendChild(key);
+      });
+    }
+
+    function classifyCell(guessLetter, col, row) {
+      var answer = lineupAnswers[col];
+      if (row < answer.length && guessLetter === answer[row]) return "exact";
+      for (var c = 0; c < lineupAnswers.length; c++) {
+        if (c !== col && row < lineupAnswers[c].length && lineupAnswers[c][row] === guessLetter)
+          return "rowmatch";
+      }
+      for (var r2 = 0; r2 < answer.length; r2++) {
+        if (r2 !== row && answer[r2] === guessLetter) return "colmatch";
+      }
+      return "absent";
+    }
+
+    function tileClassFor(state) {
+      if (state === "exact") return "correct";
+      if (state === "colmatch") return "present";
+      if (state === "rowmatch") return "rowmatch";
+      if (state === "empty") return "empty";
+      if (state === "mystery") return "mystery";
+      return "absent";
+    }
+
+    function finalizeColumn(col) {
+      var answer = lineupAnswers[col];
+      for (var r = 0; r < LINEUP_SLOTS; r++) {
+        if (r < answer.length) {
+          lineupCellState[col][r] = "exact";
+          lineupCellLetter[col][r] = answer[r];
+        } else {
+          lineupCellState[col][r] = "empty";
+          lineupCellLetter[col][r] = "";
+        }
+      }
+    }
+
+    function revealColumn(col) {
+      // used only on a loss, for a column that was never actually solved
+      var answer = lineupAnswers[col];
+      for (var r = 0; r < LINEUP_SLOTS; r++) {
+        if (r < answer.length) {
+          lineupCellState[col][r] = "reveal";
+          lineupCellLetter[col][r] = answer[r];
+        } else {
+          lineupCellState[col][r] = "empty";
+          lineupCellLetter[col][r] = "";
+        }
+      }
+    }
+
+    function renderLineupGrid() {
+      var grid = document.getElementById("lineup-grid");
+      grid.innerHTML = "";
+      lineupAnswers.forEach(function (answer, colIndex) {
+        var col = document.createElement("div");
+        col.className = "lineup-col";
+
+        var head = document.createElement("div");
+        head.className = "col-head" + (lineupLocked[colIndex] ? " solved" : "");
+        head.textContent = "Col " + (colIndex + 1);
+        col.appendChild(head);
+
+        for (var r = 0; r < LINEUP_SLOTS; r++) {
+          var tile = document.createElement("div");
+          var state = lineupCellState[colIndex][r];
+          var letter = lineupCellLetter[colIndex][r];
+          var cls = state === "reveal" ? "present" : tileClassFor(state);
+          tile.className = "lineup-tile " + cls;
+          tile.textContent = state === "mystery" ? "?" : state === "empty" ? "–" : letter;
+          var srText =
+            state === "mystery"
+              ? "Column " + (colIndex + 1) + ", slot " + (r + 1) + ": not yet guessed."
+              : state === "empty"
+                ? "Column " +
+                  (colIndex + 1) +
+                  ", slot " +
+                  (r + 1) +
+                  ": this ticker has no letter here."
+                : "Column " +
+                  (colIndex + 1) +
+                  ", slot " +
+                  (r + 1) +
+                  ": letter " +
+                  letter +
+                  ", " +
+                  (state === "exact"
+                    ? "right ticker, right spot."
+                    : state === "colmatch"
+                      ? "right ticker, wrong spot."
+                      : state === "rowmatch"
+                        ? "right spot, wrong ticker."
+                        : state === "reveal"
+                          ? "revealed."
+                          : "not in today's lineup.");
+          var srSpan = document.createElement("span");
+          srSpan.className = "sr-only";
+          srSpan.textContent = srText;
+          tile.appendChild(srSpan);
+          col.appendChild(tile);
+        }
+        grid.appendChild(col);
+      });
+    }
+
+    function updateLineupPill() {
+      var pill = document.getElementById("lineup-status-pill");
+      document.getElementById("lineup-attempt-num").textContent = String(
+        Math.min(lineupAttempt, LINEUP_MAX_ATTEMPTS),
+      );
+      if (lineupDone) return;
+      var left = LINEUP_MAX_ATTEMPTS - (lineupAttempt - 1);
+      pill.textContent = left + " guess" + (left === 1 ? "" : "es") + " left";
+    }
+
+    function refreshLineupInputs() {
+      for (var i = 0; i < 5; i++) {
+        var el = document.getElementById("lineup-input-" + i);
+        if (lineupLocked[i]) {
+          el.value = lineupAnswers[i];
+          el.disabled = true;
+          el.classList.add("locked");
+        } else if (lineupLastGuess[i]) {
+          el.value = lineupLastGuess[i];
+        }
+      }
+    }
+
+    function submitLineupRound() {
+      if (lineupDone) return;
+      var guesses = [];
+      var valid = true;
+      for (var i = 0; i < 5; i++) {
+        if (lineupLocked[i]) {
+          guesses.push(lineupAnswers[i]);
+          continue;
+        }
+        var el = document.getElementById("lineup-input-" + i);
+        var val = el.value.toUpperCase().trim();
+        if (val.length < 3 || val.length > 4 || lineupPool.indexOf(val) === -1) valid = false;
+        guesses.push(val);
+      }
+      if (!valid) {
+        var wrap = document.getElementById("lineup-inputs");
+        wrap.classList.remove("shake");
+        void wrap.offsetWidth; // restart the animation on repeated invalid submits
+        wrap.classList.add("shake");
+        return;
+      }
+
+      var counts = { exact: 0, rowmatch: 0, colmatch: 0, absent: 0 };
+      for (var col = 0; col < 5; col++) {
+        if (lineupLocked[col]) continue; // nothing new learned here this round
+        var guessWord = guesses[col];
+        lineupLastGuess[col] = guessWord;
+        for (var row = 0; row < guessWord.length; row++) {
+          var state = classifyCell(guessWord[row], col, row);
+          lineupCellState[col][row] = state;
+          lineupCellLetter[col][row] = guessWord[row];
+          counts[state]++;
+          noteLetterResult(guessWord[row], state);
+        }
+        if (guessWord === lineupAnswers[col]) {
+          lineupLocked[col] = true;
+          finalizeColumn(col);
+        }
+      }
+
+      lineupLog.push({ attempt: lineupAttempt, guesses: guesses.slice(), counts: counts });
+      renderLineupLog();
+
+      var allSolved = lineupLocked.every(function (v) {
+        return v;
+      });
+      var outOfAttempts = lineupAttempt >= LINEUP_MAX_ATTEMPTS;
+
+      renderLineupGrid();
+      renderLineupKeyboard();
+      refreshLineupInputs();
+
+      if (allSolved || outOfAttempts) {
+        finishLineup(allSolved);
+      } else {
+        lineupAttempt++;
+        updateLineupPill();
+      }
+    }
+
+    function renderLineupLog() {
+      var log = document.getElementById("lineup-log");
+      log.innerHTML = "";
+      lineupLog
+        .slice()
+        .reverse()
+        .forEach(function (entry) {
+          var row = document.createElement("div");
+          row.className = "history-log__row";
+          row.innerHTML =
+            "<b>#" +
+            entry.attempt +
+            "</b><span>" +
+            entry.guesses.join(", ") +
+            " &mdash; " +
+            entry.counts.exact +
+            " exact, " +
+            entry.counts.rowmatch +
+            " right spot/wrong ticker, " +
+            entry.counts.colmatch +
+            " right ticker/wrong spot, " +
+            entry.counts.absent +
+            " absent</span>";
+          log.appendChild(row);
+        });
+      if (lineupLog.length > 0) document.getElementById("lineup-log-toggle").open = true;
+    }
+
+    function finishLineup(won) {
+      lineupDone = true;
+      document.getElementById("lineup-submit").disabled = true;
+      for (var i = 0; i < 5; i++) document.getElementById("lineup-input-" + i).disabled = true;
+      document.getElementById("lineup-status-pill").textContent = won ? "Solved" : "Out of guesses";
+
+      var solvedCount = lineupLocked.filter(Boolean).length;
+
+      var result = document.getElementById("lineup-result");
+      result.hidden = false;
+      result.innerHTML = "";
+
+      var banner = document.createElement("div");
+      banner.className = "result-banner " + (won ? "win" : "lose");
+      banner.innerHTML = won
+        ? '<span class="result-banner__icon" aria-hidden="true">&#127881;</span><span><span class="result-banner__text">Solved all 5 in ' +
+          lineupAttempt +
+          " of " +
+          LINEUP_MAX_ATTEMPTS +
+          " rounds.</span></span>"
+        : '<span class="result-banner__icon" aria-hidden="true">&#128337;</span><span><span class="result-banner__text">Out of guesses &mdash; ' +
+          solvedCount +
+          " of 5 solved.</span><br/><span class=\"result-banner__sub\">Here's the rest of today's lineup, lengths included.</span></span>";
+      result.appendChild(banner);
+
+      var shortCols = [],
+        longCols = [];
+      lineupAnswers.forEach(function (t) {
+        (t.length === 3 ? shortCols : longCols).push(t);
+      });
+      var lengthRecap = document.createElement("p");
+      lengthRecap.className = "length-recap";
+      lengthRecap.textContent =
+        "Turned out to be " +
+        shortCols.length +
+        " short (" +
+        shortCols.join(", ") +
+        ") and " +
+        longCols.length +
+        " long (" +
+        longCols.join(", ") +
+        ").";
+      result.appendChild(lengthRecap);
+
+      if (!won) {
+        for (var i = 0; i < 5; i++) if (!lineupLocked[i]) revealColumn(i);
+      }
+      renderLineupGrid();
+      renderLineupKeyboard();
+
+      var stats = document.createElement("div");
+      stats.className = "stat-row";
+      stats.innerHTML =
+        '<div class="stat"><span class="stat__label">Current streak</span><span class="stat__value">' +
+        (won ? "1" : "0") +
+        "</span></div>" +
+        '<div class="stat"><span class="stat__label">Best streak</span><span class="stat__value">' +
+        (won ? "1" : "0") +
+        "</span></div>";
+      result.appendChild(stats);
+
+      var replay = document.createElement("button");
+      replay.className = "btn-secondary";
+      replay.style.marginTop = "0.3rem";
+      replay.textContent = "Reload to play again";
+      replay.addEventListener("click", function () {
+        window.location.reload();
+      });
+      result.appendChild(replay);
+    }
+
+    function wireLineupAutocomplete(index) {
+      var input = document.getElementById("lineup-input-" + index);
+      var acList = document.getElementById("lineup-autocomplete-" + index);
+
+      function close() {
+        acList.classList.remove("open");
+        acList.innerHTML = "";
+      }
+      function open(query) {
+        var q = query.toUpperCase();
+        var matches =
+          q.length === 0
+            ? []
+            : lineupPool
+                .filter(function (t) {
+                  return t.indexOf(q) === 0;
+                })
+                .slice(0, 6);
+        if (matches.length === 0) {
+          acList.innerHTML =
+            q.length === 0 ? "" : '<div class="autocomplete-list__empty">No match</div>';
+          acList.classList.toggle("open", q.length > 0);
+          return;
+        }
+        acList.innerHTML = matches
+          .map(function (t) {
+            return '<button type="button">' + t + "</button>";
+          })
+          .join("");
+        acList.classList.add("open");
+        acList.querySelectorAll("button").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            input.value = btn.textContent;
+            close();
+            var next = document.getElementById("lineup-input-" + (index + 1));
+            if (next && !next.disabled) next.focus();
+          });
+        });
+      }
+      input.addEventListener("input", function () {
+        open(input.value);
+      });
+      input.addEventListener("focus", function () {
+        open(input.value);
+      });
+      input.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          close();
+          submitLineupRound();
+        }
+      });
+      document.addEventListener("click", function (e) {
+        if (
+          !e.target.closest("#lineup-input-" + index) &&
+          !e.target.closest("#lineup-autocomplete-" + index)
+        )
+          close();
+      });
+    }
+    for (var lineupInputIndex = 0; lineupInputIndex < 5; lineupInputIndex++)
+      wireLineupAutocomplete(lineupInputIndex);
+
+    document.getElementById("lineup-form").addEventListener("submit", function (e) {
+      e.preventDefault();
+      submitLineupRound();
+    });
+
+    renderLineupGrid();
+    renderLineupKeyboard();
+    updateLineupPill();
+  })();
+</script>
