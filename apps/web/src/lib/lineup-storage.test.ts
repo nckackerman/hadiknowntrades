@@ -82,6 +82,29 @@ describe("saveLineupPlayedResult / getLineupPlayedResult", () => {
     );
     expect(getLineupPlayedResult("2026-08-26")).toBeNull();
   });
+
+  it("treats a stored value with a shorter (stale/hand-edited) lockedColumns array as unplayed, not as a real result with missing columns silently read as false", () => {
+    // A real LineupPlayedResult always has exactly LINEUP_COLUMNS (5)
+    // entries -- a hand-edited or stale-format value with fewer must not
+    // parse as valid: TheLineup.tsx reads lockedColumns[i] for every i up
+    // to 4 unconditionally once this parses, so a shorter array would
+    // silently read `undefined` (falsy) for the missing indices,
+    // rendering an actually-solved column as "revealed/lost" instead of
+    // "exact/solved" on a cold reload.
+    window.localStorage.setItem(
+      "hikt:the-lineup:2026-08-26",
+      JSON.stringify(result({ lockedColumns: [true, true, true] })),
+    );
+    expect(getLineupPlayedResult("2026-08-26")).toBeNull();
+
+    // A too-long array is rejected the same way -- the contract is
+    // exactly LINEUP_COLUMNS, not "at least" or "at most."
+    window.localStorage.setItem(
+      "hikt:the-lineup:2026-08-26",
+      JSON.stringify(result({ lockedColumns: [true, true, true, true, true, true] })),
+    );
+    expect(getLineupPlayedResult("2026-08-26")).toBeNull();
+  });
 });
 
 describe("computeLineupStreak", () => {

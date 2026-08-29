@@ -18,6 +18,7 @@
 // (below) can never collide with a real per-day key -- every per-day key
 // is a `YYYY-MM-DD` date string, and "history" is not one.
 
+import { LINEUP_COLUMNS } from "./lineup-game";
 import { readLocalStorage, writeLocalStorage } from "./local-storage";
 
 const KEY_PREFIX = "hikt:the-lineup:";
@@ -102,6 +103,14 @@ function isLineupPlayedResult(value: unknown): value is LineupPlayedResult {
     isFiniteNumber(tilesFilled) &&
     isFiniteNumber(totalTiles) &&
     Array.isArray(lockedColumns) &&
+    // Exactly LINEUP_COLUMNS (5) entries, not just "an array of
+    // booleans" -- TheLineup.tsx reads lockedColumns[i] for every i up
+    // to LINEUP_COLUMNS - 1 unconditionally once this parses as valid, so
+    // a shorter (stale/hand-edited) array would silently read
+    // `undefined` (falsy) for the missing indices, rendering an
+    // actually-solved column as "revealed/lost" instead of "exact/solved"
+    // on a cold reload.
+    lockedColumns.length === LINEUP_COLUMNS &&
     lockedColumns.every((v) => typeof v === "boolean")
   );
 }

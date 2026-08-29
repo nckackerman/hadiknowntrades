@@ -571,6 +571,30 @@ describe("ResultsPage", () => {
       expect(lineupSummary.tagName).toBe("SUMMARY");
       expect(lineupSummary.closest("details")).not.toBeNull();
     });
+
+    it("renders after Beat the Bench and The Call Board too, not just The Order -- a direct assertion, not just transitively via Order's own position", async () => {
+      // The pre-issue-#208 combined placeholder test directly asserted
+      // both siblings' positions relative to Beat the Bench and The Call
+      // Board; the split above only asserts Lineup's position relative
+      // to The Order, relying transitively on a separate test
+      // ("The Order placeholder tile" describe block) for Order-after-
+      // Bench/Board. Restoring a direct assertion here so a future
+      // regression in Order's own placement can't silently mask a real
+      // Lineup-placement regression that transitive coverage alone would
+      // miss.
+      render(<ResultsPage />);
+
+      const bench = screen.getByRole("button", { name: /can you do better\?/i });
+      const board = screen.getByRole("heading", { name: "The Call Board" }).closest("section")!;
+      const lineupSummary = await screen.findByTestId("the-lineup-summary");
+
+      expect(
+        bench.compareDocumentPosition(lineupSummary) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(
+        board.compareDocumentPosition(lineupSummary) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
   });
 
   describe("Beat the Bench: collapsed by default, expands in place (issue #163)", () => {

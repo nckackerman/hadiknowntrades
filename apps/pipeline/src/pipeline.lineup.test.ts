@@ -19,6 +19,7 @@ import {
   LINEUP_HISTORY_KEY,
   LINEUP_LATEST_KEY,
   lineupResultKey,
+  resultKey,
   RESULTS_SCHEMA_VERSION,
   toDateString,
   type DailyClose,
@@ -219,5 +220,55 @@ describe("The Lineup (issue #208)", () => {
     expect(result.tickers).toEqual(EXPECTED_ORDER);
     const history = JSON.parse(objects.get(LINEUP_HISTORY_KEY)!);
     expect(history.entries).toEqual([{ date: DAY, tickers: EXPECTED_ORDER }]);
+  });
+
+  it("propagates a real (non-'missing key') read failure out of readLineupHistory, contained at the runPipeline call site -- the rest of the run still succeeds, and no Lineup data is written this run", async () => {
+    // A store whose getObject throws a genuine failure (permissions/
+    // throttling/network -- anything that isn't the expected "this
+    // object doesn't exist yet" case, which s3-store.ts/local-file-
+    // store.ts both already convert to a `null` *return*, not a throw).
+    // readLineupHistory itself no longer swallows this into `null` --
+    // it propagates -- so this test is really exercising the *caller's*
+    // own containment (runPipeline's try/catch around the whole
+    // read-then-build step), not readLineupHistory's own behavior.
+    const fixture = dailyFixture();
+    const objects = new Map<string, string>();
+    const store: ResultStore = {
+      async putObject(key, body) {
+        objects.set(key, body);
+      },
+      async getObject(key) {
+        if (key === LINEUP_HISTORY_KEY) {
+          throw new Error("simulated S3 access denied");
+        }
+        return null;
+      },
+    };
+
+    const summary = await runPipeline({
+      tickers: TICKERS,
+      fetchDailyCloses: async (symbol) => fixture.get(symbol) ?? [],
+      fetchIntradayBars: someIntradayBars,
+      fetchFiveMinuteBars: noIntradayData,
+      fetchIntraday1mBars: noIntradayData,
+      store,
+      asOf: ASOF,
+    });
+
+    // The run itself did NOT throw, and every other write job still
+    // landed -- a real Lineup-history read failure must not take down
+    // the whole nightly run.
+    expect(summary.results.length).toBeGreaterThan(0);
+    expect(objects.has(resultKey("5Y"))).toBe(true);
+
+    // But no Lineup data was written this run -- the failure was
+    // contained, not silently treated as "no history, start fresh" (the
+    // real bug this test guards against: readLineupHistory used to
+    // swallow every error, including this one, into `null`, which would
+    // have produced a Lineup result computed with an incorrectly-empty
+    // repeat-avoidance history instead of skipping the write).
+    expect(objects.has(lineupResultKey(DAY))).toBe(false);
+    expect(objects.has(LINEUP_LATEST_KEY)).toBe(false);
+    expect(objects.has(LINEUP_HISTORY_KEY)).toBe(false);
   });
 });

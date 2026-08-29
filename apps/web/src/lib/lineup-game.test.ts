@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   LINEUP_MAX_ATTEMPTS,
   classifyCell,
+  classifyColumnGuess,
   columnsSolvedCount,
   createLineupBoard,
   noteLetterResult,
@@ -68,6 +69,66 @@ describe("classifyCell", () => {
     // enforced by submitLineupRound only looping `row < guessWord.length`.
     // Covered directly in the submitLineupRound tests below.
     expect(true).toBe(true);
+  });
+});
+
+describe("classifyColumnGuess (duplicate-letter fix)", () => {
+  it("never double-credits a single real letter occurrence -- the exact 'AAL' vs 'ALL' case", () => {
+    // Real answer 'AAL' (A, A, L). Guess 'ALL' (A, L, L). The column's
+    // own only real L is at position 2. Before the fix, row 1's own
+    // colmatch check (does 'L' appear elsewhere in AAL?) found that same
+    // position 2, and row 2's own exact check *also* matched it -- one
+    // real L credited twice (2 exact + 1 colmatch, for a column with
+    // only one real L). With consumption tracking: row 0 'A' is exact
+    // (against answer[0]='A'), row 2 'L' is exact (against answer[2]='L',
+    // claiming that position first via the exact pass), and row 1's own
+    // 'L' has no unclaimed answer position left to match -- absent, not
+    // colmatch, since the answer only ever had one L to credit.
+    const answers = ["AAL", "ZZZ", "ZZZ", "ZZZ", "ZZZ"]; // no other column shares a row-position letter with ALL
+    const ranks = classifyColumnGuess("ALL", 0, answers);
+
+    expect(ranks).toEqual(["exact", "absent", "exact"]);
+    // Sanity: exactly one exact per real answer position, no double count.
+    expect(ranks.filter((r) => r === "exact")).toHaveLength(2);
+    expect(ranks.filter((r) => r === "colmatch")).toHaveLength(0);
+  });
+
+  it("submitLineupRound end to end: the same duplicate-letter guess never double-credits a column's counts", () => {
+    // Same 'AAL' vs 'ALL' case, exercised through the real whole-board
+    // submission path (not just the pure classifier) -- proving the fix
+    // actually reaches the UI-facing counts/cells, not just the
+    // lower-level function.
+    const answers = ["AAL", "ZZZ", "ZZZ", "ZZZ", "ZZZ"];
+    const board = createLineupBoard(answers);
+
+    const result = submitLineupRound(board, ["ALL", "QQQ", "QQQ", "QQQ", "QQQ"], anyGuessLegal);
+
+    expect(result.state.cells[0]).toEqual([
+      { state: "exact", letter: "A" },
+      { state: "absent", letter: "L" },
+      { state: "exact", letter: "L" },
+      { state: "mystery", letter: "" }, // row 4 -- LINEUP_SLOTS, never touched by a 3-letter guess
+    ]);
+    // Exactly 2 exact for column 0 (its own real length), never 2 exact + 1 colmatch.
+    const column0Counts = result.state.cells[0]!.slice(0, 3).reduce(
+      (acc, cell) => ({ ...acc, [cell.state]: (acc[cell.state as string] ?? 0) + 1 }),
+      {} as Record<string, number>,
+    );
+    expect(column0Counts.exact).toBe(2);
+    expect(column0Counts.colmatch ?? 0).toBe(0);
+  });
+
+  it("still allows two guessed duplicate letters to both classify as colmatch when the answer genuinely has two of that letter", () => {
+    // Real answer 'LLA' (L, L, A). Guess 'ALL': row 1 'L' lands exact
+    // (against answer[1]='L', claiming that position first), then row 0
+    // 'A' colmatches against answer[2]='A', and row 2 'L' colmatches
+    // against the still-unclaimed answer[0]='L' -- both duplicate-letter
+    // colmatches genuinely credited, not suppressed just because the
+    // exact pass already consumed one of the answer's two Ls.
+    const answers = ["LLA", "ZZZ", "ZZZ", "ZZZ", "ZZZ"];
+    const ranks = classifyColumnGuess("ALL", 0, answers);
+
+    expect(ranks).toEqual(["colmatch", "exact", "colmatch"]);
   });
 });
 

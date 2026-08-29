@@ -1463,11 +1463,29 @@ section for the real, validated selection numbers this wiring produces.
   implementations (`S3ResultStore`/`LocalFileResultStore`) do implement
   it: `NoSuchKey`/`ENOENT` (the real, expected outcome the very first
   time this key is ever read, before any run has written it) become
-  `null`; any other read failure (permissions, a real corrupt read)
-  propagates and is caught one level up by `readLineupHistory`'s own
-  try/catch, which downgrades it to "start fresh this run" with a
-  `console.warn` rather than failing the pipeline over a read this
-  feature can fully function without.
+  `null`; any other read failure (permissions, throttling, a real
+  network problem) propagates. **`readLineupHistory` itself no longer
+  swallows that into `null`** (a real bug, found in `/code-review` on
+  PR #211 and fixed before merge: it originally caught every error
+  indiscriminately, including a genuine infrastructure failure, and
+  degraded it to the exact same "no history yet, start fresh" log line
+  as the expected missing-key case) -- it only ever returns `null` for
+  the store-has-no-`getObject`-at-all case, and otherwise passes
+  `store.getObject`'s own result straight through, throw included. The
+  containment lives one level up instead: `runPipeline`'s own call site
+  (where `readLineupHistory` is called, immediately followed by
+  `buildLineupResult`) wraps both in a single try/catch, so a real read
+  failure -- or a genuinely unexpected throw from
+  `selectLineupTickers`/`mergeLineupHistory` themselves -- degrades to
+  "no Lineup data written this run" (reported via `lineupStatus`, same
+  as the "known" too-few-candidates outcome) without ever reaching a
+  bare, unguarded call that could abort `runPipeline` before any other
+  write job gets a chance to run. See `pipeline.lineup.test.ts`'s own
+  "propagates a real (non-'missing key') read failure..." test and the
+  dedicated `pipeline.lineup-selection-failure.test.ts` (mirroring
+  `pipeline.write-validation.test.ts`'s own precedent for a test that
+  needs to `vi.mock` `@hadiknowntrades/core`) for the regression
+  coverage.
 - **`parseLineupHistoryEntries` is deliberately _more_ lenient than
   `validateLineupHistory`** (the write-time gate, `results-schema.ts`) --
   a real, considered asymmetry, not an oversight. `validateLineupHistory`

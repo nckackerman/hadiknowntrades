@@ -25,8 +25,11 @@
 //               real answer -- "right ticker, wrong spot"
 //   - absent:   neither of the above
 
+import { LINEUP_SIZE } from "@hadiknowntrades/core";
+
 export const LINEUP_MAX_ATTEMPTS = 7;
-export const LINEUP_COLUMNS = 5;
+/** Always exactly `LINEUP_SIZE` (from packages/core) -- kept as a distinct name for readability at this file's own call sites, not a second hand-typed literal. */
+export const LINEUP_COLUMNS = LINEUP_SIZE;
 /** Every column always renders this many slots, regardless of the real ticker's true length (3 or 4). */
 export const LINEUP_SLOTS = 4;
 
@@ -123,7 +126,22 @@ export function createLineupBoard(answers: readonly string[]): LineupBoardState 
 
 /**
  * Classifies one guessed letter at `[col, row]` against every column's
- * real answer -- the mock's own `classifyCell`, byte-for-byte.
+ * real answer -- the mock's own `classifyCell`, byte-for-byte, kept as a
+ * standalone single-letter classifier (still exported/tested in
+ * isolation) for anything that only cares about one row's own
+ * classification with no other letters guessed alongside it.
+ *
+ * **Not what `submitLineupRound` actually calls any more** -- a single
+ * real answer-letter occurrence can be matched by at most one guessed
+ * position; classifying each row of a guess word independently, as this
+ * function necessarily does, can't enforce that (the classic Wordle
+ * duplicate-letter bug: real answer 'AAL', guess 'ALL' -- row 0 'A'
+ * exact, row 1 'L' colmatch against answer[2]='L', row 2 'L' ALSO exact
+ * against that same answer[2]='L', double-crediting the column's one
+ * real L). `classifyColumnGuess` below classifies a whole guess word at
+ * once, with per-letter consumption tracking, and is what
+ * `submitLineupRound` uses instead.
+ *
  * `row < answer.length` guards every comparison against a shorter
  * column's own real length; a slot past it can never classify as
  * `exact`, `rowmatch`, or `colmatch` from that column's own side, which
@@ -147,6 +165,77 @@ export function classifyCell(
     if (r2 !== row && answer[r2] === guessLetter) return "colmatch";
   }
   return "absent";
+}
+
+/**
+ * Classifies an entire guessed word against column `col`'s real answer,
+ * with proper per-letter consumption so a single real occurrence of a
+ * letter is never credited to two guessed rows in the same word -- the
+ * fix for `classifyCell`'s own documented duplicate-letter bug (see its
+ * doc comment above for the concrete case).
+ *
+ * Two passes, same priority order `classifyCell` already used
+ * (exact > rowmatch > colmatch > absent), just resolved across the
+ * whole word instead of one row in isolation:
+ *   1. Every row that's an exact match (`guessWord[row] === answer[row]`,
+ *      guarded by `row < answer.length` the same way) is marked first,
+ *      and that answer position is "claimed" -- it can never also
+ *      satisfy a different row's colmatch.
+ *   2. Every remaining row checks rowmatch (unaffected by consumption --
+ *      it's a positional check against a *different* column's answer,
+ *      not a shared pool, see `classifyCell`'s own reasoning), then
+ *      colmatch against only the still-unclaimed positions in this
+ *      column's own answer, claiming whichever position it matches so a
+ *      later row in the same word can't also claim it.
+ */
+export function classifyColumnGuess(
+  guessWord: string,
+  col: number,
+  answers: readonly string[],
+): LineupLetterRank[] {
+  const answer = answers[col]!;
+  const ranks: LineupLetterRank[] = new Array(guessWord.length);
+  const claimed: boolean[] = new Array(answer.length).fill(false);
+
+  for (let row = 0; row < guessWord.length; row++) {
+    if (row < answer.length && guessWord[row] === answer[row]) {
+      ranks[row] = "exact";
+      claimed[row] = true;
+    }
+  }
+
+  for (let row = 0; row < guessWord.length; row++) {
+    if (ranks[row]) continue;
+    const letter = guessWord[row]!;
+
+    let matchedRow = false;
+    for (let c = 0; c < answers.length; c++) {
+      if (c !== col && row < answers[c]!.length && answers[c]![row] === letter) {
+        matchedRow = true;
+        break;
+      }
+    }
+    if (matchedRow) {
+      ranks[row] = "rowmatch";
+      continue;
+    }
+
+    let claimedPos = -1;
+    for (let r2 = 0; r2 < answer.length; r2++) {
+      if (!claimed[r2] && r2 !== row && answer[r2] === letter) {
+        claimedPos = r2;
+        break;
+      }
+    }
+    if (claimedPos >= 0) {
+      claimed[claimedPos] = true;
+      ranks[row] = "colmatch";
+    } else {
+      ranks[row] = "absent";
+    }
+  }
+
+  return ranks;
 }
 
 /** A solved column's own final tiles -- every real letter marked `exact`, every unused slot past the answer's true length marked `empty`. */
@@ -242,9 +331,14 @@ export function submitLineupRound(
     if (state.locked[col]) continue;
     const guessWord = guesses[col]!;
     lastGuess[col] = guessWord;
+    // classifyColumnGuess (not classifyCell) -- classifies the whole
+    // guess word at once with per-letter consumption tracking, so a
+    // duplicate letter in the guess can't double-credit a single real
+    // answer-letter occurrence (see that function's own doc comment).
+    const rowRanks = classifyColumnGuess(guessWord, col, state.answers);
     for (let row = 0; row < guessWord.length; row++) {
       const letter = guessWord[row]!;
-      const cellState = classifyCell(letter, col, row, state.answers);
+      const cellState = rowRanks[row]!;
       cells[col]![row] = { state: cellState, letter };
       counts[cellState] += 1;
       letterBest = noteLetterResult(letterBest, letter, cellState);

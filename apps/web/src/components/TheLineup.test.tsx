@@ -79,6 +79,32 @@ describe("TheLineup: compact card", () => {
   });
 });
 
+describe("TheLineup: a genuine fetch failure renders a distinguishable error state, not an eternal placeholder", () => {
+  it("renders LineupErrorState (not the aria-hidden placeholder) on a real HTTP error", async () => {
+    stubLineupFetch({ error: "not_found", message: "no lineup yet" }, 502);
+    render(<TheLineup />);
+
+    await waitFor(() => expect(screen.getByTestId("the-lineup-error")).toBeInTheDocument());
+    // Not the same, aria-hidden, indefinitely-pending shell a genuinely
+    // in-flight fetch shows -- it must never render alongside the error.
+    expect(screen.queryByTestId("the-lineup-summary")).not.toBeInTheDocument();
+    const errorState = screen.getByTestId("the-lineup-error");
+    expect(errorState).not.toHaveAttribute("aria-hidden");
+    expect(errorState).toHaveTextContent("Couldn't load today's lineup.");
+  });
+
+  it("renders LineupErrorState (and logs a console.error) on a 200 whose tickers field is the wrong length", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubLineupFetch({ ...LINEUP, tickers: ["IBM", "TSLA", "DIS"] }); // 3, not LINEUP_COLUMNS (5)
+    render(<TheLineup />);
+
+    await waitFor(() => expect(screen.getByTestId("the-lineup-error")).toBeInTheDocument());
+    expect(screen.queryByTestId("the-lineup-summary")).not.toBeInTheDocument();
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("malformed tickers field"));
+    consoleError.mockRestore();
+  });
+});
+
 describe("TheLineup: playing a fresh board", () => {
   it("expanding reveals the 5x4 mystery grid, explainer, and legend", async () => {
     await renderAndExpand();
@@ -143,7 +169,7 @@ describe("TheLineup: playing a fresh board", () => {
     }
 
     await waitFor(() => {
-      expect(screen.getAllByText(/Out of guesses — 0 of 5 solved\./).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/Out of guesses - 0 of 5 solved\./).length).toBeGreaterThan(0);
     });
 
     const stored = getLineupPlayedResult("2026-08-26");
@@ -214,7 +240,7 @@ describe("TheLineup: playing a fresh board", () => {
     }
 
     await waitFor(() => {
-      expect(screen.getAllByText(/Out of guesses — 0 of 5 solved\./).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/Out of guesses - 0 of 5 solved\./).length).toBeGreaterThan(0);
     });
     const currentStreakLabel = screen.getByText("Current streak");
     expect(currentStreakLabel.previousElementSibling?.textContent).toBe("0");

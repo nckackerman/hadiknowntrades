@@ -1055,23 +1055,29 @@ function shuffleInPlace<T>(items: T[], random: () => number): T[] {
  * (LINEUP_HISTORY_KEY) -- the first thing this pipeline has ever needed
  * to read from its own prior run's output (see ResultStore.getObject's
  * own doc comment). Degrades to `null` ("no history available") for any
- * store that doesn't implement `getObject` at all, or on any read
- * failure -- a missing/corrupt history just means repeat-avoidance
- * starts fresh this run, not a reason to fail the whole pipeline over a
- * read this feature can fully function without.
+ * store that doesn't implement `getObject` at all, or when the object
+ * genuinely doesn't exist yet -- a missing history just means
+ * repeat-avoidance starts fresh this run, not a reason to fail the whole
+ * pipeline over a read this feature can fully function without.
+ *
+ * **Any other error propagates, it is not swallowed here.**
+ * `S3ResultStore`/`LocalFileResultStore`'s own `getObject` already
+ * distinguish "doesn't exist yet" (`NoSuchKey`/`ENOENT`, converted to a
+ * `null` *return*, not a throw) from a real failure (permissions,
+ * throttling, network -- re-thrown, same convention `putObject` already
+ * has) -- so by the time an exception actually reaches this function's
+ * own try/catch, it is by construction NOT the expected missing-key
+ * case, and treating it the same as "no history" would silently hide a
+ * real infrastructure problem behind a misleadingly benign "starting
+ * fresh" log line. The caller (`buildLineupResult`'s own call site in
+ * `runPipeline`) is what contains this -- a Lineup-selection failure
+ * (including a propagated read failure) degrades that one feature
+ * gracefully without taking down the rest of the run, but it is still
+ * reported, not silently discarded.
  */
 async function readLineupHistory(store: ResultStore): Promise<string | null> {
   if (!store.getObject) return null;
-  try {
-    return await store.getObject(LINEUP_HISTORY_KEY);
-  } catch (error) {
-    console.warn(
-      `[pipeline] failed to read prior Lineup history, treating as empty: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-    return null;
-  }
+  return store.getObject(LINEUP_HISTORY_KEY);
 }
 
 /**
@@ -2537,22 +2543,50 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // gated on that fetch having succeeded the same way every other
   // window-history-derived computation above already is. Reads back its
   // own prior run's repeat-avoidance history first (see
-  // readLineupHistory's own doc comment for why a missing/corrupt read
-  // degrades rather than fails the run). Like the Beat the Bench session
-  // build above, a selection failure is non-fatal -- reported through
-  // `lineupStatus` in the aggregated status message rather than folded
-  // into computeFailures.
-  const lineupHistoryRaw = windowFetch.failureReason
-    ? null
-    : await readLineupHistory(options.store);
-  const lineupBuild = windowFetch.failureReason
-    ? { build: null, failureReason: null }
-    : buildLineupResult({
+  // readLineupHistory's own doc comment for why a missing history
+  // degrades rather than fails the run, and why any OTHER read error
+  // instead propagates out of that function). Like the Beat the Bench
+  // session build above, a selection failure is non-fatal -- reported
+  // through `lineupStatus` in the aggregated status message rather than
+  // folded into computeFailures.
+  //
+  // **Wrapped in its own try/catch, unlike every other window-history-
+  // derived computation above (which run unguarded, before the write
+  // loop even starts).** This is deliberate, not an oversight: a real S3
+  // read failure now propagated by readLineupHistory's own fix, or a
+  // genuine bug in selectLineupTickers/mergeLineupHistory (e.g. an
+  // unanticipated Date-parsing edge case on malformed history), would
+  // otherwise throw synchronously out of runPipeline *before* any
+  // preset-range/custom-anchor/Beat-the-Bench write job below ever gets
+  // a chance to run -- a bug confined to this brand-new feature would
+  // then break a nightly run for every other, already-working game type.
+  // Matches this pipeline's own established "one thing failed, don't
+  // take down the whole run" posture (see buildBeatTheBenchSessions's
+  // own non-fatal-outcome return shape above, and the per-range/per-day
+  // compute-failure containment documented in this package's own
+  // CLAUDE.md) -- extended here to also cover a genuinely unexpected
+  // exception, not just the "known" empty-candidates outcome
+  // buildLineupResult already reports gracefully on its own.
+  let lineupBuild: ReturnType<typeof buildLineupResult>;
+  if (windowFetch.failureReason) {
+    lineupBuild = { build: null, failureReason: null };
+  } else {
+    try {
+      const lineupHistoryRaw = await readLineupHistory(options.store);
+      lineupBuild = buildLineupResult({
         history: sortedHistory(windowFetch.history),
         day: windowFetch.dataAsOf!,
         generatedAt,
         existingHistoryRaw: lineupHistoryRaw,
       });
+    } catch (error) {
+      const reason = `Lineup selection threw unexpectedly: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      console.warn(`[pipeline] ${reason} -- no Lineup data written this run`);
+      lineupBuild = { build: null, failureReason: reason };
+    }
+  }
   const lineupStatus = windowFetch.failureReason
     ? "skipped (window path failed)"
     : (lineupBuild.failureReason ?? "ok");

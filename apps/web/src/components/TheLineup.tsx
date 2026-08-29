@@ -75,7 +75,7 @@ const CARD_CLASSNAME = `min-h-28 rounded-2xl text-white ${LINEUP_GRADIENT_AND_SH
 const TILE_ICON = "🧩";
 const TILE_TITLE = "The Lineup";
 const TILE_SUBTITLE =
-  "Fill in all 5 mystery tickers each round — 3 or 4 letters, hidden until play tells you.";
+  "Fill in all 5 mystery tickers each round - 3 or 4 letters, hidden until play tells you.";
 
 /**
  * A guess is legal for any (locked or not) column the instant it's a
@@ -160,7 +160,7 @@ const LEGEND_LABEL: Record<LineupCellState, string> = {
   colmatch: "Right ticker, wrong spot",
   absent: "Not in today's lineup",
   reveal: "",
-  empty: "No letter here — solved, and shorter than 4",
+  empty: "No letter here - solved, and shorter than 4",
 };
 
 function LineupTile({
@@ -224,7 +224,7 @@ function LineupKeyboard({ letterBest }: { letterBest: Partial<Record<string, Lin
   return (
     <div>
       <p className="mb-2 text-xs font-bold tracking-wide text-[var(--text-muted)] uppercase">
-        Letters tried — best result seen anywhere on the board
+        Letters tried - best result seen anywhere on the board
       </p>
       <div className="flex flex-wrap gap-1">
         {ALPHABET.map((letter) => {
@@ -300,6 +300,44 @@ function LineupPlaceholder() {
   return (
     <div aria-hidden="true" className={CARD_CLASSNAME}>
       <LineupSummaryRow statusLine=" " streak={{ currentStreak: 0, bestStreak: 0 }} />
+    </div>
+  );
+}
+
+/**
+ * What renders for a genuine fetch failure (a real HTTP/network error,
+ * or a 200 response whose own tickers field doesn't actually carry
+ * LINEUP_COLUMNS real tickers) -- deliberately NOT `aria-hidden` and NOT
+ * the same element as `LineupPlaceholder`, so a real failure is
+ * distinguishable both visually (a visible message, not a silent shell)
+ * and for a screen-reader user (who would otherwise get nothing at all
+ * from an `aria-hidden` node on a real error). Mirrors TheOrder.tsx's
+ * own `OrderErrorState` (issue #207) / BeatTheBench.tsx's own
+ * mystery-pool error branch -- same "no puzzle to play right now,
+ * published by the nightly run" framing, no retry button (there is no
+ * refetch mechanism on useFetchResultsState to wire one to; a page
+ * reload is the same recovery path those siblings rely on too).
+ */
+function LineupErrorState() {
+  return (
+    <div data-testid="the-lineup-error" className={`${CARD_CLASSNAME} flex flex-col gap-2 p-5`}>
+      <div className="flex items-center gap-3">
+        <span
+          aria-hidden="true"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/[0.16]"
+        >
+          <span className="text-3xl leading-none drop-shadow-[0_2px_4px_rgba(0,0,0,0.25)]">
+            {TILE_ICON}
+          </span>
+        </span>
+        <span className="font-display text-lg leading-tight font-extrabold tracking-tight">
+          {TILE_TITLE}
+        </span>
+      </div>
+      <p className="text-xs font-medium text-white/85">
+        Couldn&apos;t load today&apos;s lineup. The Lineup is published by the nightly run, shortly
+        after the close - try reloading in a bit.
+      </p>
     </div>
   );
 }
@@ -414,6 +452,7 @@ export function TheLineup() {
   const [loaded, setLoaded] = useState<LoadedState | null>(null);
   const [drafts, setDrafts] = useState<string[]>(["", "", "", "", ""]);
   const [shakeToken, setShakeToken] = useState<number | null>(null);
+  const [malformedTickers, setMalformedTickers] = useState(false);
   const initializedForDate = useRef<string | null>(null);
 
   // Runs once per newly-fetched day (guarded by initializedForDate so a
@@ -432,10 +471,21 @@ export function TheLineup() {
     // 200 response is guaranteed well-formed -- but this component still
     // shouldn't crash the whole page if that guarantee is ever violated
     // (a schema drift, a test fixture standing in for an unrelated
-    // route's fetch). Degrades to "stay on the placeholder" rather than
-    // throwing, the same silent-graceful-degrade posture BenchmarkStat's
-    // own null render already takes elsewhere in this app.
-    if (!Array.isArray(tickers) || tickers.length !== LINEUP_COLUMNS) return;
+    // route's fetch). Renders a distinguishable, visible error state
+    // instead (see `fetchFailed`/`LineupErrorState` below) rather than
+    // silently staying on the placeholder forever -- a real regression
+    // here must not ship silently indistinguishable from "still
+    // loading."
+    if (!Array.isArray(tickers) || tickers.length !== LINEUP_COLUMNS) {
+      console.error(
+        `[TheLineup] /api/lineup returned a malformed tickers field (expected ${LINEUP_COLUMNS} real tickers): ${JSON.stringify(tickers)}`,
+      );
+      // Deferred into a microtask, same reasoning as the "well-formed"
+      // branch's own queueMicrotask below -- calling setState directly
+      // in the effect body trips react-hooks/set-state-in-effect.
+      queueMicrotask(() => setMalformedTickers(true));
+      return;
+    }
     if (initializedForDate.current === date) return;
     initializedForDate.current = date;
 
@@ -520,13 +570,24 @@ export function TheLineup() {
         : `${columnsSolvedCount(loaded.board)} of ${LINEUP_COLUMNS} solved`;
   const streak = loaded?.streak ?? { currentStreak: 0, bestStreak: 0 };
 
+  // A genuine fetch failure (a real HTTP/network error) or a 200 that
+  // came back with a malformed/wrong-shaped tickers field (caught by the
+  // effect above, which is why `loaded` alone can't distinguish "still
+  // pending" from "resolved to garbage") -- either way, this is not a
+  // fetch that will ever resolve into a real board on its own, so it
+  // must not render the same aria-hidden, indefinitely-pending
+  // LineupPlaceholder a genuinely in-flight fetch shows.
+  const fetchFailed = result?.status === "error" || malformedTickers;
+
   return (
     <section>
       <h2 id="the-lineup-heading" className="sr-only">
         The Lineup
       </h2>
 
-      {!loaded ? (
+      {fetchFailed ? (
+        <LineupErrorState />
+      ) : !loaded ? (
         <LineupPlaceholder />
       ) : (
         <details className="group">
@@ -568,7 +629,7 @@ export function TheLineup() {
 
             {loaded.liveSession && !loaded.board.done && (
               <p className="text-sm text-[var(--text-secondary)]">
-                Each column hides a real ticker — 3 letters or 4, and you won&apos;t know which
+                Each column hides a real ticker - 3 letters or 4, and you won&apos;t know which
                 until play tells you. Guess all 5 at once each round: a letter can be right for this
                 exact spot, right for this ticker but the wrong spot, right for this spot but a
                 different ticker, or just not there. A slot that refuses to turn green no matter
@@ -676,7 +737,7 @@ export function TheLineup() {
                         #{entry.attempt}
                       </b>
                       <span>
-                        {entry.guesses.join(", ")} — {entry.counts.exact} exact,{" "}
+                        {entry.guesses.join(", ")} - {entry.counts.exact} exact,{" "}
                         {entry.counts.rowmatch} right spot/wrong ticker, {entry.counts.colmatch}{" "}
                         right ticker/wrong spot, {entry.counts.absent} absent
                       </span>
@@ -701,7 +762,7 @@ export function TheLineup() {
                   <p className="text-sm font-semibold text-[var(--text-primary)]">
                     {loaded.board.won
                       ? `Solved all 5 in ${loaded.board.attempt} of ${LINEUP_MAX_ATTEMPTS} rounds.`
-                      : `Out of guesses — ${columnsSolvedCount(loaded.board)} of ${LINEUP_COLUMNS} solved.`}
+                      : `Out of guesses - ${columnsSolvedCount(loaded.board)} of ${LINEUP_COLUMNS} solved.`}
                   </p>
                 </div>
                 <div className="flex gap-6">
