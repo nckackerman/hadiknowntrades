@@ -1434,3 +1434,86 @@ is the pipeline wiring.
     `results/mystery-index.json`.
   - The published id order was confirmed non-chronological, and Today's
     Close was confirmed absent from the pool.
+
+## The Order's daily puzzle (issue #207)
+
+A new, small nightly-written object at a fixed key (`THE_ORDER_KEY`,
+`results/the-order.json`) -- the day's 5 Magnificent Seven picks in real
+worst-to-best order, the same "small, versioned, nightly-written object"
+shape `results/beat-the-bench/pool/index.json` already established. See
+`packages/core/CLAUDE.md`'s own "The Order's daily-selection algorithm"
+section for the algorithm itself (`computeOrderSelection`); this section
+is the pipeline-side fetch/build/write wiring around it.
+
+- **A dedicated 7-ticker fetch (`fetchMagSevenCloses`), not a slice of
+  `windowFetch.history`** -- a real, considered choice, not an oversight:
+  `windowFetch` runs against whatever ticker universe the caller passed
+  (`options.tickers`), which for a real production run is the full
+  ~503-name S&P 500 and _would_ include all seven, but for
+  `apps/pipeline`'s own `local-run.ts` dev tool (this file's own top
+  section) is a small random subset that may not include all seven named
+  tickers at all. A dedicated fetch means The Order works correctly
+  under `local-run.ts` regardless of which random subset it happened to
+  pick -- confirmed live (see below), not just reasoned about. Costs 7
+  extra requests per run, negligible next to the ~503-ticker universe
+  fetch already happening in parallel.
+- **`ORDER_RETURN_LOOKBACK_DAYS = 10`** (calendar days, not trading
+  days) -- comfortably covers at least 2 real trading days' worth of
+  closes even across a long weekend/holiday stretch, while staying a
+  tiny payload (7 tickers, not ~503) regardless of how generous the
+  window is.
+- **Per-ticker fetch failures are non-fatal, mirroring
+  `fetchBenchmarkHistory`'s own SPY-fetch posture** -- one ticker's
+  failure doesn't block another's (`Promise.all` over 7 independent
+  `try`/`catch`-wrapped fetches, not `fetchUniverseHistory`'s heavier
+  worker-pool/abort-classification machinery, which 7 tickers doesn't
+  need). `computeOrderSelection` (packages/core) already degrades
+  gracefully with fewer than all 7 candidates present -- see that
+  function's own doc comment -- so a missing ticker here just narrows
+  the pool the algorithm sees, rather than failing the whole build.
+- **`computeMagSevenReturns` finds "the most recent real trading day"
+  as whichever date is the maximum across every ticker's own newest
+  fetched close** (not a fixed "yesterday" computed from `asOf` alone) --
+  a ticker missing an entry at that exact date, or missing a real prior
+  trading day immediately before it in its own series, is simply
+  excluded from the returned map rather than failing the computation.
+- **Non-fatal at the run level, same posture as the benchmark and Beat
+  the Bench sessions fetches**: a day where fewer than 5 of the 7
+  tickers have a usable return, or where `computeOrderSelection` itself
+  returns `null` (no exclusion clears the guardrails), simply writes no
+  `results/the-order.json` this run -- `THE_ORDER_KEY`'s own doc comment
+  (`packages/core/results-schema.ts`) is what makes "don't write" the
+  entire "hold the previous day's puzzle" mechanism, with zero explicit
+  read-back-and-compare logic needed here. Reported through a new
+  `orderStatus` string folded into the aggregated non-fatal-status log
+  line (`orderStatusLine`), the identical pattern the benchmark/session
+  fetches already use.
+- **The one write job this feature adds (`orderWriteJobs`) is held to
+  this pipeline's normal "must fail the run" write standard**, unlike
+  the non-fatal fetch/compute step that produces it -- the same
+  reasoning `sessionWriteJobs`' own comment already gives: the fetch is
+  allowed to come up empty (a quiet news day, a real Yahoo hiccup on one
+  of seven tickers), but a **write failure for already-validated,
+  already-computed data** is exactly what this pipeline's one alerting
+  mechanism (the aggregated `expectedResultCount` check) exists to
+  catch. `orderWriteJobs` is appended **after** `sessionWriteJobs` in
+  `primaryWriteJobs`, not before or interleaved -- the anchors-manifest
+  logic further down correlates `customResults[i]` with
+  `primaryWriteOutcomes[presetWriteJobs.length + i]` by shared index, so
+  anything inserted ahead of `customWriteJobs`/`sessionWriteJobs` would
+  silently break that correlation (the identical ordering constraint
+  `sessionWriteJobs`' own comment already documents for itself).
+- **Live-verified against real Yahoo data** (`LOCAL_RESULTS_DIR`,
+  `local-run.ts`'s default 20-ticker sample, `asOf` 2026-08-29, no S3
+  write): wrote a real `results/the-order.json` for the real most-recent
+  trading day (2026-08-28) -- `NVDA -4.57%, TSLA -1.71%, MSFT +1.68%,
+GOOGL +1.74%, AMZN +3.97%` -- which matches, ticker-for-ticker and
+  percent-for-percent, an **independent** direct fetch of the same seven
+  tickers' real closes run separately during this same verification pass
+  (see `packages/core/CLAUDE.md`'s own "Independently re-verified"
+  note), confirming the dedicated 7-ticker fetch here produces the same
+  real answer a from-scratch computation does, not just "some plausible-
+  looking JSON." `apps/web`'s real `GET /api/the-order` route served
+  this exact object back byte-for-byte through the running app (see
+  `apps/web/CLAUDE.md`'s own "The Order" section for the full end-to-end
+  verification).

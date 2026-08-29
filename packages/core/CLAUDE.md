@@ -1210,3 +1210,63 @@ package's own CLAUDE.md for the fetch/build/write side).
   candidate set on its own, and a session from the far side of a DST
   transition carries hour-shifted labels that visibly separate it from
   the rest of the pool.
+
+## The Order's daily-selection algorithm (issue #207)
+
+`src/order-selection.ts`'s `computeOrderSelection` is the Magnificent
+Seven-only daily-selection rule the game's own design doc
+(`docs/design/order-lineup-2026-08/spec-the-order.md`) explicitly leaves
+as an open gap for the build issue to resolve -- that spec's own Step 3
+percentile-pick algorithm was designed and validated for a ~210-name
+pool, not 7 highly correlated mega-cap tech names, so it isn't reusable
+as-is. The concrete rule this issue shipped instead: exclude the 2 of 7
+tickers with the smallest absolute real return (least differentiated),
+sort the remaining 5 worst-to-best by real return -- that ordering _is_
+the puzzle's answer -- then check two guardrails (`MIN_TOTAL_SPREAD_PP`,
+`MIN_ADJACENT_GAP_PP`); if either trips, widen to whichever 2-ticker
+exclusion (of all 21 possible pairs) maximizes the resulting spread; if
+even that fails every guardrail, `computeOrderSelection` returns `null`
+and the caller (`apps/pipeline`) simply doesn't write that day's puzzle,
+which is how "hold the previous day's puzzle" is achieved -- no explicit
+holding logic exists anywhere, it falls out for free from "don't
+overwrite the key."
+
+- **The two guardrail thresholds are deliberately NOT spec-the-order.md's
+  own n=210 numbers carried over unchanged** -- `MIN_TOTAL_SPREAD_PP`
+  (1.5pp) happens to be reused verbatim and still holds at n=7, but
+  `MIN_ADJACENT_GAP_PP` had to be recalibrated sharply downward, from
+  that spec's own 0.15pp to **0.02pp**. See `MIN_ADJACENT_GAP_PP`'s own
+  doc comment in `order-selection.ts` for the full reasoning (0.15pp
+  would trip on nearly every real day once the pool narrows from 210
+  correlated-but-diverse S&P names down to 7 highly-correlated mega-cap
+  tech names) -- this is a genuinely load-bearing, not cosmetic,
+  difference between the two pool sizes.
+- **Validated twice against real live Yahoo data, not just asserted**:
+  once during the original build (20 real trading days,
+  2026-08-03..2026-08-28) and again, independently, during this issue's
+  own finishing/verification pass (2026-08-29) against a fresh, larger,
+  32-real-trading-day sample (2026-07-16..2026-08-28) -- **0 of 32 days
+  produced `null`** (every real day cleared the guardrails, primary or
+  widened), **2 of 32 needed the widened-exclusion rescue**
+  (2026-07-17, 2026-08-18 -- both genuine near-ties on the primary
+  "exclude smallest abs return" rule), real spread ranged **1.61pp to
+  23.46pp** (median 4.89pp), real minimum adjacent gap ranged **0.04pp
+  to 1.12pp** (median 0.22pp). Both guardrail thresholds held
+  comfortably across every single real day checked in both passes --
+  see `MIN_ADJACENT_GAP_PP`'s own doc comment for the exact numbers and
+  dates, kept in the code itself so a future reader doesn't have to dig
+  through git/PR history to find them again.
+- **Generalized to "exclude however many candidates it takes to reach
+  exactly `ORDER_POOL_SIZE` (5)," not hardcoded to "exactly 2 of exactly
+  7"** -- a real, if rare, per-ticker Yahoo fetch failure
+  (`packages/core`'s own Yahoo-client notes above) leaves
+  `apps/pipeline`'s `computeMagSevenReturns` with fewer than 7 candidate
+  returns; `computeOrderSelection` degrades gracefully (excludes
+  `n - 5` instead of always assuming `n = 7`, or returns `null` outright
+  if fewer than 5 candidates are present at all) rather than crashing or
+  assuming the full seven are always available.
+- **`magSevenCompanyName`** resolves each Magnificent Seven ticker's
+  real company name from `SP500_CONSTITUENTS` -- the same single source
+  of truth every other display name in this app already reads from, not
+  a second hand-typed copy the way `spec-the-order.md`'s own now-
+  superseded 240-name allowlist needed its own curated names for.

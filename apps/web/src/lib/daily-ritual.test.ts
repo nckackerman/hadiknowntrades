@@ -12,7 +12,9 @@ import {
   callsState,
   headlineRecapClause,
   isRecapUnlocked,
+  orderRecapClause,
   type DailyRitualSnapshot,
+  type RitualOrder,
 } from "./daily-ritual";
 import type { HeadlineFigure } from "./headline-figure";
 
@@ -39,6 +41,7 @@ function snapshot(overrides: Partial<DailyRitualSnapshot> = {}): DailyRitualSnap
     heroSeen: true,
     bench: { date: "2026-08-26", session: session() },
     calls: { filled: 2, total: 3 },
+    order: null,
     headline: HEADLINE,
     ...overrides,
   };
@@ -128,6 +131,47 @@ describe("callsRecapClause", () => {
   });
 });
 
+function orderState(overrides: Partial<RitualOrder> = {}): RitualOrder {
+  return {
+    attemptsUsed: 2,
+    maxAttempts: 4,
+    solved: false,
+    bestExactCount: 3,
+    done: true,
+    ...overrides,
+  };
+}
+
+describe("orderRecapClause", () => {
+  it("renders an honest fallback when nothing has been submitted yet today", () => {
+    expect(orderRecapClause(null)).toBe("not played yet today");
+    expect(orderRecapClause(orderState({ attemptsUsed: 0, done: false }))).toBe(
+      "not played yet today",
+    );
+  });
+
+  it("reports the attempt count on a solve, never a ticker or the real order", () => {
+    expect(orderRecapClause(orderState({ solved: true, attemptsUsed: 2, maxAttempts: 4 }))).toBe(
+      "solved in 2 of 4",
+    );
+  });
+
+  it("reports the best exact count when not solved", () => {
+    expect(
+      orderRecapClause(orderState({ solved: false, attemptsUsed: 4, bestExactCount: 3 })),
+    ).toBe("3 of 5 exact after 4 guesses");
+  });
+
+  it("does not misreport a bailed-out reveal (zero guesses, done) as unplayed", () => {
+    // reveal() sets done: true, won: false with history.length === 0 --
+    // attemptsUsed alone can't tell this apart from never having opened
+    // the game at all, so `done` has to be checked first.
+    expect(orderRecapClause(orderState({ attemptsUsed: 0, solved: false, done: true }))).toBe(
+      "revealed without guessing",
+    );
+  });
+});
+
 describe("buildRecapText", () => {
   it("returns nothing while the recap is locked, so a half-day can't be copied", () => {
     expect(buildRecapText(snapshot({ bench: null }))).toBeNull();
@@ -141,6 +185,7 @@ describe("buildRecapText", () => {
         "Hindsight over the past week: $20.00 became $2.4K (122x)",
         "Beat the Bench: you beat the bench by 0.10%",
         "The Call Board: 2 of 3 upcoming sessions called",
+        "The Order: not played yet today",
         "",
         "Hindsight only -- not advice, and not a predictor.",
       ].join("\n"),

@@ -76,6 +76,16 @@ export { buildIntradaySessions, MIN_CLOSED_SESSION_SPAN_MINUTES } from "./intrad
 export type { IntradaySession } from "./intraday-sessions";
 
 export {
+  computeOrderSelection,
+  magSevenCompanyName,
+  MAG_SEVEN_TICKERS,
+  MIN_ADJACENT_GAP_PP,
+  MIN_TOTAL_SPREAD_PP,
+  ORDER_POOL_SIZE,
+} from "./order-selection";
+export type { OrderPick, OrderSelectionResult } from "./order-selection";
+
+export {
   resultKey,
   customResultKey,
   CUSTOM_ANCHORS_MANIFEST_KEY,
@@ -84,6 +94,8 @@ export {
   MYSTERY_SESSION_IDS,
   mysterySessionKey,
   RESULTS_SCHEMA_VERSION,
+  THE_ORDER_KEY,
+  THE_ORDER_TICKER_COUNT,
   TODAYS_CLOSE_SESSION_KEY,
   validatePrecomputedResult,
   validateCustomWindowResult,
@@ -91,6 +103,7 @@ export {
   validateMysteryIndex,
   validateMysteryPoolManifest,
   validateMysterySession,
+  validateTheOrderPuzzle,
   validateTodaysCloseSession,
   ResultValidationError,
 } from "./results-schema";
@@ -106,6 +119,8 @@ export type {
   MysterySession,
   ResultModel,
   SessionBar,
+  TheOrderPuzzle,
+  TheOrderTicker,
   TodaysCloseSession,
   WorstCaseResult,
   LongShortResult,
