@@ -71,9 +71,14 @@ import {
   BlockedError,
   buildIntradaySessions,
   collectTradingDates,
+  computeOrderSelection,
   customRangeAnchors,
+  isValidPrice,
+  magSevenCompanyName,
   optimizeIntradayDays,
   optimizeAllVariants,
+  MAG_SEVEN_TICKERS,
+  ORDER_POOL_SIZE,
   PRESET_RANGES,
   presetRangeStartDate,
   resultKey,
@@ -85,6 +90,7 @@ import {
   MYSTERY_SESSION_IDS,
   mysterySessionKey,
   RESULTS_SCHEMA_VERSION,
+  THE_ORDER_KEY,
   TODAYS_CLOSE_SESSION_KEY,
   toDateString,
   UnexpectedResponseError,
@@ -94,6 +100,7 @@ import {
   validateMysteryIndex,
   validateMysteryPoolManifest,
   validateMysterySession,
+  validateTheOrderPuzzle,
   validateTodaysCloseSession,
   type AnchorDate,
   type BenchmarkResult,
@@ -110,6 +117,7 @@ import {
   type OptimizationResult,
   type PrecomputedResult,
   type PresetRange,
+  type TheOrderPuzzle,
   type TodaysCloseSession,
   type WindowResult,
 } from "@hadiknowntrades/core";
@@ -1011,6 +1019,170 @@ function buildBeatTheBenchSessions(options: {
     },
     failureReason: null,
   };
+}
+
+// --- The Order (issue #207) ---------------------------------------------
+
+/**
+ * How many calendar days back the Magnificent Seven close-to-close fetch
+ * requests -- comfortably covers at least 2 real trading days even across
+ * a long weekend/holiday stretch, while staying a tiny payload either way
+ * (7 tickers, not ~503).
+ */
+const ORDER_RETURN_LOOKBACK_DAYS = 10;
+
+/**
+ * Fetches each Magnificent Seven ticker's own recent daily closes,
+ * independently -- one ticker's fetch failure doesn't block another's,
+ * mirroring fetchUniverseHistory's own per-ticker skip-and-continue
+ * posture, just without that function's heavier worker-pool/abort-
+ * classification machinery (7 tickers needs none of that, the same
+ * reasoning fetchBenchmarkHistory's own doc comment already gives for
+ * SPY's single-ticker fetch).
+ *
+ * Each ticker's own returned closes are sorted ascending by date before
+ * being stored -- `fetchDailyCloses`' return order is documented
+ * elsewhere in this codebase as "ascending in practice, not a guaranteed
+ * contract" (packages/core/CLAUDE.md), and computeMagSevenReturns below
+ * relies on ascending order to find "the trading day immediately before"
+ * a given date by array index.
+ */
+async function fetchMagSevenCloses(
+  fetchFn: RunPipelineOptions["fetchDailyCloses"],
+  from: Date,
+  to: Date,
+): Promise<{ closesByTicker: Map<string, DailyClose[]>; skippedTickers: string[] }> {
+  const outcomes = await Promise.all(
+    MAG_SEVEN_TICKERS.map(async (ticker) => {
+      try {
+        const closes = await fetchFn(ticker, from, to);
+        return { ticker, closes, error: null as string | null };
+      } catch (error) {
+        return {
+          ticker,
+          closes: [] as DailyClose[],
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }),
+  );
+
+  const closesByTicker = new Map<string, DailyClose[]>();
+  const skippedTickers: string[] = [];
+  for (const outcome of outcomes) {
+    if (outcome.error !== null) {
+      console.warn(
+        `[pipeline] The Order: ${outcome.ticker} fetch failed, excluded from today's candidate pool: ${outcome.error}`,
+      );
+      skippedTickers.push(outcome.ticker);
+      continue;
+    }
+    if (outcome.closes.length === 0) {
+      skippedTickers.push(outcome.ticker);
+      continue;
+    }
+    closesByTicker.set(
+      outcome.ticker,
+      [...outcome.closes].sort((a, b) => a.date.localeCompare(b.date)),
+    );
+  }
+  return { closesByTicker, skippedTickers };
+}
+
+/**
+ * Real close-to-close percent returns for "the most recent real trading
+ * day" (the issue's own wording) -- whichever date is the maximum across
+ * every ticker's own newest fetched close. A ticker missing an entry at
+ * that exact date, or missing a real trading day immediately before it in
+ * its OWN series, is simply excluded from the returned map rather than
+ * failing the whole computation -- computeOrderSelection (packages/core)
+ * already degrades gracefully with fewer than all 7 Magnificent Seven
+ * candidates present (see its own doc comment), so a single stale ticker
+ * doesn't need any special handling here.
+ */
+function computeMagSevenReturns(closesByTicker: ReadonlyMap<string, readonly DailyClose[]>): {
+  date: string | null;
+  returns: Map<string, number>;
+} {
+  let targetDate: string | null = null;
+  for (const closes of closesByTicker.values()) {
+    const newest = closes.at(-1);
+    if (newest && (targetDate === null || newest.date > targetDate)) targetDate = newest.date;
+  }
+  if (targetDate === null) return { date: null, returns: new Map() };
+
+  const returns = new Map<string, number>();
+  for (const [ticker, closes] of closesByTicker) {
+    const index = closes.findIndex((close) => close.date === targetDate);
+    // index <= 0: either this ticker has no entry for targetDate at all
+    // (a real fetch/data-availability gap), or targetDate is the very
+    // first entry in its own series (no prior day to compare against) --
+    // both are "exclude this ticker from today's return map," not an error.
+    if (index <= 0) continue;
+    const today = closes[index]!;
+    const prior = closes[index - 1]!;
+    if (!isValidPrice(today.close) || !isValidPrice(prior.close)) continue;
+    returns.set(ticker, (today.close / prior.close - 1) * 100);
+  }
+  return { date: targetDate, returns };
+}
+
+/**
+ * Turns one run's fetched Magnificent Seven closes into The Order's daily
+ * puzzle (issue #207), or `null` with a human-readable reason if there
+ * isn't enough real, well-differentiated data to publish one today --
+ * see computeOrderSelection's (packages/core) own doc comment for exactly
+ * what "well-differentiated" means and why a `null` here is a genuinely
+ * expected, non-fatal outcome, not a bug: the caller simply doesn't write
+ * this run (see THE_ORDER_KEY's own doc comment for why that alone is
+ * enough to "hold" the previous day's puzzle, with no separate read-back
+ * logic needed).
+ */
+function buildTheOrderPuzzle(options: {
+  closesByTicker: ReadonlyMap<string, readonly DailyClose[]>;
+  generatedAt: string;
+  endDateString: string;
+}): { puzzle: TheOrderPuzzle | null; failureReason: string | null } {
+  const { closesByTicker, generatedAt, endDateString } = options;
+
+  // Capped at the run's own requested end date, same reasoning
+  // buildBeatTheBenchSessions already documents for its own sessions
+  // filter: fetchDailyCloses pads its own request window internally, so
+  // a raw result can reach slightly past this run's own asOf boundary.
+  const cappedClosesByTicker = new Map(
+    [...closesByTicker].map(([ticker, closes]) => [
+      ticker,
+      closes.filter((close) => close.date <= endDateString),
+    ]),
+  );
+
+  const { date, returns } = computeMagSevenReturns(cappedClosesByTicker);
+  if (date === null || returns.size < ORDER_POOL_SIZE) {
+    const reason =
+      `only ${returns.size} of ${MAG_SEVEN_TICKERS.length} Magnificent Seven tickers had a usable ` +
+      `close-to-close return this run`;
+    console.warn(`[pipeline] The Order: ${reason} -- no puzzle written this run.`);
+    return { puzzle: null, failureReason: reason };
+  }
+
+  const selection = computeOrderSelection(returns);
+  if (selection === null) {
+    const reason = `no 5-ticker exclusion cleared the daily-selection guardrails for ${date}`;
+    console.warn(`[pipeline] The Order: ${reason} -- no puzzle written this run.`);
+    return { puzzle: null, failureReason: reason };
+  }
+
+  const puzzle: TheOrderPuzzle = {
+    schemaVersion: RESULTS_SCHEMA_VERSION,
+    generatedAt,
+    date,
+    tickers: selection.picks.map((pick) => ({
+      ticker: pick.ticker,
+      companyName: magSevenCompanyName(pick.ticker),
+      pctReturn: pick.pctReturn,
+    })),
+  };
+  return { puzzle, failureReason: null };
 }
 
 /** Fisher-Yates, using an injected uniform [0, 1) source so a test can pin the permutation instead of asserting on Math.random. */
@@ -2159,7 +2331,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   // array (in `granularityOverrideSpecs` order) instead of separate named
   // bindings, since the whole point of that list is that its length
   // isn't hardcoded here.
-  const [windowFetch, intradayFetch, overrideOutcomes, benchmarkFetch, sessionFetch] =
+  const [windowFetch, intradayFetch, overrideOutcomes, benchmarkFetch, sessionFetch, orderFetch] =
     await Promise.all([
       fetchPathHistory(
         "daily-close",
@@ -2219,6 +2391,18 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
       fetchSessionBars(
         options.fetchFiveMinuteBars,
         daysBeforeUtc(asOf, FIVE_MINUTE_LOOKBACK_DAYS),
+        asOf,
+      ),
+      // The Order's Magnificent Seven daily closes (issue #207) -- 7
+      // extra requests (not ~503, and not reused from windowFetch.history:
+      // that fetch runs against whatever ticker sample the caller passed
+      // via options.tickers, which for apps/pipeline's own local-run.ts
+      // dev tool is a small random subset that may not include all seven
+      // of these named tickers -- see fetchMagSevenCloses' own doc
+      // comment), non-fatal like the benchmark/session fetches above.
+      fetchMagSevenCloses(
+        options.fetchDailyCloses,
+        daysBeforeUtc(asOf, ORDER_RETURN_LOOKBACK_DAYS),
         asOf,
       ),
     ]);
@@ -2392,6 +2576,22 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   });
   const sessionStatus = sessionFetch.error ?? sessionBuild.failureReason ?? "ok";
 
+  // The Order's daily puzzle (issue #207) -- purely derived from the
+  // Magnificent Seven closes fetched above, same non-fatal posture as
+  // Beat the Bench's own sessions immediately above: the only way this
+  // comes back null is the fetch not finding enough usable, well-
+  // differentiated data, which is reported through `orderStatus` in the
+  // aggregated error message rather than failing the run.
+  const orderBuild = buildTheOrderPuzzle({
+    closesByTicker: orderFetch.closesByTicker,
+    generatedAt,
+    endDateString,
+  });
+  const orderStatus =
+    orderFetch.skippedTickers.length > 0
+      ? `skipped ${orderFetch.skippedTickers.join(", ")}; ${orderBuild.failureReason ?? "ok"}`
+      : (orderBuild.failureReason ?? "ok");
+
   // The published anchors manifest (issue #75) is computed further
   // below, once the actual per-anchor S3 write outcomes are known --
   // NOT here from customBuild.results (compute success alone) -- see
@@ -2541,7 +2741,34 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     }
   }
 
-  const primaryWriteJobs = [...presetWriteJobs, ...customWriteJobs, ...sessionWriteJobs];
+  // The Order's puzzle (issue #207) -- appended after sessionWriteJobs for
+  // the identical reason sessionWriteJobs itself is appended after
+  // customWriteJobs above: the anchors-manifest logic below correlates
+  // customResults[i] with primaryWriteOutcomes[presetWriteJobs.length + i]
+  // by shared index, so anything inserted ahead of customWriteJobs would
+  // silently break that correlation. Held to the same "must fail the
+  // run" write standard as every other write job here, for the same
+  // reasoning sessionWriteJobs' own comment above already gives: the
+  // *fetch/compute* that produced this is non-fatal, but a write failure
+  // for real, already-validated data is exactly this pipeline's only
+  // alerting mechanism's job to catch.
+  const orderWriteJobs: WriteJob[] = orderBuild.puzzle
+    ? [
+        {
+          key: THE_ORDER_KEY,
+          label: "the-order",
+          validate: () => validateTheOrderPuzzle(orderBuild.puzzle!),
+          body: JSON.stringify(orderBuild.puzzle, null, 2),
+        },
+      ]
+    : [];
+
+  const primaryWriteJobs = [
+    ...presetWriteJobs,
+    ...customWriteJobs,
+    ...sessionWriteJobs,
+    ...orderWriteJobs,
+  ];
 
   const primaryWriteOutcomes = await mapWithConcurrency(
     primaryWriteJobs,
@@ -2728,6 +2955,9 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     // status lines above; see fetchSessionBars' own doc comment for why
     // this path is non-fatal.
     const sessionStatusLine = `Beat the Bench sessions (${BENCHMARK_TICKER}, non-fatal): ${sessionStatus}.`;
+    // Same non-fatal-fetch/compute visibility posture as the benchmark and
+    // Beat the Bench session status lines above.
+    const orderStatusLine = `The Order puzzle (Magnificent Seven, non-fatal): ${orderStatus}.`;
     const writeFailureLines =
       failedWrites.length > 0
         ? ` Write failures (${failedWrites.length} of ${writeJobs.length} computed result(s)):\n` +
@@ -2767,13 +2997,17 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     // is however many complete sessions the rolling retention window
     // happens to contain, and zero is a legitimate outcome of a
     // deliberately non-fatal fetch failure rather than a gap worth
-    // counting against the run.
+    // counting against the run. The Order's puzzle (issue #207) is
+    // counted the same way -- either 0 or 1 (orderWriteJobs.length), and
+    // 0 is a legitimate, non-fatal outcome (see buildTheOrderPuzzle's own
+    // doc comment), not a gap worth counting against the run either.
     const expectedResultCount =
       PRESET_RANGES.length +
       customAnchors.length -
       customBuild.validlySkippedCount +
       (customAnchorsManifest ? 1 : 0) +
-      sessionWriteJobs.length;
+      sessionWriteJobs.length +
+      orderWriteJobs.length;
     throw new Error(
       `pipeline: wrote ${writtenCount} of ${expectedResultCount} expected result(s) (${PRESET_RANGES.length} preset range(s), ${customAnchors.length} custom anchor(s) requested; ${writeJobs.length} actually computed), but at least one path or write failed -- ` +
         `failing this run so it doesn't silently succeed while that path goes stale. ` +
@@ -2782,6 +3016,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         `${overrideStatusLines} ` +
         `${benchmarkStatusLine} ` +
         `${sessionStatusLine} ` +
+        `${orderStatusLine} ` +
         `Skipped tickers: ${skippedTickers.length > 0 ? skippedTickers.join(", ") : "(none)"}.` +
         writeFailureLines +
         computeFailureLines,

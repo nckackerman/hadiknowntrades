@@ -14,6 +14,8 @@ import {
   resultKey,
   customResultKey,
   RESULTS_SCHEMA_VERSION,
+  THE_ORDER_KEY,
+  THE_ORDER_TICKER_COUNT,
   TODAYS_CLOSE_SESSION_KEY,
   type AnchorDate,
   type CustomAnchorsManifest,
@@ -22,6 +24,7 @@ import {
   type MysterySession,
   type PrecomputedResult,
   type PresetRange,
+  type TheOrderPuzzle,
   type TodaysCloseSession,
 } from "@hadiknowntrades/core";
 
@@ -490,6 +493,40 @@ export async function getTodaysCloseSessionResponse(
   }
 
   return Response.json(session as unknown as TodaysCloseSession, {
+    headers: { "Cache-Control": CACHE_CONTROL },
+  });
+}
+
+/**
+ * Handles GET /api/the-order (issue #207) -- serves The Order's daily
+ * puzzle (packages/core's TheOrderPuzzle, written to
+ * results/the-order.json by apps/pipeline's own buildTheOrderPuzzle).
+ * Same shape as getTodaysCloseSessionResponse above (a single fixed key,
+ * no identifier to parse), including the same `not_found` framing for a
+ * pipeline run that hasn't published one yet.
+ *
+ * Checks only that `tickers` has exactly THE_ORDER_TICKER_COUNT entries
+ * on top of `readCurrentSchemaObject`'s own checks, the same light
+ * "already passed the pipeline's own write-time validator, this is just
+ * a defensive floor" posture `getTodaysCloseSessionResponse` already
+ * applies to `bars`.
+ */
+export async function getTheOrderResponse(reader: ResultReader | null): Promise<Response> {
+  const outcome = await readCurrentSchemaObject(
+    THE_ORDER_KEY,
+    reader,
+    "The Order puzzle",
+    "No Order puzzle is available yet -- today's daily selection hasn't been published by a pipeline run.",
+  );
+  if (!outcome.ok) return outcome.response;
+  const puzzle = outcome.value;
+
+  if (!Array.isArray(puzzle.tickers) || puzzle.tickers.length !== THE_ORDER_TICKER_COUNT) {
+    console.error("[api/the-order] stored puzzle does not have exactly 5 tickers");
+    return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
+  }
+
+  return Response.json(puzzle as unknown as TheOrderPuzzle, {
     headers: { "Cache-Control": CACHE_CONTROL },
   });
 }

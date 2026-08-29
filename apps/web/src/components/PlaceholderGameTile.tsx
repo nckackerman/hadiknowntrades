@@ -1,40 +1,42 @@
-// Non-functional placeholder tiles for The Order / The Lineup (issue #197).
+// A non-functional placeholder tile for The Lineup (issue #197).
 //
-// **Read issue #189 in full before touching this file.** Both games were
-// designed, mocked, then explicitly parked after an independent
-// staff-designer + staff-PM review found real, unresolved gaps: neither has
-// a working daily-selection/curation mechanism, and The Lineup's
-// 3-letter-ticker constraint structurally excludes almost every recognizable
-// S&P 500 company. This file does not attempt to resolve either gap -- it
-// exists only to give the 2x2 grid (Beat the Bench, The Call Board, The
-// Order, The Lineup -- see ResultsPage.tsx's own grid comment) its intended
-// visual completeness while that prerequisite design work is still undone.
-// No real gameplay, no scoring, no daily-selection logic, no streak chips
-// (issue #189 flags streak chips as an open, undecided retention-mechanic
-// question -- leaving both tiles' badges empty/absent, per issue #197's own
-// Out of scope, rather than defaulting to an implied answer), no wiring into
-// daily-ritual.ts's recap (these tiles aren't "played," so the recap is
-// unaffected).
+// **The Order's own placeholder used to live here too, until issue #207
+// replaced it with a real, playable game** -- see components/TheOrder.tsx.
+// This file's own reasoning below (issue #189's parked design, why
+// ComingSoonTile is a static, non-interactive `<div>`) still applies to
+// The Lineup, which remains parked: it still has no working daily-
+// selection mechanism, and its own 3-letter-ticker constraint still
+// structurally excludes almost every recognizable S&P 500 company. See
+// docs/design/order-lineup-2026-08/spec-the-lineup.md if that gap is
+// ever picked up for real.
+//
+// **Read issue #189 in full before touching this file.** It exists only
+// to give the game-tile grid (Beat the Bench, The Call Board, The Order,
+// The Lineup -- see ResultsPage.tsx's own grid comment) its intended
+// visual completeness while The Lineup's own prerequisite design work is
+// still undone. No real gameplay, no scoring, no daily-selection logic,
+// no streak chips (issue #189 flags streak chips as an open, undecided
+// retention-mechanic question -- leaving this tile's badge empty/absent,
+// per issue #197's own Out of scope, rather than defaulting to an
+// implied answer), no wiring into daily-ritual.ts's recap (this tile
+// isn't "played," so the recap is unaffected).
 //
 // **Visual treatment matches BeatTheBench.tsx's/CallBoard.tsx's own
 // collapsed-card tiles (issue #197's own Scope)**: an icon plate, a
-// colored gradient fill, rounded corners, a status pill -- purple for The
-// Order (🏁), teal for The Lineup (🧩), per issue #189's own color/icon
-// assignment. Both share one internal `ComingSoonTile` (below) rather than
-// two near-duplicate components, since the only real difference between
-// them is copy/icon/gradient, not structure.
+// colored gradient fill, rounded corners, a status pill -- teal for The
+// Lineup (🧩), per issue #189's own color/icon assignment.
 //
 // **Deliberately NOT `<BeatTheBench>`/`<CallBoard>`'s own shape**: those
 // are `<details>`/`<summary>` (CallBoard) or a plain toggled `useState`
 // (BeatTheBench) specifically because clicking them reveals a real,
-// interactive experience. There is nothing behind either tile here to
-// reveal, so `ComingSoonTile` is a single, static, non-interactive `<div>`
-// -- no `<button>`, no `<details>`, no `tabIndex`, no `onClick`. That is
-// what "not interactive... no <details>/expand behavior... no
-// focus-trap/dead click target" (issue #197's own Scope wording) actually
-// means: rather than adding `aria-disabled` to a focusable control (which
-// would still need explaining away as "focusable but does nothing" for a
-// keyboard user), there is simply no focusable control here to begin with.
+// interactive experience. There is nothing behind this tile to reveal,
+// so `ComingSoonTile` is a single, static, non-interactive `<div>` -- no
+// `<button>`, no `<details>`, no `tabIndex`, no `onClick`. That is what
+// "not interactive... no <details>/expand behavior... no focus-trap/dead
+// click target" (issue #197's own Scope wording) actually means: rather
+// than adding `aria-disabled` to a focusable control (which would still
+// need explaining away as "focusable but does nothing" for a keyboard
+// user), there is simply no focusable control here to begin with.
 // `aria-disabled="true"` still sits on the tile's own `role="group"`
 // container, satisfying the issue's explicit ask for the attribute and
 // giving assistive tech a positive "this is disabled" signal even though
@@ -43,22 +45,21 @@
 // already established (see apps/web/CLAUDE.md's "Trade replay" section,
 // issue #96 follow-up round two).
 //
-// **Gradient colors are new, not reused from BeatTheBench's amber or
-// CallBoard's blue** -- there is no committed mockup for The Order/The
-// Lineup to match pixel-for-pixel (issue #189's own body: "the interactive
-// mockup that did include The Order/The Lineup was a scratch artifact, not
-// committed to this repo... rebuild... from this description rather than
-// hunting for the original"), only issue #189's own purple/teal color
-// assignment. Both gradients were tuned the same way issue #177 tuned
-// CallBoard's own blue: three stops in the same "lighter to darker" 155deg
-// sweep this app's other two tiles already use, each stop's white-text
-// contrast independently computed (the WCAG relative-luminance formula,
-// not eyeballed) and verified >= 4.5:1 AA before being committed --
+// **Gradient color is new, not reused from BeatTheBench's amber or
+// CallBoard's blue** -- there is no committed mockup for The Lineup to
+// match pixel-for-pixel (issue #189's own body: "the interactive mockup
+// that did include The Order/The Lineup was a scratch artifact, not
+// committed to this repo... rebuild... from this description rather
+// than hunting for the original"), only issue #189's own teal
+// assignment. Tuned the same way issue #177 tuned CallBoard's own blue:
+// three stops in the same "lighter to darker" 155deg sweep this app's
+// other tiles already use, each stop's white-text contrast independently
+// computed (the WCAG relative-luminance formula, not eyeballed) and
+// verified >= 4.5:1 AA before being committed --
 //
-//   The Order (purple):  #6a3db8 (7.06:1) -> #5d36a1 (8.37:1) -> #4b2b82 (10.68:1)
-//   The Lineup (teal):   #297a72 (5.10:1) -> #246b64 (6.25:1) -> #1c544f (8.64:1)
+//   The Lineup (teal): #297a72 (5.10:1) -> #246b64 (6.25:1) -> #1c544f (8.64:1)
 //
-// both comfortably clearing AA on every stop, matching the bar issue #177's
+// comfortably clearing AA on every stop, matching the bar issue #177's
 // own doc comment already holds CallBoard's blue gradient to.
 
 /**
@@ -120,7 +121,10 @@ function ComingSoonTile({
     >
       <span className="flex flex-col gap-2">
         {/* Icon plate, matching BeatTheBench's/CallBoard's own 44px
-            circular translucent backdrop (issue #188). */}
+            circular translucent backdrop (issue #188) -- BeatTheBench's
+            own icon plate uses the same 44px size, but a different glyph
+            scale (text-[1.75rem] vs. this file's/CallBoard's text-3xl) --
+            not claimed as matching that detail, only the plate size. */}
         <span
           aria-hidden="true"
           className="flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.16]"
@@ -148,28 +152,6 @@ function ComingSoonTile({
         Coming soon
       </span>
     </div>
-  );
-}
-
-const ORDER_GRADIENT_AND_SHADOW_CLASSNAME =
-  "bg-[linear-gradient(155deg,#6a3db8_0%,#5d36a1_55%,#4b2b82_100%)] shadow-[0_8px_22px_rgba(93,54,161,0.35),0_6px_18px_rgba(0,0,0,0.35)]";
-
-/**
- * The Order (issue #189): 5 real stocks shown shuffled; the player
- * rearranges them into what they think is yesterday's actual
- * worst-to-best performance order, with Mastermind-style per-slot feedback
- * after each attempt. Purple, 🏁, per issue #189's own assignment.
- */
-export function TheOrder() {
-  return (
-    <section>
-      <ComingSoonTile
-        icon="🏁"
-        title="The Order"
-        subtitle="Rearrange 5 real stocks into yesterday's actual worst-to-best order."
-        gradientAndShadowClassName={ORDER_GRADIENT_AND_SHADOW_CLASSNAME}
-      />
-    </section>
   );
 }
 

@@ -86,6 +86,21 @@ export interface RitualBench {
   session: PlayedSession;
 }
 
+/**
+ * Today's Order state for the recap line (issue #207) -- `null` means
+ * nothing has been submitted yet today, distinct from "played but not
+ * solved" (`attemptsUsed > 0`, `solved: false`). Mirrors `RitualBench`'s
+ * own shape: the smallest slice of order-storage.ts's own OrderDayState
+ * this file's copy actually needs, not the whole stored shape.
+ */
+export interface RitualOrder {
+  attemptsUsed: number;
+  maxAttempts: number;
+  solved: boolean;
+  /** The most exact-matches any single submitted attempt scored -- shown when the day wasn't solved. */
+  bestExactCount: number;
+}
+
 /** Everything the rail renders and the recap is written from, taken against one instant. */
 export interface DailyRitualSnapshot {
   /**
@@ -103,6 +118,8 @@ export interface DailyRitualSnapshot {
   bench: RitualBench | null;
   /** How many of the board's open sessions the viewer has called, and how many there are. */
   calls: { filled: number; total: number };
+  /** Today's Order state, or `null` if nothing has been submitted yet today (issue #207). */
+  order: RitualOrder | null;
   /**
    * The figure the results page is currently headlining, or `null` when
    * there is none to quote -- the results fetch hasn't landed, the range
@@ -200,6 +217,26 @@ export function callsRecapClause(calls: { filled: number; total: number }): stri
   return `${calls.filled} of ${calls.total} upcoming sessions called`;
 }
 
+/**
+ * The recap's Order line, minus its label -- spec-the-order.md's own
+ * proposed copy verbatim ("Recap-line copy proposal"), never leaking a
+ * ticker, a real return figure, or the real order itself.
+ *
+ * **Follows `callsRecapClause`'s always-render shape, not
+ * `benchRecapClause`'s whole-recap-blocking one** (per spec-the-order.md's
+ * own "Inclusion rule"): `order === null` (or `attemptsUsed === 0`, the
+ * same "nothing submitted" fact) renders an honest "not played yet
+ * today" fallback rather than gating the entire recap on a second
+ * required mechanic -- Beat the Bench alone stays the recap's one lock
+ * (see isRecapUnlocked above), unchanged by this issue.
+ */
+export function orderRecapClause(order: RitualOrder | null): string {
+  if (order === null || order.attemptsUsed === 0) return "not played yet today";
+  return order.solved
+    ? `solved in ${order.attemptsUsed} of ${order.maxAttempts}`
+    : `${order.bestExactCount} of 5 exact after ${order.attemptsUsed} guesses`;
+}
+
 /** The recap's hindsight line, minus its label -- "$20.00 became $2.4K (122x)". */
 export function headlineRecapClause(headline: HeadlineFigure): string {
   const multiple = formatMultiplier(headline.endingBalance / headline.startingCapital);
@@ -230,6 +267,7 @@ export function buildRecapText(snapshot: DailyRitualSnapshot): string | null {
   }
   lines.push(`Beat the Bench: ${benchRecapClause(bench.session)}`);
   lines.push(`The Call Board: ${callsRecapClause(snapshot.calls)}`);
+  lines.push(`The Order: ${orderRecapClause(snapshot.order)}`);
   lines.push("", "Hindsight only -- not advice, and not a predictor.");
   return lines.join("\n");
 }

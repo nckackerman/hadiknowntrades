@@ -132,6 +132,24 @@ export function mysterySessionKey(sessionId: string): string {
  */
 export const MYSTERY_INDEX_KEY = "results/mystery-index.json";
 
+/**
+ * The S3 key The Order's daily puzzle (TheOrderPuzzle, below) is
+ * stored/read under (issue #207) -- one fixed key, overwritten each
+ * nightly run, the same idempotent "fixed key per object, not accumulated
+ * dated copies" convention every other key in this file already has. If
+ * a given run's daily-selection algorithm can't find a real 5-ticker set
+ * clearing its own guardrails (see packages/core's order-selection.ts),
+ * that run simply doesn't write this key -- whatever was already stored
+ * (yesterday's puzzle) stays in place, which is exactly the "hold the
+ * previous day's puzzle as a last resort" fallback that algorithm's own
+ * doc comment describes, achieved for free by not attempting a write
+ * rather than by any explicit "hold" logic.
+ */
+export const THE_ORDER_KEY = "results/the-order.json";
+
+/** How many tickers TheOrderPuzzle.tickers always holds -- matches order-selection.ts's own ORDER_POOL_SIZE (not imported here, see validateTheOrderPuzzle's own doc comment for why). */
+export const THE_ORDER_TICKER_COUNT = 5;
+
 /** Which trading model produced a given PrecomputedResult -- see the module header comment. */
 export type ResultModel = "window" | "intraday-daily";
 
@@ -593,6 +611,48 @@ export interface MysteryIndexEntry {
   sessionId: string;
   /** The real exchange-local trading date this session came from, YYYY-MM-DD. */
   date: string;
+}
+
+// --- The Order (issue #207) --------------------------------------------
+//
+// A brand-new stored object at a brand-new key (THE_ORDER_KEY) -- no
+// shape any existing reader parses, so (same reasoning as the Beat the
+// Bench session objects above) this needs **no RESULTS_SCHEMA_VERSION
+// bump**, even though it does reuse that shared version number for its
+// own `schemaVersion` field (the same writer/reader-drift protection
+// every other stored object in this file gets, not a second parallel
+// version number).
+//
+// Fully transparent, unlike Beat the Bench's Mystery Day mode -- there is
+// no secret to protect here (see packages/core's order-selection.ts and
+// this issue's own "Rotation/repeat-avoidance proposal" reasoning in
+// docs/design/order-lineup-2026-08/spec-the-order.md: the answer is just
+// yesterday's public market data, which is public the instant that day
+// closes). `tickers` IS the real answer, in the real worst-to-best order,
+// stored plainly.
+
+/** One ticker's real close-to-close return for The Order's target day, in worst-to-best order within TheOrderPuzzle.tickers. */
+export interface TheOrderTicker {
+  ticker: string;
+  companyName: string;
+  /** Real close-to-close percent return, e.g. -3.1 for a 3.1% decline. Not a fraction -- matches how spec-the-order.md's own real-data tables and the mockup both express it. */
+  pctReturn: number;
+}
+
+/**
+ * The Order's daily puzzle (issue #207): the Magnificent Seven's real
+ * daily-selection outcome for one real trading day, computed by
+ * packages/core's `computeOrderSelection` and written here verbatim --
+ * no shuffling, no game state. apps/web owns the shuffle-then-guess
+ * presentation entirely client-side; this object is just the answer key.
+ */
+export interface TheOrderPuzzle {
+  schemaVersion: number;
+  generatedAt: string;
+  /** The real exchange-local trading date these returns are close-to-close for, YYYY-MM-DD. */
+  date: string;
+  /** Exactly 5 entries, worst-to-best by pctReturn -- the puzzle's real answer. */
+  tickers: TheOrderTicker[];
 }
 
 /**
@@ -1786,6 +1846,78 @@ export function validateMysteryIndex(index: MysteryIndex): void {
   }
 
   throwIfProblems("MysteryIndex", problems);
+}
+
+/**
+ * Validates a TheOrderPuzzle (issue #207) immediately before its own
+ * putObject, same write-time self-validation gate (issue #47) every
+ * other stored object in this file gets.
+ *
+ * `tickers` must have exactly `THE_ORDER_TICKER_COUNT` (5) entries --
+ * matching `computeOrderSelection`'s own `ORDER_POOL_SIZE`, checked here
+ * as a plain literal rather than importing that constant (this module
+ * has no dependency on order-selection.ts today, and a validator's job
+ * is to check the *shape actually written*, not to re-derive it from the
+ * algorithm that produced it) -- and must be genuinely sorted
+ * worst-to-best (strictly ascending by `pctReturn`), since an
+ * out-of-order `tickers` array would silently make apps/web's scoring
+ * grade every guess against the wrong answer.
+ */
+export function validateTheOrderPuzzle(puzzle: TheOrderPuzzle): void {
+  if (puzzle === null || typeof puzzle !== "object") {
+    throw new ResultValidationError(`puzzle must be an object, got ${describe(puzzle)}`);
+  }
+  const p = puzzle as unknown as Record<string, unknown>;
+  const problems: string[] = [];
+
+  if (p.schemaVersion !== RESULTS_SCHEMA_VERSION) {
+    problems.push(
+      `schemaVersion must be exactly ${RESULTS_SCHEMA_VERSION}, got ${describe(p.schemaVersion)}`,
+    );
+  }
+  if (!isNonEmptyString(p.generatedAt))
+    problems.push(`generatedAt must be a non-empty string, got ${describe(p.generatedAt)}`);
+  if (typeof p.date !== "string" || !DATE_STRING_PATTERN.test(p.date)) {
+    problems.push(`date must be a "YYYY-MM-DD" string, got ${describe(p.date)}`);
+  }
+
+  if (!Array.isArray(p.tickers) || p.tickers.length !== THE_ORDER_TICKER_COUNT) {
+    problems.push(
+      `tickers must be an array of exactly ${THE_ORDER_TICKER_COUNT} entries, got ${describe(p.tickers)}`,
+    );
+  } else {
+    let previousReturn: number | null = null;
+    p.tickers.forEach((entry, i) => {
+      if (entry === null || typeof entry !== "object") {
+        problems.push(`tickers[${i}] must be an object, got ${describe(entry)}`);
+        return;
+      }
+      const t = entry as Record<string, unknown>;
+      if (!isNonEmptyString(t.ticker)) {
+        problems.push(`tickers[${i}].ticker must be a non-empty string, got ${describe(t.ticker)}`);
+      }
+      if (!isNonEmptyString(t.companyName)) {
+        problems.push(
+          `tickers[${i}].companyName must be a non-empty string, got ${describe(t.companyName)}`,
+        );
+      }
+      if (typeof t.pctReturn !== "number" || !Number.isFinite(t.pctReturn)) {
+        problems.push(
+          `tickers[${i}].pctReturn must be a finite number, got ${describe(t.pctReturn)}`,
+        );
+        return;
+      }
+      if (previousReturn !== null && t.pctReturn <= previousReturn) {
+        problems.push(
+          `tickers must be strictly ascending by pctReturn (worst-to-best), but tickers[${i}].pctReturn ` +
+            `(${t.pctReturn}) does not exceed the previous entry's pctReturn (${previousReturn})`,
+        );
+      }
+      previousReturn = t.pctReturn;
+    });
+  }
+
+  throwIfProblems("TheOrderPuzzle", problems);
 }
 
 /**

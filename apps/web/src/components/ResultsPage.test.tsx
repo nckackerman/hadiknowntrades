@@ -500,39 +500,50 @@ describe("ResultsPage", () => {
     });
   });
 
-  describe("The Order / The Lineup placeholder tiles (issue #197)", () => {
-    it("render both placeholder tiles, positioned after Beat the Bench and The Call Board in the 2x2 grid", () => {
+  describe("The Order (issue #207): a real game, positioned after Beat the Bench and The Call Board", () => {
+    it("mounts as its own section in the 2x2 grid, ahead of The Lineup's own placeholder", () => {
       render(<ResultsPage />);
 
       const bench = screen.getByRole("button", { name: /can you do better\?/i });
-      const board = screen.getByRole("heading", { name: "The Call Board" }).closest("section")!;
-      const order = screen.getByRole("group", { name: "The Order - coming soon" });
+      const board = screen
+        .getByRole("heading", { name: "The Call Board", level: 2 })
+        .closest("section")!;
+      const order = screen
+        .getByRole("heading", { name: "The Order", level: 2 })
+        .closest("section")!;
       const lineup = screen.getByRole("group", { name: "The Lineup - coming soon" });
 
-      // Same grid parent as the two real tiles -- the full 2x2 grid the
-      // daily-hub-condensed mockup was originally sketched with, not a
-      // second, separate grid.
+      // Same grid parent as the two real, playable tiles -- the full
+      // 2x2 grid the daily-hub-condensed mockup was originally sketched
+      // with, not a second, separate grid.
       const grid = bench.closest("section")!.parentElement!;
-      expect(order.closest("section")!.parentElement).toBe(grid);
-      expect(lineup.closest("section")!.parentElement).toBe(grid);
+      expect(order.parentElement).toBe(grid);
 
-      // After both real, playable tiles -- per issue #197's own scope,
-      // these two are not ranked by the sibling play-history-ordering
-      // issue in this milestone (#196), and stay pinned in place.
+      // After both real, playable tiles -- per issue #207's own scope,
+      // this game has no play state to rank by (see #196's own Out of
+      // scope) and stays pinned in place. The Lineup's own placeholder
+      // stays pinned after it too.
       expect(bench.compareDocumentPosition(order) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(board.compareDocumentPosition(order) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(order.compareDocumentPosition(lineup) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
-    it("render both tiles as clearly non-interactive: no button/link/details, aria-disabled set", () => {
+    it("renders the collapsed tile before the puzzle fetch resolves, with no crash", () => {
+      // The default beforeEach stub never resolves /api/the-order, the
+      // same "stuck in loading" treatment every other unmocked fetch in
+      // this file gets -- the collapsed placeholder must still render.
+      render(<ResultsPage />);
+      expect(screen.getByRole("heading", { name: "The Order", level: 2 })).toBeInTheDocument();
+    });
+  });
+
+  describe("The Lineup placeholder tile (issue #197)", () => {
+    it("renders as a clearly non-interactive placeholder: no button/link/details, aria-disabled set", () => {
       render(<ResultsPage />);
 
-      const order = screen.getByRole("group", { name: "The Order - coming soon" });
       const lineup = screen.getByRole("group", { name: "The Lineup - coming soon" });
 
-      expect(order).toHaveAttribute("aria-disabled", "true");
       expect(lineup).toHaveAttribute("aria-disabled", "true");
-      expect(order.querySelector("button, a, details, summary, [tabindex]")).toBeNull();
       expect(lineup.querySelector("button, a, details, summary, [tabindex]")).toBeNull();
     });
   });
