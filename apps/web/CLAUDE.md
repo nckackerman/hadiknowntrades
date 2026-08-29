@@ -9373,6 +9373,175 @@ order: GameTileId[] }`), not the simpler `{date, gameId}` "just the
   hydration-timing/render-count optimization with no visible
   difference once the microtask resolves).
 
+## The Lineup: a real, playable daily game (issue #208)
+
+`components/TheLineup.tsx` + `lib/lineup-game.ts` (pure classification/
+board logic) + `lib/lineup-storage.ts` (played-today + streak) +
+`lib/use-lineup-result.ts` (fetches `GET /api/lineup`) replace
+`PlaceholderGameTile.tsx`'s own non-functional `TheLineup` export in
+place -- same grid position, same teal gradient/icon. Ports
+`docs/design/order-lineup-2026-08/mockup-order-lineup.html`'s own "THE
+LINEUP" `<script>` block as executable spec, widened per that folder's
+own README to real 3-_or_-4-letter tickers (hidden length) instead of
+3-letter-only. See `packages/core/CLAUDE.md`'s own "The Lineup" section
+for the daily-selection algorithm side; this section is the game/UI side.
+
+- **The hidden-ticker-length mechanic is entirely a _side effect_ of
+  `classifyCell`'s own `row < answer.length` guard -- there is no
+  separate "is this column short" flag anywhere in the code.** Every
+  column always renders exactly `LINEUP_SLOTS` (4) tiles regardless of
+  the real answer's true length (3 or 4); a slot past a shorter answer's
+  own length can never classify as `exact`/`rowmatch`/`colmatch` from
+  that column's own comparison, so it silently reads `absent` no matter
+  what letter lands there -- the _only_ way a player ever learns a
+  column is 3 letters, not 4. `finalizedCells`/`revealedCells` are the
+  one place a column's true length is ever stated outright (a solved or
+  revealed column's own unused 4th slot renders the dim `"empty"` `–`
+  state) -- everywhere else in the live game, the length stays
+  genuinely undisclosed.
+- **The letters-tried tracker's "best rank wins" logic
+  (`noteLetterResult`) is a real, deliberate simplification, not an
+  oversight** -- a single shared `Partial<Record<string, LineupLetterRank>>`
+  map tracks, per letter, only the single best classification ever seen
+  _anywhere on the board_, via a fixed rank order (`exact(4) >
+rowmatch(3) > colmatch(2) > absent(1)`). A letter can genuinely be
+  `exact` in one column and `absent` in a different one on the very same
+  round -- the tracker doesn't lose that information (the tile grid
+  itself still shows the real per-cell classification), it just can't
+  _display_ more than one verdict per letter in a 26-key keyboard. Live-
+  verified this reads clearly, not confusingly, in the in-progress
+  screenshot below (9 letters tried, a real spread across all four
+  ranks from one round).
+- **Two render depths for a finished day, not one -- a real, deliberate
+  scope split.** A _live session_ (still playing, or just finished this
+  same mount) keeps the guess form, the letters-tried keyboard, and the
+  collapsible guess-history log all visible throughout `board.done`; a
+  _reconstructed cold-reload view_ (the day was already played in an
+  earlier browser session) shows only the finished grid, the legend, the
+  result banner, and the streak stats -- `reconstructFinishedCells`
+  rebuilds the grid from `LineupPlayedResult.lockedColumns` alone,
+  without needing to persist the full letter-by-letter guess history.
+  The letters-tried tracker and the guess log both genuinely need that
+  history, which isn't there for a cold reload -- they're simply
+  omitted rather than faked with a lighter version of either.
+- **Real, confirmed bug found and fixed during this issue's own
+  verification pass, not present when the implementation was first
+  handed off: the win/lose banner's own streak stats were stale by one
+  game.** `loaded.streak` was set once at mount (`computeLineupStreak()`,
+  reading storage _before_ today's game was decided) and `handleSubmit`
+  never refreshed it after `saveLineupPlayedResult` wrote today's real
+  outcome -- so a player who won today, extending a 2-day streak to 3,
+  saw "Current streak: 2" in the very banner celebrating the win; a
+  player who lost today, breaking a 2-day streak, saw "Current streak:
+  2" in the very banner saying they'd just run out of guesses (should
+  read 0). Confirmed live via screenshot before the fix (a fresh win
+  showed 0/0 instead of the expected 1/1) and after (1/1, matching the
+  mock's own win-screenshot convention). Fixed by having `handleSubmit`
+  re-run `computeLineupStreak()` and fold the fresh result into the same
+  `setLoaded` call whenever `board.done` -- see that function's own
+  comment, and `TheLineup.test.tsx`'s two new regression tests ("shows
+  today's own just-finished win/loss in the streak stats immediately,
+  not just after a reload") asserting the _live_, same-session banner
+  reflects today's outcome without a page reload.
+- **A real local pipeline run, end to end, not a hardcoded fixture** --
+  the acceptance criteria's own explicit ask. `LOCAL_TICKER_COUNT=50
+LOCAL_RESULTS_DIR=... pnpm --filter @hadiknowntrades/pipeline run
+local-run` (real Yahoo network calls, no S3 write) produced a genuine
+  `results/lineup/2026-08-28.json` + `latest.json` + `history.json`;
+  `next build && next start` (not `next dev` -- see this file's own
+  repeated note on why headless Chromium can't hydrate a dev-mode page
+  in this sandbox) plus `LOCAL_RESULTS_DIR` served it through the real
+  `GET /api/lineup` route; `TheLineup` fetched and played the real 5
+  tickers (`AMAT, AMZN, ADI, AKAM, ADM`) end to end through a real
+  browser -- see `packages/core/CLAUDE.md`'s own section for the
+  independently-cross-checked selection numbers this run produced.
+- **Screenshots (desktop 1180px, matching the mock's own viewport;
+  mobile 390px), real interactions through a real browser, not staged
+  DOM state**: idle (blank 5x4 grid, empty letters-tried tracker,
+  explainer visible), in-progress (a genuine mix of all four
+  classification states in one round -- deliberately engineered guesses
+  against the real published answers so every state is reachable in one
+  screenshot: `BAC`/`ADI`/`NKE`/`MAA`/`ADM` against real `AMAT, AMZN,
+ADI, AKAM, ADM` -- plus a populated 9-letter tracker and one locked/
+  solved column), win (all 5 solved in 2 rounds, celebratory banner,
+  correct 1/1 streak per the fix above), and lose (budget exhausted,
+  1 of 5 solved, the other 4 columns revealed in the dim non-`exact`
+  "reveal" style, 0/0 streak). **Zero console/`pageerror` events and
+  `document.documentElement.scrollWidth === clientWidth` exactly at
+  both 1180px and 390px, for every one of the 12 screenshots** -- no
+  horizontal overflow at the tight mobile width, this app's own
+  repeatedly-documented risk class for a 5-column grid plus 5
+  autocomplete inputs.
+- **Visual fidelity against the mock: ~99%, two real, considered
+  deviations, both worth naming explicitly rather than letting them
+  drift silently**:
+  1. **No per-column "currently focused" highlight.** The mock's own
+     screenshots show the active/focused column's header underlined and
+     its input outlined in amber (a vestige of the mock's own focus-
+     tracking, even though guessing is whole-board, not per-column). The
+     real component has no equivalent -- every column header/input looks
+     identical regardless of keyboard focus. Minor, purely cosmetic;
+     doesn't affect any functional acceptance criterion (whole-board
+     submission, the four classification states, the hidden-length
+     mechanic all work identically either way).
+  2. **The "Guess history" disclosure only renders once at least one
+     round has been submitted** (`loaded.board.log.length > 0`), where
+     the mock always shows a collapsed `"▸ Guess history"` affordance
+     even at idle, with nothing inside it yet. A deliberate, defensible
+     choice, not a bug -- an empty disclosure with nothing to expand
+     reads as clutter, and the real component's idle screenshot is
+     otherwise pixel-for-pixel close to the mock's own (explainer text,
+     5x4 grid, legend, empty letters-tried tracker all match).
+     Every other element -- the four glyph/color feedback states
+     (`✓`/`↔`/`~`/`✕`, `--status-good`/`--series-1`/`--text-muted`/
+     `--status-critical`), the legend, the dim `–` "empty" phantom-slot
+     state, the win/lose banners' copy and tone, the gold streak stats
+     (`--accent-reward`, shown only inside the expanded panel, never a
+     collapsed-tile badge -- matching this file's own established
+     precedent for `CallBoard.tsx`) -- matches the mock closely enough that
+     no further deviation is worth naming.
+- **`ColumnInput`'s autocomplete dropdown intercepts a same-page click on
+  "Submit guess" if left open** (found while writing this issue's own
+  screenshot-verification script, not a product bug -- the dropdown
+  already closes correctly on a real document click outside its own
+  container, per its existing `useEffect`). Worth remembering for the
+  next Playwright script driving this component: fill every column,
+  then click a neutral point on the page (e.g. `page.mouse.click(5, 5)`)
+  to close whichever dropdown is still open from the _last_ filled
+  input, before clicking Submit -- otherwise the click silently retries
+  against an intercepted target for the full 30s timeout.
+- **The `daily-ritual.ts` recap-line integration named in issue #208's
+  own Scope was genuinely missing from the handed-off implementation --
+  found by grepping for "lineup"/"Lineup" in `daily-ritual.ts` and
+  getting zero hits, not by re-reading the issue text alone.** Added:
+  `DailyRitualSnapshot` gained a `lineup: LineupPlayedResult | null`
+  field, a new `lineupRecapClause` function (`spec-the-lineup.md`'s own
+  proposed copy -- "solved all 5 in N guesses" on a win, "M of 5 solved,
+  T of `{totalTiles}` tiles filled when the guesses ran out" on a loss,
+  using the real per-day `totalTiles` -- 15 to 20 -- rather than the
+  spec's own hardcoded 15, since that spec predates the widened 3-/4-
+  letter pool), and a line in `buildRecapText` that's genuinely omitted
+  (not stubbed) when `lineup` is `null`. **Deliberately does NOT gate
+  `isRecapUnlocked`** -- Beat the Bench alone still unlocks the recap
+  (issue #133/#186's own established rule, untouched); the Lineup line
+  is an independent omit-or-include on top, exactly like `headline`'s
+  own existing precedent, not a second unlock requirement stacked on
+  top of Beat the Bench.
+  - `use-daily-ritual.ts` reads the played result keyed by the
+    _published_ lineup's own `date` (`useLineupResult()`'s own
+    `data.date`), the identical "key by the mechanic's own date, not
+    the viewer's clock" reasoning `benchDate` already establishes for
+    Beat the Bench (Today's Close replays the most recently _closed_
+    session, so a Saturday's "today" is really Friday for both games).
+  - Regression-tested three ways, not just at the pure-function level:
+    `daily-ritual.test.ts` covers `lineupRecapClause` directly (win,
+    loss, and the real 15-20 `totalTiles` range) and `buildRecapText`'s
+    own omit/include behavior; `DailyRitual.test.tsx` drives the real
+    component tree end to end (`saveLineupPlayedResult` mid-test,
+    asserting the live recap text picks it up via the same
+    `subscribeToLocalStorage` notification path every other ritual
+    input already uses -- no reload, no re-mount).
+
 ## The Order: a real, playable game replacing its placeholder tile (issue #207)
 
 `components/TheOrder.tsx` replaces `PlaceholderGameTile.tsx`'s own

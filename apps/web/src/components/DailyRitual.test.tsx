@@ -6,6 +6,7 @@ import { savePlayedSession, type PlayedSession } from "@/lib/beat-the-bench-stor
 import { saveCallBoardPick } from "@/lib/call-board-storage";
 import { upcomingCallDays } from "@/lib/call-board-scoring";
 import type { HeadlineFigure } from "@/lib/headline-figure";
+import { saveLineupPlayedResult } from "@/lib/lineup-storage";
 import { saveRangeGuess } from "@/lib/range-guess-storage";
 import { DailyRitual } from "./DailyRitual";
 
@@ -181,6 +182,28 @@ describe("DailyRitual", () => {
       await screen.findByTestId("daily-recap-text");
       expect(recapText()).not.toContain("Hindsight over");
       expect(recapText()).toContain("Beat the Bench: you beat the bench by 0.10%");
+    });
+
+    it("omits the Lineup line when it hasn't been played today, includes it once it has", async () => {
+      savePlayedSession(SESSION_DATE, "todays-close", PLAYED);
+      renderRitual();
+
+      await screen.findByTestId("daily-recap-text");
+      expect(recapText()).not.toContain("The Lineup");
+
+      saveLineupPlayedResult({
+        date: SESSION_DATE,
+        outcome: "won",
+        guessesUsed: 4,
+        columnsSolved: 5,
+        tilesFilled: 17,
+        totalTiles: 17,
+        lockedColumns: [true, true, true, true, true],
+      });
+
+      await waitFor(() => {
+        expect(recapText()).toContain("The Lineup: solved all 5 in 4 guesses");
+      });
     });
   });
 

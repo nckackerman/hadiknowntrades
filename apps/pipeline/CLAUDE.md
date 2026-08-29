@@ -1435,6 +1435,107 @@ is the pipeline wiring.
   - The published id order was confirmed non-chronological, and Today's
     Close was confirmed absent from the pool.
 
+## The Lineup: pipeline wiring (issue #208)
+
+`buildLineupResult`/`readLineupHistory`/`parseLineupHistoryEntries` in
+`pipeline.ts` -- writes `results/lineup/{date}.json` (an audit-trail-only
+per-date archive, never read by `apps/web`), `results/lineup/latest.json`
+(the one `apps/web`'s `/api/lineup` actually reads -- see
+`packages/core/CLAUDE.md`'s own `LINEUP_LATEST_KEY` doc comment for why
+both exist), and `results/lineup/history.json` (the rolling
+repeat-avoidance input/output `lineup-selection.ts`'s own
+`selectLineupTickers`/`mergeLineupHistory` need). See
+`packages/core/CLAUDE.md`'s "The Lineup: daily-selection algorithm"
+section for the real, validated selection numbers this wiring produces.
+
+- **The first capability this pipeline has ever needed to _read back_
+  its own prior run's output**, not just write forward -- every other
+  stored object in this app is either idempotently overwritten each run
+  (no read needed) or accumulated as independent dated copies nothing
+  ever reads back (the custom-anchor archive, this feature's own
+  per-date archive). `ResultStore` gained an **optional**
+  `getObject?(key): Promise<string | null>` for this -- optional (not a
+  required method every existing `ResultStore`, including every test
+  file's own inline object-literal store, would otherwise have to grow)
+  specifically so `readLineupHistory` degrades to "no history available"
+  for any store that doesn't implement it, rather than becoming a hard
+  dependency of every single caller in this codebase. Both real
+  implementations (`S3ResultStore`/`LocalFileResultStore`) do implement
+  it: `NoSuchKey`/`ENOENT` (the real, expected outcome the very first
+  time this key is ever read, before any run has written it) become
+  `null`; any other read failure (permissions, throttling, a real
+  network problem) propagates. **`readLineupHistory` itself no longer
+  swallows that into `null`** (a real bug, found in `/code-review` on
+  PR #211 and fixed before merge: it originally caught every error
+  indiscriminately, including a genuine infrastructure failure, and
+  degraded it to the exact same "no history yet, start fresh" log line
+  as the expected missing-key case) -- it only ever returns `null` for
+  the store-has-no-`getObject`-at-all case, and otherwise passes
+  `store.getObject`'s own result straight through, throw included. The
+  containment lives one level up instead: `runPipeline`'s own call site
+  (where `readLineupHistory` is called, immediately followed by
+  `buildLineupResult`) wraps both in a single try/catch, so a real read
+  failure -- or a genuinely unexpected throw from
+  `selectLineupTickers`/`mergeLineupHistory` themselves -- degrades to
+  "no Lineup data written this run" (reported via `lineupStatus`, same
+  as the "known" too-few-candidates outcome) without ever reaching a
+  bare, unguarded call that could abort `runPipeline` before any other
+  write job gets a chance to run. See `pipeline.lineup.test.ts`'s own
+  "propagates a real (non-'missing key') read failure..." test and the
+  dedicated `pipeline.lineup-selection-failure.test.ts` (mirroring
+  `pipeline.write-validation.test.ts`'s own precedent for a test that
+  needs to `vi.mock` `@hadiknowntrades/core`) for the regression
+  coverage.
+- **`parseLineupHistoryEntries` is deliberately _more_ lenient than
+  `validateLineupHistory`** (the write-time gate, `results-schema.ts`) --
+  a real, considered asymmetry, not an oversight. `validateLineupHistory`
+  runs against data _this process itself just built_, immediately before
+  its own `putObject`, so a violation there is this run's own bug and
+  should fail loudly. `parseLineupHistoryEntries` runs against a _prior_
+  run's output being read back untrusted -- the same "corrupt input
+  degrades the _cadence_, never fails the _run_" posture
+  `daily-guess-storage.ts` (`apps/web`) already applies to a corrupt
+  localStorage value, just on the pipeline side. Concretely: a missing
+  `entries` array, a non-object, or an individual entry missing
+  `date`/`tickers` are all silently dropped (or the whole thing treated
+  as `[]`) rather than thrown -- a malformed prior history just means
+  repeat-avoidance starts fresh this run, exactly as if no history
+  existed at all.
+- **A selection failure (`selectLineupTickers` returning `null`) is
+  non-fatal, reported via `lineupStatus` in the aggregated status
+  message alongside `sessionStatus` (Beat the Bench) -- but a _write_
+  failure for an already-built `LineupResult` is held to this
+  pipeline's ordinary "must fail the run" standard**, the identical
+  split this file's own granularity-override sections already draw
+  between a non-fatal _fetch_/_compute_ failure and a fatal _write_
+  failure of already-good data. Reachable in practice only against a
+  small local-dev ticker sample (see `packages/core/CLAUDE.md`'s own
+  note on why this is unreachable at the real ~443-ticker pool size) --
+  confirmed live: a `LOCAL_TICKER_COUNT` small enough that fewer than 5
+  of the sampled tickers are real 3-/4-letter symbols would produce
+  exactly this non-fatal `null` path, though the default `local-run.ts`
+  sample (20+ tickers, alphabetically-first S&P names, heavily "A"-letter
+  weighted) comfortably clears it -- confirmed via a real run (60
+  tickers) producing a real 5-ticker lineup with no fallback needed.
+- **`lineupWriteJobs` is appended _after_ `sessionWriteJobs` (Beat the
+  Bench), which is itself after `customWriteJobs`** -- load-bearing for
+  the same reason `sessionWriteJobs`' own placement already is: the
+  anchors-manifest correlation logic indexes `primaryWriteOutcomes` by
+  `presetWriteJobs.length + i`, so anything inserted _ahead_ of
+  `customWriteJobs` would silently break it. Appending after both
+  existing families keeps that indexing untouched.
+- **Live-verified end to end, real Yahoo data, no S3 write**
+  (`LOCAL_RESULTS_DIR`, 50-ticker sample, `asOf` 2026-08-29): a real
+  `results/lineup/2026-08-28.json` + `latest.json` (byte-identical,
+  `{tickers: ["AMAT","AMZN","ADI","AKAM","ADM"]}`) and a real
+  `results/lineup/history.json` (one entry, the same 5 tickers) were
+  written; `GET /api/lineup` (via `next start` + this exact
+  `LOCAL_RESULTS_DIR`) served the real object; `apps/web`'s `TheLineup`
+  component read it and played a genuine round against the real 5
+  tickers end to end -- not a hardcoded fixture. See
+  `apps/web/CLAUDE.md`'s own "The Lineup" section for the component-side
+  verification and screenshots.
+
 ## The Order's daily puzzle (issue #207)
 
 A new, small nightly-written object at a fixed key (`THE_ORDER_KEY`,

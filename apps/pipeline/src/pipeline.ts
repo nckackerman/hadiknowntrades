@@ -85,11 +85,16 @@ import {
   customResultKey,
   CUSTOM_ANCHORS_MANIFEST_KEY,
   daysBeforeUtc,
+  LINEUP_HISTORY_KEY,
+  LINEUP_LATEST_KEY,
+  lineupResultKey,
+  mergeLineupHistory,
   MYSTERY_INDEX_KEY,
   MYSTERY_POOL_MANIFEST_KEY,
   MYSTERY_SESSION_IDS,
   mysterySessionKey,
   RESULTS_SCHEMA_VERSION,
+  selectLineupTickers,
   THE_ORDER_KEY,
   TODAYS_CLOSE_SESSION_KEY,
   toDateString,
@@ -97,6 +102,8 @@ import {
   validatePrecomputedResult,
   validateCustomWindowResult,
   validateCustomAnchorsManifest,
+  validateLineupHistory,
+  validateLineupResult,
   validateMysteryIndex,
   validateMysteryPoolManifest,
   validateMysterySession,
@@ -111,6 +118,9 @@ import {
   type IntradayBar,
   type IntradayDayResult,
   type IntradayResult,
+  type LineupHistory,
+  type LineupHistoryEntry,
+  type LineupResult,
   type MysteryIndex,
   type MysteryPoolManifest,
   type MysterySession,
@@ -209,6 +219,22 @@ const INTRADAY_RANGES: readonly PresetRange[] = ["1W", "1M", "3M", "1Y"];
 
 export interface ResultStore {
   putObject(key: string, body: string): Promise<void>;
+  /**
+   * Reads back a previously-written object, or `null` if it doesn't
+   * exist -- optional, unlike `putObject`, since every ResultStore before
+   * issue #208 only ever needed to write. The Lineup's own
+   * repeat-avoidance history (LINEUP_HISTORY_KEY) is the first thing this
+   * pipeline has ever needed to read back from its own prior run, so this
+   * is a genuinely new capability, not a pre-existing one just now being
+   * used. Optional (rather than a required method every existing
+   * ResultStore implementation -- including every test file's own inline
+   * object-literal store -- would have to grow) so `readLineupHistory`
+   * can degrade to "no history available" for any store that doesn't
+   * implement it, the same graceful-degradation posture this file
+   * already applies to a granularity override's own non-fatal fetch
+   * failure.
+   */
+  getObject?(key: string): Promise<string | null>;
 }
 
 export interface PipelineRunSummary {
@@ -1192,6 +1218,126 @@ function shuffleInPlace<T>(items: T[], random: () => number): T[] {
     [items[i], items[j]] = [items[j]!, items[i]!];
   }
   return items;
+}
+
+// --- The Lineup (issue #208) -------------------------------------------
+
+/**
+ * Reads back the Lineup's previously-published repeat-avoidance history
+ * (LINEUP_HISTORY_KEY) -- the first thing this pipeline has ever needed
+ * to read from its own prior run's output (see ResultStore.getObject's
+ * own doc comment). Degrades to `null` ("no history available") for any
+ * store that doesn't implement `getObject` at all, or when the object
+ * genuinely doesn't exist yet -- a missing history just means
+ * repeat-avoidance starts fresh this run, not a reason to fail the whole
+ * pipeline over a read this feature can fully function without.
+ *
+ * **Any other error propagates, it is not swallowed here.**
+ * `S3ResultStore`/`LocalFileResultStore`'s own `getObject` already
+ * distinguish "doesn't exist yet" (`NoSuchKey`/`ENOENT`, converted to a
+ * `null` *return*, not a throw) from a real failure (permissions,
+ * throttling, network -- re-thrown, same convention `putObject` already
+ * has) -- so by the time an exception actually reaches this function's
+ * own try/catch, it is by construction NOT the expected missing-key
+ * case, and treating it the same as "no history" would silently hide a
+ * real infrastructure problem behind a misleadingly benign "starting
+ * fresh" log line. The caller (`buildLineupResult`'s own call site in
+ * `runPipeline`) is what contains this -- a Lineup-selection failure
+ * (including a propagated read failure) degrades that one feature
+ * gracefully without taking down the rest of the run, but it is still
+ * reported, not silently discarded.
+ */
+async function readLineupHistory(store: ResultStore): Promise<string | null> {
+  if (!store.getObject) return null;
+  return store.getObject(LINEUP_HISTORY_KEY);
+}
+
+/**
+ * Parses a previously-written LineupHistory object's raw JSON text back
+ * into plain LineupHistoryEntry[] -- treating anything malformed
+ * (missing, corrupt JSON, an unexpected shape) as "no history yet"
+ * rather than failing the run, the same "untrusted, degrade rather than
+ * throw" posture apps/web's own daily-guess-storage.ts already takes for
+ * a corrupt localStorage value. Deliberately more lenient than
+ * validateLineupHistory (a *write-time* gate on data this process itself
+ * just built, not a *read-time* parse of a prior run's output this run
+ * doesn't fully trust anyway) -- a stale/malformed history should
+ * degrade the *cadence* of repeat-avoidance, never fail the run.
+ */
+function parseLineupHistoryEntries(raw: string | null): LineupHistoryEntry[] {
+  if (raw === null) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (parsed === null || typeof parsed !== "object" || !("entries" in parsed)) return [];
+  const entries = (parsed as { entries: unknown }).entries;
+  if (!Array.isArray(entries)) return [];
+  return entries.filter((entry): entry is LineupHistoryEntry => {
+    if (entry === null || typeof entry !== "object") return false;
+    const e = entry as Record<string, unknown>;
+    return (
+      typeof e.date === "string" &&
+      Array.isArray(e.tickers) &&
+      e.tickers.every((t) => typeof t === "string" && t.length > 0)
+    );
+  });
+}
+
+/**
+ * Builds the day's Lineup selection (issue #208) from the window path's
+ * own already-fetched daily-close history -- no new fetch of its own,
+ * per spec-the-lineup.md's own claim that this computation is free (the
+ * daily-close history it needs is already fetched, every run, for the
+ * 5Y/MAX window results).
+ *
+ * Non-fatal on a selection failure (selectLineupTickers returning `null`
+ * -- fewer than LINEUP_SIZE real candidates found at all, even with zero
+ * repeat-avoidance): unreachable against the real ~443-ticker pool, but
+ * a genuine possibility against a small local-dev ticker sample (see
+ * local-run.ts's own reduced universe), and this must degrade the same
+ * "no data written this run" way Beat the Bench's own session-fetch
+ * failure already does, not fail the whole pipeline.
+ */
+function buildLineupResult(options: {
+  /** Must already be sorted ascending by date per ticker -- see selectLineupTickers' own doc comment. */
+  history: Map<string, DailyClose[]>;
+  day: string;
+  generatedAt: string;
+  existingHistoryRaw: string | null;
+}): {
+  build: { result: LineupResult; history: LineupHistory } | null;
+  failureReason: string | null;
+} {
+  const { history, day, generatedAt, existingHistoryRaw } = options;
+  const existingEntries = parseLineupHistoryEntries(existingHistoryRaw);
+
+  const selection = selectLineupTickers(history, day, existingEntries);
+  if (!selection) {
+    const reason = `fewer than 5 real Lineup candidates found for ${day} even with no repeat-avoidance`;
+    console.warn(`[pipeline] ${reason} -- no Lineup data written this run`);
+    return { build: null, failureReason: reason };
+  }
+
+  const result: LineupResult = {
+    schemaVersion: RESULTS_SCHEMA_VERSION,
+    generatedAt,
+    date: day,
+    tickers: selection.tickers,
+  };
+  const mergedEntries = mergeLineupHistory(existingEntries, {
+    date: day,
+    tickers: selection.tickers,
+  });
+  const updatedHistory: LineupHistory = {
+    schemaVersion: RESULTS_SCHEMA_VERSION,
+    generatedAt,
+    entries: mergedEntries,
+  };
+
+  return { build: { result, history: updatedHistory }, failureReason: null };
 }
 
 /**
@@ -2576,6 +2722,59 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
   });
   const sessionStatus = sessionFetch.error ?? sessionBuild.failureReason ?? "ok";
 
+  // The Lineup's daily ticker selection (issue #208) -- derived purely
+  // from the window path's own already-fetched daily-close history,
+  // gated on that fetch having succeeded the same way every other
+  // window-history-derived computation above already is. Reads back its
+  // own prior run's repeat-avoidance history first (see
+  // readLineupHistory's own doc comment for why a missing history
+  // degrades rather than fails the run, and why any OTHER read error
+  // instead propagates out of that function). Like the Beat the Bench
+  // session build above, a selection failure is non-fatal -- reported
+  // through `lineupStatus` in the aggregated status message rather than
+  // folded into computeFailures.
+  //
+  // **Wrapped in its own try/catch, unlike every other window-history-
+  // derived computation above (which run unguarded, before the write
+  // loop even starts).** This is deliberate, not an oversight: a real S3
+  // read failure now propagated by readLineupHistory's own fix, or a
+  // genuine bug in selectLineupTickers/mergeLineupHistory (e.g. an
+  // unanticipated Date-parsing edge case on malformed history), would
+  // otherwise throw synchronously out of runPipeline *before* any
+  // preset-range/custom-anchor/Beat-the-Bench write job below ever gets
+  // a chance to run -- a bug confined to this brand-new feature would
+  // then break a nightly run for every other, already-working game type.
+  // Matches this pipeline's own established "one thing failed, don't
+  // take down the whole run" posture (see buildBeatTheBenchSessions's
+  // own non-fatal-outcome return shape above, and the per-range/per-day
+  // compute-failure containment documented in this package's own
+  // CLAUDE.md) -- extended here to also cover a genuinely unexpected
+  // exception, not just the "known" empty-candidates outcome
+  // buildLineupResult already reports gracefully on its own.
+  let lineupBuild: ReturnType<typeof buildLineupResult>;
+  if (windowFetch.failureReason) {
+    lineupBuild = { build: null, failureReason: null };
+  } else {
+    try {
+      const lineupHistoryRaw = await readLineupHistory(options.store);
+      lineupBuild = buildLineupResult({
+        history: sortedHistory(windowFetch.history),
+        day: windowFetch.dataAsOf!,
+        generatedAt,
+        existingHistoryRaw: lineupHistoryRaw,
+      });
+    } catch (error) {
+      const reason = `Lineup selection threw unexpectedly: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      console.warn(`[pipeline] ${reason} -- no Lineup data written this run`);
+      lineupBuild = { build: null, failureReason: reason };
+    }
+  }
+  const lineupStatus = windowFetch.failureReason
+    ? "skipped (window path failed)"
+    : (lineupBuild.failureReason ?? "ok");
+
   // The Order's daily puzzle (issue #207) -- purely derived from the
   // Magnificent Seven closes fetched above, same non-fatal posture as
   // Beat the Bench's own sessions immediately above: the only way this
@@ -2741,6 +2940,44 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     }
   }
 
+  // The Lineup's own objects (issue #208) -- like sessionWriteJobs above,
+  // appended *after* customWriteJobs so the anchors-manifest correlation
+  // logic above (which indexes primaryWriteOutcomes by
+  // presetWriteJobs.length + i) stays correct. Held to the same "must
+  // fail the run" write standard as every preset range/custom anchor/
+  // Beat the Bench session above, for the identical reasoning: the
+  // *selection* (fetch-equivalent) failure above is non-fatal, but a
+  // write failure here means real, already-computed, already-validated
+  // data couldn't be stored -- exactly what this pipeline's only
+  // alerting mechanism exists to catch.
+  const lineupWriteJobs: WriteJob[] = [];
+  if (lineupBuild.build) {
+    const { result, history } = lineupBuild.build;
+    const resultBody = JSON.stringify(result, null, 2);
+    lineupWriteJobs.push({
+      key: lineupResultKey(result.date),
+      label: `lineup:${result.date}`,
+      validate: () => validateLineupResult(result),
+      body: resultBody,
+    });
+    // The same, byte-identical LineupResult, also published under a
+    // fixed key (LINEUP_LATEST_KEY) -- see that constant's own doc
+    // comment for why apps/web needs this in addition to the per-date
+    // archival key above.
+    lineupWriteJobs.push({
+      key: LINEUP_LATEST_KEY,
+      label: "lineup:latest",
+      validate: () => validateLineupResult(result),
+      body: resultBody,
+    });
+    lineupWriteJobs.push({
+      key: LINEUP_HISTORY_KEY,
+      label: "lineup:history",
+      validate: () => validateLineupHistory(history),
+      body: JSON.stringify(history, null, 2),
+    });
+  }
+
   // The Order's puzzle (issue #207) -- appended after sessionWriteJobs for
   // the identical reason sessionWriteJobs itself is appended after
   // customWriteJobs above: the anchors-manifest logic below correlates
@@ -2767,6 +3004,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     ...presetWriteJobs,
     ...customWriteJobs,
     ...sessionWriteJobs,
+    ...lineupWriteJobs,
     ...orderWriteJobs,
   ];
 
@@ -2955,6 +3193,12 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     // status lines above; see fetchSessionBars' own doc comment for why
     // this path is non-fatal.
     const sessionStatusLine = `Beat the Bench sessions (${BENCHMARK_TICKER}, non-fatal): ${sessionStatus}.`;
+    // Reported for visibility, same non-fatal-selection-failure posture
+    // as sessionStatusLine above -- see buildLineupResult's own doc
+    // comment for why a selection failure can't itself trigger this
+    // throw (only a *write* failure for an already-built LineupResult
+    // can).
+    const lineupStatusLine = `The Lineup (non-fatal): ${lineupStatus}.`;
     // Same non-fatal-fetch/compute visibility posture as the benchmark and
     // Beat the Bench session status lines above.
     const orderStatusLine = `The Order puzzle (Magnificent Seven, non-fatal): ${orderStatus}.`;
@@ -3007,6 +3251,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
       customBuild.validlySkippedCount +
       (customAnchorsManifest ? 1 : 0) +
       sessionWriteJobs.length +
+      lineupWriteJobs.length +
       orderWriteJobs.length;
     throw new Error(
       `pipeline: wrote ${writtenCount} of ${expectedResultCount} expected result(s) (${PRESET_RANGES.length} preset range(s), ${customAnchors.length} custom anchor(s) requested; ${writeJobs.length} actually computed), but at least one path or write failed -- ` +
@@ -3016,6 +3261,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         `${overrideStatusLines} ` +
         `${benchmarkStatusLine} ` +
         `${sessionStatusLine} ` +
+        `${lineupStatusLine} ` +
         `${orderStatusLine} ` +
         `Skipped tickers: ${skippedTickers.length > 0 ? skippedTickers.join(", ") : "(none)"}.` +
         writeFailureLines +

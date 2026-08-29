@@ -1,4 +1,5 @@
 import {
+  LINEUP_LATEST_KEY,
   MYSTERY_INDEX_KEY,
   MYSTERY_POOL_MANIFEST_KEY,
   mysterySessionKey,
@@ -13,6 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   getCustomAnchorsResponse,
   getCustomResultsResponse,
+  getLineupResponse,
   getMysteryRevealResponse,
   getMysterySessionResponse,
   getResultsResponse,
@@ -601,6 +603,104 @@ describe("getTodaysCloseSessionResponse", () => {
     const responses = await Promise.all([
       getTodaysCloseSessionResponse(null),
       getTodaysCloseSessionResponse(memoryReader(new Map())),
+    ]);
+
+    for (const response of responses) {
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+    }
+  });
+});
+
+describe("getLineupResponse", () => {
+  // The Lineup's read path (issue #208) -- serves apps/pipeline's most
+  // recently published LineupResult (LINEUP_LATEST_KEY). Same failure
+  // ladder as getTodaysCloseSessionResponse above, since this shares
+  // readCurrentSchemaObject with it.
+  const result = {
+    schemaVersion: RESULTS_SCHEMA_VERSION,
+    generatedAt: "2026-08-27T00:52:58.157Z",
+    date: "2026-08-26",
+    tickers: ["IBM", "TSLA", "DIS", "MSFT", "CAT"],
+  };
+
+  it("returns a 500 when no reader is configured (RESULTS_BUCKET unset)", async () => {
+    const response = await getLineupResponse(null);
+
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body.error).toBe("server_misconfigured");
+  });
+
+  it("returns a 404 before any pipeline run has published a lineup", async () => {
+    const response = await getLineupResponse(memoryReader(new Map()));
+
+    expect(response.status).toBe(404);
+    const body = await response.json();
+    expect(body.error).toBe("not_found");
+  });
+
+  it("returns a 502 when the read fails", async () => {
+    const reader: ResultReader = {
+      getObject: vi.fn().mockRejectedValue(new Error("access denied")),
+    };
+
+    const response = await getLineupResponse(reader);
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("upstream_error");
+  });
+
+  it("returns a 502 when the stored lineup isn't valid JSON", async () => {
+    const objects = new Map([[LINEUP_LATEST_KEY, "{not json"]]);
+
+    const response = await getLineupResponse(memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("corrupt_data");
+  });
+
+  it("returns a 502 when schemaVersion doesn't match", async () => {
+    const objects = new Map([
+      [LINEUP_LATEST_KEY, JSON.stringify({ ...result, schemaVersion: 999 })],
+    ]);
+
+    const response = await getLineupResponse(memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("schema_mismatch");
+  });
+
+  it("returns a 502 for a lineup without exactly 5 real ticker strings", async () => {
+    for (const tickers of [[], ["IBM"], ["IBM", "TSLA", "DIS", "MSFT", ""], "IBM", undefined]) {
+      const objects = new Map([[LINEUP_LATEST_KEY, JSON.stringify({ ...result, tickers })]]);
+
+      const response = await getLineupResponse(memoryReader(objects));
+
+      expect(response.status).toBe(502);
+      const body = await response.json();
+      expect(body.error).toBe("schema_mismatch");
+    }
+  });
+
+  it("reads the published key and returns the whole lineup with caching headers", async () => {
+    const objects = new Map([[LINEUP_LATEST_KEY, JSON.stringify(result)]]);
+
+    const response = await getLineupResponse(memoryReader(objects));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(result);
+    const cacheControl = response.headers.get("Cache-Control");
+    expect(cacheControl).toContain("max-age=300");
+    expect(cacheControl).toContain("stale-while-revalidate");
+  });
+
+  it("sets Cache-Control: no-store on every error response", async () => {
+    const responses = await Promise.all([
+      getLineupResponse(null),
+      getLineupResponse(memoryReader(new Map())),
     ]);
 
     for (const response of responses) {

@@ -32,6 +32,7 @@ import { formatDate } from "./format-date";
 import { formatHeroCurrency, formatMultiplier } from "./format-currency";
 import type { HeadlineFigure } from "./headline-figure";
 import type { PlayedSession } from "./beat-the-bench-storage";
+import type { LineupPlayedResult } from "./lineup-storage";
 
 /** How many of the rail's three steps are considered done. */
 export type RitualStepState = "done" | "partial" | "todo";
@@ -130,6 +131,17 @@ export interface DailyRitualSnapshot {
   /** Today's Order state, or `null` if nothing has been submitted yet today (issue #207). */
   order: RitualOrder | null;
   /**
+   * Today's published Lineup, played to completion -- or `null` if it
+   * hasn't been played yet (or hasn't been published yet, or storage is
+   * unavailable). Unlike `bench`, this does **not** gate
+   * `isRecapUnlocked` -- issue #208's own Scope only asks for its recap
+   * line to be *omitted rather than stubbed* when unplayed, following
+   * `headline`'s own established "omit, don't leave blank" precedent,
+   * not for it to become a second, additional unlock requirement on top
+   * of Beat the Bench.
+   */
+  lineup: LineupPlayedResult | null;
+  /**
    * The figure the results page is currently headlining, or `null` when
    * there is none to quote -- the results fetch hasn't landed, the range
    * has no days, or (intraday-daily only) the viewer hasn't cleared issue
@@ -227,6 +239,29 @@ export function callsRecapClause(calls: { filled: number; total: number }): stri
 }
 
 /**
+ * The recap's Lineup line, minus its label -- `spec-the-lineup.md`'s own
+ * proposed copy under "Recap-line copy proposal": "solved all 5 in N
+ * guesses" on a win, "M of 5 solved, T of 15 tiles filled when the
+ * guesses ran out" on a loss. `result.totalTiles` (not a hardcoded 15)
+ * is used for the loss line's own denominator -- the spec's own 15 was
+ * written for its original 3-letter-ticker-only design; issue #208's
+ * widened, mixed 3-/4-letter pool means a day's real total is anywhere
+ * from 15 to 20, and hardcoding 15 would misreport every day whose
+ * lineup includes a 4-letter ticker. Neither branch names a single
+ * ticker, matching this file's own rule 2 above (report relatively,
+ * never leak the real answer) -- a real requirement here too, not just
+ * for Beat the Bench, since the day's 5 tickers are exactly what a
+ * recap recipient shouldn't be handed for free.
+ */
+export function lineupRecapClause(result: LineupPlayedResult): string {
+  if (result.outcome === "won") return `solved all 5 in ${result.guessesUsed} guesses`;
+  return (
+    `${result.columnsSolved} of 5 solved, ${result.tilesFilled} of ${result.totalTiles} ` +
+    "tiles filled when the guesses ran out"
+  );
+}
+
+/**
  * The recap's Order line, minus its label -- spec-the-order.md's own
  * proposed copy verbatim ("Recap-line copy proposal"), never leaking a
  * ticker, a real return figure, or the real order itself.
@@ -289,6 +324,9 @@ export function buildRecapText(snapshot: DailyRitualSnapshot): string | null {
   lines.push(`Beat the Bench: ${benchRecapClause(bench.session)}`);
   lines.push(`The Call Board: ${callsRecapClause(snapshot.calls)}`);
   lines.push(`The Order: ${orderRecapClause(snapshot.order)}`);
+  if (snapshot.lineup !== null) {
+    lines.push(`The Lineup: ${lineupRecapClause(snapshot.lineup)}`);
+  }
   lines.push("", "Hindsight only -- not advice, and not a predictor.");
   return lines.join("\n");
 }

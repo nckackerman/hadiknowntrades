@@ -27,11 +27,13 @@ import { getCallBoardPick } from "./call-board-storage";
 import { MAX_OPEN_CALLS, upcomingCallDays } from "./call-board-scoring";
 import type { DailyRitualSnapshot } from "./daily-ritual";
 import type { HeadlineFigure } from "./headline-figure";
+import { getLineupPlayedResult } from "./lineup-storage";
 import { subscribeToLocalStorage } from "./local-storage";
 import type { Mode } from "./mode";
 import { ORDER_MAX_ATTEMPTS, ORDER_SLOT_COUNT } from "./order-scoring";
 import { getOrderDayState } from "./order-storage";
 import { getRangeGuess } from "./range-guess-storage";
+import { useLineupResult } from "./use-lineup-result";
 import { useTheOrderPuzzle } from "./use-the-order";
 import { useTodaysCloseSession } from "./use-todays-close-session";
 
@@ -64,6 +66,7 @@ const UNHYDRATED_SNAPSHOT: DailyRitualSnapshot = {
   calls: { filled: 0, total: MAX_OPEN_CALLS },
   order: null,
   headline: null,
+  lineup: null,
 };
 
 export interface UseDailyRitualResult {
@@ -89,6 +92,12 @@ export function useDailyRitual({
 }: UseDailyRitualOptions): UseDailyRitualResult {
   const sessionState = useTodaysCloseSession();
   const benchDate = sessionState?.status === "success" ? sessionState.data.date : null;
+  // Same "key by the mechanic's own published date, not the viewer's
+  // clock" reasoning benchDate's own doc comment already gives -- the
+  // Lineup's played record is stored under the *published* lineup's own
+  // `date` (lineup-storage.ts), not "today" per the browser.
+  const lineupResult = useLineupResult();
+  const lineupDate = lineupResult?.status === "success" ? lineupResult.data.date : null;
 
   const orderState = useTheOrderPuzzle();
   const orderDate = orderState?.status === "success" ? orderState.data.date : null;
@@ -98,6 +107,7 @@ export function useDailyRitual({
     calls: DailyRitualSnapshot["calls"];
     order: DailyRitualSnapshot["order"];
     guessed: boolean;
+    lineup: DailyRitualSnapshot["lineup"];
   } | null>(null);
 
   useEffect(() => {
@@ -149,6 +159,7 @@ export function useDailyRitual({
                 ),
               },
         guessed: range !== null && getRangeGuess(range, mode) !== null,
+        lineup: lineupDate === null ? null : getLineupPlayedResult(lineupDate),
       });
     }
 
@@ -157,7 +168,7 @@ export function useDailyRitual({
     // stay clear of react-hooks/set-state-in-effect.
     queueMicrotask(read);
     return subscribeToLocalStorage(read);
-  }, [benchDate, orderDate, range, mode]);
+  }, [benchDate, orderDate, range, mode, lineupDate]);
 
   if (stored === null) return { snapshot: UNHYDRATED_SNAPSHOT, hydrated: false };
 
@@ -178,6 +189,7 @@ export function useDailyRitual({
         headline === null || (headline.model === "intraday-daily" && !stored.guessed)
           ? null
           : headline,
+      lineup: stored.lineup,
     },
     hydrated: true,
   };

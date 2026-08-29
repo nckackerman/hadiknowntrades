@@ -44,4 +44,17 @@ describe("LocalFileResultStore", () => {
     const body = await readFile(path.join(dir, "results/1M.json"), "utf-8");
     expect(body).toBe("second");
   });
+
+  it("getObject reads back a previously-written body (issue #208)", async () => {
+    const store = new LocalFileResultStore(dir);
+    await store.putObject("results/lineup/history.json", '{"hello":"world"}');
+
+    await expect(store.getObject("results/lineup/history.json")).resolves.toBe('{"hello":"world"}');
+  });
+
+  it("getObject returns null for a key that hasn't been written yet", async () => {
+    const store = new LocalFileResultStore(dir);
+
+    await expect(store.getObject("results/lineup/history.json")).resolves.toBeNull();
+  });
 });
