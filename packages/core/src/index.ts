@@ -76,9 +76,22 @@ export { buildIntradaySessions, MIN_CLOSED_SESSION_SPAN_MINUTES } from "./intrad
 export type { IntradaySession } from "./intraday-sessions";
 
 export {
+  LINEUP_HISTORY_RETENTION_DAYS,
+  LINEUP_REPEAT_AVOIDANCE_DAYS,
+  LINEUP_SIZE,
+  LINEUP_TICKER_POOL,
+  mergeLineupHistory,
+  selectLineupTickers,
+} from "./lineup-selection";
+export type { LineupHistoryEntry, LineupSelectionResult } from "./lineup-selection";
+
+export {
   resultKey,
   customResultKey,
   CUSTOM_ANCHORS_MANIFEST_KEY,
+  LINEUP_HISTORY_KEY,
+  LINEUP_LATEST_KEY,
+  lineupResultKey,
   MYSTERY_INDEX_KEY,
   MYSTERY_POOL_MANIFEST_KEY,
   MYSTERY_SESSION_IDS,
@@ -88,6 +101,8 @@ export {
   validatePrecomputedResult,
   validateCustomWindowResult,
   validateCustomAnchorsManifest,
+  validateLineupHistory,
+  validateLineupResult,
   validateMysteryIndex,
   validateMysteryPoolManifest,
   validateMysterySession,
@@ -100,6 +115,8 @@ export type {
   IntradayResult,
   CustomWindowResult,
   CustomAnchorsManifest,
+  LineupHistory,
+  LineupResult,
   MysteryIndex,
   MysteryIndexEntry,
   MysteryPoolManifest,

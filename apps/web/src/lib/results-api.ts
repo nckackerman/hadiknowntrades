@@ -6,6 +6,8 @@
 import {
   anchorDateToDate,
   CUSTOM_ANCHORS_MANIFEST_KEY,
+  LINEUP_LATEST_KEY,
+  LINEUP_SIZE,
   MYSTERY_INDEX_KEY,
   MYSTERY_POOL_MANIFEST_KEY,
   MYSTERY_SESSION_IDS,
@@ -18,6 +20,7 @@ import {
   type AnchorDate,
   type CustomAnchorsManifest,
   type CustomWindowResult,
+  type LineupResult,
   type MysteryIndexEntry,
   type MysterySession,
   type PrecomputedResult,
@@ -490,6 +493,51 @@ export async function getTodaysCloseSessionResponse(
   }
 
   return Response.json(session as unknown as TodaysCloseSession, {
+    headers: { "Cache-Control": CACHE_CONTROL },
+  });
+}
+
+/**
+ * Handles GET /api/lineup (issue #208) -- reads the nightly pipeline's
+ * most recently published Lineup selection (packages/core's
+ * LineupResult, written to LINEUP_LATEST_KEY by apps/pipeline's
+ * `buildLineupResult`) so `TheLineup.tsx` can play a real, checkable
+ * daily puzzle.
+ *
+ * Same shape as `getTodaysCloseSessionResponse`/`getCustomAnchorsResponse`
+ * above: one fixed key, no identifier to parse, so this reuses
+ * `readCurrentSchemaObject` for the reader-configured check/getObject
+ * try-catch/JSON.parse try-catch/schemaVersion check rather than a
+ * `ResultRouteConfig` instantiation (built around parsing an identifier).
+ * Checks `tickers` is exactly LINEUP_SIZE real strings on top of that --
+ * the same light, non-redundant check `getTodaysCloseSessionResponse`
+ * applies to `bars` and `getCustomAnchorsResponse` applies to `anchors`:
+ * this object already passed packages/core's own `validateLineupResult`
+ * immediately before apps/pipeline stored it (issue #47's write-time
+ * discipline), so this is a defensive last check against a partially-
+ * written S3 object (apps/pipeline's writes are documented as
+ * non-atomic), not a re-derivation of that validator.
+ */
+export async function getLineupResponse(reader: ResultReader | null): Promise<Response> {
+  const outcome = await readCurrentSchemaObject(
+    LINEUP_LATEST_KEY,
+    reader,
+    "the Lineup selection",
+    "No Lineup is available yet -- today's puzzle hasn't been published by a pipeline run.",
+  );
+  if (!outcome.ok) return outcome.response;
+  const result = outcome.value;
+
+  if (
+    !Array.isArray(result.tickers) ||
+    result.tickers.length !== LINEUP_SIZE ||
+    result.tickers.some((t) => typeof t !== "string" || t.length === 0)
+  ) {
+    console.error("[api/lineup] stored Lineup result has a malformed tickers field");
+    return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
+  }
+
+  return Response.json(result as unknown as LineupResult, {
     headers: { "Cache-Control": CACHE_CONTROL },
   });
 }

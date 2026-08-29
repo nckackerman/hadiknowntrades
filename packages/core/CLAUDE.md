@@ -1210,3 +1210,68 @@ package's own CLAUDE.md for the fetch/build/write side).
   candidate set on its own, and a session from the far side of a DST
   transition carries hour-shifted labels that visibly separate it from
   the rest of the pool.
+
+## The Lineup: daily-selection algorithm (issue #208)
+
+`src/lineup-selection.ts` -- resolving `docs/design/order-lineup-2026-08/
+spec-the-lineup.md`'s own "Daily-selection algorithm" section, widened
+(per that folder's own README) to cover both 3- and 4-letter tickers, not
+just 3. See `apps/web/CLAUDE.md`'s own "The Lineup" section for the
+game/component side; this is the selection math only.
+
+- **`LINEUP_TICKER_POOL` is 443 real tickers (281 three-letter + 162
+  four-letter), not the spec's original 281** -- live-counted from
+  `SP500_CONSTITUENTS` after `TICKER_PATTERN` (`/^[A-Z]{3,4}$/`, anchored,
+  letters-only) excludes `BF.B` (a real 4-_character_ symbol that isn't a
+  plain 4-_letter_ ticker -- see that constant's own doc comment for why
+  a bare `.length` check would have silently let it in).
+- **The mover-ranking algorithm validated against real recent trading
+  data, independently, not just asserted**: a live pipeline run (60 real
+  tickers -- the first 60 of `SP500_CONSTITUENTS`, real Yahoo data,
+  2026-08-28) selected `[AMAT, AMZN, ADI, AKAM, ADM]` as that day's
+  lineup. A completely independent script -- its own separate
+  `fetchDailyCloses` calls, its own separate sort/tie-break
+  implementation, not a re-run of `selectLineupTickers` itself -- computed
+  `abs(close/prevClose - 1)` for the same 46 real 3-/4-letter candidates
+  that had both a 2026-08-28 close and a prior-day close, and got the
+  **exact same top 5, in the exact same order**: AMAT 4.289%, AMZN
+  3.969%, ADI 3.402%, AKAM 3.389%, ADM 3.085% (next-highest was AME at
+  3.045%, confirming a real, non-trivial margin above the cut line, not a
+  coin-flip tie). Deleted before commit, per this file's own established
+  "live-verified, no S3 write, throwaway script" convention.
+- **The repeat-avoidance cadence (`LINEUP_REPEAT_AVOIDANCE_DAYS = 14`,
+  relaxing to 7 then 0) validated against real data too, via a rolling
+  simulation, not just the synthetic unit tests that exercise the
+  fallback mechanically**: the same real-data script walked
+  `selectLineupTickers` forward across all 42 real trading days in a
+  2026-07-01..2026-08-28 window (60-ticker sample, real closes, a real
+  `mergeLineupHistory`-maintained rolling history fed forward day by
+  day) -- **every single day resolved at the full 14-day window**
+  (`repeatAvoidanceDaysUsed: 14` on all 41 successful days; the one
+  failure was 2026-07-01 itself, the window's first day, with no prior
+  day to compare against -- an expected, unrelated edge case, not a
+  repeat-avoidance failure). The 7-/0-day relaxation steps were never
+  actually exercised by this real-data run: with a 60-ticker sample
+  producing 40-46 real 3-/4-letter candidates most days and only 5 new
+  exclusions added per day (trimmed to a `LINEUP_HISTORY_RETENTION_DAYS`
+  = 30-day-bounded rolling history, well under half the candidate pool
+  even before relaxing at all), the 14-day window never ran dry. At the
+  real production scale (443-ticker pool, up to 14 x 5 = 70 possible
+  exclusions at any one time), this is even less likely to bind -- the
+  7/0 fallback exists for robustness against a pathological run of
+  identical top-movers, not because 14 days is expected to fail in
+  ordinary operation. The synthetic unit tests
+  (`lineup-selection.test.ts`) are what actually exercises the 7- and
+  0-day relaxation branches themselves (a fixture deliberately built so
+  14 days can't find 5 candidates but 7 can, and another where even 7
+  can't and it must fall all the way to 0) -- this real-data run
+  confirms the cadence is _sound_ against real market behavior, not that
+  the fallback logic itself is dead code.
+- **`selectLineupTickers` returning `null` is unreachable against the
+  real ~443-ticker pool** (would need fewer than 5 real 3-/4-letter
+  candidates to have both a `day` close and a prior-day close, with zero
+  repeat-avoidance applied at all) -- `apps/pipeline`'s `buildLineupResult`
+  treats it as non-fatal regardless (same "degrade gracefully, don't fail
+  the run" posture as Beat the Bench's own session-fetch failure), since
+  it _is_ reachable against a small local-dev ticker sample (see
+  `apps/pipeline/CLAUDE.md`'s own "The Lineup" section).

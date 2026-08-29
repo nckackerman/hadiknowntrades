@@ -22,6 +22,7 @@ import type { IntradayDayResult, IntradayLongShortResult } from "./intraday-opti
 import type { DailyClose } from "./yahoo-client";
 import { isValidPrice } from "./is-valid-price";
 import { anchorDateToDate, type AnchorDate } from "./custom-range-anchors";
+import { LINEUP_SIZE, TICKER_PATTERN, type LineupHistoryEntry } from "./lineup-selection";
 
 /**
  * Bumped whenever the shape of PrecomputedResult changes in a way a reader needs to know about.
@@ -131,6 +132,47 @@ export function mysterySessionKey(sessionId: string): string {
  * from. Key name fixed by issue #127's own specification.
  */
 export const MYSTERY_INDEX_KEY = "results/mystery-index.json";
+
+/**
+ * The S3 key one day's Lineup ticker selection (LineupResult, below) is
+ * stored/read under (issue #208) -- one object per real trading day,
+ * matching spec-the-lineup.md's own "Daily-selection algorithm" step 6
+ * ("`results/lineup/{date}.json`"). Unlike every fixed-key object above,
+ * this key set genuinely grows over time (one new object per trading
+ * day, never overwritten) rather than being idempotently replaced each
+ * run -- there is no "yesterday's lineup" to protect by refusing to
+ * overwrite it, since each date's key is written exactly once, the day
+ * it's selected for.
+ */
+export function lineupResultKey(date: string): string {
+  return `results/lineup/${date}.json`;
+}
+
+/**
+ * The S3 key the most recent LineupResult is *also* published under
+ * (issue #208), fixed and overwritten each run -- same "one fixed key
+ * for whatever's most current" shape TODAYS_CLOSE_SESSION_KEY already
+ * establishes for Beat the Bench, for the identical reason: apps/web
+ * needs to fetch "today's" lineup without already knowing today's date
+ * (which is exactly the fact this object exists to tell it). This is a
+ * deliberate, minimal addition beyond spec-the-lineup.md's own literal
+ * text (which only names the per-date archival key,
+ * `results/lineup/{date}.json`, written under `lineupResultKey` above) --
+ * both keys carry byte-identical content (same LineupResult, including
+ * its own `date` field, so a reader always knows which day it got), the
+ * per-date key exists purely as an audit trail apps/web never reads.
+ */
+export const LINEUP_LATEST_KEY = "results/lineup/latest.json";
+
+/**
+ * The S3 key the Lineup's rolling repeat-avoidance history (LineupHistory,
+ * below) is stored/read under (issue #208) -- the one Lineup object that
+ * genuinely is idempotently overwritten each run (spec-the-lineup.md's
+ * own step 6: "a small rolling `results/lineup/history.json`"). Read back
+ * by apps/pipeline itself, not by apps/web -- see LineupHistory's own doc
+ * comment.
+ */
+export const LINEUP_HISTORY_KEY = "results/lineup/history.json";
 
 /** Which trading model produced a given PrecomputedResult -- see the module header comment. */
 export type ResultModel = "window" | "intraday-daily";
@@ -615,6 +657,69 @@ export const MYSTERY_SESSION_IDS: readonly string[] = Array.from(
   { length: 48 },
   (_, i) => `s${String(i + 1).padStart(2, "0")}`,
 );
+
+// --- The Lineup (issue #208) -------------------------------------------
+//
+// One nightly-written object per trading day (LineupResult, keyed by
+// lineupResultKey(date)) plus a small rolling repeat-avoidance history
+// (LineupHistory, one fixed key) -- the exact "small, versioned,
+// nightly-written object" shape this app already uses for every other
+// mechanic (WindowResult, TodaysCloseSession, MysteryIndex), per
+// spec-the-lineup.md's own "Daily-selection algorithm" step 6. The
+// selection algorithm itself (which 5 tickers, and the repeat-avoidance
+// cascade) lives in lineup-selection.ts, not here -- this file only
+// carries the published shape and its write-time validation, matching
+// the split every other stored object family in this file already has
+// between "the type/validator" (here) and "the logic that produces one"
+// (apps/pipeline, or -- for the Lineup's own selection math specifically
+// -- lineup-selection.ts, since apps/pipeline needs it as a plain,
+// already-fetched-data computation with no I/O of its own).
+//
+// Unlike Beat the Bench's MysterySession, there is no secrecy mechanism
+// here at all -- every published LineupResult's `tickers` field is the
+// real, correct answer, in the open, from the moment it's written. The
+// game's own difficulty comes entirely from the whole-board guessing
+// mechanic and the hidden ticker *length* (apps/web's own TheLineup.tsx),
+// never from withholding which tickers are in play.
+
+/**
+ * One day's Lineup selection (issue #208) -- published transparently,
+ * same posture as TodaysCloseSession (the real date and the real answer
+ * are both right here, not hidden behind an opaque id the way Beat the
+ * Bench's Mystery Day sessions are).
+ */
+export interface LineupResult {
+  schemaVersion: number;
+  generatedAt: string;
+  /** The trading day this lineup was selected for, YYYY-MM-DD -- see lineup-selection.ts's own selectLineupTickers for how `day` is chosen. */
+  date: string;
+  /**
+   * Exactly LINEUP_SIZE (5) real S&P 500 tickers, each 3 or 4 letters --
+   * the day's biggest movers by absolute daily return within
+   * LINEUP_TICKER_POOL, per lineup-selection.ts. Order matters: this is
+   * column 1 through column 5, left to right, exactly as apps/web's
+   * TheLineup.tsx renders them -- not re-sortable by a reader.
+   */
+  tickers: string[];
+}
+
+/**
+ * The Lineup's rolling repeat-avoidance history (issue #208) -- the input
+ * lineup-selection.ts's own selectLineupTickers needs to avoid repeating
+ * a ticker too soon, and the output apps/pipeline folds a fresh entry
+ * into (via mergeLineupHistory) before overwriting this same key each
+ * run. Read back by apps/pipeline itself at the start of the next run
+ * (via ResultStore.getObject, a capability only this feature needed --
+ * see apps/pipeline/CLAUDE.md's own note on why), not by apps/web at
+ * all -- there is nothing here a player needs, only what tomorrow's
+ * selection needs to avoid.
+ */
+export interface LineupHistory {
+  schemaVersion: number;
+  generatedAt: string;
+  /** Ascending by date, trimmed to LINEUP_HISTORY_RETENTION_DAYS (lineup-selection.ts). */
+  entries: LineupHistoryEntry[];
+}
 
 // --- Write-time self-validation (issue #47) ---------------------------
 //
@@ -1831,6 +1936,139 @@ function validateSessionIdList(
     previous = id;
     previousIndex = i;
   });
+}
+
+// --- The Lineup validators (issue #208) --------------------------------
+
+/**
+ * Validates a LineupResult immediately before its own putObject.
+ *
+ * `tickers` is checked against `TICKER_PATTERN` (lineup-selection.ts's
+ * own single source of truth for "a real, plain 3-4 letter ticker
+ * shape") rather than a second, independently-derived regex -- and
+ * against exact cardinality (`LINEUP_SIZE`, currently 5) with no
+ * duplicates, since a malformed selection (too few, too many, or a
+ * repeated ticker) would silently break apps/web's fixed 5-column grid.
+ */
+export function validateLineupResult(result: LineupResult): void {
+  if (result === null || typeof result !== "object") {
+    throw new ResultValidationError(`result must be an object, got ${describe(result)}`);
+  }
+  const r = result as unknown as Record<string, unknown>;
+  const problems: string[] = [];
+
+  if (r.schemaVersion !== RESULTS_SCHEMA_VERSION) {
+    problems.push(
+      `schemaVersion must be exactly ${RESULTS_SCHEMA_VERSION}, got ${describe(r.schemaVersion)}`,
+    );
+  }
+  if (!isNonEmptyString(r.generatedAt))
+    problems.push(`generatedAt must be a non-empty string, got ${describe(r.generatedAt)}`);
+  if (typeof r.date !== "string" || !DATE_STRING_PATTERN.test(r.date)) {
+    problems.push(`date must be a "YYYY-MM-DD" string, got ${describe(r.date)}`);
+  }
+
+  if (!Array.isArray(r.tickers) || r.tickers.length !== LINEUP_SIZE) {
+    problems.push(
+      `tickers must be an array of exactly ${LINEUP_SIZE} tickers, got ${describe(r.tickers)}`,
+    );
+  } else {
+    const seen = new Set<string>();
+    r.tickers.forEach((ticker, i) => {
+      if (typeof ticker !== "string" || !TICKER_PATTERN.test(ticker)) {
+        problems.push(
+          `tickers[${i}] must be a real 3-4 letter ticker symbol, got ${describe(ticker)}`,
+        );
+        return;
+      }
+      if (seen.has(ticker)) {
+        problems.push(`tickers[${i}] ("${ticker}") duplicates an earlier entry`);
+      }
+      seen.add(ticker);
+    });
+  }
+
+  throwIfProblems("LineupResult", problems);
+}
+
+/**
+ * Validates a LineupHistoryEntry, appending to `problems` -- shared
+ * between validateLineupHistory (below) and, indirectly, the same
+ * "tickers" shape validateLineupResult already checks (kept as a
+ * separate, smaller check here since a history entry's own `tickers`
+ * isn't required to number exactly LINEUP_SIZE -- a hand-edited or
+ * stale-format entry is treated the same "untrusted, degrade rather than
+ * throw" way apps/web's own daily-guess-storage.ts treats a corrupt
+ * stored value, not a fatal write-time problem for the *history* object
+ * as a whole).
+ */
+function validateLineupHistoryEntry(
+  entry: unknown,
+  path: string,
+  problems: string[],
+): entry is LineupHistoryEntry {
+  if (entry === null || typeof entry !== "object") {
+    problems.push(`${path} must be an object, got ${describe(entry)}`);
+    return false;
+  }
+  const e = entry as Record<string, unknown>;
+  let ok = true;
+  if (typeof e.date !== "string" || !DATE_STRING_PATTERN.test(e.date)) {
+    problems.push(`${path}.date must be a "YYYY-MM-DD" string, got ${describe(e.date)}`);
+    ok = false;
+  }
+  if (!Array.isArray(e.tickers) || e.tickers.some((t) => typeof t !== "string" || !t)) {
+    problems.push(
+      `${path}.tickers must be an array of non-empty strings, got ${describe(e.tickers)}`,
+    );
+    ok = false;
+  }
+  return ok;
+}
+
+/**
+ * Validates a LineupHistory immediately before its own putObject.
+ *
+ * Entries are required to be strictly ascending by date with no
+ * duplicate -- mergeLineupHistory (lineup-selection.ts) already
+ * guarantees this by construction, so a violation here means a bug in
+ * that function, not untrusted input; still checked, per this file's own
+ * "validate the pipeline's actual output, don't just trust the function
+ * that built it" posture (see validatePrecomputedResult's own doc
+ * comment).
+ */
+export function validateLineupHistory(history: LineupHistory): void {
+  if (history === null || typeof history !== "object") {
+    throw new ResultValidationError(`history must be an object, got ${describe(history)}`);
+  }
+  const h = history as unknown as Record<string, unknown>;
+  const problems: string[] = [];
+
+  if (h.schemaVersion !== RESULTS_SCHEMA_VERSION) {
+    problems.push(
+      `schemaVersion must be exactly ${RESULTS_SCHEMA_VERSION}, got ${describe(h.schemaVersion)}`,
+    );
+  }
+  if (!isNonEmptyString(h.generatedAt))
+    problems.push(`generatedAt must be a non-empty string, got ${describe(h.generatedAt)}`);
+
+  if (!Array.isArray(h.entries)) {
+    problems.push(`entries must be an array, got ${describe(h.entries)}`);
+  } else {
+    let previousDate: string | null = null;
+    h.entries.forEach((entry, i) => {
+      if (!validateLineupHistoryEntry(entry, `entries[${i}]`, problems)) return;
+      const date = (entry as LineupHistoryEntry).date;
+      if (previousDate !== null && date <= previousDate) {
+        problems.push(
+          `entries[${i}].date ("${date}") must be strictly ascending, but does not come after "${previousDate}"`,
+        );
+      }
+      previousDate = date;
+    });
+  }
+
+  throwIfProblems("LineupHistory", problems);
 }
 
 /** Shared throw-if-anything-went-wrong tail for the four validators above, matching every other validator's message shape in this file. */

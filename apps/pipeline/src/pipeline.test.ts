@@ -24,13 +24,16 @@ function bar(dateFromAsOf: (asOf: Date) => Date, time: string, close: number): I
   return { date: `${toDateString(dateFromAsOf(ASOF))}T${time}`, close };
 }
 
-/** In-memory ResultStore, so tests can inspect exactly what was written. */
+/** In-memory ResultStore, so tests can inspect exactly what was written. Implements getObject (issue #208) so a test can seed prior-run state (e.g. Lineup repeat-avoidance history) before calling runPipeline. */
 function memoryStore(): ResultStore & { objects: Map<string, string> } {
   const objects = new Map<string, string>();
   return {
     objects,
     async putObject(key, body) {
       objects.set(key, body);
+    },
+    async getObject(key) {
+      return objects.get(key) ?? null;
     },
   };
 }

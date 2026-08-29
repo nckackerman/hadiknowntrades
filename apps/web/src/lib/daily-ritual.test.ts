@@ -12,9 +12,11 @@ import {
   callsState,
   headlineRecapClause,
   isRecapUnlocked,
+  lineupRecapClause,
   type DailyRitualSnapshot,
 } from "./daily-ritual";
 import type { HeadlineFigure } from "./headline-figure";
+import type { LineupPlayedResult } from "./lineup-storage";
 
 const HEADLINE: HeadlineFigure = {
   model: "intraday-daily",
@@ -40,6 +42,7 @@ function snapshot(overrides: Partial<DailyRitualSnapshot> = {}): DailyRitualSnap
     bench: { date: "2026-08-26", session: session() },
     calls: { filled: 2, total: 3 },
     headline: HEADLINE,
+    lineup: null,
     ...overrides,
   };
 }
@@ -128,6 +131,49 @@ describe("callsRecapClause", () => {
   });
 });
 
+function lineupResult(overrides: Partial<LineupPlayedResult> = {}): LineupPlayedResult {
+  return {
+    date: "2026-08-26",
+    outcome: "won",
+    guessesUsed: 4,
+    columnsSolved: 5,
+    tilesFilled: 17,
+    totalTiles: 17,
+    lockedColumns: [true, true, true, true, true],
+    ...overrides,
+  };
+}
+
+describe("lineupRecapClause", () => {
+  it("reports a win as 'solved all 5 in N guesses', never naming a ticker", () => {
+    expect(lineupRecapClause(lineupResult({ guessesUsed: 3 }))).toBe("solved all 5 in 3 guesses");
+  });
+
+  it("reports a loss as 'M of 5 solved, T of {totalTiles} tiles filled...'", () => {
+    expect(
+      lineupRecapClause(
+        lineupResult({
+          outcome: "lost",
+          guessesUsed: 7,
+          columnsSolved: 2,
+          tilesFilled: 7,
+          totalTiles: 17,
+        }),
+      ),
+    ).toBe("2 of 5 solved, 7 of 17 tiles filled when the guesses ran out");
+  });
+
+  it("uses the real per-day totalTiles denominator (15-20), not a hardcoded 15 -- the widened 3-/4-letter pool", () => {
+    // A day whose 5 tickers are all 4 letters long -- totalTiles is 20,
+    // not the original 3-letter-only spec's fixed 15.
+    expect(
+      lineupRecapClause(
+        lineupResult({ outcome: "lost", columnsSolved: 0, tilesFilled: 0, totalTiles: 20 }),
+      ),
+    ).toBe("0 of 5 solved, 0 of 20 tiles filled when the guesses ran out");
+  });
+});
+
 describe("buildRecapText", () => {
   it("returns nothing while the recap is locked, so a half-day can't be copied", () => {
     expect(buildRecapText(snapshot({ bench: null }))).toBeNull();
@@ -191,6 +237,30 @@ describe("buildRecapText", () => {
     const after = buildRecapText(snapshot({ calls: { filled: 3, total: 3 } }))!;
     expect(before).toContain("1 of 3 upcoming sessions called");
     expect(after).toContain("3 of 3 upcoming sessions called");
+  });
+
+  it("omits the Lineup line entirely (not stubbed) when it hasn't been played today", () => {
+    const text = buildRecapText(snapshot({ lineup: null }))!;
+    expect(text).not.toContain("The Lineup");
+  });
+
+  it("includes the Lineup line, in the same relative-only voice, once it's been played today", () => {
+    const text = buildRecapText(snapshot({ lineup: lineupResult({ guessesUsed: 3 }) }))!;
+    expect(text).toContain("The Lineup: solved all 5 in 3 guesses");
+  });
+
+  it("never leaks which tickers were in today's Lineup", () => {
+    const text = buildRecapText(
+      snapshot({
+        lineup: lineupResult({ outcome: "lost", columnsSolved: 1, tilesFilled: 3, totalTiles: 17 }),
+      }),
+    )!;
+    expect(text).toContain(
+      "The Lineup: 1 of 5 solved, 3 of 17 tiles filled when the guesses ran out",
+    );
+    // Not gated by isRecapUnlocked -- Beat the Bench alone unlocks the
+    // recap; the Lineup line is independently omit-or-include on top.
+    expect(text).toContain("Beat the Bench:");
   });
 });
 

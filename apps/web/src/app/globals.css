@@ -852,3 +852,43 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/*
+ * The Lineup's invalid-guess shake (issue #208), matching the mock's own
+ * `.lineup-inputs.shake` -- a brief horizontal wiggle on the 5-input row
+ * when a round is submitted with an unlocked column's guess that isn't a
+ * real, legal ticker for that slot. A new, small keyframe rather than
+ * reusing `.marker-landing-shake` above: that class is explicitly scoped
+ * to an SVG marker (`transform-box: fill-box` is meaningless outside
+ * SVG), and conflating two unrelated features under one shared class
+ * name would make either one harder to change later without checking
+ * the other.
+ */
+@keyframes lineup-inputs-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-4px);
+  }
+  40% {
+    transform: translateX(4px);
+  }
+  60% {
+    transform: translateX(-3px);
+  }
+  80% {
+    transform: translateX(3px);
+  }
+}
+
+.lineup-inputs-shake {
+  animation: lineup-inputs-shake 300ms ease-in-out 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lineup-inputs-shake {
+    animation: none;
+  }
+}

@@ -121,6 +121,18 @@ const SESSION = {
   ],
 };
 
+/**
+ * The Lineup's own real, published shape (issue #208) -- real, mixed-
+ * length S&P 500 tickers so `TheLineup` can build a genuine board
+ * without any of these tests needing to play it.
+ */
+const LINEUP_RESULT = {
+  schemaVersion: RESULTS_SCHEMA_VERSION,
+  generatedAt: "2026-08-27T00:52:58.157Z",
+  date: "2026-08-26",
+  tickers: ["IBM", "TSLA", "DIS", "MSFT", "CAT"],
+};
+
 describe("ResultsPage", () => {
   beforeEach(() => {
     replace.mockClear();
@@ -141,6 +153,15 @@ describe("ResultsPage", () => {
               { status: 200 },
             ),
           );
+        }
+        // The Lineup resolves its own real fixture even in tests that
+        // don't care about it, per this describe block's own comment
+        // above -- unlike /api/results, leaving it unresolved would mean
+        // TheLineup.tsx's own guard against a malformed payload keeps it
+        // permanently on its placeholder, which is a real state worth
+        // avoiding here since it's not what these tests are about.
+        if (url.startsWith("/api/lineup")) {
+          return Promise.resolve(new Response(JSON.stringify(LINEUP_RESULT), { status: 200 }));
         }
         return new Promise(() => {});
       }),
@@ -500,40 +521,55 @@ describe("ResultsPage", () => {
     });
   });
 
-  describe("The Order / The Lineup placeholder tiles (issue #197)", () => {
-    it("render both placeholder tiles, positioned after Beat the Bench and The Call Board in the 2x2 grid", () => {
+  describe("The Order placeholder tile (issue #197)", () => {
+    it("renders after Beat the Bench and The Call Board in the 2x2 grid", () => {
       render(<ResultsPage />);
 
       const bench = screen.getByRole("button", { name: /can you do better\?/i });
       const board = screen.getByRole("heading", { name: "The Call Board" }).closest("section")!;
       const order = screen.getByRole("group", { name: "The Order - coming soon" });
-      const lineup = screen.getByRole("group", { name: "The Lineup - coming soon" });
 
       // Same grid parent as the two real tiles -- the full 2x2 grid the
       // daily-hub-condensed mockup was originally sketched with, not a
       // second, separate grid.
       const grid = bench.closest("section")!.parentElement!;
       expect(order.closest("section")!.parentElement).toBe(grid);
-      expect(lineup.closest("section")!.parentElement).toBe(grid);
 
       // After both real, playable tiles -- per issue #197's own scope,
-      // these two are not ranked by the sibling play-history-ordering
-      // issue in this milestone (#196), and stay pinned in place.
+      // this is not ranked by the sibling play-history-ordering issue in
+      // this milestone (#196), and stays pinned in place.
       expect(bench.compareDocumentPosition(order) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(board.compareDocumentPosition(order) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(order.compareDocumentPosition(lineup) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
-    it("render both tiles as clearly non-interactive: no button/link/details, aria-disabled set", () => {
+    it("renders as clearly non-interactive: no button/link/details, aria-disabled set", () => {
       render(<ResultsPage />);
 
       const order = screen.getByRole("group", { name: "The Order - coming soon" });
-      const lineup = screen.getByRole("group", { name: "The Lineup - coming soon" });
 
       expect(order).toHaveAttribute("aria-disabled", "true");
-      expect(lineup).toHaveAttribute("aria-disabled", "true");
       expect(order.querySelector("button, a, details, summary, [tabindex]")).toBeNull();
-      expect(lineup.querySelector("button, a, details, summary, [tabindex]")).toBeNull();
+    });
+  });
+
+  describe("The Lineup (issue #208)", () => {
+    it("renders after The Order in the same 2x2 grid, and is a real, interactive tile", async () => {
+      render(<ResultsPage />);
+
+      const order = screen.getByRole("group", { name: "The Order - coming soon" });
+      const lineupSummary = await screen.findByTestId("the-lineup-summary");
+
+      const grid = order.closest("section")!.parentElement!;
+      expect(lineupSummary.closest("section")!.parentElement).toBe(grid);
+      expect(
+        order.compareDocumentPosition(lineupSummary) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+
+      // Unlike The Order, this is a real <details>/<summary> disclosure,
+      // not an inert placeholder -- issue #208 replaced its own
+      // placeholder export with the real, playable component.
+      expect(lineupSummary.tagName).toBe("SUMMARY");
+      expect(lineupSummary.closest("details")).not.toBeNull();
     });
   });
 
@@ -566,7 +602,11 @@ describe("ResultsPage", () => {
               ),
             );
           }
-          const body = url.startsWith("/api/beat-the-bench") ? SESSION : WINDOW_RESULT;
+          const body = url.startsWith("/api/beat-the-bench")
+            ? SESSION
+            : url.startsWith("/api/lineup")
+              ? LINEUP_RESULT
+              : WINDOW_RESULT;
           return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
         }),
       );
@@ -608,7 +648,9 @@ describe("ResultsPage", () => {
             ? SESSION
             : url.startsWith("/api/custom-anchors")
               ? { schemaVersion: RESULTS_SCHEMA_VERSION, anchors: TEST_ANCHORS }
-              : WINDOW_RESULT;
+              : url.startsWith("/api/lineup")
+                ? LINEUP_RESULT
+                : WINDOW_RESULT;
           return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
         }),
       );

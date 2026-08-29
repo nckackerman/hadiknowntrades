@@ -1,5 +1,13 @@
 // Non-functional placeholder tiles for The Order / The Lineup (issue #197).
 //
+// **Update (issue #208): The Lineup shipped for real** -- its own
+// placeholder export (`TheLineup`) has been removed from this file; see
+// apps/web/src/components/TheLineup.tsx for the real, playable
+// component (which reuses this file's own teal gradient/icon verbatim).
+// Everything below describing "both tiles"/"either tile" is historical,
+// describing the state before that issue, and still accurately describes
+// `TheOrder` below, which remains a placeholder.
+//
 // **Read issue #189 in full before touching this file.** Both games were
 // designed, mocked, then explicitly parked after an independent
 // staff-designer + staff-PM review found real, unresolved gaps: neither has
@@ -173,23 +181,8 @@ export function TheOrder() {
   );
 }
 
-const LINEUP_GRADIENT_AND_SHADOW_CLASSNAME =
-  "bg-[linear-gradient(155deg,#297a72_0%,#246b64_55%,#1c544f_100%)] shadow-[0_8px_22px_rgba(36,107,100,0.35),0_6px_18px_rgba(0,0,0,0.35)]";
-
-/**
- * The Lineup (issue #189): 5 mystery tickers, each exactly 3 letters,
- * guessed Wordle-style against a shared, limited guess budget. Teal, 🧩,
- * per issue #189's own assignment.
- */
-export function TheLineup() {
-  return (
-    <section>
-      <ComingSoonTile
-        icon="🧩"
-        title="The Lineup"
-        subtitle="Guess 5 mystery 3-letter tickers, Wordle-style, from limited clues."
-        gradientAndShadowClassName={LINEUP_GRADIENT_AND_SHADOW_CLASSNAME}
-      />
-    </section>
-  );
-}
+// The Lineup's own placeholder tile (issue #189/#197) has been replaced
+// by the real, playable TheLineup component -- see
+// apps/web/src/components/TheLineup.tsx (issue #208), which reuses this
+// file's own teal gradient/icon verbatim (unchanged, per that issue's
+// own Scope note) rather than a second copy living here.
