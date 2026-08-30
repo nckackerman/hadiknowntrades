@@ -9842,3 +9842,225 @@ no-sudo technique this file documents elsewhere) screenshot pass
 confirming all four games' collapsed tiles and expanded panels still
 render correctly and connect to each other exactly as before -- zero
 console/`pageerror` events across every pass.
+
+## Window-model result: a trade-event timeline replaces the chart as the primary at-a-glance visual (issue #209)
+
+`TradeReplay.tsx`'s own top piece used to be the hero row followed
+directly by `PortfolioChart` -- the full SVG chart, always rendered,
+always visible. This issue demotes the chart one click deeper and puts
+a new `TradeEventTimeline.tsx` in its place, per issue #200's own
+"demote the chart, lead with a timeline" direction (the option the user
+picked when asked earlier this same session). Scoped to the window
+model only (`TradeReplay.tsx`, 5Y/MAX/custom-anchor) -- the chained-
+intraday whole-range chart (`WholeRangeReplay.tsx`, 1W/1M/3M/1Y) is a
+structurally separate component with its own guess-then-reveal gate and
+its own chunked-replay pacing (see "Chunked 'Watch it happen' replay for
+1M/3M/1Y" above), explicitly out of scope here.
+
+- **`TradeEventTimeline.tsx`** is a new, small, presentation-only
+  component: an `<ol>` of tile-styled chips, one per trade (at most 3 for
+  the window model), each showing the ticker, an explicit "short" badge
+  when the trade is a short (nothing shown for a long -- the implicit,
+  more common case), the formatted open→close dates (`formatDate`), and
+  the signed return (`computeTradeReturn`/`formatPercent` -- the same
+  `trade-math.ts` helpers `TradeRow.tsx` already uses, not a fourth
+  independent re-derivation of this math). WCAG 1.4.1 gain/loss coloring
+  follows `CallBoard.tsx`'s own `OUTCOME_STYLES` glyph+color+sr-only-text
+  pattern -- a ▲/▼ icon-plate badge, a colored percent, and a full
+  sr-only sentence per chip, never color alone.
+- **Reads `packages/core`'s own `Trade[]` directly, threaded as a new
+  `trades` prop, not reconstructed from `PortfolioPoint[]`.**
+  `ResultsPanel.tsx`'s `WindowResultBody` already computes
+  `variant.trades` for `TradeList` a few lines below `TradeReplay` --
+  passed straight through as a second prop alongside the existing
+  `points`, rather than re-deriving open/close pairs from the chart's
+  own flattened point series (which `use-trade-replay.ts`'s own internal
+  segment builders already do once, for the chart itself -- doing it a
+  second time here would just be redundant work for no reason).
+- **Tile language, not a fourth gradient tile -- a real, considered
+  deviation from a literal reading of "this app's bold NYT-Games tile
+  treatment," documented rather than silently drifted from.** This
+  app's gradients are already a meaningful signal elsewhere (which of
+  the four daily-hub _games_ is this) -- painting three-or-fewer trade
+  chips the same way would misleadingly imply they're a fifth/sixth/
+  seventh distinct mechanic, not sequential entries in one list. The
+  chips borrow the icon-plate _device_ specifically (a small circular
+  glyph badge), built from this app's existing neutral surface +
+  status-color tokens rather than a new per-trade gradient.
+- **No `--status-good-wash`/`--status-critical-wash` global tokens
+  exist** (confirmed by grepping `globals.css` before writing the
+  component) -- only `--accent-reward-wash` does. The chip's icon-plate
+  background uses inline `rgba(74, 184, 111, 0.14)`/
+  `rgba(228, 107, 100, 0.14)`, the same de facto wash values
+  `TheLineup.tsx`'s own tile treatment already established as this
+  app's fallback convention for these two colors' missing tokens (see
+  that file's own identical fallback), rather than inventing new ones.
+- **The chart moves behind a plain React-state-controlled `<details>`,
+  not an uncontrolled native disclosure -- this was the one genuinely
+  load-bearing design decision, not a style preference.** "Watch it
+  happen"/"Skip to end" must force the disclosure open at the exact
+  moment they start the replay (per this issue's own acceptance
+  criteria), which an uncontrolled `<details>` has no declarative way to
+  do -- there's no prop to say "and also open, right now" without an
+  imperative DOM ref. `TradeReplay.tsx` now owns a plain `chartOpen`
+  boolean, rendered as `<details open={chartOpen} onToggle={(e) =>
+setChartOpen(e.currentTarget.open)}>` -- the native element stays the
+  real source of truth for a manual click on its own `<summary>`
+  (`onToggle` mirrors that back into React state), while `handlePlay`/
+  `handleSkipToEnd` (thin wrappers around the pre-existing `play`/
+  `skipToEnd` from `useTradeReplay`) call `setChartOpen(true)` before
+  delegating to the real hook function, so a still-closed disclosure is
+  never left behind while the chart is what's actually animating.
+- **`PortfolioChart` itself is completely unchanged** -- its own
+  `revealedCount`/`interactive`/`landing` props, the marker pulse/shake/
+  speech-bubble mechanics (issue #108), and every prior code-review fix
+  in this feature's long history are all untouched. Nesting it inside a
+  closed `<details>` needed no defensive `aria-hidden`/`inert` change on
+  this component's own part either -- a closed native `<details>`
+  already removes its content from both the tab order and the
+  accessibility tree for free (confirmed live below), the same
+  guarantee the chart's own `interactive` prop otherwise has to
+  establish by hand for the _open_-but-non-interactive case during
+  playback.
+- **A zero-trade result renders no timeline at all (not an empty
+  `<ol>`), but the chart's own disclosure still renders,
+  unconditionally** -- unchanged from this component's pre-#209
+  behavior of always showing the chart (a flat line, per issue #85's own
+  "`>= is good`" convention for a zero-trade window). `TradeEventTimeline`
+  itself has no zero-trade special case of its own (it would just render
+  an empty `<ol>` if handed `[]`) -- the empty-trades guard lives in
+  `TradeReplay.tsx`, the one caller that actually needs it, rather than
+  every future caller of the timeline component having to remember to
+  check first.
+- **jsdom does not hide a closed `<details>`'s content at all** (no
+  `details:not([open]) > *:not(summary) { display: none; }` rule in
+  jsdom 30's own default stylesheet, confirmed by reading it directly
+  rather than assumed) -- every pre-existing `TradeReplay.test.tsx` test
+  that queries the chart by its accessible role kept passing completely
+  unmodified despite the chart now living inside a disclosure closed by
+  default, since jsdom never actually computes it as hidden. **A real
+  browser does hide it** (confirmed live, below) -- this is the same
+  "jsdom is indifferent to closed-`<details>` visibility" gap this file's
+  own "Mobile layout pass" and issue #165 sections already document for
+  other disclosures in this app; worth remembering before trusting a
+  jsdom-only test suite to prove a disclosure's closed state is actually
+  invisible.
+- **Live-verified against a real local pipeline run** (`local-run.ts`,
+  the default 20-ticker sample, real Yahoo network calls) plus `next
+build`/`next start` (not `next dev` -- see issue #123's own repeatedly-
+  documented note on why headless Chromium can't hydrate a dev-mode page
+  in this sandbox) and the documented no-root headless-Chromium
+  workaround, at 1280px desktop and 375px mobile. A real 5Y result (3
+  real trades: AMD/MMM/AMD, $20 -> $1.1K, 57x) confirmed: the three
+  ticker chips render immediately with real tickers/dates/returns, no
+  interaction needed; the chart's own `<summary>` reads "View the
+  chart," closed by default (confirmed both via the DOM's own `open`
+  attribute and, in a real browser specifically, via `isVisible()` on
+  the chart's `<svg>` reporting `false` until opened -- the jsdom gap
+  above); manually clicking it opens the chart correctly; re-closing it,
+  then clicking "Watch it happen," force-opens it again with the
+  animated truncated chart visible mid-playback; "Skip to end" lands on
+  the real final chart, still open, with a "Replay" button. No
+  horizontal overflow at 375px beyond this app's own pre-existing,
+  documented `ChartDataTable` `min-w-[24rem]`/`overflow-x-auto`
+  self-scrolling exception (issue #135's own QA pass already names this
+  as correct, not a finding). Zero console errors or `pageerror` events
+  across every check. The temporary `playwright` devDependency and every
+  scratch verification script were reverted/deleted before committing,
+  per this file's own established convention; confirmed via `git
+status`/`git diff --stat` on `package.json`/`pnpm-lock.yaml` showing
+  no trace afterward.
+
+### Code-review follow-up -- two real, live-reproduced bugs, both from the same root cause
+
+A `high` review of the PR above found ten candidates; two were real,
+severe, and shared a single root cause -- `PortfolioChart` was always
+mounted, just visually hidden behind the closed `<details>`, and two of
+its own mount-time effects both assume "mounted" means "visible" (true
+for every pre-#209 caller, where this component was always rendered
+immediately). Both fixed with one change: `PortfolioChart` now mounts
+lazily (`{chartOpen && <PortfolioChart .../>}`), only at the moment it's
+genuinely about to be seen.
+
+- **`use-chart-tap-hint.ts`'s one-time touch discoverability pulse could
+  be permanently marked dismissed without ever being shown.** Its own
+  mount-only effect persists the dismissal synchronously the instant it
+  runs, on the theory (true before this issue) that a mount is a real,
+  visible mount. A first-time touch-primary visitor to a 5Y/MAX/custom-
+  anchor result would have silently burned this one-time hint the moment
+  the page loaded, well before ever clicking "View the chart" to
+  actually see it.
+- **The chart's own CSS reveal-on-mount animation
+  (`.portfolio-chart-reveal`) doesn't run at all while its ancestor
+  computes `display: none`, and genuinely restarts from scratch the
+  instant that ancestor becomes visible** (real, spec'd CSS behavior --
+  an element's animation progress isn't preserved across a `display:
+none` stint; this is the same mechanism behind the common
+  "toggle `display: none`/`block` to force-restart a CSS animation"
+  trick). Mounted-but-hidden meant this animation would fire for the
+  first time exactly when "Watch it happen" force-opens the disclosure
+  -- a reveal fade-in colliding visually with the live replay animation
+  starting at that same instant.
+- **Both gaps were invisible to the existing test suite for the same
+  reason**: jsdom applies no `details:not([open]) > *:not(summary) {
+display: none; }` rule at all (confirmed by reading its default
+  stylesheet directly, not assumed -- see this file's own repeated notes
+  on jsdom being indifferent to closed-`<details>` visibility elsewhere,
+  e.g. issue #165's own test note), so every jsdom test that queried the
+  chart by role kept finding it whether the disclosure was open or not.
+  **Live-verified, not just reasoned about**: a headless-Chromium pass
+  emulating a touch-primary device confirmed `hikt:chart-tap-hint-dismissed`
+  reads `null` right up until the chart is genuinely opened (not merely
+  mounted-but-hidden), the pulse itself is genuinely present once opened,
+  and only _then_ does the dismissal write land; a second pass sampled
+  `.portfolio-chart-reveal`'s own `getComputedStyle(...).opacity` every
+  100ms after a manual open and confirmed one clean climb from ~0 to
+  ~0.98 with no restart or double-trigger. Zero console/`pageerror`
+  events in either pass.
+- **Pre-existing `TradeReplay.test.tsx`/`ResultsPanel.test.tsx` tests
+  needed real updates, not just new assertions**, for the same jsdom-
+  blind-spot reason -- several tests asserted the chart's own accessible
+  role was present immediately at idle, relying on jsdom's own
+  indifference to the (pre-fix) mounted-but-hidden shape. With the chart
+  now genuinely absent from the DOM until opened, those tests now open
+  the disclosure by hand first (`user.click(screen.getByText("View the
+chart"))`) before asserting on it -- a real behavior-contract change to
+  document, not a mechanical patch to make a false assertion pass again.
+- **Two smaller findings, also fixed**: `TradeChip`'s sr-only sentence
+  hand-rolled the shorted/covered vs. bought/sold verb pair inline
+  instead of calling `trade-math.ts`'s own `tradeVerbsPast(direction)`
+  -- exactly the class of drift that helper was extracted to stop (see
+  that module's own header comment) -- and it never actually stated the
+  open/close prices in words at all, despite the adjacent `aria-hidden`
+  price span's own comment claiming it did (a real screen-reader
+  information gap, not just a stale comment -- fixed by adding the
+  prices to the sentence). Both `TheLineup.tsx`-style wash colors are
+  now `var(--status-good-wash, rgba(...))`/`var(--status-critical-wash,
+rgba(...))` strings (matching that file's own established fallback
+  pattern for this exact color pair) rather than bare `rgba(...)`
+  literals, so a future real token definition reaches this component
+  automatically instead of leaving it silently stale. `TradeEventTimeline`
+  is now `React.memo`'d (it re-renders on every RAF-driven replay frame
+  otherwise, for a `trades` prop that's stable for the whole run --
+  the identical class of waste this feature's own history already found
+  and fixed repeatedly elsewhere on this hot path). `handlePlay`/
+  `handleSkipToEnd`'s duplicated "force the chart open, then delegate"
+  shape is now one shared `openChartThen` helper.
+- **Two findings considered and deliberately not acted on**: `trades`/
+  `tradeCount` describing overlapping information via two independent
+  props (documented instead of collapsed -- several existing tests
+  deliberately vary `tradeCount` alone, holding `trades`/`points` fixed,
+  to isolate `canReplay`'s own gating from an unrelated `points`-
+  reference reset; deriving `tradeCount` here would have collapsed that
+  test isolation for a real call site where the two are already always
+  in sync); and `chartOpen` not resetting on a mode switch (considered,
+  not a bug -- the summary text is generic, not data-dependent, so
+  "stays whatever the user last chose" is defensible UX, not staleness).
+  A tenth finding (three structurally different chart-visibility-gating
+  mechanisms across `DailyHero.tsx`/`WholeRangeReplay.tsx`/this file) was
+  explicitly out of scope -- reconciling them would mean touching two
+  unrelated, already-shipped components for a scope this issue never
+  asked for, the same class of undisclosed scope expansion this file's
+  own issue #105 post-PR review history already flags as worth avoiding.
+- All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
+  1090 passing, `pnpm format:check`) re-ran green after every fix.

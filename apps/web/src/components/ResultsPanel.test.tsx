@@ -443,12 +443,16 @@ describe("ResultsPanel", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("renders the hero stat, chart, and trade list for a full success response", () => {
+  it("renders the hero stat, chart, and trade list for a full success response", async () => {
+    const user = userEvent.setup();
     const state: ResultsState = { status: "success", data: fixtureResult() };
     render(<ResultsPanel range="1Y" state={state} />);
 
     expect(screen.getAllByText("$20.00").length).toBeGreaterThan(0);
     expect(screen.getAllByText("$6.9K").length).toBeGreaterThan(0);
+    // The chart is behind a closed-by-default disclosure now (issue
+    // #209) -- open it by hand to confirm it's still the real chart.
+    await user.click(screen.getByText("View the chart"));
     expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
     expect(screen.getAllByText(/SNDK/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/MNST/).length).toBeGreaterThan(0);
@@ -538,7 +542,8 @@ describe("ResultsPanel", () => {
   // reading the series must keep rendering the rest of the panel
   // normally when it isn't there, rather than blanking the page or
   // throwing on a `.closes` read.
-  it("renders the whole panel normally whether benchmarkSeries is present, null, or missing entirely (issue #126)", () => {
+  it("renders the whole panel normally whether benchmarkSeries is present, null, or missing entirely (issue #126)", async () => {
+    const user = userEvent.setup();
     const withSeries: ResultsState = {
       status: "success",
       data: fixtureResult({
@@ -569,6 +574,9 @@ describe("ResultsPanel", () => {
     for (const state of [withSeries, withNullSeries, withMissingSeries]) {
       const { unmount } = render(<ResultsPanel range="1Y" state={state} />);
       expect(screen.getAllByText("$6.9K").length).toBeGreaterThan(0);
+      // The chart is behind a closed-by-default disclosure now (issue
+      // #209) -- open it by hand to confirm it's still the real chart.
+      await user.click(screen.getByText("View the chart"));
       expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
       expect(screen.getAllByText(/SNDK/).length).toBeGreaterThan(0);
       unmount();
@@ -1416,7 +1424,8 @@ describe("ResultsPanel", () => {
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     });
 
-    it("renders the hero stat, chart, and trade list for a full success response, with 'since <date>' copy instead of a preset range label", () => {
+    it("renders the hero stat, chart, and trade list for a full success response, with 'since <date>' copy instead of a preset range label", async () => {
+      const user = userEvent.setup();
       const state: ResultsState<CustomWindowResult> = {
         status: "success",
         data: fixtureCustomWindowResult(),
@@ -1425,6 +1434,9 @@ describe("ResultsPanel", () => {
 
       expect(screen.getAllByText("$20.00").length).toBeGreaterThan(0);
       expect(screen.getAllByText("$6.9K").length).toBeGreaterThan(0);
+      // The chart is behind a closed-by-default disclosure now (issue
+      // #209) -- open it by hand to confirm it's still the real chart.
+      await user.click(screen.getByText("View the chart"));
       expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
       expect(screen.getAllByText(/SNDK/).length).toBeGreaterThan(0);
       expect(screen.getByText(/best possible outcome since mar 1, 2019/i)).toBeInTheDocument();

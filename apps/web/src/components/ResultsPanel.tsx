@@ -247,6 +247,7 @@ function WindowResultBody({
     <FadeInWrapper>
       <TradeReplay
         points={points}
+        trades={variant.trades}
         tradeCount={variant.trades.length}
         heroKey={heroKey}
         startingCapital={data.startingCapital}

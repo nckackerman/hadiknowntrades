@@ -16,7 +16,9 @@
 // `landing` prop (see `ChartLanding`'s doc comment there) -- this file
 // only computes *what* landed (`landing`, below), never how it's drawn.
 
-import { useMemo, type ReactNode } from "react";
+import { useState, useMemo, type ReactNode } from "react";
+
+import type { Trade } from "@hadiknowntrades/core";
 
 import { formatHeroCurrency, formatMultiplier } from "@/lib/format-currency";
 import type { PortfolioPoint } from "@/lib/portfolio-series";
@@ -34,11 +36,41 @@ import {
   heroValueRowClassName,
 } from "@/components/HeroStat";
 import { PortfolioChart, type ChartLanding } from "@/components/PortfolioChart";
+import { TradeEventTimeline } from "@/components/TradeEventTimeline";
 
 interface TradeReplayProps {
   /** The already-rendered window-model result's own chart series (derivePortfolioSeries's output, already display-rescaled -- see ResultsPanel.tsx's own `points`). */
   points: readonly PortfolioPoint[];
-  /** How many trades this result has -- the button only renders with at least one (per the issue's own acceptance criteria). */
+  /**
+   * The same trades `TradeList` renders below (issue #209) -- passed
+   * separately from `points` rather than reconstructed from it, since
+   * `WindowResultBody` already has `variant.trades` on hand and
+   * re-deriving open/close pairs from the chart's own flattened point
+   * series would just redo work `use-trade-replay.ts`'s own internal
+   * segment builders already do. Rendered via `TradeEventTimeline` as
+   * this component's new primary, always-visible content -- see that
+   * component's own doc comment for the full reasoning (issue #200's own
+   * "demote the chart, lead with a timeline" direction). Empty for a
+   * zero-trade result, in which case the timeline renders nothing at all
+   * (the existing "Trades" section below already carries that empty
+   * state's own copy -- no reason to duplicate it here).
+   */
+  trades: readonly Trade[];
+  /**
+   * How many trades this result has -- the button only renders with at
+   * least one (per the issue's own acceptance criteria). **Deliberately
+   * not derived as `trades.length` inside this component** (a real
+   * question raised in code review): at the one real call site
+   * (`ResultsPanel.tsx`) both are always `variant.trades`/
+   * `variant.trades.length`, so they're never actually out of sync in
+   * production -- but several existing tests (see
+   * `TradeReplay.test.tsx`'s own "Skip to end stays available even if
+   * tradeCount drops to zero mid-playback" test) deliberately rerender
+   * with a changed `tradeCount` alone, holding `trades`/`points` fixed,
+   * specifically to isolate `canReplay`'s own gating from an unrelated
+   * `points`-reference reset. Deriving `tradeCount` here would collapse
+   * that test's own ability to change one variable at a time.
+   */
   tradeCount: number;
   /** Identifies "this result" -- passed straight through as HeroAndWorstCase's own `heroKey` (see that component's prop doc comment) and as PortfolioChart's own `key`, so both remount and replay their reveal animations on a genuine new result (a fetch, or a mode switch) but never mid-playback for any other reason. */
   heroKey: string;
@@ -64,20 +96,37 @@ export const buttonClassName =
   "self-start rounded-md border border-[var(--gridline)] px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] transition-colors hover:border-[var(--text-muted)] hover:text-[var(--text-primary)]";
 
 /**
- * Wraps the HeroStat + WorstCaseStat + PortfolioChart trio for a
- * window-model result (5Y/MAX, and custom-window anchors -- any range
- * using derivePortfolioSeries) with an opt-in "Watch it happen" replay.
+ * Wraps the HeroStat + WorstCaseStat + TradeEventTimeline + PortfolioChart
+ * quartet for a window-model result (5Y/MAX, and custom-window anchors --
+ * any range using derivePortfolioSeries) with an opt-in "Watch it
+ * happen" replay.
+ *
+ * **Issue #209 (resolving #200's "demote the chart, lead with a
+ * timeline" direction): `TradeEventTimeline` is now this component's
+ * primary, always-visible content, in the position `PortfolioChart` used
+ * to occupy -- the literal chart moved one click deeper, behind a plain
+ * React-state-controlled `<details>`.** Deliberately React state
+ * (`chartOpen`, see its own doc comment below), not an uncontrolled
+ * native disclosure: clicking "Watch it happen"/"Skip to end" has to be
+ * able to force the chart open programmatically the instant it starts
+ * animating, which an uncontrolled `<details>` has no declarative way to
+ * do. `PortfolioChart` itself, and everything about how it renders once
+ * visible, is completely unchanged by this issue -- it's only *mounted*
+ * lazily now, exactly when `chartOpen` first goes true, rather than
+ * always-mounted-but-visually-hidden (code review finding, fixed; see
+ * the `<details>` JSX's own doc comment below for the two real mount-
+ * time-effect bugs that shape was hiding).
  *
  * Returns a Fragment of two top-level pieces -- the hero/controls block
- * and the chart, not one wrapping div -- so both splice as direct
- * siblings into `WindowResultBody`'s own `FadeInWrapper` alongside the
- * "Trades" block below, preserving that flex column's own `gap-8`
- * spacing between all three (code-review finding, fixed: an earlier
- * version put both inside one shared `gap-2` div, which silently shrank
- * the pre-existing spacing between `children` -- BenchmarkStat, plus the
- * per-view methodology paragraph before issue #104 moved it into
- * AboutSection -- and the chart, on *every* page load, not just during
- * replay).
+ * and the timeline+chart block, not one wrapping div -- so both splice
+ * as direct siblings into `WindowResultBody`'s own `FadeInWrapper`
+ * alongside the "Trades" block below, preserving that flex column's own
+ * `gap-8` spacing between all three (code-review finding, fixed: an
+ * earlier version put both inside one shared `gap-2` div, which silently
+ * shrank the pre-existing spacing between `children` -- BenchmarkStat,
+ * plus the per-view methodology paragraph before issue #104 moved it
+ * into AboutSection -- and the chart, on *every* page load, not just
+ * during replay).
  *
  * Idle and done both render the *real*, untouched `HeroAndWorstCase`
  * pairing -- `HeroStat` inside it reveals fresh (a genuinely new
@@ -200,6 +249,7 @@ export const buttonClassName =
  */
 export function TradeReplay({
   points,
+  trades,
   tradeCount,
   heroKey,
   startingCapital,
@@ -212,6 +262,40 @@ export function TradeReplay({
 }: TradeReplayProps) {
   const reducedMotionAtMount = useReducedMotionAtMount();
   const { phase, frame, displayDate, play, skipToEnd, completedRuns } = useTradeReplay(points);
+
+  // Issue #209: the chart moved one click deeper, behind a disclosure,
+  // once TradeEventTimeline became this component's primary always-
+  // visible content. Plain React state, not an uncontrolled native
+  // <details> -- the issue's own acceptance criteria require this state
+  // to be under React's control so "Watch it happen"/"Skip to end" can
+  // force it open programmatically (see handlePlay/handleSkipToEnd
+  // below), which a bare uncontrolled <details> has no way to do short
+  // of an imperative DOM ref. Rendered as a real <details open={chartOpen}
+  // onToggle={...}> below rather than a hand-rolled show/hide div, so a
+  // user who wants to manually open/close it still gets a native,
+  // keyboard-and-screen-reader-accessible disclosure -- React's own
+  // controlled-`open`-prop support just keeps that native state and this
+  // component's own state from disagreeing.
+  const [chartOpen, setChartOpen] = useState(false);
+
+  // Shared by both buttons below (code-review finding, fixed -- an
+  // earlier version had `handlePlay`/`handleSkipToEnd` as two
+  // independent two-line wrappers with the same "force the chart open,
+  // then delegate" shape, which is exactly the kind of duplication that
+  // makes it easy to fix a future force-open behavior change at only one
+  // of the two call sites). Forces the chart open the instant playback
+  // starts or is skipped to the end -- per this issue's own acceptance
+  // criteria, the disclosure must never still be closed while
+  // PortfolioChart is what's actually animating.
+  function openChartThen(fn: () => void): () => void {
+    return () => {
+      setChartOpen(true);
+      fn();
+    };
+  }
+
+  const handlePlay = openChartThen(play);
+  const handleSkipToEnd = openChartThen(skipToEnd);
 
   // Memoized (code-review finding, issue #96 follow-up): constant for
   // the whole result, but this component re-renders on every one of the
@@ -473,12 +557,12 @@ export function TradeReplay({
             // `!showLive` instead, so there's one definition of "is this
             // an animated, non-live phase" instead of two kept in sync
             // by hand.
-            <button type="button" onClick={skipToEnd} className={buttonClassName}>
+            <button type="button" onClick={handleSkipToEnd} className={buttonClassName}>
               Skip to end
             </button>
           ) : (
             canReplay && (
-              <button type="button" onClick={play} className={buttonClassName}>
+              <button type="button" onClick={handlePlay} className={buttonClassName}>
                 {phase === "done" ? "Replay" : "Watch it happen"}
               </button>
             )
@@ -488,13 +572,66 @@ export function TradeReplay({
         {children}
       </div>
 
-      <PortfolioChart
-        key={heroKey}
-        points={points}
-        revealedCount={showLive ? undefined : frame.revealedCount}
-        interactive={showLive}
-        landing={landing}
-      />
+      <div className="flex flex-col gap-3">
+        {/* Empty for a zero-trade result (see this component's own
+            `trades` prop doc comment) -- renders nothing rather than an
+            empty list; the chart below still renders unconditionally,
+            unchanged from this component's pre-#209 behavior (a
+            zero-trade window shows a flat line, per issue #85). */}
+        {trades.length > 0 && <TradeEventTimeline trades={trades} />}
+
+        {/* Issue #209: the literal chart, unchanged, one click deeper --
+            see chartOpen's own doc comment above for why this is a
+            React-state-controlled <details>, not an uncontrolled one.
+            onToggle keeps this component's own state in sync with a
+            manual click on the <summary> itself (the native element is
+            still the source of truth for keyboard/AT interaction;
+            React's controlled `open` prop just mirrors it back). */}
+        <details open={chartOpen} onToggle={(event) => setChartOpen(event.currentTarget.open)}>
+          <summary className="cursor-pointer text-sm text-[var(--text-secondary)]">
+            {chartOpen ? "Hide the chart" : "View the chart"}
+          </summary>
+          {/* `PortfolioChart` only mounts once the disclosure is actually
+              open -- not always-mounted-but-visually-hidden (code review
+              finding, fixed). Two of its own mount-time effects assume
+              "mounted" means "visible," and a closed <details> breaks
+              that assumption in a real browser (jsdom never applies the
+              UA-stylesheet display:none rule for closed <details>
+              content -- see this file's own top-of-file doc comment --
+              so this gap was invisible to the test suite):
+              `use-chart-tap-hint.ts`'s one-time touch pulse hint
+              persists its own dismissal synchronously in a mount-only
+              effect, on the theory that "if this hook is running, the
+              hint is genuinely on screen" (true for every pre-#209
+              caller, where `PortfolioChart` was always rendered
+              immediately) -- mounted-but-hidden would burn that one-time
+              hint for a first-time touch visitor before they ever saw
+              it. And `.portfolio-chart-reveal`'s CSS reveal-on-mount
+              animation is inert while its ancestor computes
+              `display: none`, then genuinely restarts from its own
+              beginning the instant that ancestor becomes visible (real,
+              documented CSS behavior -- an element's animation doesn't
+              preserve progress across a display:none stint) -- mounting
+              behind a closed disclosure would make it fire for the first
+              time exactly when "Watch it happen" force-opens the
+              disclosure, colliding visually with the live replay
+              animation starting at that same instant. Lazy-mounting
+              sidesteps both: `PortfolioChart` only ever mounts at a
+              moment it's genuinely about to be seen, so both effects'
+              own "mount implies visible" assumption holds true again. */}
+          {chartOpen && (
+            <div className="mt-3">
+              <PortfolioChart
+                key={heroKey}
+                points={points}
+                revealedCount={showLive ? undefined : frame.revealedCount}
+                interactive={showLive}
+                landing={landing}
+              />
+            </div>
+          )}
+        </details>
+      </div>
     </>
   );
 }
