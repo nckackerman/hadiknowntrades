@@ -1,3 +1,4 @@
+import type { Trade } from "@hadiknowntrades/core";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +7,21 @@ import type { PortfolioPoint } from "@/lib/portfolio-series";
 import { createRafPump } from "@/lib/raf-pump.test-util";
 import { stubPrefersReducedMotion } from "@/lib/stub-prefers-reduced-motion.test-util";
 import { TradeReplay } from "./TradeReplay";
+
+// Mirrors POINTS below exactly -- the one real trade that series encodes
+// (an AAPL long, opened Jan 2 at $100, closed Jan 5 at $200, a 100%
+// return) -- so `trades` and `points` describe the same result the way
+// ResultsPanel.tsx's real `variant.trades`/`points` pair always does.
+const TRADES: Trade[] = [
+  {
+    ticker: "AAPL",
+    direction: "long",
+    openDate: "2024-01-02",
+    openPrice: 100,
+    closeDate: "2024-01-05",
+    closePrice: 200,
+  },
+];
 
 // Mirrors use-trade-replay.test.ts's own fixture -- a one-trade window,
 // start flat at $20, an "open" event, a mid-trade flat vertex, a "close"
@@ -37,6 +53,7 @@ const REWIND_COMPLETE_NOW = 1700;
 
 const BASE_PROPS = {
   points: POINTS,
+  trades: TRADES,
   tradeCount: 1,
   heroKey: "test-result",
   startingCapital: 20,
@@ -461,5 +478,69 @@ describe("TradeReplay (issue #96)", () => {
     expect(playing).toHaveLength(2);
     expect(playing[0]).toEqual(playing[1]);
     expect(playing[0]).toEqual(["$99.99", "$999.99", "$9.9K"]);
+  });
+
+  describe("trade event timeline + chart disclosure (issue #209)", () => {
+    it("renders the trade event timeline as primary, always-visible content, with the chart behind a closed-by-default disclosure", () => {
+      render(<TradeReplay {...BASE_PROPS} />);
+
+      // The timeline chip -- ticker, direction (implicit "long", no
+      // badge), and the real +100.0% return -- is on screen with no
+      // interaction needed.
+      expect(screen.getByText("AAPL")).toBeInTheDocument();
+      expect(screen.getByText("+100.0%")).toBeInTheDocument();
+
+      // The chart's own disclosure starts closed: its <summary> reads
+      // "View the chart", not "Hide the chart".
+      const summary = screen.getByText("View the chart");
+      expect(summary.closest("details")).not.toHaveAttribute("open");
+    });
+
+    it("renders no timeline at all for a zero-trade result -- the chart's own disclosure still renders, unconditionally", () => {
+      render(<TradeReplay {...BASE_PROPS} trades={[]} tradeCount={0} />);
+
+      expect(screen.queryByText("AAPL")).not.toBeInTheDocument();
+      expect(screen.getByText("View the chart")).toBeInTheDocument();
+    });
+
+    it("clicking Watch it happen force-opens the chart disclosure, even though it started closed", async () => {
+      createRafPump();
+      const user = userEvent.setup();
+      render(<TradeReplay {...BASE_PROPS} />);
+
+      expect(screen.getByText("View the chart").closest("details")).not.toHaveAttribute("open");
+
+      await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+
+      expect(screen.getByText("Hide the chart").closest("details")).toHaveAttribute("open");
+    });
+
+    it("clicking Skip to end also force-opens the chart disclosure", async () => {
+      createRafPump();
+      const user = userEvent.setup();
+      render(<TradeReplay {...BASE_PROPS} />);
+
+      await user.click(screen.getByRole("button", { name: "Watch it happen" }));
+      // Manually re-close it before Skip to end -- confirms the force-open
+      // is Skip to end's own doing, not a leftover from the Watch it
+      // happen click above.
+      await user.click(screen.getByText("Hide the chart"));
+      expect(screen.getByText("View the chart").closest("details")).not.toHaveAttribute("open");
+
+      await user.click(screen.getByRole("button", { name: "Skip to end" }));
+
+      expect(screen.getByText("Hide the chart").closest("details")).toHaveAttribute("open");
+    });
+
+    it("the disclosure can still be opened and closed by hand, independent of playback", async () => {
+      const user = userEvent.setup();
+      render(<TradeReplay {...BASE_PROPS} />);
+
+      await user.click(screen.getByText("View the chart"));
+      expect(screen.getByText("Hide the chart").closest("details")).toHaveAttribute("open");
+
+      await user.click(screen.getByText("Hide the chart"));
+      expect(screen.getByText("View the chart").closest("details")).not.toHaveAttribute("open");
+    });
   });
 });
