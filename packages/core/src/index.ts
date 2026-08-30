@@ -38,7 +38,6 @@ export {
   collectTradingDates,
   optimizeTrades,
   optimizeWorstTrades,
-  optimizeBothDirections,
   optimizeAllVariants,
   OptimizerInputError,
 } from "./optimizer";

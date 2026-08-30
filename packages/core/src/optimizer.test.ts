@@ -955,7 +955,7 @@ describe("optimizeAllVariants: hand-verified fixtures (issue #13)", () => {
     ]);
   });
 
-  it("includeShorts: false call paths (optimizeTrades/optimizeWorstTrades/optimizeBothDirections) never produce a short trade -- long-only behavior provably unchanged", () => {
+  it("includeShorts: false call paths (optimizeTrades/optimizeWorstTrades) never produce a short trade -- long-only behavior provably unchanged", () => {
     // A ticker that's only profitable via a short (see the first test
     // above) -- optimizeTrades itself (not optimizeAllVariants) must
     // still find nothing, proving includeShorts stays false on this path.
@@ -963,6 +963,21 @@ describe("optimizeAllVariants: hand-verified fixtures (issue #13)", () => {
     const result = optimizeTrades(prices, { startingCapital: 20, maxTrades: 1 });
     expect(result.trades).toEqual([]);
     expect(result.endingBalance).toBe(20);
+
+    // optimizeWorstTrades over the same fixture is a genuinely different
+    // case, not just a second call to the same assertion: the long trade
+    // (100 -> 50, a real 0.5x loss) is *worse* than not trading at all
+    // (1x), so the worst-case search actually picks it -- unlike
+    // optimizeTrades' own "finds nothing" case above. What this proves
+    // is narrower and just as important: the trade it picks is a LONG,
+    // never the SHORT that would be profitable here (and therefore never
+    // the worst outcome) -- confirming includeShorts stays pinned false
+    // on this path too, not merely that this fixture happens to produce
+    // no trade at all.
+    const worst = optimizeWorstTrades(prices, { startingCapital: 20, maxTrades: 1 });
+    expect(worst.trades).toHaveLength(1);
+    expect(worst.trades[0]?.direction).toBe("long");
+    expect(worst.endingBalance).toBe(10);
   });
 });
 
