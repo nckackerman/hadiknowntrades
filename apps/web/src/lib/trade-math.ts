@@ -20,7 +20,7 @@
 // always matches what the optimizer itself used to compound
 // endingBalance -- no drift between two implementations of the same math.
 
-import type { TradeDirection } from "@hadiknowntrades/core";
+import { isValidPrice, type TradeDirection } from "@hadiknowntrades/core";
 
 export interface TradeReturn {
   /** closePrice / openPrice - 1 for a long, openPrice / closePrice - 1 for a short. Negative for a loss leg. */
@@ -55,7 +55,12 @@ export class InvalidTradePriceError extends Error {
 }
 
 function assertValidPrice(value: number, label: string): void {
-  if (!Number.isFinite(value) || value <= 0) {
+  // Delegates to packages/core's own isValidPrice (Number.isFinite(v) &&
+  // v > 0) rather than re-deriving the same check a third time --
+  // beat-the-bench.ts/call-board-scoring.ts already made this same call
+  // for the identical predicate; this file's own historical duplicate
+  // (from before that precedent existed) is fixed here to match.
+  if (!isValidPrice(value)) {
     throw new InvalidTradePriceError(label, value);
   }
 }
