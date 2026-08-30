@@ -18,8 +18,11 @@
 // (below) can never collide with a real per-day key -- every per-day key
 // is a `YYYY-MM-DD` date string, and "history" is not one.
 
+import { isBooleanArray } from "./is-boolean-array";
+import { isFiniteNumber } from "./is-finite-number";
 import { LINEUP_COLUMNS } from "./lineup-game";
 import { readLocalStorage, writeLocalStorage } from "./local-storage";
+import { parseJson } from "./parse-json";
 
 const KEY_PREFIX = "hikt:the-lineup:";
 const HISTORY_KEY = `${KEY_PREFIX}history`;
@@ -39,28 +42,13 @@ function resultKeyFor(date: string): string {
   return `${KEY_PREFIX}${date}`;
 }
 
-function parseJson(raw: string | null): unknown {
-  if (raw === null) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
 function isLineupOutcome(value: unknown): value is LineupOutcome {
   return value === "won" || value === "lost";
 }
 
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
 /**
  * One completed day's Lineup result -- everything TheLineup.tsx's own
- * post-game state needs to render without replaying the board, and
- * everything the recap line (lib/daily-ritual.ts) needs to describe the
- * outcome without leaking which tickers were involved.
+ * post-game state needs to render without replaying the board.
  *
  * `totalTiles` (the sum of the day's 5 real ticker lengths, 15-20) is
  * stored here rather than recomputed from a fresh LineupResult fetch --
@@ -102,7 +90,6 @@ function isLineupPlayedResult(value: unknown): value is LineupPlayedResult {
     isFiniteNumber(columnsSolved) &&
     isFiniteNumber(tilesFilled) &&
     isFiniteNumber(totalTiles) &&
-    Array.isArray(lockedColumns) &&
     // Exactly LINEUP_COLUMNS (5) entries, not just "an array of
     // booleans" -- TheLineup.tsx reads lockedColumns[i] for every i up
     // to LINEUP_COLUMNS - 1 unconditionally once this parses as valid, so
@@ -110,8 +97,7 @@ function isLineupPlayedResult(value: unknown): value is LineupPlayedResult {
     // `undefined` (falsy) for the missing indices, rendering an
     // actually-solved column as "revealed/lost" instead of "exact/solved"
     // on a cold reload.
-    lockedColumns.length === LINEUP_COLUMNS &&
-    lockedColumns.every((v) => typeof v === "boolean")
+    isBooleanArray(lockedColumns, LINEUP_COLUMNS)
   );
 }
 

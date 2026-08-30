@@ -8650,7 +8650,14 @@ issue-tracking ceremony.
   growing to ~645px/700px once revealed -- close to the old fixed 640px
   (40rem), confirming nothing is clipped by the new floor.
 - **`BeatTheBench.tsx`'s expanded view is collapsible again, not a
-  one-way mount.** Issue #163's own original design deliberately chose a
+  one-way mount.** (**Superseded** by the later "Header consistency fix"
+  described in this file's own "'Today's recap' removed outright, and a
+  deep-clean pass" section: the separate "Collapse" button/`handleCollapse`
+  this bullet describes were removed outright, replaced by the tile
+  itself staying clickable in both directions -- read that section for
+  the current, accurate mechanism. This bullet is left as-is as a
+  historical record of what this pass originally shipped and why.)
+  Issue #163's own original design deliberately chose a
   plain button over a native `<details>` specifically because "there's
   nothing here that needs to also collapse back closed" -- that premise
   changed. `BeatTheBenchFrame`'s header now carries a "Collapse" button
@@ -8879,7 +8886,7 @@ combination.
   experience is ever considered worth restoring for a visitor who
   expands the explorer.
 
-## Connecting each game tile's expanded panel to the tile that opened it (issue #195)
+## Connecting each game tile's expanded panel to the tile that opened it (issue #195, unified across all four games by a later header-consistency fix)
 
 Before this issue, clicking either compact tile (issue #163/#176's Beat
 the Bench, issue #164/#177's The Call Board) swapped its bold
@@ -8900,17 +8907,20 @@ tile's own darkest gradient stop as a shared accent:
    expanded panel, tinted with a ~15% wash of the same accent
    (`${CONNECTOR_ACCENT}26`, an 8-digit hex alpha), sitting beside a
    visible heading naming the mechanic.
-3. **The Call Board's `<details>` additionally gets flush corners**,
-   since its tile stays mounted as the (still-clickable) `<summary>`
-   while open, unlike Beat the Bench's tile, which fully unmounts on
-   expand (a plain `useState` toggle, not a `<details>`) -- see the two
-   files' own top-of-file notes. `<details className="group">`, the
-   `<summary>` gains `group-open:rounded-b-none`, and the body wrapper
-   drops its `mt-3` gap and `surface-card` shadow, flips to
-   `rounded-t-none rounded-b-2xl`, and swaps its uniform `border` for
-   `border-x border-b` (no top) plus the new `border-t-4` accent -- so
-   it reads as unfolding directly out of the tile rather than a separate
-   floating card.
+3. **Flush corners**: the tile's own bottom corners square off
+   (`rounded-b-none`) once its panel is open, and the panel itself drops
+   its top rounding (`rounded-t-none`) to meet it, reading as one tile
+   unfolding rather than two stacked cards. The Call Board does this via
+   `<details className="group">` + `group-open:rounded-b-none` on the
+   `<summary>` (its tile is a real, always-mounted DOM element whose
+   `open` state CSS can key off directly). Beat the Bench has no native
+   disclosure to key a CSS variant off -- its tile is a plain `useState`
+   toggle -- so it swaps the same classes outright in JS based on the
+   `expanded` boolean instead (see `CompactCard`'s own `liftClasses`).
+   Both tiles now stay permanently mounted regardless of panel state (see
+   the "Header consistency" note below); before that fix, Beat the
+   Bench's tile fully unmounted on expand and this device didn't apply
+   to it at all.
 4. No transition/animation on either device, per the issue's own scope.
 
 **`CONNECTOR_ACCENT` is derived from each file's own existing gradient
@@ -8936,11 +8946,11 @@ _derive_ the value at all:
   itself is now built from them via template literal, and
   `CONNECTOR_ACCENT` just reads the last array element directly.
 
-**Hover-lift vs. the flush seam (The Call Board only).** `<summary>`
-already had `hover:-translate-y-0.5 hover:scale-[1.015]
-active:translate-y-0 active:scale-[0.99]` (issue #177/#186) -- once open
-and flush against the body below (device #3), that lift would visibly
-tear the seam on hover. Fixed by adding
+**Hover-lift vs. the flush seam.** `<summary>`/the tile button already
+had `hover:-translate-y-0.5 hover:scale-[1.015] active:translate-y-0
+active:scale-[0.99]` (issue #177/#186) -- once open and flush against
+the body below (device #3), that lift would visibly tear the seam on
+hover. The Call Board fixes this by adding
 `group-open:hover:translate-y-0 group-open:hover:scale-100`, relying on
 Tailwind's own variant-count-based rule ordering (a two-variant rule
 like `group-open:hover:` is always emitted after a one-variant rule
@@ -8948,15 +8958,21 @@ targeting the same property, regardless of source order in the
 `className` string, which is exactly why "the order of classes in your
 HTML never matters" holds in Tailwind generally) to make the
 more-specific suppression win while both rules are simultaneously
-active. **Live-verified, not just asserted**: a real Playwright hover
-against the running production server read `getComputedStyle(el)`'s
-`translate`/`scale` longhands (Tailwind v4's transform utilities set
-these, not the `transform` shorthand, so asserting `transform` alone
-reads `"none"` regardless of state and proves nothing) -- collapsed +
-hover genuinely applies `translate: 0px -2px; scale: 1.015`, expanded +
-hover genuinely settles at `translate: 0px; scale: 1`, and the
-summary's own `border-bottom-left-radius` reads `0px` once open,
-confirming the flush-seam device too.
+active. Beat the Bench has no `group-open:` to key off (no native
+disclosure), so `CompactCard` swaps the whole hover-lift class pair
+outright via a plain JS ternary on `expanded` instead -- simpler than
+CallBoard's variant-ordering trick, and available to Beat the Bench
+specifically because `expanded` is already real React state rather than
+CSS-only `<details>` state. **Live-verified, not just asserted**: a real
+Playwright hover against the running production server read
+`getComputedStyle(el)`'s `translate`/`scale` longhands (Tailwind v4's
+transform utilities set these, not the `transform` shorthand, so
+asserting `transform` alone reads `"none"` regardless of state and
+proves nothing) -- collapsed + hover genuinely applies `translate: 0px
+-2px; scale: 1.015`, expanded + hover genuinely settles at `translate:
+0px; scale: 1`, and the tile's own `border-bottom-left-radius` reads
+`0px` once open, confirming the flush-seam device too (checked for both
+games).
 
 **Factual correction to the original plan, confirmed by reading the
 component before touching it**: the plan claimed The Call Board's
@@ -8973,31 +8989,53 @@ top-level section via `getByRole("heading", { name })`) needed a
 specifically, not either of the two same-named headings ambiguously,
 once the board is expanded in a test.
 
-**The visual-symmetry question (Beat the Bench's thinner treatment --
-border + icon only, no flush seam, since its tile fully unmounts)** was
-explicitly checked live, not assumed: both tiles' expanded panels were
-screenshotted side by side (1280px and 375px) after this fix. Beat the
-Bench's rounded, floating panel -- carrying the identical accent-colored
-border and icon the collapsed tile itself uses, positioned immediately
-adjacent to it -- reads as clearly connected to its own tile, not
-meaningfully weaker than The Call Board's flush-seam treatment; the two
-devices (border + icon) alone were judged sufficient without adding a
-third (e.g. a colored ambient glow) specifically to compensate. Beat the
-Bench keeps `rounded-lg` on every corner (not `rounded-t-none`) since,
-unlike The Call Board, there is no tile left mounted above it once
-expanded to flush against -- forcing square top corners there would just
-look like an accidental rounding bug, not a connector device.
+**Header-consistency fix (direct user feedback, later pass): Beat the
+Bench's tile now stays mounted and unchanged across expand/collapse,
+exactly like The Call Board's `<summary>`.** The original version of
+this issue accepted an intentional asymmetry here -- Beat the Bench's
+tile fully unmounted on expand, replaced by a differently-styled header
+(a smaller icon, a shortened title "Beat the Bench" instead of "Can you
+do better?", a separate "▾ Collapse" text link) -- and that asymmetry
+was explicitly checked live and judged acceptable at the time (both
+tiles' expanded panels screenshotted side by side, Beat the Bench's
+rounded floating panel judged "not meaningfully weaker" than The Call
+Board's flush-seam treatment). Comparing all four daily-hub games side
+by side after The Order/The Lineup shipped surfaced that it read as
+inconsistent in practice -- clicking Beat the Bench's tile visibly swapped
+it for a different component, unlike the other three. Fixed by making
+`CompactCard` (Beat the Bench's tile) permanently mounted regardless of
+`expanded`, matching `<summary>`'s own always-present nature, and giving
+`BeatTheBenchFrame`'s panel the exact same flush-corner/icon+`<h3>`-header
+treatment The Call Board already had (`rounded-t-none` against the
+tile's own new `rounded-b-none`, no more separate "Collapse" button --
+the tile itself, still visible above, is what you click again). See
+`BeatTheBench.tsx`'s own top-of-file note and `CompactCard`/
+`BeatTheBenchFrame`'s own doc comments for the current, accurate
+picture -- this section's devices #1/#2 above are unchanged by that fix,
+only device #3 (flush corners) newly applies to both games instead of
+The Call Board alone.
 
-`CallBoard.test.tsx`/`BeatTheBench.test.tsx` both gained a dedicated
-test for the new border-color/icon/heading (and, for The Call Board, the
-`group`/flush-corner/no-`surface-card` structure) -- see each file's own
-"issue #195" test. Live-verified via `next build`/`next start` (this
-sandbox's headless Chromium can't hydrate `next dev`, per this file's
-own established note) against a real `LOCAL_RESULTS_DIR` pipeline run:
-screenshotted both tiles collapsed/expanded at 1280px and 375px,
-confirmed keyboard nav (`Tab` to the summary, `Enter` toggles it closed
-again -- native `<details>`/`<summary>` behavior, untouched by this
-issue), and zero console/`pageerror` events across every pass.
+Both tiles now carry a stable sr-only `<h2>` landmark heading at every
+state (Beat the Bench gained this as part of the same fix, mirroring The
+Call Board's pre-existing `<h2 id="call-board-heading">`), decoupled
+from whichever visible marketing copy the tile itself shows -- see
+`ResultsPage.test.tsx`'s own `sectionFor` helper, now shared by both
+games' section-lookup logic (Beat the Bench previously needed its own
+separate `benchSection` helper specifically because its heading didn't
+exist until expanded; deleted once the landmark heading became
+permanent).
+
+`CallBoard.test.tsx`/`BeatTheBench.test.tsx` both carry a dedicated test
+for the border-color/icon/heading connector devices (and, for both
+games now, the flush-corner/no-`surface-card` structure) -- see each
+file's own "issue #195" test. Live-verified via a real Chromium
+screenshot pass (the `apt-get download`/`dpkg-deb -x` no-sudo technique
+documented below) against a running `next dev` server with real
+`LOCAL_RESULTS_DIR` data: both tiles' collapsed and expanded states
+screenshotted at 1280px, confirming the tile stays visually unchanged
+(marketing copy, gradient, status pill all intact) with only its bottom
+corners squaring off once its own panel opens beneath it, and the panel
+reading as flush against it rather than a separate floating card.
 
 ### `high` code review: two findings, both fixed before merge
 
@@ -9649,3 +9687,158 @@ win,lose}.png` closely -- comfortably at the folder's own stated ~99%
   slot's ticker and position untouched (including the all-locked
   no-op case) -- matching the issue's own acceptance criterion
   literally, not just covering the happy path.
+
+## "Today's recap" removed outright, and a deep-clean pass across the daily-hub game system (direct user request, not a filed issue)
+
+Three direct asks in one session, not a GitHub issue: (1) make Beat the
+Bench's expand/collapse header behavior match the other three daily-hub
+games, (2) remove the "Today's recap" section entirely, (3) a "deep deep"
+cleanup pass on the daily-hub game system for readability/maintainability/
+reuse. All three shipped in one pass, verified live and via the full test
+suite at every step -- see git history for the exact diff, this section is
+the "why," not a change log.
+
+**(1) Beat the Bench's tile now stays mounted and visually unchanged
+across expand/collapse, exactly like The Call Board's `<summary>`.** See
+this file's own "Connecting each game tile's expanded panel to the tile
+that opened it" section above for the full before/after -- that section
+now documents the corrected, unified behavior directly rather than
+carrying a separate addendum.
+
+**(2) The whole recap disclosure (`DailyRitual.tsx`, "Today's recap
+unlocks after you play Beat the Bench" / "Today's recap is ready --
+Copy") is gone, deleted outright, not just hidden.** Direct user
+feedback: it added little on top of what the two game tiles already show
+at a glance (their own corner status badges, already extracted to
+`STEP_STYLES` back when issue #186 condensed the old always-visible
+status rail into this same disclosure). `ResultsPage.tsx` now goes
+straight from the daily-hub game grid into the demoted "Explore other
+windows" section.
+
+**This removal cascaded into a real, mechanical dead-code sweep** --
+each piece confirmed to have zero remaining consumers before deletion,
+not assumed:
+
+- `apps/web/src/components/DailyRitual.tsx` + its test, and
+  `apps/web/src/lib/use-daily-ritual.ts` (its only consumer) -- deleted
+  outright.
+- `apps/web/src/lib/copy-text.ts` + its test -- the clipboard-write
+  helper built specifically for the recap's "Copy" button, with zero
+  other callers anywhere in the app once `DailyRitual.tsx` was gone.
+- `apps/web/src/lib/headline-figure.ts`'s `headlineFigureFor`/
+  `HeadlineFigure` -- the "which figure does the active view headline
+  right now" computation `ResultsPage.tsx` fed the recap, with no other
+  caller. That file's _other_ export, `wholeRangeFinalBalance` (real
+  consumers: `ResultsPanel.tsx`, described from `WholeRangeReplay.tsx`/
+  `WholeRangeBalance.tsx`/`og-card.ts`'s own doc comments), survives --
+  the file was renamed to `whole-range-balance.ts` so its name matches
+  what's actually left in it, not a stale name from a computation that's
+  now gone. 6 import-path updates, all comment-only elsewhere (the other
+  "consumers" `grep` first turned up were just doc-comment mentions
+  pointing at `ResultsPanel.tsx`'s own copy, not real imports).
+- `apps/web/src/lib/local-storage.ts`'s entire "Change notification
+  (issue #133)" subsystem (`listeners`, `notifyLocalStorageListeners`,
+  `subscribeToLocalStorage`, and the `notifyLocalStorageListeners()` call
+  inside `writeLocalStorage`) -- its own header comment stated its whole
+  purpose explicitly: "The daily ritual's status rail summarises state
+  that three _other_ features own and write... It has to re-read the
+  moment any of them writes." With that rail gone, `subscribeToLocalStorage`
+  had zero real callers left (confirmed via repo-wide `grep`) -- the file
+  reverted to the two plain defensive read/write wrappers it had before
+  issue #133 ever touched it. Its own 5-test `describe` block went with
+  it.
+- `apps/web/src/lib/beat-the-bench-storage.ts`'s `readAnyPlayedSession`/
+  `BEAT_THE_BENCH_MODES` -- written specifically for "did you play today,
+  in _any_ mode" (the rail's own question), zero other callers once the
+  rail was gone.
+- Every stale doc-comment reference to any of the above, across
+  `DailyHero.tsx`, `select-variant.ts`, `lineup-storage.ts`, and
+  `BeatTheBench.tsx` itself, corrected rather than left dangling.
+
+**(3) The deep-clean pass, scoped to the daily-hub game system** (the
+four game components and their supporting `lib/` modules -- not a
+repo-wide pass; the chart/optimizer/pipeline areas already have their
+own dedicated history of focused cleanup passes, see this file's and the
+other nested `CLAUDE.md`s' own entries). Real, verified findings, not
+performative churn -- every extraction below was applied only once a
+genuine second (or third/fourth) real consumer existed, matching this
+codebase's own established "not written speculatively ahead of a need"
+discipline (see `use-hydrated-local-storage-state.ts`'s own doc comment
+for the precedent):
+
+- **`isFiniteNumber`** (`typeof value === "number" && Number.isFinite(value)`)
+  was byte-for-byte duplicated between `beat-the-bench-storage.ts` and
+  `lineup-storage.ts` -- extracted to `lib/is-finite-number.ts`
+  (matching `packages/core/src/is-valid-price.ts`'s own established
+  one-predicate-per-file convention), both call sites updated,
+  `beat-the-bench-storage.ts`'s own inline `JSON.parse`/try-catch also
+  folded into the next finding below while touching that function anyway.
+- **`parseJson`** (`raw === null ? null : try JSON.parse(raw) catch null`)
+  was byte-for-byte duplicated _three_ times (`call-board-storage.ts`,
+  `order-storage.ts`, `lineup-storage.ts`), with `beat-the-bench-storage.ts`
+  carrying a fourth, differently-shaped inline copy of the identical
+  logic -- extracted to `lib/parse-json.ts`, all four call sites updated
+  to the shared version.
+- **`isBooleanArray(value, length)`** (a real array of exactly `length`
+  booleans) existed as a named function in `order-storage.ts` and as
+  equivalent inline logic in `lineup-storage.ts`'s own
+  `isLineupPlayedResult` -- extracted to `lib/is-boolean-array.ts`, both
+  call sites updated. `isStringArray`/`isOrderFeedbackArray`
+  (`order-storage.ts`'s other two length-checked-array validators)
+  deliberately left where they are -- each has exactly one real
+  consumer, and extracting them now would be the exact "premature
+  abstraction with only one consumer" this codebase's own code-review
+  history (see this file's other entries) has already flagged and
+  declined to do elsewhere.
+- **`GamePanelHeader`** (`apps/web/src/components/GamePanelHeader.tsx`,
+  new): the icon-plate + `<h3>` heading row every game's expanded panel
+  opens with (issue #195's connector device #2) was hand-duplicated,
+  essentially verbatim, across all four game components once Beat the
+  Bench's own tile stopped fully unmounting on expand (fix (1) above) --
+  the same `h-9 w-9`/`text-lg` icon span, the same
+  `text-sm font-medium text-[var(--text-primary)]` `<h3>`, the same
+  `${accentColor}26` wash, differing only in which icon/title/accent
+  each caller passed. All four (`BeatTheBench.tsx`, `CallBoard.tsx`,
+  `TheOrder.tsx`, `TheLineup.tsx`) now render the shared component,
+  passing their own icon/accent/title as props, instead. Zero test
+  changes needed anywhere -- every game's own test suite finds this
+  content by role/text/testid, not by DOM structure, confirming the
+  extraction changed nothing about what actually renders.
+- **`TheLineup.tsx`'s own `CONNECTOR_ACCENT`** (new): the only one of
+  the four games with no named accent constant at all -- `#1c544f`
+  (the gradient's own darkest stop, already present a third time inside
+  `LINEUP_GRADIENT_AND_SHADOW_CLASSNAME`'s own Tailwind bracket-value
+  class) was hand-typed as two separate raw string literals (the panel's
+  `borderTopColor`, the icon plate's `backgroundColor` wash). Named once,
+  matching `TheOrder.tsx`'s own established "just a single hardcoded
+  named constant, not a regex-extraction" precedent for this exact
+  situation (`CallBoard.tsx`'s heavier regex-extraction approach exists
+  only because its gradient is a Tailwind bracket-value class that
+  genuinely can't be _built from_ a JS constant the way an inline
+  `style` gradient can -- see this file's own "Connecting each game
+  tile's expanded panel" section for that distinction; it doesn't apply
+  here as a reason not to just hardcode one constant).
+- **`BeatTheBench.tsx`'s own control flow simplified** as a direct
+  consequence of fix (1): the old 7-way early-return ladder (one branch
+  per mode/loading/error combination, each independently re-wrapping
+  `<BeatTheBenchFrame>`) collapsed into a single `renderGameContent()`
+  helper and one final `return`, since the frame now only ever renders
+  once, in one place, rather than once per branch.
+- **Explored and deliberately left alone**: the four games' own
+  outcome/feedback-glyph systems (`CallBoard.tsx`'s `OUTCOME_STYLES`,
+  `TheOrder.tsx`'s exact/close/far scoring,
+  `TheLineup.tsx`'s exact/rowmatch/colmatch/absent classification) look
+  superficially similar (each is a glyph-plus-class-name-per-state
+  WCAG-1.4.1 pattern) but encode genuinely different numbers of states
+  with different domain meanings per game -- forcing
+  a shared shape onto them would be the same class of premature,
+  wrong-direction abstraction this section's `isStringArray` note above
+  already declined elsewhere, not a real duplication.
+
+Full verification after every change in this pass, not just at the end:
+`pnpm typecheck`/`lint`/`test`/`build`/`format:check` all green, plus a
+real `next dev` + Playwright (the `apt-get download`/`dpkg-deb -x`
+no-sudo technique this file documents elsewhere) screenshot pass
+confirming all four games' collapsed tiles and expanded panels still
+render correctly and connect to each other exactly as before -- zero
+console/`pageerror` events across every pass.

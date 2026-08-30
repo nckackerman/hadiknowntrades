@@ -53,6 +53,7 @@ import {
 import type { OrderDayState } from "@/lib/order-storage";
 import { useOrderGame, type OrderView } from "@/lib/use-order-game";
 import { useTheOrderPuzzle } from "@/lib/use-the-order";
+import { GamePanelHeader } from "@/components/GamePanelHeader";
 
 const ICON = "🏁";
 const TITLE = "The Order";
@@ -573,16 +574,7 @@ export function TheOrder() {
             className="flex flex-col gap-6 rounded-t-none rounded-b-2xl border-x border-b border-t-4 border-[var(--gridline)] bg-[var(--surface-1)] px-4 pt-4 pb-5"
             style={{ borderTopColor: CONNECTOR_ACCENT }}
           >
-            <div className="flex items-center gap-2">
-              <span
-                aria-hidden="true"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-lg"
-                style={{ backgroundColor: `${CONNECTOR_ACCENT}26` }}
-              >
-                {ICON}
-              </span>
-              <h3 className="text-sm font-medium text-[var(--text-primary)]">{TITLE}</h3>
-            </div>
+            <GamePanelHeader icon={ICON} accentColor={CONNECTOR_ACCENT} title={TITLE} />
 
             <OrderBoard
               puzzle={puzzle}

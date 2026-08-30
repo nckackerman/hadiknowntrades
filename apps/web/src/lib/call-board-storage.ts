@@ -30,8 +30,10 @@ import {
   type CallScore,
   type ResolvedCall,
 } from "./call-board-scoring";
+import { isFiniteNumber } from "./is-finite-number";
 import { isPickEditable } from "./market-calendar";
 import { readLocalStorage, writeLocalStorage } from "./local-storage";
+import { parseJson } from "./parse-json";
 
 // Namespaced distinctly from every other feature's prefix ("hikt:range-guess:",
 // "hikt:startingCapital", ...) so no coordination between features is needed.
@@ -67,15 +69,6 @@ function isCallBucket(value: unknown): value is CallBucket {
 /** The stored shape of one day's pick. An object rather than a bare bucket string so a later field (a timestamp, a note) is an additive value change, not a stored-format migration. */
 interface StoredPick {
   bucket: CallBucket;
-}
-
-function parseJson(raw: string | null): unknown {
-  if (raw === null) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
 }
 
 /** The viewer's pick for `date`, or `null` if they haven't called that day (or storage is unavailable, or holds something malformed). */
@@ -131,8 +124,7 @@ function isResolvedCall(value: unknown): value is ResolvedCall {
     date.length > 0 &&
     isCallBucket(pick) &&
     isCallBucket(actual) &&
-    typeof moveFraction === "number" &&
-    Number.isFinite(moveFraction) &&
+    isFiniteNumber(moveFraction) &&
     isCallScore(score)
   );
 }

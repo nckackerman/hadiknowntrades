@@ -10,14 +10,15 @@
 // storage-blocking policy, SSR) degrades to "you haven't played yet" --
 // the game stays fully playable, it just won't remember.
 //
-// **Keyed per (date, mode), which is why issue #133's status rail can
-// build on it directly.** The date is the *session's own trading date*
-// (TodaysCloseSession.date), not the viewer's calendar day: Today's
-// Close replays the most recently closed session, so on a Saturday both
-// the game and the rail mean Friday's session, and keying by the
-// viewer's clock would silently start a second "today" over a weekend.
+// **Keyed per (date, mode).** The date is the *session's own trading
+// date* (TodaysCloseSession.date), not the viewer's calendar day:
+// Today's Close replays the most recently closed session, so on a
+// Saturday the game means Friday's session, and keying by the viewer's
+// clock would silently start a second "today" over a weekend.
 
+import { isFiniteNumber } from "./is-finite-number";
 import { readLocalStorage, writeLocalStorage } from "./local-storage";
+import { parseJson } from "./parse-json";
 import type { SessionOutcome } from "./beat-the-bench";
 
 /**
@@ -27,20 +28,9 @@ import type { SessionOutcome } from "./beat-the-bench";
  */
 export type BeatTheBenchMode = "todays-close" | "mystery";
 
-/**
- * Every mode this key format can carry, most-canonical first.
- *
- * Exists for issue #133's status rail, which asks "did you play today, in
- * *any* mode?" and must not hard-code `"todays-close"` -- the one mode that
- * exists as this is written. Listing them here means issue #132 turning
- * Mystery Day on is an addition to this array, not a second read path the
- * rail would have to grow a branch for.
- */
-export const BEAT_THE_BENCH_MODES: readonly BeatTheBenchMode[] = ["todays-close", "mystery"];
-
 const KEY_PREFIX = "hikt:beat-the-bench:";
 
-/** The exact key one played session is stored under -- `hikt:beat-the-bench:{date}:{mode}`, the shape issue #133's status rail reads. */
+/** The exact key one played session is stored under -- `hikt:beat-the-bench:{date}:{mode}`. */
 export function beatTheBenchKey(date: string, mode: BeatTheBenchMode): string {
   return `${KEY_PREFIX}${date}:${mode}`;
 }
@@ -52,9 +42,9 @@ export function beatTheBenchKey(date: string, mode: BeatTheBenchMode): string {
  * own StoredPick records.
  *
  * `played` is stored explicitly even though its presence is implied by
- * the record existing: issue #133's rail asks "played today?" and should
- * be able to answer that from the field it names, not from a truthiness
- * check on the record itself.
+ * the record existing: a caller asking "played today?" should be able to
+ * answer that from the field it names, not from a truthiness check on
+ * the record itself.
  */
 export interface PlayedSession {
   played: true;
@@ -63,10 +53,6 @@ export interface PlayedSession {
   benchmarkBalance: number;
   /** How many times the player toggled. Zero is a real way to play (see `outcomeHeadline`), so this is a genuine value, not a "didn't really play" marker. */
   moves: number;
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
 }
 
 function isOutcome(value: unknown): value is SessionOutcome {
@@ -80,15 +66,7 @@ function isOutcome(value: unknown): value is SessionOutcome {
  * as one that was never written.
  */
 export function readPlayedSession(date: string, mode: BeatTheBenchMode): PlayedSession | null {
-  const raw = readLocalStorage(beatTheBenchKey(date, mode));
-  if (raw === null) return null;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
+  const parsed = parseJson(readLocalStorage(beatTheBenchKey(date, mode)));
   if (typeof parsed !== "object" || parsed === null) return null;
 
   const { played, outcome, playerBalance, benchmarkBalance, moves } = parsed as Record<
@@ -101,29 +79,6 @@ export function readPlayedSession(date: string, mode: BeatTheBenchMode): PlayedS
   if (!isFiniteNumber(moves) || moves < 0) return null;
 
   return { played: true, outcome, playerBalance, benchmarkBalance, moves };
-}
-
-/**
- * The viewer's stored result for `date` in whichever mode they played it,
- * or `null` if they haven't played that date at all.
- *
- * `BEAT_THE_BENCH_MODES` is ordered, so a date played in more than one mode
- * reports the canonical ("todays-close") record rather than whichever
- * happened to be enumerated first. Written for issue #133's status rail,
- * which cares that the day was played, not which card it was played from.
- *
- * **Deliberately keyed on a date the caller supplies**, not on a scan of
- * every stored key: "played today" has to mean today's session, and a
- * key-space scan would happily report yesterday's record as today's.
- */
-export function readAnyPlayedSession(
-  date: string,
-): { mode: BeatTheBenchMode; session: PlayedSession } | null {
-  for (const mode of BEAT_THE_BENCH_MODES) {
-    const session = readPlayedSession(date, mode);
-    if (session !== null) return { mode, session };
-  }
-  return null;
 }
 
 /**

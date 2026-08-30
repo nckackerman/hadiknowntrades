@@ -22,7 +22,7 @@ import { DEFAULT_MODE, MODE_LABELS, type Mode } from "@/lib/mode";
 import { RANGE_COPY } from "@/lib/range-copy";
 import { rescaleFromStartingCapital } from "@/lib/rescale-starting-capital";
 import { selectVariant } from "@/lib/select-variant";
-import { wholeRangeFinalBalance } from "@/lib/headline-figure";
+import { wholeRangeFinalBalance } from "@/lib/whole-range-balance";
 import { useRangeGuess } from "@/lib/use-range-guess";
 import { useReducedMotionAtMount } from "@/lib/use-reduced-motion-at-mount";
 import { AboutSection } from "@/components/AboutSection";
@@ -592,10 +592,10 @@ export function ResultsPanel({
     // The range's true final chained balance for whichever track `mode`
     // currently selects, rescaled from the range's own root startingCapital
     // -- deliberately NOT the per-day rescale pattern. That rule (and the
-    // trap it avoids) now lives in lib/headline-figure.ts, extracted there
-    // by issue #133 so the daily ritual's shareable recap quotes this exact
-    // figure rather than re-deriving a second, drift-prone copy of it; see
-    // that function's own doc comment.
+    // trap it avoids) lives in lib/whole-range-balance.ts, extracted there
+    // so this figure, WholeRangeReplay's own copy, and og-card.ts's share
+    // card all quote the exact same number rather than each re-deriving a
+    // second, drift-prone copy of it; see that function's own doc comment.
     const wholeRangeBalance = wholeRangeFinalBalance(data, mode, effectiveStartingCapital);
 
     // The whole range's own worst-case (max-trade, every choice wrong)

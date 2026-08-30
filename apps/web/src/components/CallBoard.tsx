@@ -45,9 +45,11 @@
 // `STEP_STYLES`/`callsState` -- see `CallBoardSummaryRow`'s own doc
 // comment) plus a miniature version of the history strip/streak chip
 // below, reusing `callOutcomeFor`/`OUTCOME_STYLES` unchanged, once
-// `board.resolved` is non-empty. This replaces what used to be a
+// `board.resolved` is non-empty. This replaced what used to be a
 // separate, always-visible "Today, so far" status rail above every
-// mechanic (`DailyRitual.tsx`) -- see that file's own doc comment.
+// mechanic (`DailyRitual.tsx`) -- itself removed outright in a later
+// pass, once the recap disclosure it fed was also removed (see
+// apps/web/CLAUDE.md's own "'Today's recap' removed outright" section).
 
 import { useState } from "react";
 
@@ -67,6 +69,7 @@ import {
 import { formatDate } from "@/lib/format-date";
 import { formatPercent } from "@/lib/format-currency";
 import { useCallBoard, useCallBoardCloses } from "@/lib/use-call-board";
+import { GamePanelHeader } from "@/components/GamePanelHeader";
 
 /** How many settled calls the history strip shows, newest last. */
 export const HISTORY_STRIP_LENGTH = 10;
@@ -630,28 +633,19 @@ export function CallBoard() {
               {announcement}
             </div>
 
-            {/* Icon plate + heading (issue #195, device #2): a small,
-                persistent visual echo of the collapsed tile's own icon,
-                tinted with a ~15% wash of CONNECTOR_ACCENT, sitting
-                beside a visible heading naming the mechanic -- so the
-                expanded panel doesn't read as plain neutral chrome. The
-                sr-only <h2> above already names this section "The Call
-                Board" for landmark purposes; this is the first *visible*
-                instance of that name, styled at the same h3 level/weight
-                this panel's own "Your record"/"Recent calls" headings
-                already use below, for consistency (review finding #1:
-                this panel already had visible headings, so this isn't
-                introducing a new pattern). */}
-            <div className="flex items-center gap-2">
-              <span
-                aria-hidden="true"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-lg"
-                style={{ backgroundColor: `${CONNECTOR_ACCENT}26` }}
-              >
-                {CTA_ICON}
-              </span>
-              <h3 className="text-sm font-medium text-[var(--text-primary)]">The Call Board</h3>
-            </div>
+            {/* Icon plate + heading (issue #195, device #2), extracted
+                into GamePanelHeader.tsx once this exact block turned up
+                hand-duplicated across all four daily-hub games -- see
+                that component's own doc comment. The sr-only <h2> above
+                already names this section "The Call Board" for landmark
+                purposes; this is the first *visible* instance of that
+                name, styled at the same h3 level/weight this panel's own
+                "Your record"/"Recent calls" headings already use below. */}
+            <GamePanelHeader
+              icon={CTA_ICON}
+              accentColor={CONNECTOR_ACCENT}
+              title="The Call Board"
+            />
 
             <p className="text-sm text-[var(--text-secondary)]">
               Call the next {MAX_OPEN_CALLS} trading sessions before they open. A move of{" "}

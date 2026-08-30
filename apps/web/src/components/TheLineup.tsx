@@ -66,6 +66,7 @@ import {
   type LineupStreak,
 } from "@/lib/lineup-storage";
 import { useLineupResult } from "@/lib/use-lineup-result";
+import { GamePanelHeader } from "@/components/GamePanelHeader";
 
 /** Exact copy of PlaceholderGameTile.tsx's own teal gradient -- issue #208's own Scope: "don't touch those, they're already correct." */
 const LINEUP_GRADIENT_AND_SHADOW_CLASSNAME =
@@ -76,6 +77,9 @@ const TILE_ICON = "🧩";
 const TILE_TITLE = "The Lineup";
 const TILE_SUBTITLE =
   "Fill in all 5 mystery tickers each round - 3 or 4 letters, hidden until play tells you.";
+
+/** The gradient's own darkest stop -- the expanded panel's connector accent (issue #195), matching CallBoard.tsx's/TheOrder.tsx's identical `CONNECTOR_ACCENT` device. Named once rather than left as two separately-hand-typed hex literals (the panel's own top border, the icon plate's wash) that could silently drift from each other or from `LINEUP_GRADIENT_AND_SHADOW_CLASSNAME`'s own darkest stop above. */
+const CONNECTOR_ACCENT = "#1c544f";
 
 /**
  * A guess is legal for any (locked or not) column the instant it's a
@@ -601,7 +605,7 @@ export function TheLineup() {
           <div
             data-testid="the-lineup-panel"
             className="flex flex-col gap-4 rounded-t-none rounded-b-2xl border-x border-b border-t-4 border-[var(--gridline)] bg-[var(--surface-1)] px-4 pt-4 pb-5"
-            style={{ borderTopColor: "#1c544f" }}
+            style={{ borderTopColor: CONNECTOR_ACCENT }}
           >
             <div
               role="status"
@@ -616,16 +620,7 @@ export function TheLineup() {
                 : ""}
             </div>
 
-            <div className="flex items-center gap-2">
-              <span
-                aria-hidden="true"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-lg"
-                style={{ backgroundColor: "#1c544f26" }}
-              >
-                {TILE_ICON}
-              </span>
-              <h3 className="text-sm font-medium text-[var(--text-primary)]">The Lineup</h3>
-            </div>
+            <GamePanelHeader icon={TILE_ICON} accentColor={CONNECTOR_ACCENT} title={TILE_TITLE} />
 
             {loaded.liveSession && !loaded.board.done && (
               <p className="text-sm text-[var(--text-secondary)]">
