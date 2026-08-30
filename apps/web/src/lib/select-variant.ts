@@ -24,8 +24,8 @@ export interface Variant<T> {
  * both always present on a real pipeline-written result. This is the single
  * place that decision is made -- every consumer downstream
  * (HeroAndWorstCase, PortfolioChart via portfolio-series.ts,
- * TradeList/IntradayTradeList, and since issue #133 the daily ritual's
- * recap via headline-figure.ts) is threaded this function's result instead
+ * TradeList/IntradayTradeList, and wholeRangeFinalBalance via
+ * whole-range-balance.ts) is threaded this function's result instead
  * of reading the raw top-level fields directly, the same class of mistake
  * apps/web/CLAUDE.md documents happening *twice* for
  * `effectiveStartingCapital` (issue #15) -- a component quietly reading the

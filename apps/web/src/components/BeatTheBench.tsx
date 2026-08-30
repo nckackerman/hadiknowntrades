@@ -34,35 +34,37 @@
 // Weekly/monthly modes remain backlog.
 //
 // **Collapsed by default (issue #163), and collapsible again (a later
-// design pass).** This section used to render the mode chooser (and,
-// once a mode was picked, the game itself) the moment it mounted -- a
-// full, always-rendered game rather than an immediate call-to-action. It
-// now renders a compact "Can you do better?" card (`CompactCard`, an
-// icon, the exact mockup copy, and a status line built from
-// `beat-the-bench-storage.ts`'s existing read) until that card is
-// clicked, at which point it expands *in place* to the exact same
-// chooser/playback/settlement experience this file always rendered --
-// unchanged in substance, per issue #163's own scope. A "Collapse" control
-// in `BeatTheBenchFrame`'s own header (present at every expanded state --
-// the mode chooser, mid-game, settlement) flips it back, mirroring how
-// The Call Board's own `<details>`/`<summary>` stays clickable and
-// collapsible after opening. Unlike The Call Board, this stays a plain
-// `useState` toggle rather than a native `<details>`: the content behind
-// it is a stateful game (fetches, a running playback interval), and
-// collapsing deliberately *unmounts* it -- via the same `expanded ===
-// false` branch that renders `CompactCard` -- rather than merely hiding
-// it the way a closed `<details>` would (which keeps its children
-// mounted, `display: none`'d, with any interval still silently ticking
-// underneath). Collapsing also resets `mode` back to `null`, so
-// re-expanding always starts from the mode chooser rather than resuming
-// stale mid-game state. This is purely a presentational/mounting change:
-// `useTodaysCloseSession` is still called unconditionally at the top of
-// this component regardless of collapsed state (so the fetch-on-mount
-// behaviour this file's own Judgment-calls section already documents is
-// untouched), and the Mystery Day zero-request-before-settlement rule
-// above is completely orthogonal to whether the card is collapsed or
-// expanded -- it depends only on `settled`, never on this `expanded`
-// flag.
+// design pass).** This section renders a compact "Can you do better?"
+// tile (`CompactCard`) that stays mounted and visible at all times --
+// clicking it toggles a panel open/closed directly beneath it, holding
+// the exact same chooser/playback/settlement experience this file always
+// rendered. The tile itself never changes shape or title when the panel
+// opens; only its bottom corners square off to flush against the panel,
+// exactly mirroring The Call Board's own `<details>`/`<summary>` (the
+// summary you clicked stays put, and clicking it again closes the
+// board). An earlier version of this file instead swapped the whole tile
+// out for a differently-styled header (a smaller icon, a shortened
+// title, a separate "Collapse" text link) once expanded -- fixed after
+// direct user feedback that it read as a different component once
+// opened, unlike the other three daily-hub games.
+//
+// Unlike The Call Board, the *panel* is still a plain `useState`
+// boolean, not a native `<details>`: its content is a stateful game
+// (fetches, a running playback interval), and collapsing deliberately
+// *unmounts* it -- via the same `expanded === false` check that hides
+// `BeatTheBenchFrame` -- rather than merely hiding it the way a closed
+// `<details>` would (which keeps its children mounted, `display:
+// none`'d, with any interval still silently ticking underneath). The
+// tile (`CompactCard`), by contrast, is unconditionally mounted now,
+// same as `<summary>` always is. Collapsing also resets `mode` back to
+// `null`, so re-expanding always starts from the mode chooser rather
+// than resuming stale mid-game state. `useTodaysCloseSession` is still
+// called unconditionally at the top of this component regardless of
+// panel state (so the fetch-on-mount behaviour this file's own
+// Judgment-calls section already documents is untouched), and the
+// Mystery Day zero-request-before-settlement rule above is completely
+// orthogonal to whether the panel is open -- it depends only on
+// `settled`, never on this `expanded` flag.
 //
 // **Issue #186's condensation**: `CompactCard` gained a small corner
 // status badge (`done` once today's session has been played, nothing
@@ -114,6 +116,7 @@ import { useReducedMotionAfterMount } from "@/lib/use-reduced-motion-after-mount
 import { useMysteryReveal, useMysterySession } from "@/lib/use-mystery-session";
 import { useTodaysCloseSession } from "@/lib/use-todays-close-session";
 import { BeatTheBenchChart } from "@/components/BeatTheBenchChart";
+import { GamePanelHeader } from "@/components/GamePanelHeader";
 
 /** Every control in the playback row shares this: >= 44px in both directions at any width (`min-h-11`/`min-w-11` are 44px), per issue #131's touch-target criterion. The row wraps rather than shrinking these. */
 const CONTROL_CLASS =
@@ -133,15 +136,15 @@ const CONTROL_CLASS =
 const BENCH_TILE_GRADIENT_STOPS = ["#f0b658", "#e8a33d", "#d88f28"] as const;
 const BENCH_TILE_GRADIENT = `linear-gradient(155deg, ${BENCH_TILE_GRADIENT_STOPS[0]} 0%, ${BENCH_TILE_GRADIENT_STOPS[1]} 55%, ${BENCH_TILE_GRADIENT_STOPS[2]} 100%)`;
 
+/** The tile's own icon (🎯), named once so `CompactCard` and `BeatTheBenchFrame`'s panel header can't drift apart -- mirrors CallBoard.tsx's identical `CTA_ICON` constant. */
+const BENCH_ICON = "🎯";
+
 /**
- * Connecting the expanded frame back to the tile that opened it (issue
- * #195): the same darkest gradient stop the collapsed tile fills with,
- * reused for the expanded panel's own 4px top border and icon-plate
- * wash. Beat the Bench's tile fully unmounts on expand (see
- * `BeatTheBench`'s own top-of-file note -- a plain `useState` toggle,
- * not a `<details>`), so unlike CallBoard.tsx there's no flush-seam
- * device to add here -- just the border + icon plate, applied to
- * `BeatTheBenchFrame`'s own root below.
+ * Connecting the expanded panel back to the tile that opened it (issue
+ * #195, now matching The Call Board's full treatment): the same darkest
+ * gradient stop the tile fills with, reused for the panel's 4px top
+ * border, its icon-plate wash, and (see `CompactCard`, below) the tile's
+ * own squared-off bottom corners while the panel beneath it is open.
  */
 const CONNECTOR_ACCENT = BENCH_TILE_GRADIENT_STOPS[2];
 
@@ -189,7 +192,8 @@ export function BeatTheBench() {
 
   // Collapsed by default (issue #163) -- see this file's own top-of-file
   // note. Nothing below this flag's declaration changed in substance from
-  // before that issue; it only decides whether any of it renders yet.
+  // before that issue; it only decides whether the panel below the tile
+  // renders yet.
   const [expanded, setExpanded] = useState(false);
   const [mode, setMode] = useState<ChosenMode>(null);
   // Bumped to ask for *another* random day. It rides in the mystery
@@ -201,51 +205,44 @@ export function BeatTheBench() {
   const mysteryState = useMysterySession(mode === "mystery" ? pick : null);
   const todaysClose = playableTodaysClose(todaysCloseState);
 
-  // Collapses the whole section back to the compact card -- see this
-  // file's own top-of-file note on why this unmounts (via the `expanded
-  // === false` branch below) rather than merely hiding, unlike The Call
-  // Board's own collapse. Resetting `mode` here (rather than leaving it
-  // set for a future re-expand) keeps re-expanding always land on the
-  // mode chooser, never resumed mid-game state a viewer might not
-  // recognize.
-  function handleCollapse() {
-    setExpanded(false);
-    setMode(null);
+  // Toggles the panel open/closed -- the tile above it (see `CompactCard`)
+  // is clickable in both directions, exactly like The Call Board's own
+  // `<summary>`. Resetting `mode` only on the close transition (rather
+  // than leaving it set for a future re-expand) keeps re-expanding always
+  // land on the mode chooser, never resumed mid-game state a viewer might
+  // not recognize.
+  function handleToggle() {
+    setExpanded((wasExpanded) => {
+      if (wasExpanded) setMode(null);
+      return !wasExpanded;
+    });
   }
 
-  if (!expanded) {
-    return (
-      <CompactCard
-        headingId={headingId}
-        todaysCloseDate={todaysClose?.date ?? null}
-        onExpand={() => setExpanded(true)}
-      />
-    );
-  }
-
-  if (mode === null) {
-    return (
-      <BeatTheBenchFrame headingId={headingId} onCollapse={handleCollapse}>
+  // A pure function of already-resolved state (mode/todaysClose/
+  // mysteryState/pick/reducedMotion) -- safe to call only when the panel
+  // is actually open, below. Kept as one function rather than the
+  // 7-way early-return ladder this replaced (one per mode/loading/error
+  // combination, each separately re-wrapping `BeatTheBenchFrame`) so the
+  // frame markup exists in exactly one place.
+  function renderGameContent(): ReactNode {
+    if (mode === null) {
+      return (
         <ModeChooser
           todaysClose={todaysClose}
           todaysCloseLoading={todaysCloseState === null || todaysCloseState.status === "loading"}
           reducedMotion={reducedMotion}
           onChoose={setMode}
         />
-      </BeatTheBenchFrame>
-    );
-  }
-
-  if (mode === "todays-close") {
-    const session = todaysClose;
-    if (session === null) {
-      return <BeatTheBenchFrame headingId={headingId} onCollapse={handleCollapse} />;
+      );
     }
-    return (
-      <BeatTheBenchFrame headingId={headingId} onCollapse={handleCollapse}>
-        {/* Keyed on the session's own date so a fresh trading day starts a
-            genuinely fresh game (state, stored-record read and all) rather
-            than carrying yesterday's bar index into today's bars. */}
+
+    if (mode === "todays-close") {
+      const session = todaysClose;
+      if (session === null) return null;
+      return (
+        // Keyed on the session's own date so a fresh trading day starts a
+        // genuinely fresh game (state, stored-record read and all)
+        // rather than carrying yesterday's bar index into today's bars.
         <SessionGame
           key={`todays-close-${session.date}`}
           session={{
@@ -260,33 +257,27 @@ export function BeatTheBench() {
           reducedMotion={reducedMotion}
           onBack={() => setMode(null)}
         />
-      </BeatTheBenchFrame>
-    );
-  }
+      );
+    }
 
-  if (mysteryState === null || mysteryState.status === "loading") {
+    if (mysteryState === null || mysteryState.status === "loading") {
+      return <p className="text-sm text-[var(--text-muted)]">Picking a day out of the hat…</p>;
+    }
+
+    if (mysteryState.status === "error" || !isPlayableSession(mysteryState.data.session)) {
+      return (
+        <>
+          <p className="text-sm text-[var(--text-secondary)]">
+            There&apos;s no mystery session to play right now. The pool is published by the nightly
+            run, shortly after the close.
+          </p>
+          <BackToModesButton onBack={() => setMode(null)} />
+        </>
+      );
+    }
+
+    const mystery = mysteryState.data;
     return (
-      <BeatTheBenchFrame headingId={headingId} onCollapse={handleCollapse}>
-        <p className="text-sm text-[var(--text-muted)]">Picking a day out of the hat…</p>
-      </BeatTheBenchFrame>
-    );
-  }
-
-  if (mysteryState.status === "error" || !isPlayableSession(mysteryState.data.session)) {
-    return (
-      <BeatTheBenchFrame headingId={headingId} onCollapse={handleCollapse}>
-        <p className="text-sm text-[var(--text-secondary)]">
-          There&apos;s no mystery session to play right now. The pool is published by the nightly
-          run, shortly after the close.
-        </p>
-        <BackToModesButton onBack={() => setMode(null)} />
-      </BeatTheBenchFrame>
-    );
-  }
-
-  const mystery = mysteryState.data;
-  return (
-    <BeatTheBenchFrame headingId={headingId} onCollapse={handleCollapse}>
       <SessionGame
         // Keyed on the pick counter as well as the slot id, so "play
         // another" always starts a genuinely fresh game -- including in
@@ -305,102 +296,68 @@ export function BeatTheBench() {
         onBack={() => setMode(null)}
         onAnother={() => setPick((current) => current + 1)}
       />
-    </BeatTheBenchFrame>
+    );
+  }
+
+  return (
+    <section aria-labelledby={headingId} className="flex flex-col">
+      {/* A stable, sr-only landmark name -- decoupled from the tile's own
+          visible marketing copy, mirroring CallBoard.tsx's identical
+          `<h2 id="call-board-heading" className="sr-only">` above its own
+          `<details>`. */}
+      <h2 id={headingId} className="sr-only">
+        Beat the Bench
+      </h2>
+      <CompactCard
+        todaysCloseDate={todaysClose?.date ?? null}
+        expanded={expanded}
+        onToggle={handleToggle}
+      />
+      {expanded && <BeatTheBenchFrame>{renderGameContent()}</BeatTheBenchFrame>}
+    </section>
   );
 }
 
-function BeatTheBenchFrame({
-  headingId,
-  onCollapse,
-  children,
-}: {
-  headingId: string;
-  onCollapse: () => void;
-  children?: ReactNode;
-}) {
+/**
+ * The expanded panel -- The Call Board's own dark `surface-card`-less
+ * wrapper shape (`bg-[var(--surface-1)]`, not the tile's own gradient),
+ * connected back to the tile above it via issue #195's two devices,
+ * fully matching The Call Board's own treatment now that the tile stays
+ * mounted above this panel rather than unmounting: a 4px
+ * `CONNECTOR_ACCENT`-colored top border (replacing the top edge of the
+ * otherwise-unchanged `border-[var(--gridline)]` on the other three
+ * sides), and flush corners (`rounded-t-none`) against the tile's own
+ * squared-off bottom (see `CompactCard`, below). No "Collapse" control
+ * of its own -- the tile above, always visible and always clickable (see
+ * `BeatTheBench`'s own `handleToggle`), is what closes this again,
+ * exactly like The Call Board's `<summary>`.
+ *
+ * `data-bench-expanded` (issue #178) is what the 2-up grid wrapping this
+ * card and The Call Board keys its own `:has()` selector off of, to
+ * collapse itself to one column whenever either game's full content is
+ * showing, without lifting `expanded` state up into the parent. CallBoard
+ * needs no equivalent marker -- its own expanded state is already a
+ * native `<details open>`, directly selectable on its own. Placed here
+ * (not on the tile) since this panel is exactly what's conditionally
+ * mounted.
+ */
+function BeatTheBenchFrame({ children }: { children?: ReactNode }) {
   return (
-    <section
-      aria-labelledby={headingId}
-      // Only ever rendered once BeatTheBench's own `expanded` flag is
-      // true (issue #163) -- this marker attribute exists purely so the
-      // 2-up grid wrapping both game cards (issue #178, ResultsPage.tsx)
-      // can detect "this tile is showing its full real game, not the
-      // compact CTA card" via a plain CSS `:has()` selector, without
-      // lifting `expanded` state up into the parent. CallBoard needs no
-      // equivalent marker -- its own expanded state is already a native
-      // `<details open>`, directly selectable on its own.
+    <div
       data-bench-expanded="true"
-      // Connecting this expanded panel back to the tile that opened it
-      // (issue #195, device #1): a 4px CONNECTOR_ACCENT-colored top
-      // border, replacing the uniform 1px border on that one edge --
-      // `border-x border-b` keeps the original `border-[var(--gridline)]`
-      // color/width on the other three sides unchanged (review finding
-      // #5), while `border-t-4` plus the inline `borderTopColor` below
-      // override just the top edge. `rounded-lg` is kept on every
-      // corner, including the top -- unlike CallBoard.tsx's own flush-
-      // seam treatment, there's no tile left mounted above this panel to
-      // flush against (see this file's own top-of-file note: the
-      // compact tile fully unmounts on expand), so a fully-rounded panel
-      // is the correct shape here, not a bug.
-      className="surface-card flex flex-col gap-4 rounded-lg border-x border-b border-t-4 border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-4"
+      data-testid="beat-the-bench-panel"
+      className="flex flex-col gap-4 rounded-t-none rounded-b-2xl border-x border-b border-t-4 border-[var(--gridline)] bg-[var(--surface-1)] px-4 pt-4 pb-5"
       style={{ borderTopColor: CONNECTOR_ACCENT }}
     >
-      <div className="flex flex-col gap-2">
-        <div className="flex items-start justify-between gap-2">
-          {/* Icon plate + heading (issue #195, device #2): grouped into
-              one sub-row so the pre-existing two-child `justify-between`
-              layout (heading, "Collapse" button) is preserved -- this
-              whole div is now the first child, the Collapse button stays
-              the second (review finding #4). The icon echoes the
-              collapsed tile's own 🎯, tinted with a ~15% wash of the
-              same CONNECTOR_ACCENT the top border above uses. */}
-          <div className="flex items-center gap-2">
-            <span
-              aria-hidden="true"
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-base"
-              style={{ backgroundColor: `${CONNECTOR_ACCENT}26` }}
-            >
-              🎯
-            </span>
-            {/* font-display, matching CallBoard's and DailyRitual's own
-                section headings (and this file's own settlement headline
-                below) -- issue #121's type roles put headings on
-                --font-display. It resolves to the same Geist Sans the body
-                already inherits today, so this is a same-pixels consistency
-                fix, not a visual change; it stops being a no-op the moment
-                --font-display is ever pointed at a real display face. */}
-            <h2
-              id={headingId}
-              className="font-display text-lg font-semibold text-[var(--text-primary)]"
-            >
-              Beat the Bench
-            </h2>
-          </div>
-          {/* Collapses back to the compact card -- present at every
-              expanded state (the mode chooser, mid-game, settlement),
-              mirroring The Call Board's own always-clickable, collapsible
-              `<summary>`. See this file's own top-of-file note on why
-              this is a plain button rather than a native `<details>`.
-              min-h-11/min-w-11 (44px) matches this app's own established
-              touch-target floor (CONTROL_CLASS, below) even though this
-              reads visually smaller than a bordered control. */}
-          <button
-            type="button"
-            onClick={onCollapse}
-            className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md px-2 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-          >
-            ▾ Collapse
-          </button>
-        </div>
-        <p className="text-sm text-[var(--text-secondary)]">
-          One real trading session, replayed close by close. You start with{" "}
-          {formatHeroCurrency(STARTING_CAPITAL)}, already in the market -- exactly where the bench
-          starts. Ride it out and you finish exactly where it does; step aside before a dip and you
-          finish ahead.
-        </p>
-      </div>
+      <GamePanelHeader icon={BENCH_ICON} accentColor={CONNECTOR_ACCENT} title="Beat the Bench" />
+      <p className="text-sm text-[var(--text-secondary)]">
+        One real trading session, replayed close by close. You start with{" "}
+        {formatHeroCurrency(STARTING_CAPITAL)}, already in the market -- exactly where the bench
+        starts. Ride it out and you finish exactly where it does; step aside before a dip and you
+        finish ahead.
+      </p>
       {children}
-    </section>
+    </div>
   );
 }
 
@@ -484,13 +441,13 @@ function BeatTheBenchFrame({
  * no gradient/layout/badge change from #176/#186.
  */
 function CompactCard({
-  headingId,
   todaysCloseDate,
-  onExpand,
+  expanded,
+  onToggle,
 }: {
-  headingId: string;
   todaysCloseDate: string | null;
-  onExpand: () => void;
+  expanded: boolean;
+  onToggle: () => void;
 }) {
   const [playedRecord, setPlayedRecord] = useState<PlayedSession | null>(null);
 
@@ -504,58 +461,69 @@ function CompactCard({
     queueMicrotask(() => setPlayedRecord(readPlayedSession(todaysCloseDate, "todays-close")));
   }, [todaysCloseDate]);
 
+  // The pre-existing hover-lift, present while collapsed; suppressed
+  // while the panel below is open, matching CallBoard.tsx's own
+  // `group-open:hover:translate-y-0 group-open:hover:scale-100` (issue
+  // #195) -- swapped outright here rather than layered via a CSS
+  // variant, since `expanded` is already real React state with no need
+  // for CallBoard's own group-open indirection.
+  const liftClasses = expanded
+    ? "hover:translate-y-0 hover:scale-100"
+    : "hover:-translate-y-0.5 hover:scale-[1.015]";
+
   return (
-    <section aria-label="Beat the Bench">
-      <button
-        type="button"
-        onClick={onExpand}
-        style={{
-          backgroundImage: BENCH_TILE_GRADIENT,
-          color: "#241a08",
-        }}
-        className="relative flex w-full flex-col gap-4 rounded-2xl px-[1.15rem] py-[1.1rem] text-left shadow-[0_8px_22px_rgba(232,163,61,0.35),0_6px_18px_rgba(0,0,0,0.35)] transition-transform duration-150 ease-out hover:-translate-y-0.5 hover:scale-[1.015] active:translate-y-0 active:scale-[0.99]"
-      >
-        {playedRecord !== null && (
-          // aria-hidden: the compact status line below already conveys
-          // this same "played" fact in full, readable text -- this badge
-          // is a purely visual at-a-glance duplicate of it.
-          <span
-            aria-hidden="true"
-            className={`${STATUS_BADGE_CLASSNAME} ${STEP_STYLES.done.colorClassName}`}
-          >
-            {STEP_STYLES.done.glyph}
-          </span>
-        )}
-        <div className="flex flex-col gap-1">
-          {/* Icon plate (issue #188): a soft circular translucent backdrop
-              behind the emoji, matching the design reference's own
-              `.tile-icon-plate` -- 2.75rem (44px, this app's own established
-              touch-target size, CONTROL_CLASS above) housing the existing
-              1.75rem emoji, with the same subtle drop-shadow the reference
-              gives the icon itself for a little lift off the plate. */}
-          <span
-            aria-hidden="true"
-            className="flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.16]"
-          >
-            <span className="text-[1.75rem] leading-none drop-shadow-[0_2px_4px_rgba(0,0,0,0.25)]">
-              🎯
-            </span>
-          </span>
-          <span
-            id={headingId}
-            className="font-display text-[1.0625rem] font-extrabold tracking-[-0.01em] leading-[1.15]"
-          >
-            Can you do better?
-          </span>
-          <span className="text-xs font-medium opacity-85">
-            Play today&apos;s real session against the market, live.
-          </span>
-        </div>
-        <span className="font-numeric self-start rounded-full bg-black/[14%] px-[0.55rem] py-[0.2rem] text-[0.6875rem] font-bold">
-          {compactStatusLine(playedRecord)}
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={expanded}
+      data-testid="beat-the-bench-tile"
+      style={{
+        backgroundImage: BENCH_TILE_GRADIENT,
+        color: "#241a08",
+      }}
+      // rounded-b-none once expanded (issue #195): flush against
+      // BeatTheBenchFrame's own rounded-t-none panel directly below,
+      // reading as one tile unfolding rather than two stacked cards --
+      // see that component's own doc comment.
+      className={`relative flex w-full flex-col gap-4 rounded-2xl px-[1.15rem] py-[1.1rem] text-left shadow-[0_8px_22px_rgba(232,163,61,0.35),0_6px_18px_rgba(0,0,0,0.35)] transition-transform duration-150 ease-out ${liftClasses} active:translate-y-0 active:scale-[0.99] ${expanded ? "rounded-b-none" : ""}`}
+    >
+      {playedRecord !== null && (
+        // aria-hidden: the compact status line below already conveys
+        // this same "played" fact in full, readable text -- this badge
+        // is a purely visual at-a-glance duplicate of it.
+        <span
+          aria-hidden="true"
+          className={`${STATUS_BADGE_CLASSNAME} ${STEP_STYLES.done.colorClassName}`}
+        >
+          {STEP_STYLES.done.glyph}
         </span>
-      </button>
-    </section>
+      )}
+      <div className="flex flex-col gap-1">
+        {/* Icon plate (issue #188): a soft circular translucent backdrop
+            behind the emoji, matching the design reference's own
+            `.tile-icon-plate` -- 2.75rem (44px, this app's own established
+            touch-target size, CONTROL_CLASS above) housing the existing
+            1.75rem emoji, with the same subtle drop-shadow the reference
+            gives the icon itself for a little lift off the plate. */}
+        <span
+          aria-hidden="true"
+          className="flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.16]"
+        >
+          <span className="text-[1.75rem] leading-none drop-shadow-[0_2px_4px_rgba(0,0,0,0.25)]">
+            {BENCH_ICON}
+          </span>
+        </span>
+        <span className="font-display text-[1.0625rem] font-extrabold tracking-[-0.01em] leading-[1.15]">
+          Can you do better?
+        </span>
+        <span className="text-xs font-medium opacity-85">
+          Play today&apos;s real session against the market, live.
+        </span>
+      </div>
+      <span className="font-numeric self-start rounded-full bg-black/[14%] px-[0.55rem] py-[0.2rem] text-[0.6875rem] font-bold">
+        {compactStatusLine(playedRecord)}
+      </span>
+    </button>
   );
 }
 
@@ -567,9 +535,7 @@ function CompactCard({
  * Mirrors `gapPhrase`'s own thresholds (above) rather than calling it:
  * that function writes a full settlement-card sentence ("0.13% behind
  * the bench."), and this needs a short standalone line for a card
- * that's collapsed by default -- the same "same numbers, different
- * sentence shape" precedent `lib/daily-ritual.ts`'s `benchGapClause`
- * already establishes for this identical figure.
+ * that's collapsed by default -- same numbers, different sentence shape.
  */
 function compactStatusLine(record: PlayedSession | null): string {
   if (record === null) return "Not played yet today";

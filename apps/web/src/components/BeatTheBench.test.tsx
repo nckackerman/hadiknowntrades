@@ -1,5 +1,5 @@
 import { RESULTS_SCHEMA_VERSION } from "@hadiknowntrades/core";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { beatTheBenchKey } from "@/lib/beat-the-bench-storage";
@@ -32,13 +32,18 @@ function stubSessionFetch(body: unknown = SESSION, status = 200): void {
 
 /**
  * This section renders collapsed by default (issue #163) -- a compact
- * "Can you do better?" card, not the mode chooser -- so every test that
+ * "Can you do better?" tile, not the mode chooser -- so every test that
  * needs the chooser/game itself has to click through it first. Split out
  * as its own helper rather than folded into `renderChooser`/
  * `renderReducedMotionChooser` below since a couple of call sites need
  * the click without either of those helpers' own extra waits.
+ *
+ * The tile is a genuine toggle (the header-consistency fix that made it
+ * match The Call Board's own always-clickable `<summary>`): calling this
+ * a second time collapses again, exactly like clicking the same tile a
+ * real user would.
  */
-function expandCompactCard(): void {
+function clickCompactCard(): void {
   fireEvent.click(screen.getByRole("button", { name: /can you do better\?/i }));
 }
 
@@ -57,7 +62,7 @@ function expandCompactCard(): void {
  */
 async function renderChooser(): Promise<void> {
   render(<BeatTheBench />);
-  expandCompactCard();
+  clickCompactCard();
   await screen.findByText(/79 bars/);
   vi.useFakeTimers();
 }
@@ -74,7 +79,7 @@ async function renderChooser(): Promise<void> {
  */
 async function renderReducedMotionChooser(): Promise<void> {
   render(<BeatTheBench />);
-  expandCompactCard();
+  clickCompactCard();
   await screen.findByText(/79 bars/);
   await screen.findByText(/You prefer reduced motion/);
   vi.useFakeTimers();
@@ -163,7 +168,7 @@ function stubRoutedFetch(options: { revealGeneratedAt?: string; revealStatus?: n
 /** Renders, expands the compact card, picks Mystery Day, and waits for its (paused, under reduced motion) session to be on screen. */
 async function enterMysterySession(): Promise<void> {
   render(<BeatTheBench />);
-  expandCompactCard();
+  clickCompactCard();
   await screen.findByText(/You prefer reduced motion/);
   click(/play a mystery day/i);
   await screen.findByText(/bar 1 of 78/);
@@ -209,8 +214,14 @@ describe("BeatTheBench", () => {
       screen.getByText("Play today's real session against the market, live."),
     ).toBeInTheDocument();
     expect(screen.getByText("Not played yet today")).toBeInTheDocument();
-    // None of the full game's own content is rendered yet.
-    expect(screen.queryByRole("heading", { name: "Beat the Bench" })).not.toBeInTheDocument();
+    // None of the full game's own content is rendered yet. The section's
+    // own sr-only landmark heading (mirroring CallBoard's identical
+    // always-present `<h2 id="call-board-heading">`) is present at every
+    // state; the panel's own *visible* `<h3>` heading is what actually
+    // signals expansion, so this checks that one specifically.
+    expect(
+      screen.queryByRole("heading", { name: "Beat the Bench", level: 3 }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText(/already in the market/)).not.toBeInTheDocument();
 
     // Let the always-on-mount session fetch (see this file's own
@@ -229,15 +240,12 @@ describe("BeatTheBench", () => {
     // keyed on this exact attribute -- see BeatTheBenchFrame's own doc
     // comment for why it's a data attribute here rather than a native
     // disclosure element the grid could key off directly.
-    const collapsedCard = screen.getByRole("button", { name: /can you do better\?/i });
-    expect(collapsedCard.closest("section")).not.toHaveAttribute("data-bench-expanded");
+    expect(screen.queryByTestId("beat-the-bench-panel")).not.toBeInTheDocument();
 
-    expandCompactCard();
+    clickCompactCard();
 
-    const expandedFrame = (await screen.findByRole("heading", { name: "Beat the Bench" })).closest(
-      "section",
-    )!;
-    expect(expandedFrame).toHaveAttribute("data-bench-expanded", "true");
+    const panel = await screen.findByTestId("beat-the-bench-panel");
+    expect(panel).toHaveAttribute("data-bench-expanded", "true");
   });
 
   it("renders the compact card as a solid amber tile, not the old bordered-card treatment (issue #176)", async () => {
@@ -293,7 +301,14 @@ describe("BeatTheBench", () => {
       // line itself (not just the tile's own presence, which renders
       // immediately regardless of whether the deferred storage read has
       // landed yet) so the badge assertion below isn't racing that read.
+      //
+      // `cleanup()` first: the tile stays mounted across expand/collapse
+      // now (issue: header-consistency fix), so leaving the earlier
+      // render's tree in place would leave two "Can you do better?"
+      // buttons in the document once this second `render()` mounts a
+      // genuinely fresh one, making the query below ambiguous.
       vi.useRealTimers();
+      cleanup();
       render(<BeatTheBench />);
       await screen.findByText("Level with the bench today");
       const tile = screen.getByRole("button", { name: /can you do better\?/i });
@@ -303,11 +318,11 @@ describe("BeatTheBench", () => {
     });
   });
 
-  it("expands to the full game in place once the compact card is clicked", async () => {
+  it("expands to the full game in a panel below the tile once the tile is clicked", async () => {
     render(<BeatTheBench />);
-    expandCompactCard();
+    clickCompactCard();
 
-    expect(screen.getByRole("heading", { name: "Beat the Bench" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Beat the Bench", level: 3 })).toBeInTheDocument();
     // "Already in the market" is the fact that makes the zero-trade tie
     // work, so it's stated plainly rather than left to be inferred.
     expect(screen.getByText(/already in the market/)).toBeInTheDocument();
@@ -315,54 +330,70 @@ describe("BeatTheBench", () => {
     // 78 ticks x 300ms = 23.4s -> "about 23 seconds", the stated target.
     expect(await screen.findByText(/about 23 seconds at normal speed/)).toBeInTheDocument();
     expect(screen.getByText(/Aug 26, 2026/)).toBeInTheDocument();
-    // The compact card itself is gone, not left behind.
-    expect(screen.queryByRole("button", { name: /can you do better\?/i })).not.toBeInTheDocument();
+    // The tile stays visible above the panel, unchanged -- the same tile
+    // you clicked, not swapped out for a different header (the whole
+    // point of the header-consistency fix: matching The Call Board's own
+    // always-visible <summary>).
+    expect(screen.getByRole("button", { name: /can you do better\?/i })).toBeInTheDocument();
   });
 
-  it("connects the expanded frame back to the tile that opened it (issue #195)", async () => {
+  it("connects the expanded panel back to the tile that opened it (issue #195)", async () => {
     render(<BeatTheBench />);
-    expandCompactCard();
+    clickCompactCard();
 
-    const heading = await screen.findByRole("heading", { name: "Beat the Bench" });
-    const frame = heading.closest("section")!;
+    const panel = await screen.findByTestId("beat-the-bench-panel");
 
     // A 4px top border colored with the tile's own darkest gradient
     // stop (#d88f28), plus the other three sides keeping their original
     // border color/width (mirroring CallBoard's identical review
     // finding #5) -- jsdom normalizes the hex to rgb().
-    expect(frame.className).toContain("border-t-4");
-    expect(frame.className).toContain("border-x");
-    expect(frame.className).toContain("border-b");
-    expect(frame.style.borderTopColor).toBe("rgb(216, 143, 40)"); // #d88f28
+    expect(panel.className).toContain("border-t-4");
+    expect(panel.className).toContain("border-x");
+    expect(panel.className).toContain("border-b");
+    expect(panel.style.borderTopColor).toBe("rgb(216, 143, 40)"); // #d88f28
 
-    // The header row's own two-child justify-between layout (icon+
-    // heading group, "Collapse" button) is preserved -- the heading is
-    // still directly reachable by role/name (review finding #4), and the
-    // icon plate sits immediately beside it.
-    expect(screen.getByRole("button", { name: /collapse/i })).toBeInTheDocument();
+    // The panel's own icon+heading row, matching CallBoard's identical
+    // treatment.
+    expect(screen.getByRole("heading", { name: "Beat the Bench", level: 3 })).toBeInTheDocument();
+
+    // Flush against the tile above it, not a separate floating card --
+    // the tile's own bottom corners square off and its hover-lift is
+    // suppressed while the panel is open (the direct-boolean equivalent
+    // of CallBoard's own `group-open:` treatment), and the panel itself
+    // drops its own top rounding to meet it.
+    const tile = screen.getByRole("button", { name: /can you do better\?/i });
+    expect(tile.className).toContain("rounded-b-none");
+    expect(tile.className).not.toContain("hover:-translate-y-0.5");
+    expect(panel.className).toContain("rounded-t-none");
   });
 
-  it("collapses back to the compact card, and resets mode so a re-expand starts at the chooser", async () => {
+  it("collapses back to the compact tile, and resets mode so a re-expand starts at the chooser", async () => {
     render(<BeatTheBench />);
-    expandCompactCard();
+    clickCompactCard();
 
-    expect(screen.getByRole("heading", { name: "Beat the Bench" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Beat the Bench", level: 3 })).toBeInTheDocument();
     await screen.findByText(/79 bars/); // the chooser's own session detail line
     click(/play today's close/i);
     expect(barReadout()).toMatch(/bar 1 of 79/); // now genuinely mid-game
 
-    fireEvent.click(screen.getByRole("button", { name: /collapse/i }));
+    // The tile itself is the toggle in both directions now, exactly like
+    // The Call Board's own always-clickable <summary> -- no separate
+    // "Collapse" control.
+    clickCompactCard();
 
-    // Back to the compact card, not left showing the game mid-collapse.
+    // Back to the compact tile alone, not left showing the game
+    // mid-collapse.
     expect(screen.getByRole("button", { name: /can you do better\?/i })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Beat the Bench" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Beat the Bench", level: 3 }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText(/bar \d+ of 79/)).not.toBeInTheDocument();
 
     // Clickable and collapsible either direction, like The Call Board's
     // own <summary> -- re-expanding lands back on the mode chooser, not
     // resumed mid-game state.
-    expandCompactCard();
-    expect(screen.getByRole("heading", { name: "Beat the Bench" })).toBeInTheDocument();
+    clickCompactCard();
+    expect(screen.getByRole("heading", { name: "Beat the Bench", level: 3 })).toBeInTheDocument();
     await screen.findByText(/79 bars/);
     expect(screen.queryByText(/bar \d+ of 79/)).not.toBeInTheDocument();
 
@@ -374,7 +405,7 @@ describe("BeatTheBench", () => {
   it("says so, without alarm, when no session has been published", async () => {
     stubSessionFetch({ error: "not_found", message: "nope" }, 404);
     render(<BeatTheBench />);
-    expandCompactCard();
+    clickCompactCard();
 
     expect(await screen.findByText(/There's no session to play right now/)).toBeInTheDocument();
   });
@@ -501,8 +532,10 @@ describe("BeatTheBench", () => {
     // A fresh visit reads the stored record back through the same
     // defensive path -- both in the compact card's own status line
     // (issue #163) and, once expanded, the mode chooser's own recap
-    // paragraph.
+    // paragraph. `cleanup()` first, same reasoning as the identical
+    // pattern above in "shows a real, gold done badge...".
     vi.useRealTimers();
+    cleanup();
     render(<BeatTheBench />);
     expect(await screen.findByText("Level with the bench today")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /can you do better\?/i }));

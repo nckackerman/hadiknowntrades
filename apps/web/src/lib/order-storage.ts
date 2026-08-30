@@ -22,7 +22,9 @@
 // to summarise" reasoning call-board-storage.ts's own `syncCallBoard`
 // doc comment already gives for computing stats fresh every time.
 
+import { isBooleanArray } from "./is-boolean-array";
 import { readLocalStorage, writeLocalStorage } from "./local-storage";
+import { parseJson } from "./parse-json";
 import type { OrderFeedback } from "./order-scoring";
 
 const KEY_PREFIX = "hikt:the-order:";
@@ -33,28 +35,11 @@ function dayKeyFor(date: string): string {
   return `${DAY_KEY_PREFIX}${date}`;
 }
 
-function parseJson(raw: string | null): unknown {
-  if (raw === null) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
 function isStringArray(value: unknown, length: number): value is string[] {
   return (
     Array.isArray(value) &&
     value.length === length &&
     value.every((entry) => typeof entry === "string" && entry.length > 0)
-  );
-}
-
-function isBooleanArray(value: unknown, length: number): value is boolean[] {
-  return (
-    Array.isArray(value) &&
-    value.length === length &&
-    value.every((entry) => typeof entry === "boolean")
   );
 }
 

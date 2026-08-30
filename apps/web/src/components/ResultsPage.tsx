@@ -12,12 +12,10 @@ import { useDailyChallenge } from "@/lib/use-daily-challenge";
 import { useGameTileOrder } from "@/lib/use-game-tile-order";
 import { formatDate } from "@/lib/format-date";
 import { parseAnchorDate, parseRange } from "@/lib/results-api";
-import { headlineFigureFor } from "@/lib/headline-figure";
 import { DEFAULT_MODE, parseMode, type Mode } from "@/lib/mode";
 import { BeatTheBench } from "@/components/BeatTheBench";
 import { CallBoard } from "@/components/CallBoard";
 import { DailyHero } from "@/components/DailyHero";
-import { DailyRitual } from "@/components/DailyRitual";
 import { TheOrder } from "@/components/TheOrder";
 import { TheLineup } from "@/components/TheLineup";
 import { CustomRangeSelector } from "@/components/CustomRangeSelector";
@@ -126,16 +124,6 @@ export function ResultsPage() {
   // third, call cheap). Degrades to rendering nothing while loading or
   // on a fetch error -- see the header JSX below.
   const { dailyChallenge: headerDailyChallenge } = useDailyChallenge(mode);
-
-  // The one figure the active view headlines (issue #133) -- the window
-  // model's HeroStat figure for 5Y/Max/a custom anchor, the whole-range
-  // chained balance for the intraday-daily ranges. Computed here, once,
-  // from the same helper ResultsPanel itself uses, and handed to the daily
-  // ritual's recap so the two can't disagree about the day's number. `null`
-  // until the fetch succeeds; the recap simply omits the line rather than
-  // stubbing it (see buildRecapText).
-  const headline =
-    state.status === "success" ? headlineFigureFor(state.data, range, mode, startingCapital) : null;
 
   function selectRange(next: PresetRange) {
     const params = new URLSearchParams(searchParams);
@@ -301,32 +289,18 @@ export function ResultsPage() {
         <TheLineup />
       </div>
 
-      {/* The Daily Ritual (issue #133): the "today, so far" rail plus the
-          shareable recap, the capstone on the daily hero + two mechanics
-          directly above it -- so the locked copy's "Play Beat the Bench
-          above" is literally true, and the recap sits at the end of the
-          day's run rather than interrupting it. Repositioned here, ahead
-          of the demoted range explorer below, by issue #165 -- a
-          mount-order change only, no functional change to DailyRitual.tsx
-          itself (that issue's own Background section is explicit about
-          this). Mounted at this level for exactly the reasons the two
-          mechanics are (issue #122): it reads state those two own, and it
-          must not vanish when /api/results is slow or failing. It takes
-          the headline figure the page is already rendering rather than a
-          result to re-derive one from -- see lib/headline-figure.ts,
-          which ResultsPanel computes its own whole-range figure through
-          too. */}
-      <DailyRitual range={range} mode={mode} headline={headline} />
-
       {/* "Explore other windows" (issue #165): the entire pre-existing
           1W/1M/3M/1Y/5Y/Max range-explorer experience -- RangeSelector,
           the "More options" disclosure (CustomRangeSelector/ModeToggle),
           and ResultsPanel itself (including its own nested AboutSection
           disclaimer/methodology disclosure, per result view) -- demoted
           into one collapsed <details> at the bottom of the page, below
-          DailyRitual. Everything inside moves unchanged (this issue's own
-          Out of scope: no change to ResultsPanel's internal model
-          branching, WholeRangeReplay/TradeReplay, DayOverview,
+          the daily-hub game grid above (the "Today's recap" section that
+          used to sit between them, issue #133, was removed outright --
+          direct user feedback that it added little on top of what the
+          game tiles already show). Everything inside moves unchanged
+          (this issue's own Out of scope: no change to ResultsPanel's
+          internal model branching, WholeRangeReplay/TradeReplay, DayOverview,
           CustomRangeSelector, ModeToggle, or BenchmarkStat) -- same
           range/anchor/mode/day URL state, same guess-then-reveal gate,
           same window-model chart. This <details> only changes whether

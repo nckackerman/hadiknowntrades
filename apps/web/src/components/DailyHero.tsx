@@ -219,9 +219,8 @@ const CHART_SLOT_HEIGHT_CLASSNAME = "h-[24rem]";
  * that class is shared by `TradeReplay`'s own "Watch it happen"/"Skip to
  * end"/"Replay" buttons and `WholeRangeReplay`'s identical pair, all deep
  * inside the demoted "Explore other windows" section -- out of this
- * issue's own scope, which names only this button and `DailyRitual.tsx`'s
- * "Copy recap". Restyling the shared class would have silently reached
- * those other buttons too.
+ * issue's own scope, which named only this one button. Restyling the
+ * shared class would have silently reached those other buttons too.
  */
 const WATCH_BUTTON_CLASSNAME =
   "inline-flex min-h-11 items-center justify-center rounded-[0.65rem] bg-[var(--surface-2)] px-[1.15rem] py-2 text-sm font-bold text-[var(--text-primary)] shadow-[0_4px_0_0_#0d0d0c] transition duration-75 ease-out active:translate-y-[3px] active:shadow-[0_1px_0_0_#0d0d0c]";
