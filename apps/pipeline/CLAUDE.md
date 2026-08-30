@@ -1493,9 +1493,10 @@ section for the real, validated selection numbers this wiring produces.
   its own `putObject`, so a violation there is this run's own bug and
   should fail loudly. `parseLineupHistoryEntries` runs against a _prior_
   run's output being read back untrusted -- the same "corrupt input
-  degrades the _cadence_, never fails the _run_" posture
-  `daily-guess-storage.ts` (`apps/web`) already applies to a corrupt
-  localStorage value, just on the pipeline side. Concretely: a missing
+  degrades gracefully rather than failing outright" posture every one of
+  `apps/web`'s own storage modules already applies to a malformed
+  localStorage value (e.g. `lineup-storage.ts`'s own
+  `getLineupPlayedResult`), just on the pipeline side. Concretely: a missing
   `entries` array, a non-object, or an individual entry missing
   `date`/`tickers` are all silently dropped (or the whole thing treated
   as `[]`) rather than thrown -- a malformed prior history just means
