@@ -421,7 +421,20 @@ export const PortfolioChart = memo(function PortfolioChart({
 
   function stepFocus(delta: number) {
     setHoverIndex((current) => {
-      const from = current ?? 0;
+      // `-1`, not `0` (real bug, found via a coverage audit -- this
+      // keyboard interaction had zero test coverage despite the idle
+      // caption itself advertising "use the arrow keys"): the very
+      // first ArrowRight press with no prior hover used to compute
+      // `0 + 1 = 1`, silently skipping the chart's own opening point --
+      // unreachable via keyboard-only "next" navigation, even though a
+      // mouse/touch user can always reach it directly. Starting the
+      // implicit "no selection yet" position one step before the first
+      // real index means the first ArrowRight now lands on 0 (clamped
+      // up from `-1 + 1`), and the first ArrowLeft still lands on 0 too
+      // (clamped up from `-1 - 1`) -- both directions' first press
+      // reveals the start, matching what a pointer-based tap/hover
+      // already lets a sighted user do.
+      const from = current ?? -1;
       const next = Math.min(drawn.length - 1, Math.max(0, from + delta));
       return next;
     });
