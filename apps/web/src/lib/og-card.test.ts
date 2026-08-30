@@ -1,7 +1,8 @@
-import type { IntradayDayResult, IntradayResult, WindowResult } from "@hadiknowntrades/core";
+import type { WindowResult } from "@hadiknowntrades/core";
 import { RESULTS_SCHEMA_VERSION } from "@hadiknowntrades/core";
 import { describe, expect, it } from "vitest";
 
+import { intradayDay, intradayResult } from "./intraday-result.test-util";
 import { buildOgCardContent, rangeLabel } from "./og-card";
 
 function windowResult(overrides: Partial<WindowResult> = {}): WindowResult {
@@ -24,53 +25,6 @@ function windowResult(overrides: Partial<WindowResult> = {}): WindowResult {
     benchmark: null,
     benchmarkSeries: null,
     ...overrides,
-  };
-}
-
-function intradayResult(overrides: Partial<IntradayResult> = {}): IntradayResult {
-  return {
-    schemaVersion: RESULTS_SCHEMA_VERSION,
-    model: "intraday-daily",
-    range: "1M",
-    generatedAt: "2026-08-21T00:00:00.000Z",
-    dataAsOf: "2026-08-20",
-    endDate: "2026-08-21",
-    maxTradesPerDay: 3,
-    startingCapital: 20,
-    universeSize: 500,
-    skippedTickers: [],
-    benchmark: null,
-    benchmarkSeries: null,
-    days: [],
-    ...overrides,
-  };
-}
-
-/**
- * One chained trading day, in the exact shape apps/pipeline writes since
- * issue #84: every track carries its own `startingCapital`, and day N's
- * is day N-1's own `endingBalance` (see packages/core's
- * validateChainedStartingCapital, which enforces exactly this at write
- * time -- these fixtures satisfy it rather than approximating it).
- */
-function intradayDay(
-  date: string,
-  startingCapital: number,
-  endingBalance: number,
-): IntradayDayResult {
-  return {
-    date,
-    startingCapital,
-    endingBalance,
-    barIntervalMinutes: 60,
-    trades: [],
-    worstCase: { startingCapital, endingBalance: startingCapital / 2, trades: [] },
-    longShort: {
-      startingCapital,
-      endingBalance: endingBalance * 1.1,
-      trades: [],
-      worstCase: { startingCapital, endingBalance: startingCapital / 4, trades: [] },
-    },
   };
 }
 
