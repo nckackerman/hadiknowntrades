@@ -8650,7 +8650,14 @@ issue-tracking ceremony.
   growing to ~645px/700px once revealed -- close to the old fixed 640px
   (40rem), confirming nothing is clipped by the new floor.
 - **`BeatTheBench.tsx`'s expanded view is collapsible again, not a
-  one-way mount.** Issue #163's own original design deliberately chose a
+  one-way mount.** (**Superseded** by the later "Header consistency fix"
+  described in this file's own "'Today's recap' removed outright, and a
+  deep-clean pass" section: the separate "Collapse" button/`handleCollapse`
+  this bullet describes were removed outright, replaced by the tile
+  itself staying clickable in both directions -- read that section for
+  the current, accurate mechanism. This bullet is left as-is as a
+  historical record of what this pass originally shipped and why.)
+  Issue #163's own original design deliberately chose a
   plain button over a native `<details>` specifically because "there's
   nothing here that needs to also collapse back closed" -- that premise
   changed. `BeatTheBenchFrame`'s header now carries a "Collapse" button

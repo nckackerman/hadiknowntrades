@@ -70,9 +70,11 @@
 // status badge (`done` once today's session has been played, nothing
 // otherwise -- see its own doc comment) built from
 // `lib/daily-ritual.ts`'s own `STEP_STYLES`, shared with The Call
-// Board's identical badge. This replaces what used to be a separate,
+// Board's identical badge. This replaced what used to be a separate,
 // always-visible "Today, so far" status rail above every mechanic
-// (`DailyRitual.tsx`) -- see that file's own doc comment.
+// (`DailyRitual.tsx`) -- itself removed outright in a later pass, once
+// the recap disclosure it fed was also removed (see apps/web/CLAUDE.md's
+// own "'Today's recap' removed outright" section).
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 
@@ -138,6 +140,9 @@ const BENCH_TILE_GRADIENT = `linear-gradient(155deg, ${BENCH_TILE_GRADIENT_STOPS
 
 /** The tile's own icon (🎯), named once so `CompactCard` and `BeatTheBenchFrame`'s panel header can't drift apart -- mirrors CallBoard.tsx's identical `CTA_ICON` constant. */
 const BENCH_ICON = "🎯";
+
+/** The mechanic's name, named once so the sr-only landmark `<h2>` and the panel's own visible `<GamePanelHeader>` heading can't drift apart -- mirrors TheOrder.tsx's `TITLE`/TheLineup.tsx's `TILE_TITLE`. */
+const BENCH_TITLE = "Beat the Bench";
 
 /**
  * Connecting the expanded panel back to the tile that opened it (issue
@@ -210,12 +215,16 @@ export function BeatTheBench() {
   // `<summary>`. Resetting `mode` only on the close transition (rather
   // than leaving it set for a future re-expand) keeps re-expanding always
   // land on the mode chooser, never resumed mid-game state a viewer might
-  // not recognize.
+  // not recognize. A plain closure read of `expanded`, not
+  // `setExpanded`'s own functional-updater form -- this is a synchronous
+  // onClick handler with `expanded` already correct in scope, so there's
+  // no batched/stale-state risk a functional updater would guard
+  // against, and calling `setMode` as a side effect *inside* an updater
+  // would violate React's "updaters must be pure" contract (Strict
+  // Mode's dev-only double-invoke exists specifically to catch this).
   function handleToggle() {
-    setExpanded((wasExpanded) => {
-      if (wasExpanded) setMode(null);
-      return !wasExpanded;
-    });
+    if (expanded) setMode(null);
+    setExpanded(!expanded);
   }
 
   // A pure function of already-resolved state (mode/todaysClose/
@@ -299,6 +308,14 @@ export function BeatTheBench() {
     );
   }
 
+  // Not `headingId` itself -- that already names the sr-only landmark
+  // `<h2>` below. A second, derived id for the panel `<div>` so the tile
+  // button's own `aria-controls` has a real target to point at, the
+  // relationship CallBoard/TheOrder/TheLineup get for free from native
+  // `<details>`/`<summary>` (see CompactCard's own doc comment on why
+  // this game hand-rolls the toggle instead).
+  const panelId = `${headingId}-panel`;
+
   return (
     <section aria-labelledby={headingId} className="flex flex-col">
       {/* A stable, sr-only landmark name -- decoupled from the tile's own
@@ -306,14 +323,15 @@ export function BeatTheBench() {
           `<h2 id="call-board-heading" className="sr-only">` above its own
           `<details>`. */}
       <h2 id={headingId} className="sr-only">
-        Beat the Bench
+        {BENCH_TITLE}
       </h2>
       <CompactCard
         todaysCloseDate={todaysClose?.date ?? null}
         expanded={expanded}
         onToggle={handleToggle}
+        panelId={panelId}
       />
-      {expanded && <BeatTheBenchFrame>{renderGameContent()}</BeatTheBenchFrame>}
+      {expanded && <BeatTheBenchFrame panelId={panelId}>{renderGameContent()}</BeatTheBenchFrame>}
     </section>
   );
 }
@@ -341,15 +359,16 @@ export function BeatTheBench() {
  * (not on the tile) since this panel is exactly what's conditionally
  * mounted.
  */
-function BeatTheBenchFrame({ children }: { children?: ReactNode }) {
+function BeatTheBenchFrame({ panelId, children }: { panelId: string; children?: ReactNode }) {
   return (
     <div
+      id={panelId}
       data-bench-expanded="true"
       data-testid="beat-the-bench-panel"
       className="flex flex-col gap-4 rounded-t-none rounded-b-2xl border-x border-b border-t-4 border-[var(--gridline)] bg-[var(--surface-1)] px-4 pt-4 pb-5"
       style={{ borderTopColor: CONNECTOR_ACCENT }}
     >
-      <GamePanelHeader icon={BENCH_ICON} accentColor={CONNECTOR_ACCENT} title="Beat the Bench" />
+      <GamePanelHeader icon={BENCH_ICON} accentColor={CONNECTOR_ACCENT} title={BENCH_TITLE} />
       <p className="text-sm text-[var(--text-secondary)]">
         One real trading session, replayed close by close. You start with{" "}
         {formatHeroCurrency(STARTING_CAPITAL)}, already in the market -- exactly where the bench
@@ -376,14 +395,14 @@ function BeatTheBenchFrame({ children }: { children?: ReactNode }) {
  * app's other expand-in-place disclosures ("More options," "View chart
  * data as a table"), the content behind this click is a stateful game
  * (fetches, playback intervals) this file's own Judgment-calls section
- * already documents as "fetched on mount, always". Expanding mounts
- * `BeatTheBenchFrame`, whose own header carries a "Collapse" control that
- * unmounts it again, back to this same card -- so the section is
- * clickable and collapsible either direction, matching The Call Board's
- * own `<details>`/`<summary>` behavior, just via a plain boolean toggle
- * instead of a native disclosure element (an unmount, not a `display:
- * none`, is what actually stops the game's own running interval once
- * collapsed).
+ * already documents as "fetched on mount, always". This same button is
+ * the toggle in both directions -- clicking it again while expanded
+ * collapses `BeatTheBenchFrame`'s panel, unmounting it (not merely
+ * hiding it), which is what actually stops the game's own running
+ * interval -- matching The Call Board's own always-clickable `<summary>`
+ * behavior, just via a plain boolean toggle instead of a native
+ * disclosure element. Unlike the panel, this button/tile itself never
+ * unmounts.
  *
  * **Issue #176's restyle**: a thin-left-border-accent card became a
  * solid-fill amber gradient tile (`linear-gradient(155deg, #f0b658 0%,
@@ -444,10 +463,13 @@ function CompactCard({
   todaysCloseDate,
   expanded,
   onToggle,
+  panelId,
 }: {
   todaysCloseDate: string | null;
   expanded: boolean;
   onToggle: () => void;
+  /** The panel `<div>`'s own id (only actually rendered while `expanded`) -- wired to `aria-controls` below so a screen-reader user gets the same toggle-controls-region relationship CallBoard/TheOrder/TheLineup get for free from native `<details>`/`<summary>`. */
+  panelId: string;
 }) {
   const [playedRecord, setPlayedRecord] = useState<PlayedSession | null>(null);
 
@@ -476,7 +498,7 @@ function CompactCard({
       type="button"
       onClick={onToggle}
       aria-expanded={expanded}
-      data-testid="beat-the-bench-tile"
+      aria-controls={panelId}
       style={{
         backgroundImage: BENCH_TILE_GRADIENT,
         color: "#241a08",
@@ -747,7 +769,7 @@ function SessionGame({
   // The date this session's stored record is keyed by. Today's Close has
   // it from the start; Mystery Day only once the reveal lands, so its
   // record is written at that moment rather than at settlement -- keyed
-  // by the *real* date, so issue #133's status rail reads one consistent
+  // by the *real* date, so every reader shares one consistent
   // `hikt:beat-the-bench:{date}:{mode}` shape for both modes rather than
   // one keyed by an opaque slot id that means something different after
   // the next pipeline run.

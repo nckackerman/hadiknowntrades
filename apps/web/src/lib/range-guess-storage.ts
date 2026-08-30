@@ -16,8 +16,10 @@
 
 import type { PresetRange } from "@hadiknowntrades/core";
 
+import { isFiniteNumber } from "./is-finite-number";
 import type { Mode } from "./mode";
 import { readLocalStorage, writeLocalStorage } from "./local-storage";
+import { parseJson } from "./parse-json";
 
 // Namespaced (not just the bare range) so this can't collide with a key
 // some other feature picks -- see apps/web/CLAUDE.md's localStorage note.
@@ -44,12 +46,7 @@ function isStoredRangeGuess(value: unknown): value is StoredRangeGuess {
   if (typeof value !== "object" || value === null) return false;
   const { guess, startingCapital } = value as Record<string, unknown>;
   return (
-    typeof guess === "number" &&
-    Number.isFinite(guess) &&
-    guess >= 0 &&
-    typeof startingCapital === "number" &&
-    Number.isFinite(startingCapital) &&
-    startingCapital > 0
+    isFiniteNumber(guess) && guess >= 0 && isFiniteNumber(startingCapital) && startingCapital > 0
   );
 }
 
@@ -62,14 +59,7 @@ function isStoredRangeGuess(value: unknown): value is StoredRangeGuess {
  * guessed", not throw or render nonsense).
  */
 export function getRangeGuess(range: PresetRange, mode: Mode): StoredRangeGuess | null {
-  const raw = readLocalStorage(keyFor(range, mode));
-  if (raw === null) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
+  const parsed = parseJson(readLocalStorage(keyFor(range, mode)));
   return isStoredRangeGuess(parsed) ? parsed : null;
 }
 

@@ -11,6 +11,8 @@
 
 import { ORDER_POOL_SIZE } from "@hadiknowntrades/core";
 
+import { isFiniteNumber } from "./is-finite-number";
+
 /** How many attempts the player gets before the puzzle reveals as "out of guesses" -- see spec-the-order.md's own "Attempt limit & pacing" section for the reasoning behind 4. */
 export const ORDER_MAX_ATTEMPTS = 4;
 
@@ -192,8 +194,7 @@ export function isValidOrderPuzzle(value: unknown): value is {
       ticker.length === 0 ||
       typeof companyName !== "string" ||
       companyName.length === 0 ||
-      typeof pctReturn !== "number" ||
-      !Number.isFinite(pctReturn)
+      !isFiniteNumber(pctReturn)
     ) {
       return false;
     }

@@ -30,6 +30,7 @@ import {
   type CallScore,
   type ResolvedCall,
 } from "./call-board-scoring";
+import { isFiniteNumber } from "./is-finite-number";
 import { isPickEditable } from "./market-calendar";
 import { readLocalStorage, writeLocalStorage } from "./local-storage";
 import { parseJson } from "./parse-json";
@@ -123,8 +124,7 @@ function isResolvedCall(value: unknown): value is ResolvedCall {
     date.length > 0 &&
     isCallBucket(pick) &&
     isCallBucket(actual) &&
-    typeof moveFraction === "number" &&
-    Number.isFinite(moveFraction) &&
+    isFiniteNumber(moveFraction) &&
     isCallScore(score)
   );
 }

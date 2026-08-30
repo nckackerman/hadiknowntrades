@@ -26,6 +26,7 @@
 // viewer's own day, not about any trading calendar.
 
 import { readLocalStorage, writeLocalStorage } from "./local-storage";
+import { parseJson } from "./parse-json";
 
 /** The two playable game tiles this ranking covers. The Order/The Lineup placeholder tiles (a sibling issue) have no play state to rank by and aren't part of this type yet. */
 export type GameTileId = "beat-the-bench" | "call-board";
@@ -83,15 +84,6 @@ function isTileOrderDay(value: unknown): value is TileOrderDay {
   // No duplicate tile within one day's order -- a hand-edited/corrupt
   // entry could claim a tile was "first touched" twice.
   return new Set(order).size === order.length;
-}
-
-function parseJson(raw: string | null): unknown {
-  if (raw === null) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
 }
 
 /**

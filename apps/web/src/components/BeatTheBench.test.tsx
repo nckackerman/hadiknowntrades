@@ -339,9 +339,26 @@ describe("BeatTheBench", () => {
 
   it("connects the expanded panel back to the tile that opened it (issue #195)", async () => {
     render(<BeatTheBench />);
+
+    // Before expanding: aria-expanded is false, and aria-controls already
+    // names the panel's id even though that element isn't mounted yet --
+    // the same "controls a not-yet-rendered region" shape a native
+    // <details>/<summary> gets from the browser for free.
+    const tileBeforeExpand = screen.getByRole("button", { name: /can you do better\?/i });
+    expect(tileBeforeExpand).toHaveAttribute("aria-expanded", "false");
+    const panelId = tileBeforeExpand.getAttribute("aria-controls");
+    expect(panelId).toBeTruthy();
+
     clickCompactCard();
 
     const panel = await screen.findByTestId("beat-the-bench-panel");
+    // The real programmatic tile-controls-panel relationship a screen
+    // reader can follow -- not just a visual/positional connection.
+    expect(panel).toHaveAttribute("id", panelId);
+    expect(screen.getByRole("button", { name: /can you do better\?/i })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
 
     // A 4px top border colored with the tile's own darkest gradient
     // stop (#d88f28), plus the other three sides keeping their original

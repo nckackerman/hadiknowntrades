@@ -45,9 +45,11 @@
 // `STEP_STYLES`/`callsState` -- see `CallBoardSummaryRow`'s own doc
 // comment) plus a miniature version of the history strip/streak chip
 // below, reusing `callOutcomeFor`/`OUTCOME_STYLES` unchanged, once
-// `board.resolved` is non-empty. This replaces what used to be a
+// `board.resolved` is non-empty. This replaced what used to be a
 // separate, always-visible "Today, so far" status rail above every
-// mechanic (`DailyRitual.tsx`) -- see that file's own doc comment.
+// mechanic (`DailyRitual.tsx`) -- itself removed outright in a later
+// pass, once the recap disclosure it fed was also removed (see
+// apps/web/CLAUDE.md's own "'Today's recap' removed outright" section).
 
 import { useState } from "react";
 
