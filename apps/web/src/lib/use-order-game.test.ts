@@ -161,3 +161,84 @@ describe("useOrderGame -- persist() only re-reads streak history on the done tra
     expect(streakSpy).toHaveBeenCalled();
   });
 });
+
+describe("useOrderGame -- move/shuffle/submit/reveal are no-ops once the day is already done", () => {
+  // Real, reachable defensive guards, not dead code: a double-click or a
+  // stray keyboard-repeat firing an action after `done` already went
+  // true (e.g. between the winning submit() and the settlement UI
+  // actually re-rendering to hide the controls) must not silently
+  // re-open, re-attempt, or re-record a finished puzzle.
+  it("move() does not change a finished day's stored guess", async () => {
+    const finished = stateWith({ done: true, won: true, attempt: 2 });
+    saveOrderDayState(DATE, finished);
+    const { result } = renderHook(() => useOrderGame(PUZZLE));
+    await waitFor(() => expect(result.current.view.hydrated).toBe(true));
+
+    act(() => {
+      result.current.move(0, 1);
+    });
+
+    expect(result.current.view.state).toEqual(finished);
+  });
+
+  it("shuffle() does not change a finished day's stored guess", async () => {
+    const finished = stateWith({ done: true, won: false, attempt: 4 });
+    saveOrderDayState(DATE, finished);
+    const { result } = renderHook(() => useOrderGame(PUZZLE));
+    await waitFor(() => expect(result.current.view.hydrated).toBe(true));
+
+    act(() => {
+      result.current.shuffle();
+    });
+
+    expect(result.current.view.state).toEqual(finished);
+  });
+
+  it("submit() does not record a second attempt against an already-finished day", async () => {
+    const finished = stateWith({ done: true, won: true, attempt: 1 });
+    saveOrderDayState(DATE, finished);
+    const { result } = renderHook(() => useOrderGame(PUZZLE));
+    await waitFor(() => expect(result.current.view.hydrated).toBe(true));
+
+    const streakSpy = vi.spyOn(orderStorage, "getOrderStreakHistory");
+    act(() => {
+      result.current.submit();
+    });
+
+    expect(result.current.view.state).toEqual(finished);
+    expect(streakSpy).not.toHaveBeenCalled();
+  });
+
+  it("reveal() does not overwrite an already-finished day's real won/history", async () => {
+    const finished = stateWith({
+      done: true,
+      won: true,
+      attempt: 1,
+      history: [{ guess: ANSWER, feedback: ["exact", "exact", "exact", "exact", "exact"] }],
+    });
+    saveOrderDayState(DATE, finished);
+    const { result } = renderHook(() => useOrderGame(PUZZLE));
+    await waitFor(() => expect(result.current.view.hydrated).toBe(true));
+
+    act(() => {
+      result.current.reveal();
+    });
+
+    // A real win must never be silently flipped to won: false by a
+    // stray post-finish reveal() call.
+    expect(result.current.view.state).toEqual(finished);
+  });
+
+  it("reveal() on a genuinely in-progress day marks it done without a win, per its own contract", async () => {
+    const { result } = renderHook(() => useOrderGame(PUZZLE));
+    await waitFor(() => expect(result.current.view.hydrated).toBe(true));
+    expect(result.current.view.state!.done).toBe(false);
+
+    act(() => {
+      result.current.reveal();
+    });
+
+    expect(result.current.view.state!.done).toBe(true);
+    expect(result.current.view.state!.won).toBe(false);
+  });
+});
