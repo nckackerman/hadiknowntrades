@@ -116,6 +116,98 @@ describe("PortfolioChart", () => {
     expect(readout.getByText(PLACEHOLDER_TEXT)).toBeInTheDocument();
   });
 
+  describe("keyboard navigation (issue #44): ArrowRight/ArrowLeft/Escape", () => {
+    // A third point specifically to make the ArrowRight-skips-index-0 bug
+    // (found via a coverage audit -- this whole describe block previously
+    // had zero tests, despite the idle caption itself advertising "use
+    // the arrow keys") unambiguous: with only two points, "the point
+    // after the implicit start" and "the last point" are the same index,
+    // which would hide the bug.
+    const threePoints: PortfolioPoint[] = [
+      { date: "2024-01-01", value: 20, event: null },
+      { date: "2024-01-02", value: 25, event: null },
+      { date: "2024-01-03", value: 30, event: null },
+    ];
+
+    it("ArrowRight from no prior hover reveals the FIRST point, not the second (real bug, fixed)", () => {
+      const { container } = render(<PortfolioChart points={threePoints} />);
+      const svg = getChartSvg();
+      const readout = getReadout(container);
+
+      fireEvent.keyDown(svg, { key: "ArrowRight" });
+
+      // Before the fix, stepFocus's own `current ?? 0` default meant the
+      // very first ArrowRight computed `0 + 1 = 1`, silently skipping the
+      // chart's own opening point for any keyboard-only user whose first
+      // move was "next" rather than "previous" -- the window's own start
+      // was unreachable via that path even though the idle caption
+      // explicitly names arrow keys as the accessible way to inspect the
+      // chart.
+      expect(readout.getByText("Jan 1, 2024")).toBeInTheDocument();
+      expect(readout.getByText("$20.00")).toBeInTheDocument();
+    });
+
+    it("ArrowLeft from no prior hover also reveals the first point", () => {
+      const { container } = render(<PortfolioChart points={threePoints} />);
+      const svg = getChartSvg();
+      const readout = getReadout(container);
+
+      fireEvent.keyDown(svg, { key: "ArrowLeft" });
+
+      expect(readout.getByText("Jan 1, 2024")).toBeInTheDocument();
+    });
+
+    it("steps forward and backward through every point, clamped at both ends", () => {
+      const { container } = render(<PortfolioChart points={threePoints} />);
+      const svg = getChartSvg();
+      const readout = getReadout(container);
+
+      fireEvent.keyDown(svg, { key: "ArrowRight" }); // -> index 0
+      expect(readout.getByText("Jan 1, 2024")).toBeInTheDocument();
+
+      fireEvent.keyDown(svg, { key: "ArrowRight" }); // -> index 1
+      expect(readout.getByText("Jan 2, 2024")).toBeInTheDocument();
+
+      fireEvent.keyDown(svg, { key: "ArrowRight" }); // -> index 2 (last)
+      expect(readout.getByText("Jan 3, 2024")).toBeInTheDocument();
+
+      fireEvent.keyDown(svg, { key: "ArrowRight" }); // clamped, stays at 2
+      expect(readout.getByText("Jan 3, 2024")).toBeInTheDocument();
+
+      fireEvent.keyDown(svg, { key: "ArrowLeft" }); // -> index 1
+      expect(readout.getByText("Jan 2, 2024")).toBeInTheDocument();
+
+      fireEvent.keyDown(svg, { key: "ArrowLeft" }); // -> index 0
+      expect(readout.getByText("Jan 1, 2024")).toBeInTheDocument();
+
+      fireEvent.keyDown(svg, { key: "ArrowLeft" }); // clamped, stays at 0
+      expect(readout.getByText("Jan 1, 2024")).toBeInTheDocument();
+    });
+
+    it("Escape clears the tooltip back to the placeholder readout", () => {
+      const { container } = render(<PortfolioChart points={threePoints} />);
+      const svg = getChartSvg();
+      const readout = getReadout(container);
+
+      fireEvent.keyDown(svg, { key: "ArrowRight" });
+      expect(readout.getByText("Jan 1, 2024")).toBeInTheDocument();
+
+      fireEvent.keyDown(svg, { key: "Escape" });
+
+      expect(readout.getByText(PLACEHOLDER_TEXT)).toBeInTheDocument();
+    });
+
+    it("an unrelated key is a no-op -- no tooltip, no crash", () => {
+      const { container } = render(<PortfolioChart points={threePoints} />);
+      const svg = getChartSvg();
+      const readout = getReadout(container);
+
+      fireEvent.keyDown(svg, { key: "Tab" });
+
+      expect(readout.getByText(PLACEHOLDER_TEXT)).toBeInTheDocument();
+    });
+  });
+
   describe("trade markers (issue #13: long/short direction verbs)", () => {
     const eventPoints: PortfolioPoint[] = [
       { date: "2024-01-01", value: 20, event: null },

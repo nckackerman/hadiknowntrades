@@ -515,6 +515,54 @@ clearing `hoverIndex` the same way `onPointerLeave` does, the tooltip
 stays visibly pinned to wherever the touch landed even after the chart
 scrolls out of view.
 
+### Keyboard navigation (`stepFocus`) had zero test coverage, and a real bug -- found via a coverage audit, not a filed issue
+
+`PortfolioChart.tsx`'s idle caption has said "use the arrow keys" since
+issue #66, but `stepFocus` (the `ArrowRight`/`ArrowLeft`/`Escape`
+`onKeyDown` handler) had no dedicated tests at all until a `@vitest/
+coverage-v8` sweep flagged its whole body as unexecuted -- despite
+`onPointerLeave`/`onPointerCancel`'s own one-line handlers showing as
+covered (fired incidentally by the pointer tests above), the keyboard
+path was never exercised by anything.
+
+Writing the missing tests surfaced a real, live-reproduced bug:
+**a keyboard-only user's very first `ArrowRight` press skipped the
+chart's own opening point.** `stepFocus`'s `current ?? 0` default meant
+the first press (no prior hover) computed `0 + 1 = 1`, landing on the
+_second_ point -- the window's own start was unreachable via forward
+navigation, even though a mouse/touch user can always reach it directly
+via hover/tap. `ArrowLeft`-first correctly landed on index 0 (clamped up
+from `0 - 1`), so the bug was asymmetric between the two directions and
+easy to miss without a fixture wide enough to distinguish "the point
+after the implicit start" from "the last point" (a 2-point fixture
+happens to make both the same index -- the new tests use 3 points
+specifically to avoid that trap).
+
+**Confirmed as a real regression, not a hypothetical, before fixing
+it**: the new tests were run against the unfixed code first and failed
+exactly as predicted (`ArrowRight` revealed "Jan 2, 2024" instead of
+"Jan 1, 2024"), the same "reproduce first" discipline this repo's own
+global instructions ask for on any bug fix. Fixed by starting the
+implicit "nothing hovered yet" position one step before the first real
+index (`current ?? -1`, not `current ?? 0`) -- `ArrowRight`'s first
+press now clamps up to `0` from `-1 + 1`, and `ArrowLeft`'s first press
+still clamps up to `0` from `-1 - 1` (unchanged from before), so both
+directions' first press reveals the start. `PortfolioChart.test.tsx`
+gained a full "keyboard navigation" describe block: the fixed bug
+itself, both directions' first-press behavior, stepping through every
+point with clamping verified at both ends, `Escape` clearing back to
+the placeholder readout, and an unrelated key being a safe no-op.
+
+Not chased further in the same sweep: `TheLineup.tsx`'s autocomplete-
+dropdown interaction (Enter-to-submit, click-to-select-and-focus-next)
+and `beat-the-bench.ts`'s zero-move-tie outcome sentence also showed up
+as partial-coverage gaps, but neither looked likely to hide a similarly
+real bug on inspection (the former needs real DOM-focus scaffolding to
+test properly, the latter is a hardcoded string) -- picking off one real,
+confirmed, well-scoped bug is more valuable than chasing every partial-
+branch nit to 100%, the same call this file's own PR #216 coverage pass
+already made.
+
 ## Prose trade narration (issue #32)
 
 `TradeList.tsx` (the window model's whole-window trade list, 5Y/MAX --
