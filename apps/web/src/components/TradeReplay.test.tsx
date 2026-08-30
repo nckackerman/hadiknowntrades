@@ -91,12 +91,19 @@ describe("TradeReplay (issue #96)", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders the real, unmodified hero row and chart on first render -- never auto-plays", () => {
+  it("renders the real, unmodified hero row on first render, and the real chart one click deeper -- never auto-plays", async () => {
+    const user = userEvent.setup();
     render(<TradeReplay {...BASE_PROPS} />);
 
     expect(screen.getByText("Worst case, same budget")).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Watch it happen" })).toBeInTheDocument();
+    expect(statusRegion()).toHaveTextContent("");
+
+    // The chart itself is behind a closed-by-default disclosure now
+    // (issue #209) -- opening it manually confirms it's still the real,
+    // unmodified chart, and that opening it alone never triggers replay.
+    await user.click(screen.getByText("View the chart"));
+    expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
     expect(statusRegion()).toHaveTextContent("");
   });
 
@@ -106,16 +113,21 @@ describe("TradeReplay (issue #96)", () => {
     expect(screen.queryByRole("button", { name: /watch it happen/i })).not.toBeInTheDocument();
   });
 
-  it("prefers-reduced-motion fully bypasses the feature: no button renders, real hero/chart shown as-is", () => {
+  it("prefers-reduced-motion fully bypasses the replay feature: no button renders, real hero/chart still reachable as-is", async () => {
     stubPrefersReducedMotion(true);
+    const user = userEvent.setup();
 
     render(<TradeReplay {...BASE_PROPS} />);
 
     expect(screen.queryByRole("button", { name: /watch it happen/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /replay/i })).not.toBeInTheDocument();
     // Zero information loss: the real chart/hero still render exactly as
-    // they did before this feature existed.
+    // they did before this feature existed -- the chart itself is one
+    // click behind its own disclosure regardless of motion preference
+    // (issue #209 didn't touch this feature's reduced-motion bypass, and
+    // the disclosure's own manual open/close never depends on it).
     expect(screen.getByText("Worst case, same budget")).toBeInTheDocument();
+    await user.click(screen.getByText("View the chart"));
     expect(screen.getByRole("img", { name: /portfolio value over time/i })).toBeInTheDocument();
   });
 
@@ -314,6 +326,10 @@ describe("TradeReplay (issue #96)", () => {
     // second div one level further out.
     const chartWrapper = () => container.querySelector("svg")!.parentElement!;
 
+    // PortfolioChart only mounts once its own disclosure is open (issue
+    // #209 code review finding) -- open it by hand first so the
+    // "interactive at idle" baseline below is actually observable.
+    await user.click(screen.getByText("View the chart"));
     expect(chartWrapper().hasAttribute("inert")).toBe(false);
     expect(chartWrapper().hasAttribute("aria-hidden")).toBe(false);
 
@@ -425,23 +441,27 @@ describe("TradeReplay (issue #96)", () => {
     expect(screen.getByText("(2x)")).toBeInTheDocument();
   });
 
-  it("PortfolioChart's own DOM node never remounts across idle -> playing -> done -> replay transitions (no reveal-animation flash at those boundaries)", async () => {
+  it("PortfolioChart's own DOM node never remounts across playing -> done -> replay transitions (no reveal-animation flash at those boundaries)", async () => {
     createRafPump();
     const user = userEvent.setup();
     const { container } = render(<TradeReplay {...BASE_PROPS} />);
     const currentSvg = () => container.querySelector("svg");
 
-    const svgAtIdle = currentSvg();
-    expect(svgAtIdle).not.toBeNull();
-
+    // PortfolioChart only mounts once its own disclosure is open (issue
+    // #209 code review finding) -- there is no node to capture before
+    // that first happens, which "Watch it happen" itself triggers (it
+    // force-opens the disclosure at the same instant it starts
+    // playback), so the node identity is captured right after that
+    // click rather than beforehand.
     await user.click(screen.getByRole("button", { name: "Watch it happen" }));
-    expect(currentSvg()).toBe(svgAtIdle);
+    const svgAfterFirstOpen = currentSvg();
+    expect(svgAfterFirstOpen).not.toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Skip to end" }));
-    expect(currentSvg()).toBe(svgAtIdle);
+    expect(currentSvg()).toBe(svgAfterFirstOpen);
 
     await user.click(screen.getByRole("button", { name: "Replay" }));
-    expect(currentSvg()).toBe(svgAtIdle);
+    expect(currentSvg()).toBe(svgAfterFirstOpen);
   });
 
   it("reserves the identical figure width on the playing overlay and the real HeroStat behind it (issue #147)", async () => {

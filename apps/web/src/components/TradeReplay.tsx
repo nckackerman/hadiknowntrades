@@ -56,7 +56,21 @@ interface TradeReplayProps {
    * state's own copy -- no reason to duplicate it here).
    */
   trades: readonly Trade[];
-  /** How many trades this result has -- the button only renders with at least one (per the issue's own acceptance criteria). */
+  /**
+   * How many trades this result has -- the button only renders with at
+   * least one (per the issue's own acceptance criteria). **Deliberately
+   * not derived as `trades.length` inside this component** (a real
+   * question raised in code review): at the one real call site
+   * (`ResultsPanel.tsx`) both are always `variant.trades`/
+   * `variant.trades.length`, so they're never actually out of sync in
+   * production -- but several existing tests (see
+   * `TradeReplay.test.tsx`'s own "Skip to end stays available even if
+   * tradeCount drops to zero mid-playback" test) deliberately rerender
+   * with a changed `tradeCount` alone, holding `trades`/`points` fixed,
+   * specifically to isolate `canReplay`'s own gating from an unrelated
+   * `points`-reference reset. Deriving `tradeCount` here would collapse
+   * that test's own ability to change one variable at a time.
+   */
   tradeCount: number;
   /** Identifies "this result" -- passed straight through as HeroAndWorstCase's own `heroKey` (see that component's prop doc comment) and as PortfolioChart's own `key`, so both remount and replay their reveal animations on a genuine new result (a fetch, or a mode switch) but never mid-playback for any other reason. */
   heroKey: string;
@@ -97,7 +111,11 @@ export const buttonClassName =
  * able to force the chart open programmatically the instant it starts
  * animating, which an uncontrolled `<details>` has no declarative way to
  * do. `PortfolioChart` itself, and everything about how it renders once
- * visible, is completely unchanged by this issue.
+ * visible, is completely unchanged by this issue -- it's only *mounted*
+ * lazily now, exactly when `chartOpen` first goes true, rather than
+ * always-mounted-but-visually-hidden (code review finding, fixed; see
+ * the `<details>` JSX's own doc comment below for the two real mount-
+ * time-effect bugs that shape was hiding).
  *
  * Returns a Fragment of two top-level pieces -- the hero/controls block
  * and the timeline+chart block, not one wrapping div -- so both splice
@@ -260,19 +278,24 @@ export function TradeReplay({
   // component's own state from disagreeing.
   const [chartOpen, setChartOpen] = useState(false);
 
-  function handlePlay() {
-    // Force the chart open the instant playback starts, whether it's a
-    // fresh "Watch it happen" or a "Replay" -- per this issue's own
-    // acceptance criteria, the disclosure must never still be closed
-    // while PortfolioChart is what's actually animating.
-    setChartOpen(true);
-    play();
+  // Shared by both buttons below (code-review finding, fixed -- an
+  // earlier version had `handlePlay`/`handleSkipToEnd` as two
+  // independent two-line wrappers with the same "force the chart open,
+  // then delegate" shape, which is exactly the kind of duplication that
+  // makes it easy to fix a future force-open behavior change at only one
+  // of the two call sites). Forces the chart open the instant playback
+  // starts or is skipped to the end -- per this issue's own acceptance
+  // criteria, the disclosure must never still be closed while
+  // PortfolioChart is what's actually animating.
+  function openChartThen(fn: () => void): () => void {
+    return () => {
+      setChartOpen(true);
+      fn();
+    };
   }
 
-  function handleSkipToEnd() {
-    setChartOpen(true);
-    skipToEnd();
-  }
+  const handlePlay = openChartThen(play);
+  const handleSkipToEnd = openChartThen(skipToEnd);
 
   // Memoized (code-review finding, issue #96 follow-up): constant for
   // the whole result, but this component re-renders on every one of the
@@ -568,15 +591,45 @@ export function TradeReplay({
           <summary className="cursor-pointer text-sm text-[var(--text-secondary)]">
             {chartOpen ? "Hide the chart" : "View the chart"}
           </summary>
-          <div className="mt-3">
-            <PortfolioChart
-              key={heroKey}
-              points={points}
-              revealedCount={showLive ? undefined : frame.revealedCount}
-              interactive={showLive}
-              landing={landing}
-            />
-          </div>
+          {/* `PortfolioChart` only mounts once the disclosure is actually
+              open -- not always-mounted-but-visually-hidden (code review
+              finding, fixed). Two of its own mount-time effects assume
+              "mounted" means "visible," and a closed <details> breaks
+              that assumption in a real browser (jsdom never applies the
+              UA-stylesheet display:none rule for closed <details>
+              content -- see this file's own top-of-file doc comment --
+              so this gap was invisible to the test suite):
+              `use-chart-tap-hint.ts`'s one-time touch pulse hint
+              persists its own dismissal synchronously in a mount-only
+              effect, on the theory that "if this hook is running, the
+              hint is genuinely on screen" (true for every pre-#209
+              caller, where `PortfolioChart` was always rendered
+              immediately) -- mounted-but-hidden would burn that one-time
+              hint for a first-time touch visitor before they ever saw
+              it. And `.portfolio-chart-reveal`'s CSS reveal-on-mount
+              animation is inert while its ancestor computes
+              `display: none`, then genuinely restarts from its own
+              beginning the instant that ancestor becomes visible (real,
+              documented CSS behavior -- an element's animation doesn't
+              preserve progress across a display:none stint) -- mounting
+              behind a closed disclosure would make it fire for the first
+              time exactly when "Watch it happen" force-opens the
+              disclosure, colliding visually with the live replay
+              animation starting at that same instant. Lazy-mounting
+              sidesteps both: `PortfolioChart` only ever mounts at a
+              moment it's genuinely about to be seen, so both effects'
+              own "mount implies visible" assumption holds true again. */}
+          {chartOpen && (
+            <div className="mt-3">
+              <PortfolioChart
+                key={heroKey}
+                points={points}
+                revealedCount={showLive ? undefined : frame.revealedCount}
+                interactive={showLive}
+                landing={landing}
+              />
+            </div>
+          )}
         </details>
       </div>
     </>

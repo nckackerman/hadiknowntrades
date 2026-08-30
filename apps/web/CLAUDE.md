@@ -9970,3 +9970,97 @@ build`/`next start` (not `next dev` -- see issue #123's own repeatedly-
   per this file's own established convention; confirmed via `git
 status`/`git diff --stat` on `package.json`/`pnpm-lock.yaml` showing
   no trace afterward.
+
+### Code-review follow-up -- two real, live-reproduced bugs, both from the same root cause
+
+A `high` review of the PR above found ten candidates; two were real,
+severe, and shared a single root cause -- `PortfolioChart` was always
+mounted, just visually hidden behind the closed `<details>`, and two of
+its own mount-time effects both assume "mounted" means "visible" (true
+for every pre-#209 caller, where this component was always rendered
+immediately). Both fixed with one change: `PortfolioChart` now mounts
+lazily (`{chartOpen && <PortfolioChart .../>}`), only at the moment it's
+genuinely about to be seen.
+
+- **`use-chart-tap-hint.ts`'s one-time touch discoverability pulse could
+  be permanently marked dismissed without ever being shown.** Its own
+  mount-only effect persists the dismissal synchronously the instant it
+  runs, on the theory (true before this issue) that a mount is a real,
+  visible mount. A first-time touch-primary visitor to a 5Y/MAX/custom-
+  anchor result would have silently burned this one-time hint the moment
+  the page loaded, well before ever clicking "View the chart" to
+  actually see it.
+- **The chart's own CSS reveal-on-mount animation
+  (`.portfolio-chart-reveal`) doesn't run at all while its ancestor
+  computes `display: none`, and genuinely restarts from scratch the
+  instant that ancestor becomes visible** (real, spec'd CSS behavior --
+  an element's animation progress isn't preserved across a `display:
+none` stint; this is the same mechanism behind the common
+  "toggle `display: none`/`block` to force-restart a CSS animation"
+  trick). Mounted-but-hidden meant this animation would fire for the
+  first time exactly when "Watch it happen" force-opens the disclosure
+  -- a reveal fade-in colliding visually with the live replay animation
+  starting at that same instant.
+- **Both gaps were invisible to the existing test suite for the same
+  reason**: jsdom applies no `details:not([open]) > *:not(summary) {
+display: none; }` rule at all (confirmed by reading its default
+  stylesheet directly, not assumed -- see this file's own repeated notes
+  on jsdom being indifferent to closed-`<details>` visibility elsewhere,
+  e.g. issue #165's own test note), so every jsdom test that queried the
+  chart by role kept finding it whether the disclosure was open or not.
+  **Live-verified, not just reasoned about**: a headless-Chromium pass
+  emulating a touch-primary device confirmed `hikt:chart-tap-hint-dismissed`
+  reads `null` right up until the chart is genuinely opened (not merely
+  mounted-but-hidden), the pulse itself is genuinely present once opened,
+  and only _then_ does the dismissal write land; a second pass sampled
+  `.portfolio-chart-reveal`'s own `getComputedStyle(...).opacity` every
+  100ms after a manual open and confirmed one clean climb from ~0 to
+  ~0.98 with no restart or double-trigger. Zero console/`pageerror`
+  events in either pass.
+- **Pre-existing `TradeReplay.test.tsx`/`ResultsPanel.test.tsx` tests
+  needed real updates, not just new assertions**, for the same jsdom-
+  blind-spot reason -- several tests asserted the chart's own accessible
+  role was present immediately at idle, relying on jsdom's own
+  indifference to the (pre-fix) mounted-but-hidden shape. With the chart
+  now genuinely absent from the DOM until opened, those tests now open
+  the disclosure by hand first (`user.click(screen.getByText("View the
+chart"))`) before asserting on it -- a real behavior-contract change to
+  document, not a mechanical patch to make a false assertion pass again.
+- **Two smaller findings, also fixed**: `TradeChip`'s sr-only sentence
+  hand-rolled the shorted/covered vs. bought/sold verb pair inline
+  instead of calling `trade-math.ts`'s own `tradeVerbsPast(direction)`
+  -- exactly the class of drift that helper was extracted to stop (see
+  that module's own header comment) -- and it never actually stated the
+  open/close prices in words at all, despite the adjacent `aria-hidden`
+  price span's own comment claiming it did (a real screen-reader
+  information gap, not just a stale comment -- fixed by adding the
+  prices to the sentence). Both `TheLineup.tsx`-style wash colors are
+  now `var(--status-good-wash, rgba(...))`/`var(--status-critical-wash,
+rgba(...))` strings (matching that file's own established fallback
+  pattern for this exact color pair) rather than bare `rgba(...)`
+  literals, so a future real token definition reaches this component
+  automatically instead of leaving it silently stale. `TradeEventTimeline`
+  is now `React.memo`'d (it re-renders on every RAF-driven replay frame
+  otherwise, for a `trades` prop that's stable for the whole run --
+  the identical class of waste this feature's own history already found
+  and fixed repeatedly elsewhere on this hot path). `handlePlay`/
+  `handleSkipToEnd`'s duplicated "force the chart open, then delegate"
+  shape is now one shared `openChartThen` helper.
+- **Two findings considered and deliberately not acted on**: `trades`/
+  `tradeCount` describing overlapping information via two independent
+  props (documented instead of collapsed -- several existing tests
+  deliberately vary `tradeCount` alone, holding `trades`/`points` fixed,
+  to isolate `canReplay`'s own gating from an unrelated `points`-
+  reference reset; deriving `tradeCount` here would have collapsed that
+  test isolation for a real call site where the two are already always
+  in sync); and `chartOpen` not resetting on a mode switch (considered,
+  not a bug -- the summary text is generic, not data-dependent, so
+  "stays whatever the user last chose" is defensible UX, not staleness).
+  A tenth finding (three structurally different chart-visibility-gating
+  mechanisms across `DailyHero.tsx`/`WholeRangeReplay.tsx`/this file) was
+  explicitly out of scope -- reconciling them would mean touching two
+  unrelated, already-shipped components for a scope this issue never
+  asked for, the same class of undisclosed scope expansion this file's
+  own issue #105 post-PR review history already flags as worth avoiding.
+- All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
+  1090 passing, `pnpm format:check`) re-ran green after every fix.

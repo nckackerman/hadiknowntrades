@@ -1,8 +1,10 @@
+import { memo } from "react";
+
 import type { Trade } from "@hadiknowntrades/core";
 
 import { formatDate } from "@/lib/format-date";
 import { formatHeroCurrency, formatPercent } from "@/lib/format-currency";
-import { computeTradeReturn } from "@/lib/trade-math";
+import { computeTradeReturn, tradeVerbsPast } from "@/lib/trade-math";
 
 /**
  * The window-model result page's new primary at-a-glance visual (issue
@@ -36,6 +38,17 @@ import { computeTradeReturn } from "@/lib/trade-math";
  * tokens rather than a new per-trade gradient. A real, considered
  * deviation from the issue's own literal wording, called out explicitly
  * per that issue's own instruction to do so rather than silently drift.
+ *
+ * **Memoized (code review finding, fixed): `TradeReplay.tsx` re-renders
+ * on every one of the dozens of RAF-driven frames while playing, but
+ * this component's own `trades` prop is a stable reference for the
+ * whole run** (its parent, `WindowResultBody`, doesn't itself re-render
+ * during playback -- only `TradeReplay`'s own internal replay state
+ * does) -- the exact class of wasted per-frame recomputation this
+ * file's own doc comment above already documents being found and fixed
+ * repeatedly elsewhere on this same hot path (`endingBalanceDisplayValue`,
+ * `displayStartingCapitalFormatted`, `multiplier`, `PortfolioChart`'s own
+ * `React.memo`).
  */
 interface TradeEventTimelineProps {
   trades: readonly Trade[];
@@ -44,6 +57,16 @@ interface TradeEventTimelineProps {
 interface OutcomeStyle {
   glyph: string;
   label: string;
+  /**
+   * A CSS `var(--token, fallback)` string, not a bare literal -- matches
+   * `TheLineup.tsx`'s own established `bg-[var(--status-good-wash,rgba(...))]`
+   * pattern for this identical color pair (code review finding, fixed:
+   * an earlier version hardcoded just the fallback rgba() value, which
+   * would silently keep rendering stale if `globals.css` ever defines
+   * real `--status-good-wash`/`--status-critical-wash` tokens -- every
+   * other call site referencing those names would pick the new value up
+   * automatically; this one wouldn't have).
+   */
   plateBackground: string;
   textColor: string;
 }
@@ -51,18 +74,14 @@ interface OutcomeStyle {
 const GAIN_STYLE: OutcomeStyle = {
   glyph: "▲",
   label: "Gain",
-  // The same rgba wash TheLineup.tsx's own tile treatment already
-  // established as this app's de facto --status-good-wash (no such
-  // token exists in globals.css yet -- see that file's own identical
-  // fallback value) -- reused rather than inventing a second one.
-  plateBackground: "rgba(74, 184, 111, 0.14)",
+  plateBackground: "var(--status-good-wash, rgba(74, 184, 111, 0.14))",
   textColor: "var(--status-good)",
 };
 
 const LOSS_STYLE: OutcomeStyle = {
   glyph: "▼",
   label: "Loss",
-  plateBackground: "rgba(228, 107, 100, 0.14)",
+  plateBackground: "var(--status-critical-wash, rgba(228, 107, 100, 0.14))",
   textColor: "var(--status-critical)",
 };
 
@@ -74,6 +93,12 @@ function TradeChip({ trade, index }: { trade: Trade; index: number }) {
   );
   const style = isGain ? GAIN_STYLE : LOSS_STYLE;
   const percentLabel = formatPercent(returnFraction);
+  // Shared with TradeRow.tsx/narrate-trades.ts (code review finding,
+  // fixed) -- an earlier version hand-rolled this exact "bought"/"sold"
+  // vs "shorted"/"covered" mapping inline, exactly the class of drift
+  // trade-math.ts's own header comment already documents happening
+  // independently in four places before this helper existed to stop it.
+  const { openVerb, closeVerb } = tradeVerbsPast(trade.direction);
 
   return (
     <li className="surface-card flex min-w-[13rem] flex-1 items-center gap-3 rounded-2xl border border-[var(--gridline)] bg-[var(--surface-1)] px-4 py-3">
@@ -108,23 +133,25 @@ function TradeChip({ trade, index }: { trade: Trade; index: number }) {
         <span className="font-numeric text-sm font-bold" style={{ color: style.textColor }}>
           {percentLabel}
         </span>
-        {/* aria-hidden -- the sr-only sentence below already states this
-            same fact in words; WCAG 1.4.1 is satisfied by the glyph +
-            sr-only text, not by this pixel-value pair on its own. */}
+        {/* aria-hidden -- the sr-only sentence below states the same
+            prices in words too (code review finding, fixed: an earlier
+            version's comment here claimed that was already true when it
+            wasn't -- the sr-only sentence never mentioned a price at
+            all, a real screen-reader information gap). */}
         <span aria-hidden="true" className="font-numeric text-[0.6875rem] text-[var(--text-muted)]">
           {formatHeroCurrency(trade.openPrice)} → {formatHeroCurrency(trade.closePrice)}
         </span>
       </div>
       <span className="sr-only">
-        Trade {index + 1}: {trade.direction === "short" ? "shorted" : "bought"} {trade.ticker} on{" "}
-        {formatDate(trade.openDate)}, {trade.direction === "short" ? "covered" : "sold"} on{" "}
-        {formatDate(trade.closeDate)}. {style.label}, {percentLabel}.
+        Trade {index + 1}: {openVerb} {trade.ticker} on {formatDate(trade.openDate)} at{" "}
+        {formatHeroCurrency(trade.openPrice)}, {closeVerb} on {formatDate(trade.closeDate)} at{" "}
+        {formatHeroCurrency(trade.closePrice)}. {style.label}, {percentLabel}.
       </span>
     </li>
   );
 }
 
-export function TradeEventTimeline({ trades }: TradeEventTimelineProps) {
+function TradeEventTimelineImpl({ trades }: TradeEventTimelineProps) {
   return (
     <ol aria-label="Trade sequence" className="flex flex-wrap gap-3">
       {trades.map((trade, index) => (
@@ -133,3 +160,5 @@ export function TradeEventTimeline({ trades }: TradeEventTimelineProps) {
     </ol>
   );
 }
+
+export const TradeEventTimeline = memo(TradeEventTimelineImpl);

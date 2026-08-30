@@ -59,11 +59,27 @@ describe("TradeEventTimeline (issue #209)", () => {
     expect(screen.getByText("+25.0%")).toBeInTheDocument();
   });
 
-  it("carries a WCAG 1.4.1-compliant sr-only sentence per chip, not color alone", () => {
+  it("carries a WCAG 1.4.1-compliant sr-only sentence per chip, not color alone -- including the prices the adjacent aria-hidden span shows", () => {
     render(<TradeEventTimeline trades={[trade({ ticker: "AAPL" })]} />);
 
     expect(
-      screen.getByText("Trade 1: bought AAPL on Jan 2, 2024, sold on Jan 5, 2024. Gain, +100.0%."),
+      screen.getByText(
+        "Trade 1: bought AAPL on Jan 2, 2024 at $100.00, sold on Jan 5, 2024 at $200.00. Gain, +100.0%.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("uses shorted/covered for a short trade's sr-only sentence too, not just its visible badge", () => {
+    render(
+      <TradeEventTimeline
+        trades={[trade({ ticker: "SHORTCO", direction: "short", openPrice: 100, closePrice: 80 })]}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        "Trade 1: shorted SHORTCO on Jan 2, 2024 at $100.00, covered on Jan 5, 2024 at $80.00. Gain, +25.0%.",
+      ),
     ).toBeInTheDocument();
   });
 
