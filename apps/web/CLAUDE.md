@@ -8657,3 +8657,80 @@ format:check`) are green. Live-verified at 1440px and 375px via a real
   across the whole click-through (expand daily hero chart, expand Beat
   the Bench, collapse it, confirm the compact card is back) at both
   widths.
+
+## "You guessed $X" grouped with the whole-range headline, not left orphaned under the worst-case stat below `sm` (issue #158)
+
+Found during issue #135's own cross-feature design QA pass, on a real
+375px full-page screenshot, and filed per this repo's `backlog`
+convention -- see that section above's own item 2. `WholeRangeBalance.tsx`'s
+revealed branch used to be a `flex flex-col gap-4 sm:flex-row` row
+holding `.relative` (the headline) and `WorstCaseStat` as its only two
+children, with the "You guessed $X." `<p>` as a **following sibling**
+of that whole row, not a child of it. At `sm` and up that read fine (two
+side-by-side columns, "You guessed" sitting full-width below, starting
+under the left column). Below `sm`, the row stacks and the render order
+became headline -> worst case -> "You guessed" -- 16px directly under
+the worst-case figure, in the same `--text-muted` tone, reading as
+though the guess were about the worst case rather than the headline.
+
+**The fix groups `.relative` and the "You guessed" `<p>` into one new
+`flex flex-col gap-2` wrapper, a sibling of `WorstCaseStat` inside the
+outer row -- not a move into the `relative`/`invisible` pair itself.**
+That distinction is the entire point: the naive fix (moving the `<p>`
+inside the `relative`/`invisible` div) would put it inside the exact box
+`revealSlot`'s `absolute inset-0` overlay sizes itself against -- the
+overlay-height parity that broke twice in issue #107 and that issue
+#147 had to re-establish across all four hero figures (see both
+sections above). The new wrapper is a plain sibling _next to_
+`.relative`; nothing inside `.relative`/the `invisible` pair changed --
+same children, same classes, same markup, byte-for-byte. At `sm` and up
+this is a pure no-op visually (the wrapper's own `flex flex-col gap-2`
+just reproduces the row's pre-existing vertical stacking of headline
+then guess line within what's now one column instead of two flex-row
+siblings); below `sm`, "You guessed" now renders immediately after the
+headline and before `WorstCaseStat`, unambiguously attached to the
+figure it describes.
+
+- **Live-verified via the established throwaway `next build`/`next
+start` (port 3104) + no-root-headless-Chromium technique**, against a
+  real `local-run.ts` pipeline result (no `RESULTS_BUCKET`/AWS creds
+  needed) -- a real revealed 1W whole-range guess, screenshotted and
+  measured at 375px and 1280px, both before (via a temporary `git
+stash` of just this fix) and after:
+  - **Before, at 375px**: `guessedTop` (410) sat well below
+    `worstCaseBottom` (376) -- confirmed, and screenshotted, as exactly
+    the bug the issue describes (the guessed line directly under the
+    worst-case figure).
+  - **After, at 375px**: `guessedTop` (348) sits between
+    `headlineBottom` (340, an 8px `gap-2` gap) and `worstCaseTop` (384)
+    -- "You guessed" now renders immediately below the headline and
+    above the worst-case stat, both sharing the same `left` (58px,
+    genuinely stacked in one column).
+  - **At 1280px, before and after**: byte-identical (`guessedTop` 963,
+    `worstCaseLeft` 786.8 vs. `guessedLeft` 322 -- two real side-by-side
+    columns, unaffected by this fix either way), confirming no desktop
+    regression.
+  - **Overlay-height parity, measured live in a real browser (jsdom
+    computes no text metrics at all -- the exact gap #147's own version
+    of this bug shipped through), both before and after**: clicking the
+    whole-range "Watch it happen" button and reading real
+    `getBoundingClientRect().height` off the invisible headline pair vs.
+    the `revealSlot` overlay vs. `.relative` itself, all three were
+    exactly equal at both widths, both before and after this fix (68px
+    at 375px, 72px at 1280px) -- confirming the contract was never at
+    risk and still holds.
+  - Mid-replay screenshots at both widths confirm the "Watching {date}"
+    overlay and the tweened figure render in the identical position/size
+    as the real headline, with "You guessed" still correctly grouped
+    beneath it, no overlap, zero console/`pageerror` events across the
+    whole run.
+- **Regression-tested** in `WholeRangeBalance.test.tsx` (the guessed
+  line's own parent element contains the headline figure and does not
+  contain the worst-case heading) and via two `ResultsPanel.test.tsx`
+  query updates (an added `.parentElement` hop past the new wrapper to
+  reach the row that actually contains `WorstCaseStat` -- see that
+  file's own updated comment at each call site).
+- **Out of scope, unchanged**: the guessed-line copy itself, and
+  whether the whole-range worst-case stat should be there at all
+  (settled by issues #105/#118) -- both explicitly out of this issue's
+  own scope.

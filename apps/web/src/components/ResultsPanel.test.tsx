@@ -1245,11 +1245,15 @@ describe("ResultsPanel", () => {
         // Scoped to the whole-range headline's own row -- the per-day
         // detail view (issue #84) renders its own independent
         // "Worst case, same budget" stat elsewhere on the same page, so
-        // an unscoped query would false-negative here.
+        // an unscoped query would false-negative here. Two `parentElement`
+        // hops, not one, since issue #158: `.relative`'s own direct
+        // parent is now a wrapper it shares only with the "You guessed"
+        // line (WholeRangeBalance.tsx's own fix for that issue), and the
+        // outer row containing WorstCaseStat is one level up from there.
         const caption = screen.getByText(
           "Whole-range running balance -- carried day to day, start to finish",
         );
-        const row = caption.closest(".relative")!.parentElement!;
+        const row = caption.closest(".relative")!.parentElement!.parentElement!;
         expect(within(row).getByText("Worst case, same budget")).toBeInTheDocument();
       });
 
@@ -1268,7 +1272,7 @@ describe("ResultsPanel", () => {
         const caption = screen.getByText(
           "Whole-range running balance -- carried day to day, start to finish",
         );
-        const row = caption.closest(".relative")!.parentElement!;
+        const row = caption.closest(".relative")!.parentElement!.parentElement!;
         const worstCase = within(row).getByText("Worst case, same budget").parentElement!;
         expect(within(worstCase).getByText("$100.00")).toBeInTheDocument();
       });
@@ -1294,7 +1298,7 @@ describe("ResultsPanel", () => {
         const caption = screen.getByText(
           "Whole-range running balance -- carried day to day, start to finish",
         );
-        const row = caption.closest(".relative")!.parentElement!;
+        const row = caption.closest(".relative")!.parentElement!.parentElement!;
         const worstCase = within(row).getByText("Worst case, same budget").parentElement!;
         expect(within(worstCase).getByText("$75.00")).toBeInTheDocument();
       });
@@ -1319,7 +1323,7 @@ describe("ResultsPanel", () => {
           const caption = screen.getByText(
             "Whole-range running balance -- carried day to day, start to finish",
           );
-          const row = caption.closest(".relative")!.parentElement!;
+          const row = caption.closest(".relative")!.parentElement!.parentElement!;
           const worstCase = within(row).getByText("Worst case, same budget").parentElement!;
           expect(within(worstCase).getByText("$100.00")).toBeInTheDocument();
         },

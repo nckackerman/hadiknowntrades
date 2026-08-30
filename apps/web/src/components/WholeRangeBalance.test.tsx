@@ -169,6 +169,37 @@ describe("WholeRangeBalance", () => {
         /revealed.*\$20\.00 to \$32\.80/,
       );
     });
+
+    it("groups the guessed line with the headline, as a DOM sibling of WorstCaseStat -- not the other way around (issue #158)", () => {
+      render(
+        <WholeRangeBalance
+          rangeLabel="the past month"
+          startingCapital={20}
+          finalBalance={32.8}
+          guess={40}
+          guessStartingCapital={20}
+          onSubmitGuess={vi.fn()}
+          worstCase={{ startingCapital: 20, endingBalance: 14.6 }}
+        />,
+      );
+
+      const guessedLine = screen.getByText(/you guessed/i);
+      const worstCaseHeading = screen.getByText("Worst case, same budget");
+
+      // The guessed line's own parent also contains the headline
+      // figure -- it's grouped with the headline, not with the
+      // worst-case stat.
+      const headlineFigure = screen.getByText("$32.80");
+      expect(guessedLine.parentElement).toContainElement(headlineFigure);
+
+      // The worst-case stat is a DOM sibling of that whole grouping, not
+      // an ancestor/descendant of it -- confirming "You guessed" never
+      // ends up nested under (or containing) the worst-case figure at
+      // any width, which is what let it read as attached to the wrong
+      // stat once the row stacks below `sm`.
+      expect(guessedLine.parentElement).not.toContainElement(worstCaseHeading);
+      expect(worstCaseHeading.closest("div")).not.toContainElement(guessedLine);
+    });
   });
 
   describe("worstCase prop (issue #105)", () => {

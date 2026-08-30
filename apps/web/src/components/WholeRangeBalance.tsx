@@ -177,8 +177,23 @@ export function WholeRangeBalance({
           : ""}
       </div>
       {revealed ? (
-        <>
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:gap-8">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:gap-8">
+          {/* Issue #158: the headline and "You guessed" line are grouped
+              into this one wrapper -- a sibling of WorstCaseStat, not
+              merged into it -- so "You guessed" is DOM-adjacent to the
+              headline it describes at every width. Below `sm`, the outer
+              row stacks (flex-col), and without this wrapper the render
+              order became headline -> worst case -> "You guessed", which
+              reads as though the guess were about the worst-case figure
+              directly above it (found on a real 375px screenshot,
+              filed as issue #158). Wrapping instead of moving the `<p>`
+              into the `relative`/`invisible` pair itself is deliberate:
+              that pair is what `revealSlot`'s `absolute inset-0` overlay
+              below sizes itself against (the #107/#147 contract), and
+              this wrapper adds a sibling *next to* `.relative`, touching
+              nothing inside it -- its own children/markup are
+              byte-for-byte unchanged from before this issue. */}
+          <div className="flex flex-col gap-2">
             <div className="relative">
               {/* Always mounted -- see this component's own `revealSlot`
                   doc comment for why hiding it via CSS (not a ternary
@@ -216,30 +231,30 @@ export function WholeRangeBalance({
               </div>
               {revealSlot}
             </div>
-            {worstCaseDisplayValue !== null && (
-              <WorstCaseStat
-                startingCapital={startingCapital}
-                endingBalance={worstCaseDisplayValue}
-              />
-            )}
+            <p className="text-sm text-[var(--text-muted)]">
+              {/* guessStartingCapital may go stale relative to `startingCapital`
+                  if the user edits starting capital after revealing -- rescale
+                  the same way every other dollar figure on this page does
+                  (see ResultsPanel.tsx's identical per-day pattern this
+                  replaces). */}
+              You guessed{" "}
+              {formatHeroCurrency(
+                rescaleFromStartingCapital(
+                  guess,
+                  guessStartingCapital ?? startingCapital,
+                  startingCapital,
+                ),
+              )}
+              .
+            </p>
           </div>
-          <p className="text-sm text-[var(--text-muted)]">
-            {/* guessStartingCapital may go stale relative to `startingCapital`
-                if the user edits starting capital after revealing -- rescale
-                the same way every other dollar figure on this page does
-                (see ResultsPanel.tsx's identical per-day pattern this
-                replaces). */}
-            You guessed{" "}
-            {formatHeroCurrency(
-              rescaleFromStartingCapital(
-                guess,
-                guessStartingCapital ?? startingCapital,
-                startingCapital,
-              ),
-            )}
-            .
-          </p>
-        </>
+          {worstCaseDisplayValue !== null && (
+            <WorstCaseStat
+              startingCapital={startingCapital}
+              endingBalance={worstCaseDisplayValue}
+            />
+          )}
+        </div>
       ) : (
         <>
           <p className={wholeRangeLabelClassName}>{CAPTION_TEXT}</p>
