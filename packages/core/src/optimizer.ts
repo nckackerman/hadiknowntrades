@@ -40,8 +40,9 @@
 // the price falls -- ratio P[open]/P[close], see below) -- gated behind
 // an `includeShorts` flag threaded into computeLevel, off by default so
 // every existing long-only call path is byte-identical to before this
-// issue (see optimizeTrades/optimizeWorstTrades/optimizeBothDirections
-// below, which all still pass includeShorts: false).
+// issue (see optimizeTrades/optimizeWorstTrades below, plus
+// optimizeAllVariants' own long-only run, all of which still pass
+// includeShorts: false).
 //
 // Short trades are modeled as reciprocal-price longs, not literal
 // fixed-share-count short-selling (docs/plans/issue-13-plan.md section
@@ -261,9 +262,10 @@ type Direction = "max" | "min";
  *   (open at P[open], cover at P[close], payoff P[open]/P[close] -- see
  *   this file's own header comment for the reciprocal-price derivation)
  *   for the same value[]/choice[] slots. When false (every call site
- *   before this issue, and optimizeTrades/optimizeWorstTrades/
- *   optimizeBothDirections still today), this function's behavior is
- *   byte-identical to before issue #13 -- the short block is skipped
+ *   before this issue, and optimizeTrades/optimizeWorstTrades still
+ *   today, plus optimizeAllVariants' own long-only run below), this
+ *   function's behavior is byte-identical to before issue #13 -- the
+ *   short block is skipped
  *   entirely, no new allocation or comparison evaluated. Because the long
  *   pass always runs to completion (including its own value[]/choice[]
  *   update) before the short pass for the same ticker even starts, an
@@ -486,11 +488,11 @@ function reconstructTrades(levels: Level[], maxTrades: number): TradeChoice[] {
  * Everything a DP run needs that depends only on the input price data --
  * not on `direction`, and not on a particular call's `OptimizeOptions` --
  * (issue #31 perf follow-up): the built calendar and the sorted ticker
- * list. Building this once and reusing it across both a "max" and a
- * "min" run over the *same* price data (as every current caller does,
- * via optimizeBothDirections below) avoids redundantly rebuilding the
- * calendar and re-sorting tickers for the second run, since neither step
- * depends on which direction is being searched.
+ * list. Building this once and reusing it across multiple runs over the
+ * *same* price data (as optimizeAllVariants below does, across all 4 of
+ * its own direction x instrument-set runs) avoids redundantly rebuilding
+ * the calendar and re-sorting tickers for each additional run, since
+ * neither step depends on which direction is being searched.
  */
 interface OptimizerState {
   calendar: Calendar;
@@ -503,7 +505,7 @@ interface OptimizerState {
   sortedTickers: [string, (number | null)[]][];
 }
 
-/** Validates OptimizeOptions -- independent of any price data or direction, so callers that share one OptimizerState across two directions (see optimizeBothDirections) only need to call this once. */
+/** Validates OptimizeOptions -- independent of any price data or direction, so a caller that shares one OptimizerState across multiple direction/instrument-set runs (see optimizeAllVariants below) only needs to call this once. */
 function validateOptimizeOptions(options: OptimizeOptions): void {
   const { startingCapital, maxTrades } = options;
   if (!Number.isInteger(maxTrades) || maxTrades < 0 || maxTrades > MAX_REASONABLE_TRADES) {
@@ -611,10 +613,14 @@ function runOptimizerForDirection(
 /**
  * Validates options, builds a fresh OptimizerState from the given price
  * data, and runs the DP once in the given direction -- the single-call
- * path behind optimizeTrades/optimizeWorstTrades below. A caller that
- * needs *both* directions over the *same* price data should call
- * optimizeBothDirections instead, so the calendar/ticker-sort work isn't
- * done twice (see OptimizerState's own doc comment).
+ * path behind optimizeTrades/optimizeWorstTrades below, each of which
+ * builds its own OptimizerState independently. A caller that needs
+ * *both* directions over the *same* price data, sharing one build (see
+ * OptimizerState's own doc comment), should build its own
+ * OptimizerState and call runOptimizerForDirection directly per
+ * direction instead of going through this function twice -- see
+ * optimizeAllVariants below for the one real caller that does exactly
+ * that, across all 4 of its own direction x instrument-set runs.
  */
 function runOptimizer(
   priceSeriesByTicker: Map<string, DailyClose[]>,
@@ -624,10 +630,10 @@ function runOptimizer(
   validateOptimizeOptions(options);
   const state = buildOptimizerState(priceSeriesByTicker);
   // includeShorts is always false here -- optimizeTrades/
-  // optimizeWorstTrades/optimizeBothDirections (the only callers of this
-  // function) are pinned to long-only, not merely defaulted, so their
-  // behavior stays provably unchanged by issue #13 (see optimizeAllVariants
-  // below for the only path that can reach includeShorts: true).
+  // optimizeWorstTrades (the only callers of this function) are pinned
+  // to long-only, not merely defaulted, so their behavior stays provably
+  // unchanged by issue #13 (see optimizeAllVariants below for the only
+  // path that can reach includeShorts: true).
   return runOptimizerForDirection(state, options, direction, false);
 }
 
@@ -670,47 +676,20 @@ export function optimizeWorstTrades(
 }
 
 /**
- * Runs both optimizeTrades ("max") and optimizeWorstTrades ("min") over
- * the *same* `priceSeriesByTicker`/`options`, sharing one built
- * OptimizerState (the calendar + sorted ticker list) between the two
- * runs instead of rebuilding it twice (issue #31 perf follow-up -- see
- * OptimizerState's own doc comment for why that work is safe to share).
- *
- * Every current call site (apps/pipeline's buildWindowResults,
- * packages/core's optimizeIntradayDays) always calls both directions
- * back-to-back on identical input, so this is a drop-in replacement for
- * "call optimizeTrades, then call optimizeWorstTrades" wherever that
- * pattern shows up -- same two OptimizationResults, just computed
- * without the redundant calendar-build/ticker-sort the two separate
- * calls used to each do independently.
- */
-export function optimizeBothDirections(
-  priceSeriesByTicker: Map<string, DailyClose[]>,
-  options: OptimizeOptions,
-): { best: OptimizationResult; worst: OptimizationResult } {
-  validateOptimizeOptions(options);
-  const state = buildOptimizerState(priceSeriesByTicker);
-  return {
-    best: runOptimizerForDirection(state, options, "max", false),
-    worst: runOptimizerForDirection(state, options, "min", false),
-  };
-}
-
-/**
  * Runs all 4 direction x instrument-set combinations over the *same*
- * `priceSeriesByTicker`/`options` (issue #13): long-only best/worst (the
- * exact same results optimizeBothDirections would produce -- see
+ * `priceSeriesByTicker`/`options` (issue #13): long-only best/worst (see
  * `longOnly` below) and long+short best/worst, sharing one built
- * OptimizerState across all 4 runs the same way optimizeBothDirections
- * shares it across 2 (see OptimizerState's own doc comment).
+ * OptimizerState (the calendar + sorted ticker list, issue #31 perf
+ * follow-up -- see that interface's own doc comment for why that work
+ * is safe to share) across all 4 runs instead of rebuilding it per run.
  *
  * This is the *only* path that can ever reach computeLevel with
- * `includeShorts: true` -- optimizeTrades/optimizeWorstTrades/
- * optimizeBothDirections all still call runOptimizerForDirection with a
- * fixed `includeShorts: false`, never threaded from a caller-supplied
- * option, so their own behavior stays provably unchanged by this
- * function's existence. `OptimizeOptions` itself gained no new field for
- * this -- the flag lives only at this internal layer.
+ * `includeShorts: true` -- optimizeTrades/optimizeWorstTrades both still
+ * call runOptimizerForDirection with a fixed `includeShorts: false`,
+ * never threaded from a caller-supplied option, so their own behavior
+ * stays provably unchanged by this function's existence. `OptimizeOptions`
+ * itself gained no new field for this -- the flag lives only at this
+ * internal layer.
  *
  * `longShort.best.endingBalance >= longOnly.best.endingBalance` and
  * `longShort.worst.endingBalance <= longOnly.worst.endingBalance` always

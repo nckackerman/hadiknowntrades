@@ -141,6 +141,26 @@ direction)` -- only `computeLevel`'s four comparison sites/sentinels are
   proportionally more, since its per-day calendars are far smaller and
   the fixed calendar-build/sort overhead was a proportionally larger
   slice of each call.
+  **`optimizeBothDirections` itself was later deleted -- see "Short-
+  selling mode" below for why, and don't go looking for it in the code.**
+  Once issue #13's short-selling mode shipped and its own merge moved
+  every real call site (`apps/pipeline`'s `buildWindowResults`,
+  `optimizeIntradayDays`) onto `optimizeAllVariants` instead (which
+  shares one `OptimizerState` across all 4 direction x instrument-set
+  runs the same way, so `optimizeBothDirections` stopped being needed
+  for its own stated purpose), it sat as exported-but-unused dead code
+  with a stale doc comment still claiming those same call sites -- found
+  via a `@vitest/coverage-v8` sweep (its whole body showed as
+  unexecuted) and confirmed via a repo-wide grep for real call sites
+  before deleting it outright, not just flagging it. `buildOptimizerState`/
+  `runOptimizerForDirection` (the two functions this bullet's own fix
+  actually introduced) are untouched and still do exactly what's
+  described above -- only the convenience wrapper this paragraph
+  benchmarks is gone. The benchmark numbers above are left as-is, a
+  historical record of the fix's own value at the time, not a claim
+  about a function still in the code -- `optimizeAllVariants`' own
+  "Short-selling mode" section below has its own, more recent benchmark
+  numbers for the function that actually replaced it.
 - **Fun/expected product quirk, not a bug**: the "Max" range genuinely
   produces astronomically large numbers (a 5-ticker demo run hit ~$716M
   from $20). That's real perfect-hindsight compounding over decades, not
