@@ -361,7 +361,23 @@ export class HadIKnownTradesStack extends Stack {
       // technical requirement. Applies regardless of `bypassCloudFront`
       // -- harmless once CloudFront is the only way in, since real
       // traffic here will never come close to it.
-      reservedConcurrentExecutions: 5,
+      //
+      // **`1`, not the original `5` (real bug, caught only by a real
+      // `cdk deploy`, not `cdk synth`/the vitest suite -- neither
+      // validates this against the account's actual account-wide
+      // concurrency quota)**: AWS requires an account to always keep a
+      // minimum pool of *unreserved* concurrency available across every
+      // other function once this one's reservation is subtracted --
+      // this sandbox account's own total Lambda concurrency quota is low
+      // enough that reserving `5` here alone violated that floor
+      // (`CREATE_FAILED`: "decreases account's UnreservedConcurrentExecution
+      // below its minimum value of [5]"). `1` still gives a real, non-
+      // zero ceiling (this Lambda can never scale past one concurrent
+      // invocation, so no unbounded cost/abuse spiral either way) while
+      // clearing that floor -- revisit upward only alongside confirming
+      // the account's own real total quota first, not by guessing a
+      // bigger number again.
+      reservedConcurrentExecutions: 1,
       environment: {
         RESULTS_BUCKET: resultsBucket.bucketName,
         // OpenNext's own S3-backed incremental cache -- apps/web's
