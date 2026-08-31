@@ -17,6 +17,11 @@
 /.next/
 /out/
 
+# OpenNext (issue #6's real web Lambda build -- `pnpm run build:lambda`/
+# `build:lambda:bypass`) -- generated build output, never committed, same
+# as /.next/ above.
+/.open-next/
+
 # production
 /build
 

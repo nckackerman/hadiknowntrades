@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // OpenNext's own generated Lambda build output (issue #6's real web
+    // Lambda) -- same "never lint generated/bundled output" reasoning as
+    // .next/** above, not source this repo owns.
+    ".open-next/**",
   ]),
 ]);
 

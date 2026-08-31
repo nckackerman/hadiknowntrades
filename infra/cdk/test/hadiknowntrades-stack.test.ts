@@ -101,14 +101,42 @@ describe("HadIKnownTradesStack", () => {
     });
   });
 
-  it("creates the web Lambda with an IAM-authenticated Function URL", () => {
+  it("creates the web Lambda with an IAM-authenticated Function URL, wired to RESULTS_BUCKET and the OpenNext S3 incremental cache", () => {
     template.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "hadiknowntrades-web",
       Handler: "index.handler",
+      Environment: {
+        Variables: Match.objectLike({
+          RESULTS_BUCKET: Match.anyValue(),
+          CACHE_BUCKET_NAME: Match.anyValue(),
+          CACHE_BUCKET_KEY_PREFIX: "cache",
+        }),
+      },
     });
     template.hasResourceProperties("AWS::Lambda::Url", {
       AuthType: "AWS_IAM",
     });
+  });
+
+  it("bypassCloudFront=true flips the Function URL public and the web-assets bucket to a fixed public name -- everything else is unaffected", () => {
+    // Context has to be supplied when the App itself is constructed
+    // (read by tryGetContext's own scope-walking lookup) -- matches how
+    // a real `cdk deploy -c bypassCloudFront=true` actually supplies it.
+    const bypassApp = new App({ context: { bypassCloudFront: "true" } });
+    const bypassStack = new HadIKnownTradesStack(bypassApp, "TestStack", {
+      env: { region: "us-west-2" },
+    });
+    const bypassTemplate = Template.fromStack(bypassStack);
+
+    bypassTemplate.hasResourceProperties("AWS::Lambda::Url", { AuthType: "NONE" });
+    bypassTemplate.hasResourceProperties("AWS::S3::Bucket", {
+      BucketName: "hadiknowntrades-web-assets-public",
+    });
+    // The CloudFront Distribution itself is completely unaffected by the
+    // flag -- it stays declared, unchanged, ready to pick up on a plain
+    // `cdk deploy` the moment AWS unblocks it (see this stack's own
+    // bypassCloudFront doc comment).
+    bypassTemplate.resourceCountIs("AWS::CloudFront::Distribution", 1);
   });
 
   it("scopes the pipeline Lambda's S3 permission to the results/ prefix only", () => {
