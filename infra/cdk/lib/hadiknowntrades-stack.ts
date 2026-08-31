@@ -216,14 +216,22 @@ export class HadIKnownTradesStack extends Stack {
     // together, only under `bypassCloudFront`. Outside it (the normal
     // case) this bucket keeps its usual CDK-auto-generated name and
     // stays fully private, unchanged from before this workaround
-    // existed. `BLOCK_ACLS` (not `BLOCK_ALL`) is required for
+    // existed. `BLOCK_ACLS_ONLY` (not `BLOCK_ALL`) is required for
     // `publicReadAccess: true` to actually take effect -- it blocks
     // ACL-based public access while still allowing the bucket-policy-
-    // based public read this construct adds.
+    // based public read this construct adds. **Not `BLOCK_ACLS`, a real
+    // bug caught only by the real `cdk deploy` CLI, not this file's own
+    // vitest suite (fixed, see that suite's own updated setup for why):
+    // `BLOCK_ACLS` is a deprecated preset that still leaves
+    // `blockPublicPolicy: true`, which throws
+    // `CannotGrantPublicAccessWhenBlockPublicPolicyEnabled` the moment
+    // `publicReadAccess: true` tries to attach a public bucket policy --
+    // `BLOCK_ACLS_ONLY` is the current preset that actually sets
+    // `blockPublicPolicy: false` alongside blocking ACLs.**
     const webAssetsBucket = new Bucket(this, "WebAssetsBucket", {
       bucketName: bypassCloudFront ? WEB_ASSETS_PUBLIC_BUCKET_NAME : undefined,
       blockPublicAccess: bypassCloudFront
-        ? BlockPublicAccess.BLOCK_ACLS
+        ? BlockPublicAccess.BLOCK_ACLS_ONLY
         : BlockPublicAccess.BLOCK_ALL,
       publicReadAccess: bypassCloudFront,
       // Browsers loading a fingerprinted chunk from this bucket's own
