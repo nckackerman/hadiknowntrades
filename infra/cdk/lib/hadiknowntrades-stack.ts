@@ -353,31 +353,33 @@ export class HadIKnownTradesStack extends Stack {
       // Revisit once this is actually invoked for real.
       memorySize: 1024,
       timeout: Duration.seconds(30),
-      // A real ceiling on cost/abuse exposure while `bypassCloudFront`
-      // makes this Lambda's own Function URL public and CloudFront-
-      // uncached, with no automatic AWS Budget Action lockdown on this
-      // account (infra/CLAUDE.md's own "budget circuit breaker" note) --
-      // a deliberate choice for a low-traffic personal project, not a
-      // technical requirement. Applies regardless of `bypassCloudFront`
-      // -- harmless once CloudFront is the only way in, since real
-      // traffic here will never come close to it.
-      //
-      // **`1`, not the original `5` (real bug, caught only by a real
-      // `cdk deploy`, not `cdk synth`/the vitest suite -- neither
-      // validates this against the account's actual account-wide
-      // concurrency quota)**: AWS requires an account to always keep a
-      // minimum pool of *unreserved* concurrency available across every
-      // other function once this one's reservation is subtracted --
-      // this sandbox account's own total Lambda concurrency quota is low
-      // enough that reserving `5` here alone violated that floor
-      // (`CREATE_FAILED`: "decreases account's UnreservedConcurrentExecution
-      // below its minimum value of [5]"). `1` still gives a real, non-
-      // zero ceiling (this Lambda can never scale past one concurrent
-      // invocation, so no unbounded cost/abuse spiral either way) while
-      // clearing that floor -- revisit upward only alongside confirming
-      // the account's own real total quota first, not by guessing a
-      // bigger number again.
-      reservedConcurrentExecutions: 1,
+      // **No `reservedConcurrentExecutions` -- tried and reverted twice
+      // against this exact sandbox account, both a real `cdk deploy`
+      // failure (real bug, caught only by an actual deploy, not `cdk
+      // synth`/the vitest suite -- neither validates against the
+      // account's real account-wide concurrency quota).** The original
+      // intent (a real ceiling on cost/abuse exposure while
+      // `bypassCloudFront` makes this Lambda's own Function URL public
+      // and CloudFront-uncached, with no automatic AWS Budget Action
+      // lockdown on this account, see infra/CLAUDE.md's own "budget
+      // circuit breaker" note) still stands -- but this account's own
+      // *total* Lambda concurrency quota turns out too low to support
+      // *any* nonzero per-function reservation at all: both `5` and `1`
+      // failed identically (`CREATE_FAILED`: "decreases account's
+      // UnreservedConcurrentExecution below its minimum value of [5]"),
+      // confirming this is a fixed account-wide floor, not proportional
+      // to the number requested -- this account's total quota is at or
+      // below that floor already, almost certainly the same new-account
+      // restriction blocking CloudFront (see this stack's own
+      // `bypassCloudFront` doc comment) rather than something specific
+      // to this Lambda. The pipeline Lambda already runs fine with no
+      // reservation of its own, sharing the account's unreserved pool
+      // like every other unconfigured Lambda -- this one does the same
+      // for now. Revisit adding a real cap back once the account's own
+      // total quota is confirmed higher (e.g. after the same AWS Support
+      // process that unblocks CloudFront) -- until then, the existing
+      // $20/month Budget alert (email only, not an auto-lockdown) is the
+      // only cost safety net for this Lambda while it's public.
       environment: {
         RESULTS_BUCKET: resultsBucket.bucketName,
         // OpenNext's own S3-backed incremental cache -- apps/web's
