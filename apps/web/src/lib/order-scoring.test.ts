@@ -3,15 +3,14 @@ import { describe, expect, it } from "vitest";
 import { ORDER_POOL_SIZE, THE_ORDER_TICKER_COUNT } from "@hadiknowntrades/core";
 
 import {
+  bestToWorstTickers,
   initialOrderGuess,
   isValidOrderPuzzle,
   isWinningFeedback,
   moveOrderGuess,
-  nextOpenSlot,
-  ORDER_MAX_ATTEMPTS,
   ORDER_SLOT_COUNT,
-  scoreOrderGuess,
-  shuffleUnlockedGuess,
+  scoreOrderMatch,
+  shuffleGuess,
   type OrderFeedback,
 } from "./order-scoring";
 
@@ -31,8 +30,7 @@ function validPuzzlePayload(): unknown {
 }
 
 describe("constants", () => {
-  it("has the expected values", () => {
-    expect(ORDER_MAX_ATTEMPTS).toBe(4);
+  it("has the expected value", () => {
     expect(ORDER_SLOT_COUNT).toBe(5);
   });
 
@@ -48,112 +46,77 @@ describe("constants", () => {
   });
 });
 
-describe("scoreOrderGuess", () => {
-  it("scores an all-exact guess as every slot exact", () => {
-    const feedback = scoreOrderGuess(ANSWER, ANSWER);
-    expect(feedback).toEqual(["exact", "exact", "exact", "exact", "exact"]);
-    expect(isWinningFeedback(feedback)).toBe(true);
+describe("bestToWorstTickers", () => {
+  it("reverses a worst-to-best array into best-to-worst", () => {
+    const worstToBest = [
+      { ticker: "TSLA", pctReturn: -3.1 },
+      { ticker: "AAPL", pctReturn: -0.42 },
+      { ticker: "NVDA", pctReturn: 3.2 },
+    ];
+    expect(bestToWorstTickers(worstToBest).map((t) => t.ticker)).toEqual(["NVDA", "AAPL", "TSLA"]);
   });
 
-  it("scores a fully reversed guess as far everywhere except the middle slot", () => {
-    const reversed = [...ANSWER].reverse();
-    const feedback = scoreOrderGuess(reversed, ANSWER);
-    // Positions: 0<->4 (dist 4, far), 1<->3 (dist 2, far), 2 stays put (dist 0, exact)
-    expect(feedback).toEqual(["far", "far", "exact", "far", "far"]);
-    expect(isWinningFeedback(feedback)).toBe(false);
-  });
-
-  it("scores an adjacent swap as close for both swapped slots", () => {
-    const guess = ["AAPL", "TSLA", "MSFT", "META", "NVDA"]; // swap slots 0/1
-    const feedback = scoreOrderGuess(guess, ANSWER);
-    expect(feedback).toEqual(["close", "close", "exact", "exact", "exact"]);
-  });
-
-  it("realistic mix: some exact, some close, some far", () => {
-    // ANSWER: TSLA(0) AAPL(1) MSFT(2) META(3) NVDA(4)
-    const guess = ["NVDA", "AAPL", "META", "MSFT", "TSLA"];
-    // NVDA at 0, real index 4 -> dist 4 -> far
-    // AAPL at 1, real index 1 -> dist 0 -> exact
-    // META at 2, real index 3 -> dist 1 -> close
-    // MSFT at 3, real index 2 -> dist 1 -> close
-    // TSLA at 4, real index 0 -> dist 4 -> far
-    const feedback: OrderFeedback[] = scoreOrderGuess(guess, ANSWER);
-    expect(feedback).toEqual(["far", "exact", "close", "close", "far"]);
+  it("doesn't mutate its input", () => {
+    const worstToBest = [{ ticker: "TSLA" }, { ticker: "AAPL" }];
+    const copy = [...worstToBest];
+    bestToWorstTickers(worstToBest);
+    expect(worstToBest).toEqual(copy);
   });
 });
 
-describe("nextOpenSlot", () => {
-  it("returns the immediately adjacent slot when nothing is locked", () => {
-    const locked = [false, false, false, false, false];
-    expect(nextOpenSlot(locked, 2, 1)).toBe(3);
-    expect(nextOpenSlot(locked, 2, -1)).toBe(1);
+describe("scoreOrderMatch", () => {
+  it("scores a fully correct guess as every slot correct", () => {
+    const feedback = scoreOrderMatch(ANSWER, ANSWER);
+    expect(feedback).toEqual(["correct", "correct", "correct", "correct", "correct"]);
+    expect(isWinningFeedback(feedback)).toBe(true);
   });
 
-  it("hops over a locked slot in its path", () => {
-    const locked = [false, true, false, false, false];
-    expect(nextOpenSlot(locked, 0, 1)).toBe(2); // hops over index 1
+  it("scores a fully reversed guess as incorrect everywhere except the middle slot", () => {
+    const reversed = [...ANSWER].reverse();
+    const feedback = scoreOrderMatch(reversed, ANSWER);
+    expect(feedback).toEqual(["incorrect", "incorrect", "correct", "incorrect", "incorrect"]);
+    expect(isWinningFeedback(feedback)).toBe(false);
   });
 
-  it("hops over multiple consecutive locked slots", () => {
-    const locked = [false, true, true, true, false];
-    expect(nextOpenSlot(locked, 0, 1)).toBe(4);
+  it("scores an adjacent swap as incorrect for exactly the two swapped slots", () => {
+    const guess = ["AAPL", "TSLA", "MSFT", "META", "NVDA"]; // swap slots 0/1
+    const feedback: OrderFeedback[] = scoreOrderMatch(guess, ANSWER);
+    expect(feedback).toEqual(["incorrect", "incorrect", "correct", "correct", "correct"]);
   });
 
-  it("returns -1 at the edge with nothing further to move to", () => {
-    const locked = [false, false, false, false, false];
-    expect(nextOpenSlot(locked, 4, 1)).toBe(-1);
-    expect(nextOpenSlot(locked, 0, -1)).toBe(-1);
-  });
-
-  it("returns -1 when every remaining slot in that direction is locked", () => {
-    const locked = [false, false, false, true, true];
-    expect(nextOpenSlot(locked, 2, 1)).toBe(-1);
+  it("realistic mix: some correct, some not", () => {
+    const guess = ["NVDA", "AAPL", "META", "MSFT", "TSLA"];
+    const feedback = scoreOrderMatch(guess, ANSWER);
+    expect(feedback).toEqual(["incorrect", "correct", "incorrect", "incorrect", "incorrect"]);
   });
 });
 
 describe("moveOrderGuess", () => {
-  it("swaps with the next open slot", () => {
+  it("swaps with the adjacent slot in the given direction", () => {
     const guess = ["A", "B", "C", "D", "E"];
-    const locked = [false, false, false, false, false];
-    expect(moveOrderGuess(guess, locked, 1, 1)).toEqual(["A", "C", "B", "D", "E"]);
+    expect(moveOrderGuess(guess, 1, 1)).toEqual(["A", "C", "B", "D", "E"]);
+    expect(moveOrderGuess(guess, 1, -1)).toEqual(["B", "A", "C", "D", "E"]);
   });
 
-  it("hops a moving slot over a locked slot in its path", () => {
+  it("is a no-op (same reference) at either edge", () => {
     const guess = ["A", "B", "C", "D", "E"];
-    const locked = [false, false, true, false, false];
-    // Moving index 1 ("B") downward should land on index 3 ("D"), skipping locked index 2 ("C").
-    expect(moveOrderGuess(guess, locked, 1, 1)).toEqual(["A", "D", "C", "B", "E"]);
-  });
-
-  it("never moves a locked slot itself", () => {
-    const guess = ["A", "B", "C", "D", "E"];
-    const locked = [false, true, false, false, false];
-    expect(moveOrderGuess(guess, locked, 1, 1)).toBe(guess); // same reference, no-op
-  });
-
-  it("is a no-op (same reference) when there's no legal target", () => {
-    const guess = ["A", "B", "C", "D", "E"];
-    const locked = [false, false, false, false, false];
-    expect(moveOrderGuess(guess, locked, 0, -1)).toBe(guess);
+    expect(moveOrderGuess(guess, 0, -1)).toBe(guess);
+    expect(moveOrderGuess(guess, 4, 1)).toBe(guess);
   });
 });
 
-describe("shuffleUnlockedGuess", () => {
-  it("leaves every locked slot's ticker and position untouched", () => {
+describe("shuffleGuess", () => {
+  it("returns a permutation of the same tickers", () => {
     const guess = ["A", "B", "C", "D", "E"];
-    const locked = [true, false, false, true, false];
-    // A fixed "random" source that always returns 0 -- deterministic Fisher-Yates result.
-    const result = shuffleUnlockedGuess(guess, locked, () => 0);
-    expect(result[0]).toBe("A");
-    expect(result[3]).toBe("D");
-    // The unlocked values (B, C, E) are still present, just possibly reordered.
-    expect(new Set([result[1], result[2], result[4]])).toEqual(new Set(["B", "C", "E"]));
+    const result = shuffleGuess(guess, () => 0.5);
+    expect([...result].sort()).toEqual([...guess].sort());
   });
 
-  it("with every slot locked, returns the guess unchanged", () => {
+  it("doesn't mutate its input", () => {
     const guess = ["A", "B", "C", "D", "E"];
-    const locked = [true, true, true, true, true];
-    expect(shuffleUnlockedGuess(guess, locked, () => 0.5)).toEqual(guess);
+    const copy = [...guess];
+    shuffleGuess(guess, () => 0.5);
+    expect(guess).toEqual(copy);
   });
 });
 
@@ -215,7 +178,7 @@ describe("isValidOrderPuzzle", () => {
   // The same strict-ascending-by-pctReturn check the server-side
   // validateTheOrderPuzzle (packages/core's results-schema.ts) already
   // enforces at write time -- a right-shaped-but-out-of-order puzzle
-  // would otherwise silently grade every guess against the wrong answer.
+  // would otherwise silently grade every guess against the wrong slot.
   it("rejects a right-shaped puzzle whose tickers are not strictly ascending by pctReturn", () => {
     const payload = validPuzzlePayload() as {
       tickers: { ticker: string; companyName: string; pctReturn: number }[];

@@ -2,11 +2,13 @@ import { RESULTS_SCHEMA_VERSION, type TheOrderPuzzle } from "@hadiknowntrades/co
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { bestToWorstTickers } from "@/lib/order-scoring";
 import { getOrderStreakHistory, saveOrderDayState, type OrderDayState } from "@/lib/order-storage";
 import { TheOrder } from "./TheOrder";
 
 const DATE = "2026-08-26";
 
+// Worst-to-best, exactly as the server always emits it.
 const PUZZLE: TheOrderPuzzle = {
   schemaVersion: RESULTS_SCHEMA_VERSION,
   generatedAt: "2026-08-27T06:00:00.000Z",
@@ -20,7 +22,9 @@ const PUZZLE: TheOrderPuzzle = {
   ],
 };
 
-const ANSWER = PUZZLE.tickers.map((t) => t.ticker);
+// Best-to-worst -- what the redesigned game actually shows/grades against
+// (NVDA the best mover, at the top; TSLA the worst, at the bottom).
+const ANSWER = bestToWorstTickers(PUZZLE.tickers).map((t) => t.ticker);
 
 function stubPuzzleFetch(puzzle: TheOrderPuzzle | null = PUZZLE): void {
   vi.stubGlobal(
@@ -36,11 +40,9 @@ function stubPuzzleFetch(puzzle: TheOrderPuzzle | null = PUZZLE): void {
 function freshState(overrides: Partial<OrderDayState> = {}): OrderDayState {
   return {
     guess: [...ANSWER],
-    attempt: 1,
-    history: [],
-    locked: [false, false, false, false, false],
     done: false,
     won: false,
+    feedback: null,
     ...overrides,
   };
 }
@@ -99,134 +101,142 @@ describe("TheOrder", () => {
     expect(await screen.findByTestId("the-order-error")).toBeInTheDocument();
   });
 
-  it("expands to show all 5 real tickers with their real company names, once the puzzle loads", async () => {
+  it("expands to show all 5 real tickers with their real company names and real % moves, always visible", async () => {
     const panel = await expandBoard();
     for (const { ticker, companyName } of PUZZLE.tickers) {
       expect(panel.getByText(ticker)).toBeInTheDocument();
       expect(panel.getByText(companyName)).toBeInTheDocument();
     }
-    expect(panel.getByText(/attempt 1 of 4/i)).toBeInTheDocument();
+    // Every real return is on screen before any guess is submitted --
+    // the whole point of the redesign.
+    expect(panel.getByText("-3.10%")).toBeInTheDocument();
+    expect(panel.getByText("+3.20%")).toBeInTheDocument();
+    // No attempt-limit copy left from the original Mastermind mechanic.
+    expect(panel.queryByText(/attempt/i)).not.toBeInTheDocument();
   });
 
-  it("submitting the real answer wins in 1 attempt, locks every slot, and reveals real returns", async () => {
+  it("the best mover sits in the top slot and the worst in the bottom slot, both explicitly tagged", async () => {
+    const panel = await expandBoard();
+    const rows = panel.getAllByRole("listitem");
+    expect(within(rows[0]!).getByText("+3.20%")).toBeInTheDocument(); // NVDA, best mover
+    expect(within(rows[0]!).getByText("Best")).toBeInTheDocument();
+    expect(within(rows[rows.length - 1]!).getByText("-3.10%")).toBeInTheDocument(); // TSLA, worst
+    expect(within(rows[rows.length - 1]!).getByText("Worst")).toBeInTheDocument();
+  });
+
+  it("submitting the real (best-to-worst) answer wins outright and records a streak of 1", async () => {
     saveOrderDayState(DATE, freshState());
     const panel = await expandBoard();
 
     fireEvent.click(panel.getByRole("button", { name: "Submit guess" }));
 
     // Two matches expected: the sr-only aria-live announcement and the
-    // visible reveal banner both say this, matching CallBoard.tsx's own
-    // announcement+visible-text pairing.
-    expect(await panel.findAllByText(/solved in 1 of 4/i)).toHaveLength(2);
-    // Every slot's own "★ Locked" badge should now be present -- 5 of them.
-    expect(panel.getAllByText("Locked")).toHaveLength(5);
-    // The real returns are revealed, formatted with a sign and 2 decimals.
-    expect(panel.getByText("-3.10%")).toBeInTheDocument();
-    expect(panel.getByText("+3.20%")).toBeInTheDocument();
-    // A first-ever win records a streak of 1 -- located via its own label's
-    // sibling, since a bare "1" also matches the reveal ranking's #1 slot
-    // and the row list's own index badges.
+    // visible reveal banner both say this.
+    expect(await panel.findAllByText(/every stock matched/i)).toHaveLength(2);
+    expect(panel.getAllByText("Correct")).toHaveLength(5);
     const currentStreakLabel = panel.getByText("Current streak");
     expect(currentStreakLabel.previousElementSibling).toHaveTextContent("1");
   });
 
-  it("locks only the exact slots on a mixed guess, and hops a move over a locked slot", async () => {
-    // Swap TSLA/AAPL (both far off) but keep MSFT/META/NVDA exact.
-    saveOrderDayState(DATE, freshState({ guess: ["AAPL", "TSLA", "MSFT", "META", "NVDA"] }));
+  it("grades a mixed guess per slot, shows the real answer for each miss, and does not win", async () => {
+    // Swap the top two slots (NVDA/META) -- both wrong, the rest correct.
+    const guess = [...ANSWER];
+    [guess[0], guess[1]] = [guess[1]!, guess[0]!];
+    saveOrderDayState(DATE, freshState({ guess }));
     const panel = await expandBoard();
 
     fireEvent.click(panel.getByRole("button", { name: "Submit guess" }));
-    await panel.findByText(/attempt 2 of 4/i);
 
-    // MSFT, META, NVDA are now locked -- no move buttons remain for them,
-    // replaced by the "★ Locked" badge -- while AAPL/TSLA still have theirs.
-    expect(panel.getAllByText("Locked")).toHaveLength(3);
-    expect(panel.queryByRole("button", { name: "Move MSFT toward worst" })).not.toBeInTheDocument();
-    expect(panel.getByRole("button", { name: "Move AAPL toward worst" })).toBeInTheDocument();
-
-    // AAPL (slot 0) moving "toward best" (dir=+1) must hop over the now-
-    // locked MSFT (slot 2) and land on TSLA's own slot (1) -- the
-    // hop-over-locked-slot mechanic, exercised through real clicks.
-    fireEvent.click(panel.getByRole("button", { name: "Move AAPL toward best" }));
-    const rows = panel.getAllByRole("listitem");
-    // After the hop: TSLA first, then AAPL, then the three locked ones.
-    expect(within(rows[0]!).getByText("TSLA")).toBeInTheDocument();
-    expect(within(rows[1]!).getByText("AAPL")).toBeInTheDocument();
+    expect(await panel.findAllByText(/3 of 5 correct/i)).toHaveLength(2);
+    expect(panel.getAllByText("Correct")).toHaveLength(3);
+    expect(panel.getAllByText("Incorrect")).toHaveLength(2);
+    // The two missed slots each name the ticker that actually belongs there.
+    expect(panel.getByText("Actually NVDA")).toBeInTheDocument();
+    expect(panel.getByText("Actually META")).toBeInTheDocument();
   });
 
-  it("out-of-attempts reveals the answer without a win, and resets the streak", async () => {
-    // Seed a real prior win, so this loss shows the reset take effect.
+  it("moving a ticker up swaps it toward the best-mover end, and moving down swaps it toward the worst", async () => {
+    // Start with the two top slots swapped.
+    const guess = [...ANSWER];
+    [guess[0], guess[1]] = [guess[1]!, guess[0]!];
+    saveOrderDayState(DATE, freshState({ guess })); // META, NVDA, MSFT, AAPL, TSLA
+    const panel = await expandBoard();
+
+    fireEvent.click(panel.getByRole("button", { name: "Move NVDA toward best" }));
+
+    const rows = panel.getAllByRole("listitem");
+    expect(within(rows[0]!).getByText("NVDA")).toBeInTheDocument();
+    expect(within(rows[1]!).getByText("META")).toBeInTheDocument();
+  });
+
+  it("the top slot's 'toward best' button and the bottom slot's 'toward worst' button are disabled at the edge", async () => {
+    // Seeded to the exact real answer so which ticker sits at each edge
+    // slot is deterministic -- the default fresh state is a *random*
+    // shuffle (initialOrderGuess), which could land any ticker at either
+    // edge and make this assertion flaky.
+    saveOrderDayState(DATE, freshState());
+    const panel = await expandBoard();
+    expect(panel.getByRole("button", { name: `Move ${ANSWER[0]} toward best` })).toBeDisabled();
+    expect(
+      panel.getByRole("button", { name: `Move ${ANSWER[ANSWER.length - 1]} toward worst` }),
+    ).toBeDisabled();
+  });
+
+  it("a bail-out reveal ends the day without grading any slot, and still counts as a loss for the streak", async () => {
     window.localStorage.setItem(
       "hikt:the-order:streak-history",
       JSON.stringify({ days: [{ date: "2026-08-20", won: true }] }),
     );
-    // Attempt 4 of 4, a fully reversed guess -- not a win (only the exact
-    // middle slot happens to score exact by coincidence of the reversal;
-    // the other 4 don't), so running out of attempts is what ends this day.
-    saveOrderDayState(DATE, freshState({ attempt: 4, guess: [...ANSWER].reverse() }));
+    saveOrderDayState(DATE, freshState());
     const panel = await expandBoard();
 
-    fireEvent.click(panel.getByRole("button", { name: "Submit guess" }));
+    fireEvent.click(panel.getByRole("button", { name: "Reveal answer" }));
 
-    // Two matches expected -- see the "solved" test's own note above.
-    expect(await panel.findAllByText(/out of guesses/i)).toHaveLength(2);
-    // Two matches expected too: the still-rendered interactive row list
-    // (its own slots never disappear, just get disabled) and the reveal
-    // panel's own "yesterday, worst to best" ranking.
-    expect(panel.getAllByText(ANSWER[0]!)).toHaveLength(2); // real order revealed
+    expect(await panel.findAllByText(/revealed/i)).toHaveLength(2);
+    // Revealing (not submitting) grades nothing -- no per-slot badges.
+    expect(panel.queryByText("Correct")).not.toBeInTheDocument();
+    expect(panel.queryByText("Incorrect")).not.toBeInTheDocument();
     expect(getOrderStreakHistory()).toEqual([
       { date: "2026-08-20", won: true },
       { date: DATE, won: false },
     ]);
   });
 
-  it("a bail-out reveal ends the game without recording any submitted attempt", async () => {
-    saveOrderDayState(DATE, freshState());
+  it("a bail-out reveal actually shows the real ticker at every slot, not the player's own last (possibly wrong) arrangement", async () => {
+    // Start from a deliberately wrong arrangement -- the reversed answer.
+    saveOrderDayState(DATE, freshState({ guess: [...ANSWER].reverse() }));
     const panel = await expandBoard();
 
     fireEvent.click(panel.getByRole("button", { name: "Reveal answer" }));
+    await panel.findAllByText(/revealed/i);
 
-    expect(await panel.findAllByText(/out of guesses/i)).toHaveLength(2);
-    // No history strip -- nothing was ever actually submitted.
-    expect(panel.queryByText("Past guesses")).not.toBeInTheDocument();
-  });
-
-  it("every history glyph cell carries a real glyph and an sr-only description, not color alone", async () => {
-    // Swap the two end slots (TSLA/NVDA): both land 4 positions from their
-    // real slot -- a real "far" case for both -- while AAPL/MSFT/META stay
-    // exact in the middle.
-    saveOrderDayState(DATE, freshState({ guess: ["NVDA", "AAPL", "MSFT", "META", "TSLA"] }));
-    const panel = await expandBoard();
-    fireEvent.click(panel.getByRole("button", { name: "Submit guess" }));
-    await panel.findByText("Past guesses");
-
-    expect(panel.getByText("TSLA: far off.")).toBeInTheDocument();
-    expect(panel.getByText("NVDA: far off.")).toBeInTheDocument();
-    expect(panel.getByText("MSFT: exact position.")).toBeInTheDocument();
+    const rows = panel.getAllByRole("listitem");
+    // Every row now shows the real, best-to-worst ticker order -- not the
+    // reversed guess the player left it on.
+    ANSWER.forEach((ticker, index) => {
+      expect(within(rows[index]!).getByText(ticker)).toBeInTheDocument();
+    });
   });
 
   it("persists progress across a fresh mount (a reload)", async () => {
-    saveOrderDayState(
-      DATE,
-      freshState({
-        attempt: 2,
-        history: [{ guess: [...ANSWER], feedback: ["exact", "exact", "exact", "exact", "exact"] }],
-      }),
-    );
+    const guess = [...ANSWER].reverse();
+    saveOrderDayState(DATE, freshState({ guess }));
     // Scoped to the expanded panel specifically -- the collapsed tile's
     // own summary status line (issue #195's own connector-panel markup)
-    // also reads "Attempt 2 of 4" once expanded, so an unscoped query
+    // also reads "In progress" once expanded, so an unscoped query
     // against the whole screen matches both.
     const { unmount } = render(<TheOrder />);
     fireEvent.click(await screen.findByTestId("the-order-summary"));
-    await within(await screen.findByTestId("the-order-panel")).findByText(/attempt 2 of 4/i);
+    const panel = within(await screen.findByTestId("the-order-panel"));
+    const rowsBefore = panel.getAllByRole("listitem");
+    expect(within(rowsBefore[0]!).getByText(guess[0]!)).toBeInTheDocument();
     unmount();
 
     render(<TheOrder />);
     fireEvent.click(await screen.findByTestId("the-order-summary"));
-    expect(
-      await within(await screen.findByTestId("the-order-panel")).findByText(/attempt 2 of 4/i),
-    ).toBeInTheDocument();
+    const panelAfter = within(await screen.findByTestId("the-order-panel"));
+    const rowsAfter = panelAfter.getAllByRole("listitem");
+    expect(within(rowsAfter[0]!).getByText(guess[0]!)).toBeInTheDocument();
   });
 
   it("the collapsed tile's own status line reflects the stored state without expanding", async () => {
@@ -235,12 +245,29 @@ describe("TheOrder", () => {
       freshState({
         done: true,
         won: true,
-        history: [{ guess: [...ANSWER], feedback: ["exact", "exact", "exact", "exact", "exact"] }],
+        feedback: ["correct", "correct", "correct", "correct", "correct"],
       }),
     );
     render(<TheOrder />);
     await waitFor(() => {
-      expect(screen.getByTestId("the-order-summary")).toHaveTextContent(/solved in 1 of 4/i);
+      expect(screen.getByTestId("the-order-summary")).toHaveTextContent(
+        /solved -- every stock matched/i,
+      );
+    });
+  });
+
+  it("the collapsed tile's status line shows a partial score for a finished-but-not-won day", async () => {
+    saveOrderDayState(
+      DATE,
+      freshState({
+        done: true,
+        won: false,
+        feedback: ["correct", "incorrect", "correct", "incorrect", "correct"],
+      }),
+    );
+    render(<TheOrder />);
+    await waitFor(() => {
+      expect(screen.getByTestId("the-order-summary")).toHaveTextContent(/3 of 5 correct/i);
     });
   });
 });
