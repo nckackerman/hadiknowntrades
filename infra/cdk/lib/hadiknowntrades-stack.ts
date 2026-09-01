@@ -11,9 +11,16 @@
 //     domain requested yet. If one is added later, remember the ACM
 //     cert for CloudFront must be requested in us-east-1 regardless of
 //     the region everything else lives in.
-//   - The real OpenNext build for apps/web -- see
-//     lambda/web-placeholder/handler.ts for what stands in for it and
-//     how to swap in the real thing once apps/web has actual routes.
+//
+// The web Lambda now runs a real OpenNext build of apps/web (issue #6's
+// original placeholder is gone -- see git history for
+// lambda/web-placeholder/handler.ts if that stub is ever needed for
+// reference again). Run `pnpm --filter web run build:lambda` (or
+// `build:lambda:bypass`, see WEB_ASSETS_PUBLIC_BUCKET_NAME below) before
+// `cdk synth`/`cdk deploy` -- there's no build step wired into the CDK
+// deploy itself, matching this stack's existing pattern of the pipeline
+// Lambda bundling from already-checked-out source rather than building
+// it.
 
 import { fileURLToPath } from "node:url";
 import * as path from "node:path";
@@ -33,9 +40,15 @@ import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
 import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
 import { CfnRole, ManagedPolicy, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
-import { FunctionUrlAuthType, Runtime } from "aws-cdk-lib/aws-lambda";
+import {
+  Code,
+  Function as LambdaFunction,
+  FunctionUrlAuthType,
+  Runtime,
+} from "aws-cdk-lib/aws-lambda";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
-import { BlockPublicAccess, Bucket } from "aws-cdk-lib/aws-s3";
+import { BlockPublicAccess, Bucket, HttpMethods } from "aws-cdk-lib/aws-s3";
+import { BucketDeployment, Source } from "aws-cdk-lib/aws-s3-deployment";
 import type { Construct, IConstruct } from "constructs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -46,22 +59,51 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, "..", "..", "..");
 const PNPM_LOCK_FILE = path.join(REPO_ROOT, "pnpm-lock.yaml");
 const PIPELINE_LAMBDA_ENTRY = path.join(REPO_ROOT, "apps", "pipeline", "src", "lambda-handler.ts");
-const WEB_PLACEHOLDER_LAMBDA_ENTRY = path.join(
-  __dirname,
-  "..",
-  "lambda",
-  "web-placeholder",
-  "handler.ts",
+// Real OpenNext build output -- produced by `pnpm --filter web run
+// build:lambda` (or `build:lambda:bypass`), not built by this CDK app
+// itself. See this file's own top-of-file comment.
+//
+// This points at the *zipped* build output (`default.zip`), not the
+// raw `default/` directory, and that's load-bearing, not a style
+// choice: `Code.fromAsset(directory)`'s own zip-creation step
+// dereferences pnpm's symlinked node_modules structure, which silently
+// disconnects `next` from sibling transitive deps it needs at runtime
+// (e.g. `@swc/helpers`) -- confirmed by downloading and inspecting a
+// real deployed Lambda's code package, which crashed every request
+// with `Cannot find module '@swc/helpers/_/_interop_require_default'`
+// despite `WebFunction` itself reaching CREATE_COMPLETE. `build:lambda`/
+// `build:lambda:bypass`'s own last step (`apps/web/scripts/
+// zip-server-function.mjs`) zips the directory with symlinks preserved
+// as real zip symlink entries instead; `Code.fromAsset` accepts a
+// `.zip` file path directly and uploads it as-is, skipping its own
+// (dereferencing) zip step entirely. See that script's own doc comment
+// for the full story and how it was verified.
+const WEB_SERVER_FUNCTION_ZIP = path.join(
+  REPO_ROOT,
+  "apps",
+  "web",
+  ".open-next",
+  "server-functions",
+  "default.zip",
 );
+const WEB_ASSETS_DIR = path.join(REPO_ROOT, "apps", "web", ".open-next", "assets");
 
 // Static asset paths CloudFront routes straight to S3 instead of
 // through the web Lambda. `_next/static/*` is Next.js's own
-// fingerprinted, immutable build output -- the one path pattern that's
-// stable regardless of what routes apps/web ends up with. Once the real
-// OpenNext build exists, this will likely need more entries (e.g. a
-// `/favicon.ico` or public/* passthrough) -- left minimal for now since
-// there's no real static output to serve yet either.
-const STATIC_ASSET_PATH_PATTERNS = ["/_next/static/*"];
+// fingerprinted, immutable build output; `/favicon.ico` is the one
+// other real path the real OpenNext build actually produces at the
+// bucket root (confirmed by inspecting a real `.open-next/assets`
+// build -- the create-next-app starter's other unused `public/*` SVGs
+// were left out deliberately, since apps/web's own code never
+// references them).
+const STATIC_ASSET_PATH_PATTERNS = ["/_next/static/*", "/favicon.ico"];
+
+// Must match apps/web/next.config.ts's own hardcoded
+// `WEB_ASSETS_PUBLIC_BUCKET_URL` constant exactly -- see
+// `webAssetsBucket`'s own doc comment below for why a fixed bucket name
+// (not this stack's usual CDK-auto-generated one) is needed here,
+// specifically only while bypassing CloudFront.
+const WEB_ASSETS_PUBLIC_BUCKET_NAME = "hadiknowntrades-web-assets-public";
 
 // The sandbox account's deploying IAM user has no general IAM access --
 // PowerUserAccess deliberately excludes it (infra/bootstrap/SETUP.md) --
@@ -78,11 +120,30 @@ const ROLE_NAME_PREFIX = "hadiknowntrades-";
  * Catches any IAM role left with no explicit name -- specifically the
  * shared custom-resource execution role CDK's S3 `autoDeleteObjects`
  * support creates internally (aws-cdk-lib/aws-s3 exposes no prop to name
- * it directly). Both Lambda execution roles in this stack are already
- * given explicit `hadiknowntrades-*` names below, so in practice this
- * only ever touches that one internal role -- but doing it as an Aspect
- * means any other CDK-internal role added later is covered too, without
- * having to special-case each construct that happens to create one.
+ * it directly). Both Lambda execution roles in this stack, and the
+ * `BucketDeployment` construct's own execution role (see
+ * `webAssetsDeploymentRole` below), are already given explicit
+ * `hadiknowntrades-*` names via their own constructor props, so in
+ * practice this only ever touches that one S3-internal role -- but doing
+ * it as an Aspect means any other CDK-internal role added later is
+ * covered too, without having to special-case each construct that
+ * happens to create one.
+ *
+ * **`BucketDeployment` deliberately gets an explicit `role` passed in
+ * (see below), not left for this Aspect to patch after the fact** --
+ * found empirically while first adding that construct, not assumed:
+ * `BucketDeployment`'s own default auto-created role is a singleton
+ * `CfnRole` built by a `CustomResourceProvider` factory whose own
+ * internal Cfn-property derivation discards a `roleName` set here
+ * *both* via a plain assignment *and* via `addPropertyOverride` --
+ * confirmed by direct synth-and-inspect that this Aspect's own `visit()`
+ * genuinely runs and the override genuinely "takes" at that moment, yet
+ * the final synthesized template has no `RoleName` regardless. Passing
+ * an explicit, already-named role into the construct up front sidesteps
+ * that internal machinery entirely instead of fighting it after the
+ * fact -- worth remembering before assuming this Aspect alone is enough
+ * for a future CDK-internal-role case; check whether the construct
+ * accepts its own `role` prop first.
  */
 class ScopedIamRoleNames implements IAspect {
   private count = 0;
@@ -92,7 +153,7 @@ class ScopedIamRoleNames implements IAspect {
       // Typed roles (this stack only creates these via an explicit
       // `new Role(...)` with a name already set) -- nothing to do, but
       // handled for completeness in case one is ever added without one.
-      if (node.roleName === undefined) node.roleName = this.nextName();
+      if (node.roleName === undefined) node.addPropertyOverride("RoleName", this.nextName());
       return;
     }
     // CDK's `CustomResourceProvider` framework -- what S3's
@@ -120,6 +181,25 @@ export class HadIKnownTradesStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
+    // --- CloudFront-bypass workaround toggle -----------------------------
+    // AWS blocks new CloudFront Distribution creation on low-usage
+    // accounts pending a manual AWS Support account-verification case --
+    // see infra/CLAUDE.md's "Current deployment state" (the Distribution
+    // resource below is CREATE_FAILED for exactly this reason, filed and
+    // pending as of this writing, not a bug in this stack). This flag is
+    // a temporary, single-toggle workaround: `cdk deploy -c
+    // bypassCloudFront=true` exposes the web Lambda's own Function URL
+    // directly (public, no CloudFront) and serves static assets from a
+    // genuinely public S3 bucket instead of CloudFront's own S3 origin.
+    // Every place this flag is read is called out explicitly below --
+    // nothing else in this stack branches on it. Revert is just
+    // redeploying with the flag omitted (the default, `false`) once AWS
+    // Support clears the account -- the *same*, already-declared
+    // Distribution resource then completes on a plain `cdk deploy`, and
+    // everything below reverts to its normal, locked-down shape
+    // automatically.
+    const bypassCloudFront = this.node.tryGetContext("bypassCloudFront") === "true";
+
     // --- S3: precomputed results -------------------------------------
     // Written by the pipeline Lambda as `results/{RANGE}.json` (see
     // apps/pipeline/CLAUDE.md). Idempotent fixed-key overwrites, not
@@ -137,12 +217,48 @@ export class HadIKnownTradesStack extends Stack {
 
     // --- S3: static web assets -----------------------------------------
     // Holds the OpenNext build's static output (`.open-next/assets`:
-    // fingerprinted `_next/static/*` JS/CSS, images, etc), served
-    // straight from S3 via CloudFront rather than round-tripping
-    // through the web Lambda. Empty until apps/web has a real OpenNext
-    // build to sync into it (see lambda/web-placeholder/handler.ts).
+    // fingerprinted `_next/static/*` JS/CSS, favicon.ico, etc), normally
+    // served straight from S3 via CloudFront's own S3 origin rather than
+    // round-tripping through the web Lambda.
+    //
+    // While bypassing CloudFront (see `bypassCloudFront` above), this
+    // bucket instead needs to be reachable directly, and needs a *known*
+    // name -- Next's own `assetPrefix` (apps/web/next.config.ts, gated on
+    // the same `OPENNEXT_BYPASS_CLOUDFRONT` env var the bypass build
+    // sets) has to be baked into the app at `next build` time, before
+    // this bucket even exists, so its name can't be the usual
+    // CDK-auto-generated one in that mode.
+    // `WEB_ASSETS_PUBLIC_BUCKET_NAME` is that fixed name; both flip
+    // together, only under `bypassCloudFront`. Outside it (the normal
+    // case) this bucket keeps its usual CDK-auto-generated name and
+    // stays fully private, unchanged from before this workaround
+    // existed. `BLOCK_ACLS_ONLY` (not `BLOCK_ALL`) is required for
+    // `publicReadAccess: true` to actually take effect -- it blocks
+    // ACL-based public access while still allowing the bucket-policy-
+    // based public read this construct adds. **Not `BLOCK_ACLS`, a real
+    // bug caught only by the real `cdk deploy` CLI, not this file's own
+    // vitest suite (fixed, see that suite's own updated setup for why):
+    // `BLOCK_ACLS` is a deprecated preset that still leaves
+    // `blockPublicPolicy: true`, which throws
+    // `CannotGrantPublicAccessWhenBlockPublicPolicyEnabled` the moment
+    // `publicReadAccess: true` tries to attach a public bucket policy --
+    // `BLOCK_ACLS_ONLY` is the current preset that actually sets
+    // `blockPublicPolicy: false` alongside blocking ACLs.**
     const webAssetsBucket = new Bucket(this, "WebAssetsBucket", {
-      blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
+      bucketName: bypassCloudFront ? WEB_ASSETS_PUBLIC_BUCKET_NAME : undefined,
+      blockPublicAccess: bypassCloudFront
+        ? BlockPublicAccess.BLOCK_ACLS_ONLY
+        : BlockPublicAccess.BLOCK_ALL,
+      publicReadAccess: bypassCloudFront,
+      // Browsers loading a fingerprinted chunk from this bucket's own
+      // domain (not the page's own origin) need this for the fetch-based
+      // parts of Next's client runtime (dynamic import()) -- plain
+      // <script src>/<link href> loads don't need it, but not every
+      // asset load goes through those tags. GET-only, matches this
+      // bucket's own read-only role in the bypass.
+      cors: bypassCloudFront
+        ? [{ allowedMethods: [HttpMethods.GET], allowedOrigins: ["*"], allowedHeaders: ["*"] }]
+        : undefined,
       enforceSSL: true,
       removalPolicy: RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
@@ -228,7 +344,12 @@ export class HadIKnownTradesStack extends Stack {
       targets: [new targets.LambdaFunction(pipelineFn)],
     });
 
-    // --- Lambda: web app (PLACEHOLDER, see lambda/web-placeholder) ------
+    // --- Lambda: web app --------------------------------------------------
+    // Real OpenNext build output. Not a NodejsFunction: OpenNext already
+    // produces a fully bundled Lambda package (its own node_modules
+    // included), so this points Code.fromAsset at that output directory
+    // rather than having esbuild re-bundle a TS source entry the way the
+    // pipeline Lambda does.
     const webFnRole = new Role(this, "WebFunctionRole", {
       roleName: `${ROLE_NAME_PREFIX}web-fn-role`,
       assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
@@ -236,31 +357,135 @@ export class HadIKnownTradesStack extends Stack {
         ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole"),
       ],
     });
-    const webFn = new NodejsFunction(this, "WebFunction", {
+    const webFn = new LambdaFunction(this, "WebFunction", {
       functionName: "hadiknowntrades-web",
       role: webFnRole,
-      entry: WEB_PLACEHOLDER_LAMBDA_ENTRY,
-      handler: "handler",
+      code: Code.fromAsset(WEB_SERVER_FUNCTION_ZIP),
+      handler: "index.handler",
       runtime: Runtime.NODEJS_22_X,
-      memorySize: 256,
-      timeout: Duration.seconds(10),
-      depsLockFilePath: PNPM_LOCK_FILE,
-      bundling: {
-        sourceMap: true,
+      // Starting guesses for a real Next SSR cold start -- not yet
+      // measured against real CloudWatch numbers (unlike the pipeline
+      // Lambda's own memory, tuned against three real OOMs, see below).
+      // Revisit once this is actually invoked for real.
+      memorySize: 1024,
+      timeout: Duration.seconds(30),
+      // **No `reservedConcurrentExecutions` -- tried and reverted twice
+      // against this exact sandbox account, both a real `cdk deploy`
+      // failure (real bug, caught only by an actual deploy, not `cdk
+      // synth`/the vitest suite -- neither validates against the
+      // account's real account-wide concurrency quota).** The original
+      // intent (a real ceiling on cost/abuse exposure while
+      // `bypassCloudFront` makes this Lambda's own Function URL public
+      // and CloudFront-uncached, with no automatic AWS Budget Action
+      // lockdown on this account, see infra/CLAUDE.md's own "budget
+      // circuit breaker" note) still stands -- but this account's own
+      // *total* Lambda concurrency quota turns out too low to support
+      // *any* nonzero per-function reservation at all: both `5` and `1`
+      // failed identically (`CREATE_FAILED`: "decreases account's
+      // UnreservedConcurrentExecution below its minimum value of [5]"),
+      // confirming this is a fixed account-wide floor, not proportional
+      // to the number requested -- this account's total quota is at or
+      // below that floor already, almost certainly the same new-account
+      // restriction blocking CloudFront (see this stack's own
+      // `bypassCloudFront` doc comment) rather than something specific
+      // to this Lambda. The pipeline Lambda already runs fine with no
+      // reservation of its own, sharing the account's unreserved pool
+      // like every other unconfigured Lambda -- this one does the same
+      // for now. Revisit adding a real cap back once the account's own
+      // total quota is confirmed higher (e.g. after the same AWS Support
+      // process that unblocks CloudFront) -- until then, the existing
+      // $20/month Budget alert (email only, not an auto-lockdown) is the
+      // only cost safety net for this Lambda while it's public.
+      environment: {
+        RESULTS_BUCKET: resultsBucket.bucketName,
+        // OpenNext's own S3-backed incremental cache -- apps/web's
+        // open-next.config.ts sets tagCache: "dummy"/queue: "direct"
+        // specifically so this is the *only* extra AWS dependency ISR
+        // needs here (no DynamoDB, no SQS), matching apps/web's own one
+        // real ISR route (/api/og/[range], time-based revalidate only,
+        // no revalidateTag/revalidatePath calls anywhere in this app).
+        // Reuses webAssetsBucket under its own prefix rather than a
+        // third bucket.
+        CACHE_BUCKET_NAME: webAssetsBucket.bucketName,
+        CACHE_BUCKET_KEY_PREFIX: "cache",
+        CACHE_BUCKET_REGION: this.region,
       },
     });
-    // AWS_IAM (not NONE): CloudFront's Origin Access Control signs
-    // requests to the function URL with SigV4, and Lambda checks that
-    // signature against the resource policy CloudFront's origin setup
-    // grants it -- this is what stops the function URL from being
-    // invokable directly, bypassing CloudFront.
-    const webFnUrl = webFn.addFunctionUrl({ authType: FunctionUrlAuthType.AWS_IAM });
+    resultsBucket.grantRead(webFn, "results/*");
+    webAssetsBucket.grantReadWrite(webFn, "cache/*");
+    // AWS_IAM normally (not NONE): CloudFront's Origin Access Control
+    // signs requests to the function URL with SigV4, and Lambda checks
+    // that signature against the resource policy CloudFront's origin
+    // setup grants it -- this is what stops the function URL from being
+    // invokable directly, bypassing CloudFront. Flipped to NONE (public,
+    // no auth at all) only under `bypassCloudFront` -- see this file's
+    // own `bypassCloudFront` doc comment above.
+    const webFnUrl = webFn.addFunctionUrl({
+      authType: bypassCloudFront ? FunctionUrlAuthType.NONE : FunctionUrlAuthType.AWS_IAM,
+    });
+
+    // Syncs the OpenNext build's static output into webAssetsBucket as
+    // part of the same `cdk deploy` -- no separate manual `aws s3 sync`
+    // step needed either way (normal or bypass).
+    //
+    // Explicit `role`, not BucketDeployment's own default auto-created
+    // one (real bug, found empirically, not assumed from CDK's docs):
+    // its default role is a singleton `CfnRole` shared across every
+    // `BucketDeployment` in a stack, built by a `CustomResourceProvider`
+    // factory whose own re-derivation of that role's Cfn properties
+    // during synthesis discards a plain `roleName` assignment *and* an
+    // `addPropertyOverride("RoleName", ...)` applied via the
+    // ScopedIamRoleNames Aspect below -- confirmed by direct synth-and-
+    // inspect: the Aspect's own visit() genuinely runs and the override
+    // genuinely "takes" at that moment, but the final synthesized
+    // template has no RoleName regardless. Supplying an explicit,
+    // already-named Role up front (the same pattern webFnRole/
+    // pipelineFnRole already use) sidesteps that internal machinery
+    // entirely rather than trying to patch its output after the fact --
+    // BucketDeployment still grants this role whatever S3 permissions it
+    // needs, the same as if it had created the role itself.
+    const webAssetsDeploymentRole = new Role(this, "WebAssetsDeploymentRole", {
+      roleName: `${ROLE_NAME_PREFIX}web-assets-deployment-role`,
+      assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
+      managedPolicies: [
+        ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole"),
+      ],
+    });
+    new BucketDeployment(this, "WebAssetsDeployment", {
+      sources: [Source.asset(WEB_ASSETS_DIR)],
+      destinationBucket: webAssetsBucket,
+      role: webAssetsDeploymentRole,
+    });
 
     // --- CloudFront -------------------------------------------------------
+    // Computed once and reused across every static-asset behavior below
+    // (real bug, found by an unexpected third AWS::CloudFront::
+    // OriginAccessControl showing up in the synthesized template once
+    // STATIC_ASSET_PATH_PATTERNS grew a second entry): `withOriginAccessControl`
+    // creates a fresh Origin *and* a fresh OAC resource on every call, even
+    // for the identical bucket -- calling it once per path pattern inside
+    // the .map() below silently created one redundant origin+OAC pair per
+    // extra pattern instead of sharing the one this bucket actually needs.
+    const webAssetsOrigin = origins.S3BucketOrigin.withOriginAccessControl(webAssetsBucket);
+    // CDK itself refuses to synthesize `FunctionUrlOrigin.withOriginAccessControl`
+    // paired with anything but an AWS_IAM-authed Function URL (a real,
+    // synth-time error caught while first testing bypassCloudFront=true,
+    // not a hypothetical): OAC signs its requests with SigV4, and an
+    // origin CloudFront can't actually authenticate against with that
+    // signature is a genuine misconfiguration CDK is right to reject
+    // outright, even though this specific Distribution won't actually
+    // deploy either way during the bypass window (AWS blocks its
+    // creation at the account level regardless of its own config, see
+    // this file's own bypassCloudFront doc comment) -- the plain,
+    // non-OAC `FunctionUrlOrigin` constructor is what a NONE-authed
+    // Function URL actually needs to stay a valid declaration.
+    const webFnOrigin = bypassCloudFront
+      ? new origins.FunctionUrlOrigin(webFnUrl)
+      : origins.FunctionUrlOrigin.withOriginAccessControl(webFnUrl);
     const distribution = new cloudfront.Distribution(this, "Distribution", {
       comment: "hadiknowntrades",
       defaultBehavior: {
-        origin: origins.FunctionUrlOrigin.withOriginAccessControl(webFnUrl),
+        origin: webFnOrigin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
         // SSR responses are dynamic and per-request; caching is left to
@@ -273,7 +498,7 @@ export class HadIKnownTradesStack extends Stack {
         STATIC_ASSET_PATH_PATTERNS.map((pattern) => [
           pattern,
           {
-            origin: origins.S3BucketOrigin.withOriginAccessControl(webAssetsBucket),
+            origin: webAssetsOrigin,
             viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
             cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
           },
@@ -291,5 +516,9 @@ export class HadIKnownTradesStack extends Stack {
     new CfnOutput(this, "WebAssetsBucketName", { value: webAssetsBucket.bucketName });
     new CfnOutput(this, "PipelineFunctionName", { value: pipelineFn.functionName });
     new CfnOutput(this, "DistributionDomainName", { value: distribution.distributionDomainName });
+    // Harmless to always emit -- only actually reachable when
+    // bypassCloudFront is true (AWS_IAM auth otherwise rejects a direct
+    // request). See this file's own bypassCloudFront doc comment above.
+    new CfnOutput(this, "WebFunctionUrl", { value: webFnUrl.url });
   }
 }

@@ -4,14 +4,39 @@
 // S3 buckets, CloudFront, both Lambdas, the EventBridge rule + target,
 // and minimally-scoped IAM.
 
+import { readFileSync } from "node:fs";
+import * as path from "node:path";
+
 import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { HadIKnownTradesStack } from "../lib/hadiknowntrades-stack.js";
 
-function synthTemplate(): Template {
-  const app = new App();
+/**
+ * `cdk.json`'s own `context` block (the aws-cdk-lib feature flags this
+ * project's own real `cdk deploy`/`cdk synth` always pick up) --
+ * `new App()` with no explicit `context` prop does NOT load this file
+ * automatically outside the real CDK CLI's own process wrapping (real
+ * bug, found empirically, not assumed): confirmed live that a plain
+ * `new App()` here returns `undefined` for
+ * `@aws-cdk/aws-s3:publicAccessBlockedByDefault` even though it's set
+ * in cdk.json, and that this genuinely changes S3 `Bucket` construct
+ * validation behavior -- `BlockPublicAccess.BLOCK_ACLS` paired with
+ * `publicReadAccess: true` synthesized cleanly under this test suite's
+ * old context-less `App()` calls, but threw
+ * `CannotGrantPublicAccessWhenBlockPublicPolicyEnabled` under the real
+ * `cdk deploy` CLI, which does load this file. Every `App` construction
+ * in this suite now explicitly merges this file's context in, so a
+ * future feature-flag-dependent bug like that one actually fails a test
+ * instead of only surfacing at real-deploy time.
+ */
+const CDK_JSON_CONTEXT: Record<string, unknown> = JSON.parse(
+  readFileSync(path.join(__dirname, "..", "cdk.json"), "utf-8"),
+).context;
+
+function synthTemplate(context: Record<string, unknown> = {}): Template {
+  const app = new App({ context: { ...CDK_JSON_CONTEXT, ...context } });
   const stack = new HadIKnownTradesStack(app, "TestStack", {
     env: { region: "us-west-2" },
   });
@@ -101,14 +126,42 @@ describe("HadIKnownTradesStack", () => {
     });
   });
 
-  it("creates the web Lambda with an IAM-authenticated Function URL", () => {
+  it("creates the web Lambda with an IAM-authenticated Function URL, wired to RESULTS_BUCKET and the OpenNext S3 incremental cache", () => {
     template.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "hadiknowntrades-web",
       Handler: "index.handler",
+      Environment: {
+        Variables: Match.objectLike({
+          RESULTS_BUCKET: Match.anyValue(),
+          CACHE_BUCKET_NAME: Match.anyValue(),
+          CACHE_BUCKET_KEY_PREFIX: "cache",
+        }),
+      },
     });
     template.hasResourceProperties("AWS::Lambda::Url", {
       AuthType: "AWS_IAM",
     });
+  });
+
+  it("bypassCloudFront=true flips the Function URL public and the web-assets bucket to a fixed public name -- everything else is unaffected", () => {
+    // Goes through synthTemplate (cdk.json's own context merged in, see
+    // that helper's own doc comment) rather than a hand-rolled `new
+    // App()` -- this exact test previously used one and passed locally
+    // while the real `cdk deploy` CLI threw
+    // `CannotGrantPublicAccessWhenBlockPublicPolicyEnabled`, precisely
+    // because a hand-rolled App skipped cdk.json's
+    // `publicAccessBlockedByDefault` flag.
+    const bypassTemplate = synthTemplate({ bypassCloudFront: "true" });
+
+    bypassTemplate.hasResourceProperties("AWS::Lambda::Url", { AuthType: "NONE" });
+    bypassTemplate.hasResourceProperties("AWS::S3::Bucket", {
+      BucketName: "hadiknowntrades-web-assets-public",
+    });
+    // The CloudFront Distribution itself is completely unaffected by the
+    // flag -- it stays declared, unchanged, ready to pick up on a plain
+    // `cdk deploy` the moment AWS unblocks it (see this stack's own
+    // bypassCloudFront doc comment).
+    bypassTemplate.resourceCountIs("AWS::CloudFront::Distribution", 1);
   });
 
   it("scopes the pipeline Lambda's S3 permission to the results/ prefix only", () => {
