@@ -279,4 +279,21 @@ describe("useOrderGame -- move/shuffle/submit/reveal are no-ops once the day is 
     expect(result.current.view.state!.won).toBe(false);
     expect(result.current.view.state!.feedback).toBeNull();
   });
+
+  it("reveal() replaces the guess with the real answer, so every slot actually shows the ticker that belongs there", async () => {
+    // Deliberately start from a wrong arrangement -- if reveal() merely
+    // left the guess as-is (the bug this test guards against), the
+    // player's own wrong guess would still be showing after "revealing."
+    const wrong = [...ANSWER].reverse();
+    saveOrderDayState(DATE, stateWith({ guess: wrong }));
+    const { result } = renderHook(() => useOrderGame(PUZZLE));
+    await waitFor(() => expect(result.current.view.hydrated).toBe(true));
+    expect(result.current.view.state!.guess).toEqual(wrong);
+
+    act(() => {
+      result.current.reveal();
+    });
+
+    expect(result.current.view.state!.guess).toEqual(ANSWER);
+  });
 });

@@ -170,9 +170,19 @@ export function useOrderGame(puzzle: TheOrderPuzzle | null): UseOrderGameResult 
     persist({ guess: [...view.state.guess], done: true, won, feedback });
   }, [puzzle, view.state, persist]);
 
+  // A bail-out: replaces the guess with the real answer (rather than
+  // leaving whatever the player last arranged), so every slot shows the
+  // real ticker that belongs there -- feedback stays `null` since
+  // nothing was actually graded, this is a flat reveal, not a scored
+  // guess. Without this, `SlotRow` would just keep displaying the
+  // player's own last arrangement with no per-slot correctness shown at
+  // all (feedback === null renders no badge), which left a "Reveal
+  // answer" click ending the day without ever actually revealing which
+  // ticker belongs at which %.
   const reveal = useCallback(() => {
     if (puzzle === null || view.state === null || view.state.done) return;
-    persist({ ...view.state, done: true, won: false, feedback: null });
+    const answer = bestToWorstTickers(puzzle.tickers).map((t) => t.ticker);
+    persist({ guess: [...answer], done: true, won: false, feedback: null });
   }, [puzzle, view.state, persist]);
 
   return { view, move, shuffle, submit, reveal };

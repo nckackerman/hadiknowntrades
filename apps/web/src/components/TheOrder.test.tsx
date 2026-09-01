@@ -202,6 +202,22 @@ describe("TheOrder", () => {
     ]);
   });
 
+  it("a bail-out reveal actually shows the real ticker at every slot, not the player's own last (possibly wrong) arrangement", async () => {
+    // Start from a deliberately wrong arrangement -- the reversed answer.
+    saveOrderDayState(DATE, freshState({ guess: [...ANSWER].reverse() }));
+    const panel = await expandBoard();
+
+    fireEvent.click(panel.getByRole("button", { name: "Reveal answer" }));
+    await panel.findAllByText(/revealed/i);
+
+    const rows = panel.getAllByRole("listitem");
+    // Every row now shows the real, best-to-worst ticker order -- not the
+    // reversed guess the player left it on.
+    ANSWER.forEach((ticker, index) => {
+      expect(within(rows[index]!).getByText(ticker)).toBeInTheDocument();
+    });
+  });
+
   it("persists progress across a fresh mount (a reload)", async () => {
     const guess = [...ANSWER].reverse();
     saveOrderDayState(DATE, freshState({ guess }));
