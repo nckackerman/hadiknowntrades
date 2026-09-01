@@ -10112,3 +10112,82 @@ rgba(...))` strings (matching that file's own established fallback
   own issue #105 post-PR review history already flags as worth avoiding.
 - All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
   1090 passing, `pnpm format:check`) re-ran green after every fix.
+
+## The Order: redesigned to a %-match, one-shot puzzle (direct user request, not a filed issue)
+
+Two real problems with the shipped issue #207 mechanic, raised directly by
+the user rather than filed as an issue (the same "direct request, not a
+filed issue" documentation precedent this file's own "'Today's recap'
+removed outright..." section above already establishes): the ordering
+read backwards (worst mover at the top, best mover at the _bottom_,
+position 5 -- "make it clear the highest stock is the best mover"), and
+every stock's real % move was hidden until the puzzle ended, with only
+an abstract Mastermind-style exact/close/far glyph as feedback across up
+to 4 attempts. Both fixed together, since fixing the ordering alone
+wouldn't have addressed the second complaint and vice versa -- see
+`order-scoring.ts`'s own top-of-file note and `TheOrder.tsx`'s own for
+the full before/after reasoning, not repeated here.
+
+- **Leaderboard order**: best mover is now slot 1 (top), worst is the
+  last slot (bottom) -- flipped from the original worst-to-best reading.
+  The server-side puzzle (`packages/core`'s `TheOrderPuzzle`, written by
+  `apps/pipeline`) is **unchanged** and still emits `tickers` ascending
+  by `pctReturn` (worst-to-best) -- no schema/pipeline change was needed.
+  `order-scoring.ts`'s new `bestToWorstTickers()` is the one place that
+  gets reversed into the order the game actually shows and grades
+  against. Both slot-1 and the last slot also carry an explicit
+  "Best"/"Worst" tag (`SlotRow`), so the direction is unambiguous even
+  before reading a single row's own numbers.
+- **Every slot's real % move is shown from the start, always** -- not
+  gated behind a guess or a reveal the way the original mechanic's
+  per-slot returns were. This is what turns the puzzle from "guess an
+  order with no information" into "match 5 already-visible numbers to 5
+  tickers," and is the change that made the ordering-direction fix above
+  matter in the first place (a hidden value can't read as "backwards").
+- **One-shot matching, not attempt-limited Mastermind.** Once a slot's
+  target is a known, already-visible number, an assignment is either the
+  real ticker for that slot or it isn't -- there's no meaningful "close"
+  distance left to give partial credit for. `OrderFeedback` narrowed from
+  three states (`exact`/`close`/`far`) to two (`correct`/`incorrect`);
+  `ORDER_MAX_ATTEMPTS`, the whole `history`/`locked`-array/hop-over-
+  locked-slots machinery, and the "Past guesses" history strip are all
+  gone outright, not superseded. A player freely rearranges the five
+  tickers (the same ▲/▼ per-row controls as before, now a plain adjacent
+  swap with no locked slot to hop over, and relabeled "toward best"/
+  "toward worst" to match the flipped direction) and submits exactly
+  once; submitting always ends the day. A miss shows "Actually {ticker}"
+  right on that slot, so a player learns what they got wrong without a
+  separate reveal-ranking list.
+- **`OrderDayState`'s persisted shape changed** (`guess`/`done`/`won`/
+  `feedback`, replacing `guess`/`attempt`/`history`/`locked`/`done`/
+  `won`) -- a pre-redesign stored value simply fails the new
+  `isOrderDayState` shape check and reads as "nothing stored," the same
+  graceful degradation this app's storage convention already gives a
+  puzzle rewritten with a different ticker set (see `isPermutationOf`'s
+  own doc comment). No migration or key-format bump was needed, matching
+  how this module already treats any malformed/differently-shaped stored
+  value. Streak tracking (`computeOrderStreak`/`recordOrderCompletion`,
+  a day-level win/loss history) is completely unaffected by the mechanic
+  change -- still derived fresh from a persisted history on every read,
+  mirroring The Call Board's own shape exactly.
+- **Live-verified** via a throwaway debug route (per this file's own
+  "Screenshotting a component locally" convention) that stubs
+  `window.fetch` for `/api/the-order` with a hardcoded puzzle -- no real
+  pipeline run needed, since this is a pure frontend/mechanic change with
+  zero server-side diff (confirmed via `git status` before opening a
+  PR: only `apps/web/src/{components,lib}` files touched). Screenshotted
+  idle and post-submit states: the best mover (highest %) renders in slot
+  1 with a visible "BEST" tag, the worst mover in the last slot with a
+  "WORST" tag, every slot's real % is visible before any guess, and a
+  submitted guess grades each slot independently (gold "★ Correct" /
+  red "✕ Incorrect" badges, with "Actually {ticker}" on a miss) --
+  matching the intended design exactly. Zero console/`pageerror` events.
+  The debug route and the temporary `playwright` devDependency were both
+  reverted before committing, per this file's own established
+  convention -- including clearing `.next` afterward, since `next
+typegen` otherwise keeps a stale reference to the deleted debug route
+  and fails typecheck for a reason unrelated to any real code change
+  (this file's own issue #96 follow-up round four already documents this
+  exact gotcha; hit again here, same fix).
+- All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
+  1096 passing, `pnpm format:check`) green on the resulting clean tree.

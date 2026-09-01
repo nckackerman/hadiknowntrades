@@ -1,22 +1,28 @@
 "use client";
 
-// The React layer over The Order (issue #207): reads/writes today's game
-// state against the daily puzzle -- the pure move/shuffle/score functions
-// live in order-scoring.ts, the storage layer in order-storage.ts; this
-// file is the only place either gets called from React.
+// The React layer over The Order: reads/writes today's game state
+// against the daily puzzle -- the pure move/shuffle/score functions live
+// in order-scoring.ts, the storage layer in order-storage.ts; this file
+// is the only place either gets called from React.
+//
+// Rewritten for the one-shot matching mechanic (see order-scoring.ts's
+// own top-of-file note): `submit()` now always ends the day (there's
+// only one guess to grade, not up to ORDER_MAX_ATTEMPTS of them), and
+// `move`/`shuffle` no longer thread a `locked` array through, since
+// nothing locks mid-game any more.
 
 import { useCallback, useEffect, useState } from "react";
 
 import type { TheOrderPuzzle } from "@hadiknowntrades/core";
 
 import {
+  bestToWorstTickers,
   initialOrderGuess,
   isPermutationOf,
   isWinningFeedback,
   moveOrderGuess,
-  scoreOrderGuess,
-  shuffleUnlockedGuess,
-  ORDER_MAX_ATTEMPTS,
+  scoreOrderMatch,
+  shuffleGuess,
   ORDER_SLOT_COUNT,
 } from "./order-scoring";
 import {
@@ -33,11 +39,9 @@ import {
 function freshDayState(answer: readonly string[], random: () => number): OrderDayState {
   return {
     guess: [...initialOrderGuess(answer, random)],
-    attempt: 1,
-    history: [],
-    locked: Array<boolean>(ORDER_SLOT_COUNT).fill(false),
     done: false,
     won: false,
+    feedback: null,
   };
 }
 
@@ -101,7 +105,7 @@ export function useOrderGame(puzzle: TheOrderPuzzle | null): UseOrderGameResult 
     // statement, the same shape use-hydrated-local-storage-state.ts uses
     // to stay clear of react-hooks/set-state-in-effect.
     queueMicrotask(() => {
-      const answer = puzzle.tickers.map((t) => t.ticker);
+      const answer = bestToWorstTickers(puzzle.tickers).map((t) => t.ticker);
       const existing = getOrderDayState(puzzle.date, ORDER_SLOT_COUNT);
       // A stored OrderDayState is only trusted if its own guess is
       // actually a permutation of *this* puzzle's tickers -- matched by
@@ -126,17 +130,6 @@ export function useOrderGame(puzzle: TheOrderPuzzle | null): UseOrderGameResult 
   // storage, records a streak-history entry the instant `done` first
   // goes true (recordOrderCompletion is idempotent per date, so calling
   // it again later on the same finished day is harmless).
-  //
-  // **`getOrderStreakHistory()` (a full localStorage read + JSON.parse +
-  // filter over up to MAX_STORED_ORDER_DAYS stored days) is only called
-  // on the `done` transition, not on every move/shuffle/submit** --
-  // `currentStreak`/`bestStreak` can only actually change once, at that
-  // transition (see OrderStreakStats/computeOrderStreak's own doc
-  // comment), so re-reading it on every intermediate interaction was
-  // unconditional wasted work. Every other call keeps the already-known
-  // streak from `view` untouched via a functional setView update, rather
-  // than re-deriving it from storage for a value that provably hasn't
-  // changed.
   const persist = useCallback(
     (nextState: OrderDayState) => {
       if (puzzle === null) return;
@@ -154,7 +147,7 @@ export function useOrderGame(puzzle: TheOrderPuzzle | null): UseOrderGameResult 
   const move = useCallback(
     (index: number, dir: 1 | -1) => {
       if (puzzle === null || view.state === null || view.state.done) return;
-      const nextGuess = moveOrderGuess(view.state.guess, view.state.locked, index, dir);
+      const nextGuess = moveOrderGuess(view.state.guess, index, dir);
       if (nextGuess === view.state.guess) return; // no legal move -- no-op
       persist({ ...view.state, guess: [...nextGuess] });
     },
@@ -163,39 +156,23 @@ export function useOrderGame(puzzle: TheOrderPuzzle | null): UseOrderGameResult 
 
   const shuffle = useCallback(() => {
     if (puzzle === null || view.state === null || view.state.done) return;
-    const nextGuess = shuffleUnlockedGuess(view.state.guess, view.state.locked, Math.random);
+    const nextGuess = shuffleGuess(view.state.guess, Math.random);
     persist({ ...view.state, guess: [...nextGuess] });
   }, [puzzle, view.state, persist]);
 
+  // The one and only submission -- always ends the day, whether it wins
+  // or not (no more "attempts remaining" to carry forward).
   const submit = useCallback(() => {
     if (puzzle === null || view.state === null || view.state.done) return;
-    const answer = puzzle.tickers.map((t) => t.ticker);
-    const { guess, attempt, history, locked } = view.state;
-    const feedback = scoreOrderGuess(guess, answer);
-    // A slot locks the instant it scores exact, for every remaining
-    // attempt this day -- once locked, it stays locked even if a later
-    // (impossible, since it can't move) guess would have scored it
-    // differently.
-    const nextLocked = locked.map((isLocked, i) => isLocked || feedback[i] === "exact");
+    const answer = bestToWorstTickers(puzzle.tickers).map((t) => t.ticker);
+    const feedback = scoreOrderMatch(view.state.guess, answer);
     const won = isWinningFeedback(feedback);
-    const outOfAttempts = attempt >= ORDER_MAX_ATTEMPTS;
-    const done = won || outOfAttempts;
-    persist({
-      // The next editable row is seeded from the just-submitted
-      // arrangement, not a fresh shuffle -- this is what lets a player
-      // incrementally adjust rather than re-enter all 5 slots each time.
-      guess: [...guess],
-      attempt: done ? attempt : attempt + 1,
-      history: [...history, { guess: [...guess], feedback }],
-      locked: nextLocked,
-      done,
-      won,
-    });
+    persist({ guess: [...view.state.guess], done: true, won, feedback });
   }, [puzzle, view.state, persist]);
 
   const reveal = useCallback(() => {
     if (puzzle === null || view.state === null || view.state.done) return;
-    persist({ ...view.state, done: true, won: false });
+    persist({ ...view.state, done: true, won: false, feedback: null });
   }, [puzzle, view.state, persist]);
 
   return { view, move, shuffle, submit, reveal };

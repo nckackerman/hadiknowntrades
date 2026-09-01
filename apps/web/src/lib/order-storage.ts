@@ -1,28 +1,41 @@
-// Date-keyed browser storage for The Order (issue #207): today's
-// in-progress/finished game state, plus a persisted streak history --
-// the same two-layer localStorage pattern every prior feature in this
-// app builds on (see apps/web/CLAUDE.md's "localStorage pattern"): every
-// read/write goes through local-storage.ts's defensive helpers, this
-// module owns one namespaced key prefix and its own JSON shapes, and
-// anything that doesn't parse as well-formed reads as "nothing stored"
-// rather than throwing.
+// Date-keyed browser storage for The Order: today's in-progress/finished
+// game state, plus a persisted streak history -- the same two-layer
+// localStorage pattern every prior feature in this app builds on (see
+// apps/web/CLAUDE.md's "localStorage pattern"): every read/write goes
+// through local-storage.ts's defensive helpers, this module owns one
+// namespaced key prefix and its own JSON shapes, and anything that
+// doesn't parse as well-formed reads as "nothing stored" rather than
+// throwing.
 //
 // **Keyed by the puzzle's own real date** (TheOrderPuzzle.date -- "the
 // most recent real trading day," the same concept
 // beat-the-bench-storage.ts's own TodaysCloseSession.date keys against),
-// not the viewer's local calendar day -- mirroring that established
-// precedent rather than inventing a second "what day is it" concept.
+// not the viewer's local calendar day.
 //
-// **Streak tracking follows CallBoard.tsx's own shape exactly** (per
-// spec-the-order.md's own "Retention mechanic recommendation": "The
-// Order should follow The Call Board's shape exactly"): `currentStreak`/
+// **`OrderDayState`'s own shape changed with the mechanic redesign** (see
+// order-scoring.ts's own top-of-file note) -- it used to track an
+// `attempt` counter, a full `history` of past submissions, and a
+// per-slot `locked` array (a multi-attempt Mastermind loop). The new
+// one-shot mechanic needs none of that: `guess` is still the current
+// arrangement, but there's only ever one real submission, so `feedback`
+// (this attempt's own per-slot grading, or `null` if the day ended via
+// a bail-out reveal instead) replaces the whole `history`/`locked` pair.
+// A pre-redesign stored value simply fails `isOrderDayState`'s shape
+// check below and reads as "nothing stored," the same graceful
+// degradation this app's storage convention already gives a puzzle
+// rewritten with a different ticker set (see `isPermutationOf`'s own
+// doc comment in order-scoring.ts) -- no migration needed, and no
+// storage-format version bump either, since a malformed/differently-
+// shaped stored value has always meant "start fresh" here.
+//
+// **Streak tracking follows CallBoard.tsx's own shape exactly**, and is
+// completely unaffected by the mechanic redesign above: `currentStreak`/
 // `bestStreak` are *derived* from a persisted, bounded history on every
 // read, never stored as their own numbers -- the same "a stale or
 // hand-edited stored streak could disagree with the very days it claims
 // to summarise" reasoning call-board-storage.ts's own `syncCallBoard`
 // doc comment already gives for computing stats fresh every time.
 
-import { isBooleanArray } from "./is-boolean-array";
 import { readLocalStorage, writeLocalStorage } from "./local-storage";
 import { parseJson } from "./parse-json";
 import type { OrderFeedback } from "./order-scoring";
@@ -47,55 +60,34 @@ function isOrderFeedbackArray(value: unknown, length: number): value is OrderFee
   return (
     Array.isArray(value) &&
     value.length === length &&
-    value.every((entry) => entry === "exact" || entry === "close" || entry === "far")
+    value.every((entry) => entry === "correct" || entry === "incorrect")
   );
-}
-
-/** One past submitted attempt, in the day's history strip. */
-export interface OrderHistoryEntry {
-  guess: string[];
-  feedback: OrderFeedback[];
 }
 
 /** Today's in-progress or finished game state for one puzzle. */
 export interface OrderDayState {
-  /** The current editable row -- ticker codes, in guess order. */
+  /** The current editable arrangement -- ticker codes, one per slot, best mover (slot 0) to worst (last slot). */
   guess: string[];
-  /** 1-based, the attempt currently being edited (or, once `done`, the attempt count actually used). */
-  attempt: number;
-  /** Every submitted attempt so far, oldest first. */
-  history: OrderHistoryEntry[];
-  /** Per-slot lock state -- true once that slot has scored "exact" on some submitted attempt. */
-  locked: boolean[];
-  /** True once the puzzle is solved, out of attempts, or the player bailed out with a reveal. */
+  /** True once the player has submitted their one guess, or bailed out with a reveal. */
   done: boolean;
-  /** Only meaningful once `done` -- true if the puzzle was solved (not just revealed/exhausted). */
+  /** Only meaningful once `done` -- true if every slot's guess matched the real ticker. */
   won: boolean;
-}
-
-function isOrderHistoryEntry(value: unknown, slotCount: number): value is OrderHistoryEntry {
-  if (typeof value !== "object" || value === null) return false;
-  const { guess, feedback } = value as Record<string, unknown>;
-  return isStringArray(guess, slotCount) && isOrderFeedbackArray(feedback, slotCount);
+  /** This puzzle's one real grading, from the actual submitted guess -- `null` if the day ended via a bail-out reveal instead of a real submission (there's nothing to grade in that case). */
+  feedback: OrderFeedback[] | null;
 }
 
 function isOrderDayState(value: unknown, slotCount: number): value is OrderDayState {
   if (typeof value !== "object" || value === null) return false;
-  const { guess, attempt, history, locked, done, won } = value as Record<string, unknown>;
+  const { guess, done, won, feedback } = value as Record<string, unknown>;
   return (
     isStringArray(guess, slotCount) &&
-    typeof attempt === "number" &&
-    Number.isInteger(attempt) &&
-    attempt >= 1 &&
-    Array.isArray(history) &&
-    history.every((entry) => isOrderHistoryEntry(entry, slotCount)) &&
-    isBooleanArray(locked, slotCount) &&
     typeof done === "boolean" &&
-    typeof won === "boolean"
+    typeof won === "boolean" &&
+    (feedback === null || isOrderFeedbackArray(feedback, slotCount))
   );
 }
 
-/** Today's stored game state for `date`, or `null` if there's nothing stored yet (or storage is unavailable, or holds something malformed). */
+/** Today's stored game state for `date`, or `null` if there's nothing stored yet (or storage is unavailable, or holds something malformed -- including a pre-redesign, differently-shaped value). */
 export function getOrderDayState(date: string, slotCount: number): OrderDayState | null {
   const parsed = parseJson(readLocalStorage(dayKeyFor(date)));
   return isOrderDayState(parsed, slotCount) ? parsed : null;
@@ -162,9 +154,7 @@ export interface OrderStreakStats {
  * Rolls a completed-day history (ascending by date) up into streak stats
  * -- pure, mirrors call-board-scoring.ts's own computeCallBoardStats
  * currentStreak/bestStreak logic exactly (a trailing run of wins from the
- * most recent end, and the longest such run anywhere in the history),
- * per spec-the-order.md's own instruction to follow The Call Board's
- * shape, not invent a second one.
+ * most recent end, and the longest such run anywhere in the history).
  */
 export function computeOrderStreak(history: readonly OrderCompletedDay[]): OrderStreakStats {
   let currentStreak = 0;

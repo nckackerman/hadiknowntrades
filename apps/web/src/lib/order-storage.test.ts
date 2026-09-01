@@ -18,11 +18,9 @@ const SLOT_COUNT = 5;
 function freshState(overrides: Partial<OrderDayState> = {}): OrderDayState {
   return {
     guess: ["A", "B", "C", "D", "E"],
-    attempt: 1,
-    history: [],
-    locked: [false, false, false, false, false],
     done: false,
     won: false,
+    feedback: null,
     ...overrides,
   };
 }
@@ -32,23 +30,27 @@ describe("getOrderDayState / saveOrderDayState", () => {
     expect(getOrderDayState("2026-08-26", SLOT_COUNT)).toBeNull();
   });
 
-  it("round-trips a real state", () => {
+  it("round-trips a real in-progress state", () => {
+    const state = freshState();
+    expect(saveOrderDayState("2026-08-26", state)).toBe(true);
+    expect(getOrderDayState("2026-08-26", SLOT_COUNT)).toEqual(state);
+  });
+
+  it("round-trips a real finished state, with its own feedback", () => {
     const state = freshState({
-      attempt: 2,
-      history: [
-        { guess: ["A", "B", "C", "D", "E"], feedback: ["far", "close", "exact", "far", "close"] },
-      ],
-      locked: [false, false, true, false, false],
+      done: true,
+      won: false,
+      feedback: ["correct", "incorrect", "correct", "incorrect", "correct"],
     });
     expect(saveOrderDayState("2026-08-26", state)).toBe(true);
     expect(getOrderDayState("2026-08-26", SLOT_COUNT)).toEqual(state);
   });
 
   it("keys by date -- two different dates don't collide", () => {
-    saveOrderDayState("2026-08-26", freshState({ attempt: 1 }));
-    saveOrderDayState("2026-08-27", freshState({ attempt: 3 }));
-    expect(getOrderDayState("2026-08-26", SLOT_COUNT)?.attempt).toBe(1);
-    expect(getOrderDayState("2026-08-27", SLOT_COUNT)?.attempt).toBe(3);
+    saveOrderDayState("2026-08-26", freshState({ won: false }));
+    saveOrderDayState("2026-08-27", freshState({ done: true, won: true }));
+    expect(getOrderDayState("2026-08-26", SLOT_COUNT)?.done).toBe(false);
+    expect(getOrderDayState("2026-08-27", SLOT_COUNT)?.done).toBe(true);
   });
 
   it("treats a malformed stored value as nothing stored", () => {
@@ -62,6 +64,24 @@ describe("getOrderDayState / saveOrderDayState", () => {
   it("rejects a guess array with the wrong slot count", () => {
     const wrongLength = { ...freshState(), guess: ["A", "B", "C"] };
     window.localStorage.setItem("hikt:the-order:day:2026-08-26", JSON.stringify(wrongLength));
+    expect(getOrderDayState("2026-08-26", SLOT_COUNT)).toBeNull();
+  });
+
+  it("treats a pre-redesign stored value (attempt/history/locked shape) as nothing stored", () => {
+    // The original multi-attempt Mastermind shape -- a stale value from
+    // before the one-shot matching redesign. It must not be trusted just
+    // because it happens to have a well-formed `guess` array.
+    window.localStorage.setItem(
+      "hikt:the-order:day:2026-08-26",
+      JSON.stringify({
+        guess: ["A", "B", "C", "D", "E"],
+        attempt: 2,
+        history: [],
+        locked: [false, false, false, false, false],
+        done: false,
+        won: false,
+      }),
+    );
     expect(getOrderDayState("2026-08-26", SLOT_COUNT)).toBeNull();
   });
 });
