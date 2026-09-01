@@ -5,8 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "build:lambda": "next build && open-next build",
-    "build:lambda:bypass": "OPENNEXT_BYPASS_CLOUDFRONT=true next build && OPENNEXT_BYPASS_CLOUDFRONT=true open-next build",
+    "build:lambda": "next build && open-next build && node scripts/zip-server-function.mjs",
+    "build:lambda:bypass": "OPENNEXT_BYPASS_CLOUDFRONT=true next build && OPENNEXT_BYPASS_CLOUDFRONT=true open-next build && node scripts/zip-server-function.mjs",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
@@ -15,6 +15,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1114.0",
     "@hadiknowntrades/core": "workspace:*",
+    "@swc/helpers": "0.5.23",
     "next": "16.3.4",
     "react": "19.2.8",
     "react-dom": "19.2.8"
@@ -25,10 +26,12 @@
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.5",
+    "@types/archiver": "^8.0.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^6.1.0",
+    "archiver": "^8.0.0",
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
     "jsdom": "^30.0.1",

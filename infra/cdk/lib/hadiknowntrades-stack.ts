@@ -62,13 +62,29 @@ const PIPELINE_LAMBDA_ENTRY = path.join(REPO_ROOT, "apps", "pipeline", "src", "l
 // Real OpenNext build output -- produced by `pnpm --filter web run
 // build:lambda` (or `build:lambda:bypass`), not built by this CDK app
 // itself. See this file's own top-of-file comment.
-const WEB_SERVER_FUNCTION_DIR = path.join(
+//
+// This points at the *zipped* build output (`default.zip`), not the
+// raw `default/` directory, and that's load-bearing, not a style
+// choice: `Code.fromAsset(directory)`'s own zip-creation step
+// dereferences pnpm's symlinked node_modules structure, which silently
+// disconnects `next` from sibling transitive deps it needs at runtime
+// (e.g. `@swc/helpers`) -- confirmed by downloading and inspecting a
+// real deployed Lambda's code package, which crashed every request
+// with `Cannot find module '@swc/helpers/_/_interop_require_default'`
+// despite `WebFunction` itself reaching CREATE_COMPLETE. `build:lambda`/
+// `build:lambda:bypass`'s own last step (`apps/web/scripts/
+// zip-server-function.mjs`) zips the directory with symlinks preserved
+// as real zip symlink entries instead; `Code.fromAsset` accepts a
+// `.zip` file path directly and uploads it as-is, skipping its own
+// (dereferencing) zip step entirely. See that script's own doc comment
+// for the full story and how it was verified.
+const WEB_SERVER_FUNCTION_ZIP = path.join(
   REPO_ROOT,
   "apps",
   "web",
   ".open-next",
   "server-functions",
-  "default",
+  "default.zip",
 );
 const WEB_ASSETS_DIR = path.join(REPO_ROOT, "apps", "web", ".open-next", "assets");
 
@@ -344,7 +360,7 @@ export class HadIKnownTradesStack extends Stack {
     const webFn = new LambdaFunction(this, "WebFunction", {
       functionName: "hadiknowntrades-web",
       role: webFnRole,
-      code: Code.fromAsset(WEB_SERVER_FUNCTION_DIR),
+      code: Code.fromAsset(WEB_SERVER_FUNCTION_ZIP),
       handler: "index.handler",
       runtime: Runtime.NODEJS_22_X,
       // Starting guesses for a real Next SSR cold start -- not yet
