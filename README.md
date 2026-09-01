@@ -119,8 +119,20 @@ pnpm test
 The [v1: MVP launch milestone](https://github.com/nckackerman/hadiknowntrades/milestone/1)
 is code-complete: the optimizer, nightly precompute pipeline, and the core
 visualization UI are all built and merged, and infra is deployed and
-running the real pipeline against real data. The one open piece is the
-public site itself -- CloudFront is still blocked by an AWS account
-verification step outside this repo's control (see `infra/CLAUDE.md`), so
-there's no live public URL yet even though everything behind it works.
-See that milestone and the `backlog`-labeled issues for what's next.
+running the real pipeline against real data.
+
+**Live now (temporary URL):**
+
+```
+https://7wyjrkhxt5srua26agwb5egtfm0dkvqa.lambda-url.us-west-2.on.aws/
+```
+
+This is an AWS Lambda Function URL, not the final CloudFront-fronted
+domain -- CloudFront itself is still blocked by an AWS account
+verification step outside this repo's control (see `infra/CLAUDE.md`).
+It's a deliberate, reversible workaround (`bypassCloudFront` CDK context
+flag) that serves the real app directly from the web Lambda in the
+meantime. Once AWS clears the account, a plain `cdk deploy` (no flag)
+will pick up the already-declared CloudFront distribution and this URL
+will be replaced by the real domain. See that milestone and the
+`backlog`-labeled issues for what's next.
