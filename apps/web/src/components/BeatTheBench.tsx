@@ -905,6 +905,19 @@ function SessionGame({
   // rule, so a future change to any one of them should check the other
   // two too).
   //
+  // **Also gated on `paused`, matching the ordinary tick effect above
+  // (real bug, found in independent code review, fixed).** `deciding`
+  // force-pauses normal playback regardless of the player's own
+  // `paused` state, but `paused` itself doesn't reset just because
+  // `deciding` became true -- a player who paused, then used "Step
+  // forward one bar" (always available, see below) to step into a
+  // trigger bar, would have this real-time timer silently counting down
+  // while the game visibly looked paused to them. Restarting the effect
+  // once `paused` later goes false (a fresh `BULLET_TIME_DECISION_WINDOW_MS`
+  // window, not a resumed partial one) is the deliberate, simplest fix --
+  // there's no partial-elapsed state worth tracking for a decision window
+  // this short.
+  //
   // **`PlaybackControls`' own "Step forward one bar" is a second,
   // equally valid way to reach this same no-op, deliberately, for every
   // player regardless of motion preference** -- it already just
@@ -916,14 +929,14 @@ function SessionGame({
   // own header comment) -- it was never meant to be reachable only via
   // waiting out a timer.
   useEffect(() => {
-    if (!deciding || reducedMotion) return;
+    if (!deciding || reducedMotion || paused) return;
     const id = window.setTimeout(() => {
       setBarIndex((current) => Math.min(current + 1, lastIndex));
     }, BULLET_TIME_DECISION_WINDOW_MS);
     return () => {
       window.clearTimeout(id);
     };
-  }, [deciding, reducedMotion, lastIndex]);
+  }, [deciding, reducedMotion, paused, lastIndex]);
 
   // The decision window's two explicit choices -- absolute stances, not
   // a toggle: "Ride it out" ensures the player ends up holding (a move
@@ -1020,6 +1033,7 @@ function SessionGame({
         <BulletTimeDecisionPanel
           eventIndex={biStatus.eventIndex}
           reducedMotion={reducedMotion}
+          paused={paused}
           onRideItOut={handleRideItOut}
           onStepAside={handleStepAside}
         />
@@ -1128,16 +1142,33 @@ function SessionGame({
  * ring sketch, and this file's own top note for why reduced motion drops
  * it (and the auto-lock timer behind it) entirely in favour of a plain,
  * un-timed prompt.
+ *
+ * **The bar's own CSS `animation-play-state` mirrors the real
+ * `paused` prop (found alongside the auto-lock timer's own `paused` fix
+ * above -- the same root cause, a second symptom).** A CSS `@keyframes`
+ * animation has no notion of this app's own `paused` state on its own --
+ * without this, a player who paused before stepping into a trigger bar
+ * would see the bar visibly finish counting down to empty on its own
+ * real-time schedule, even though `SessionGame`'s own real
+ * `window.setTimeout` auto-lock is correctly suspended the whole time
+ * behind it -- a countdown that looks like it ran out with nothing
+ * actually happening. `animationPlayState: paused ? "paused" : "running"`
+ * keeps the visible bar and the real timer honest with each other in
+ * both directions: it freezes mid-shrink while paused, and resumes from
+ * wherever it stopped once play resumes.
  */
 function BulletTimeDecisionPanel({
   eventIndex,
   reducedMotion,
+  paused,
   onRideItOut,
   onStepAside,
 }: {
   /** The current event's own index within its session's schedule -- keyed onto the countdown bar below so a fresh decision window always gets a fresh DOM node, guaranteeing its CSS animation restarts from full even if this panel component itself ever stayed mounted across two different events. */
   eventIndex: number;
   reducedMotion: boolean;
+  /** Whether the player's own playback is paused -- see this function's own doc comment above for why the countdown bar's `animation-play-state` has to track this directly. */
+  paused: boolean;
   onRideItOut: () => void;
   onStepAside: () => void;
 }) {
@@ -1157,7 +1188,10 @@ function BulletTimeDecisionPanel({
           <div
             key={eventIndex}
             className="bullet-time-countdown-bar h-full rounded-full bg-[var(--accent-selection)]"
-            style={{ animationDuration: `${BULLET_TIME_DECISION_WINDOW_MS}ms` }}
+            style={{
+              animationDuration: `${BULLET_TIME_DECISION_WINDOW_MS}ms`,
+              animationPlayState: paused ? "paused" : "running",
+            }}
           />
         </div>
       )}

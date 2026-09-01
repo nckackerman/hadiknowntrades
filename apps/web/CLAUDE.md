@@ -7067,6 +7067,56 @@ Position)` helper. `topUpMoves`/`biggestSwings` now build their
 - All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
   1138 passing, `pnpm format:check`) re-ran green after every fix.
 
+### Independent-review follow-up (post-PR) -- one real bug, converged on by three independent finder angles
+
+A separate, independent `/code-review high` pass on the already-opened
+PR (after the worker's own code-review follow-up above) found one more
+real, reachable bug -- flagged as the review's own top/most severe
+finding, and confirmed independently by three separate finder angles
+before any fix was written.
+
+- **The decision auto-lock timer's own guard checked only `deciding`/
+  `reducedMotion`, never the player's own `paused` state.** The
+  ordinary bar-tick effect just above it already gates on `paused`
+  (`if (paused || atEnd || deciding) return;`), but this second effect
+  didn't -- and `PlaybackControls` (Pause/Play/Step) renders whenever
+  `!settled`, unconditional on `deciding`, so a player who paused
+  _before_ `deciding` became true (reachable by pausing, then using the
+  always-available "Step forward one bar" to walk into a trigger bar)
+  had this real `window.setTimeout` silently counting down in the
+  background even though the game visibly looked paused to them --
+  contradicting the effect's own doc comment, which frames the
+  auto-lock as an honest, explicit "no decision = no-op," not something
+  that fires invisibly while the player believes time has stopped.
+  Fixed by adding `paused` to both the guard and the dependency array,
+  matching the sibling tick effect's own shape exactly -- unpausing
+  restarts the effect with a fresh `BULLET_TIME_DECISION_WINDOW_MS`
+  window (not a resumed partial one; there's no partial-elapsed state
+  worth tracking for a window this short).
+- **The visible countdown bar needed its own matching fix, found while
+  reasoning through the first one, not by the review itself** --
+  `.bullet-time-countdown-bar` is a plain CSS `@keyframes` animation
+  with no notion of this app's own `paused` state on its own, so once
+  the real timer above correctly stopped counting down while paused,
+  the bar would keep shrinking to empty on its own unrelated real-time
+  schedule regardless -- a countdown that visibly runs out with nothing
+  actually happening, the exact class of "the code is honest but the
+  animation lies about it" bug this app's own reveal-animation history
+  (e.g. issue #96's `PortfolioChart` key-stability fixes) has hit
+  before. Fixed with `animationPlayState: paused ? "paused" :
+"running"` on the bar's own inline style, threaded through a new
+  `paused` prop on `BulletTimeDecisionPanel` -- the bar now freezes
+  mid-shrink while paused and resumes from wherever it stopped once
+  play resumes, staying honest with the real timer in both directions.
+- Regression-tested in `BeatTheBench.test.tsx`'s own "Bullet Time"
+  describe block: pause (already the describe block's own
+  `enterMysteryUnderNormalMotion` setup), step into a trigger bar,
+  advance real fake-timer time well past the decision window with
+  nothing happening, then unpause and confirm the auto-lock fires only
+  after a fresh full window elapses.
+- All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
+  1139 passing, `pnpm format:check`) re-ran green after the fix.
+
 ## The hero count-up no longer moves the page (issue #147)
 
 The fix for the jitter issue #124's spike measured. The hero's 1.2s

@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { beatTheBenchKey } from "@/lib/beat-the-bench-storage";
+import { BULLET_TIME_DECISION_WINDOW_MS } from "@/lib/bullet-time";
 import { stubPrefersReducedMotion } from "@/lib/stub-prefers-reduced-motion.test-util";
 import { SPY_SESSION_BARS } from "@/test-fixtures/spy-session-bars";
 import { SPY_DOWN_SESSION_BARS } from "@/test-fixtures/spy-trending-session-bars";
@@ -826,6 +827,40 @@ describe("BeatTheBench", () => {
       // second event is also a down-swing.
       await stepToClose();
       expect(screen.getByText("Bullet Time calls: 2 of 2 correct.")).toBeInTheDocument();
+    });
+
+    // A real bug, found by an independent code review: the decision
+    // auto-lock timer's own guard used to check only `deciding`/
+    // `reducedMotion`, not the player's own `paused` state -- a player
+    // who paused, then used "Step forward one bar" (always available) to
+    // step into a trigger bar, would have a real wall-clock timer
+    // silently counting down while the game visibly looked paused to
+    // them. `enterMysteryUnderNormalMotion` already leaves the session
+    // paused (it clicks "Pause" once, up front), so stepping straight
+    // into the deciding bar reproduces the exact scenario -- no extra
+    // pause click needed here.
+    it("does not auto-lock the decision window while the player is paused, and resumes counting down once they unpause", async () => {
+      await enterMysteryUnderNormalMotion();
+
+      // 27 steps from the opening bar (barIndex 0) lands on barIndex 27
+      // -- the first event's own fromIndex, displayed as "bar 28".
+      for (let i = 0; i < 27; i += 1) click("Step forward one bar");
+      expect(screen.getByText("Big swing incoming")).toBeInTheDocument();
+      expect(screen.getByText(/bar 28 of 78/)).toBeInTheDocument();
+
+      // Well past the real decision window -- if the timer were still
+      // running despite `paused`, it would have fired by now.
+      advance(BULLET_TIME_DECISION_WINDOW_MS + 1000);
+      expect(screen.getByText("Big swing incoming")).toBeInTheDocument();
+      expect(screen.getByText(/bar 28 of 78/)).toBeInTheDocument();
+
+      // Unpausing restarts the effect with a fresh window (not a resumed
+      // partial one, per this fix's own doc comment) -- advancing by
+      // exactly that window now lets the real auto-lock fire.
+      click("Play");
+      advance(BULLET_TIME_DECISION_WINDOW_MS);
+      expect(screen.queryByText("Big swing incoming")).not.toBeInTheDocument();
+      expect(screen.getByText(/bar 29 of 78/)).toBeInTheDocument();
     });
   });
 
