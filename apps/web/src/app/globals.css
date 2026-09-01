@@ -892,3 +892,45 @@ body {
     animation: none;
   }
 }
+
+/*
+ * Bullet Time's decision-window countdown (issue #224) -- a plain
+ * shrinking bar, not the design review's own SVG ring sketch. A
+ * deliberate simplicity choice, not a fidelity gap left unconsidered:
+ * this is a purely visual affordance layered on top of the real
+ * deciding-window timer (`BeatTheBench.tsx`'s own setTimeout, which
+ * this bar has no bearing on and never drives), so a second animated
+ * SVG element plus its own keyframe math would add real complexity for
+ * no behavioral difference. `animation-duration` is set inline per
+ * render (`BULLET_TIME_DECISION_WINDOW_MS`), and the element is
+ * `key`-ed by the current event's own index so a fresh decision window
+ * always restarts the animation from full, the same "a fresh DOM node
+ * is what restarts a CSS mount animation" mechanism this app's other
+ * keyed reveal animations already rely on (see e.g. `results-fade-in`'s
+ * own note above). Reduced-motion sessions never render this element at
+ * all (`BeatTheBench.tsx`'s own reduced-motion branch shows a static
+ * prompt with no countdown, per issue #224's own scope) -- the media
+ * query below is defense-in-depth, matching every other animation in
+ * this file's own established two-layer posture.
+ */
+@keyframes bullet-time-countdown {
+  from {
+    width: 100%;
+  }
+  to {
+    width: 0%;
+  }
+}
+
+.bullet-time-countdown-bar {
+  animation-name: bullet-time-countdown;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bullet-time-countdown-bar {
+    animation: none;
+    width: 0%;
+  }
+}

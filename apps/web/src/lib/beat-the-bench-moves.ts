@@ -95,27 +95,121 @@ export function benchmarkDollarsFor(
 }
 
 /**
- * The session's best `count` non-overlapping up-moves, descending by
- * return.
+ * Whether bar-interval `[aFrom, aTo)` and `[bFrom, bTo)` come within
+ * `gap` bars of each other -- `gap = 0` (the default) is exact interval
+ * overlap, the same check `findBestRuns` uses inline to keep its own
+ * picks from sharing a bar. Exported so a caller scheduling something
+ * *around* a run -- Bullet Time's own trigger scheduler
+ * (`bullet-time.ts`), which needs two events' whole active windows kept
+ * `BULLET_TIME_MIN_TRIGGER_GAP_BARS` apart, not just their own trigger
+ * points -- can reuse the identical primitive instead of writing a
+ * second, differently-shaped "close enough to conflict" check.
+ */
+export function intervalsWithinGap(
+  aFrom: number,
+  aTo: number,
+  bFrom: number,
+  bTo: number,
+  gap = 0,
+): boolean {
+  return aFrom < bTo + gap && bFrom < aTo + gap;
+}
+
+/**
+ * The shared shape `topUpMoves` and `biggestSwings` each build their own
+ * return objects from -- one place computing `fromTime`/`toTime` off
+ * `bars` so the two can't quietly disagree about how a run's own time
+ * span is read from the same array.
+ */
+function runFields(
+  bars: readonly SessionBar[],
+  run: { from: number; to: number; returnFraction: number },
+): {
+  fromIndex: number;
+  toIndex: number;
+  fromTime: string;
+  toTime: string;
+  returnFraction: number;
+} {
+  return {
+    fromIndex: run.from,
+    toIndex: run.to,
+    fromTime: bars[run.from]!.time,
+    toTime: bars[run.to]!.time,
+    returnFraction: run.returnFraction,
+  };
+}
+
+/**
+ * The greedy window-search shared by `topUpMoves` and `biggestSwings`
+ * (issue #224): take the single best-scoring `(from, to)` run in the
+ * session, then the best-scoring run that doesn't overlap it, and so on,
+ * until `count` picks are made or none qualify.
  *
- * Greedy over all `(from, to)` pairs: take the single best move in the
- * session, then the best move that doesn't overlap it, and so on. That is
- * genuinely greedy rather than optimal (packages/core's optimizer runs a
- * real DP for the equivalent whole-window question), and that is the
- * right call here for two reasons: the settlement's claim is only ever
- * "here are some of the day's biggest moves", never "here is the best
- * possible three-trade sequence", and the greedy pick is the one that
- * actually answers *that* question -- the biggest single move in the day
- * is always in this list, whereas a maximum-total DP could drop it in
- * favour of three merely-good ones.
+ * `score` is what "best" means to the caller -- `topUpMoves` scores an
+ * up-move by its own `returnFraction` (so a bigger gain always beats a
+ * smaller one, and a flat/down move is disqualified via `null`);
+ * `biggestSwings` scores by `Math.abs(returnFraction)` instead, so the
+ * single biggest move in *either* direction wins regardless of sign.
+ * Both are genuinely greedy rather than optimal (packages/core's
+ * optimizer runs a real DP for the equivalent whole-window question),
+ * and that is the right call for both callers: neither's claim is "here
+ * is the best possible sequence", only "here are some of the day's
+ * biggest runs" -- the greedy pick is what actually answers that
+ * question, since the single biggest run in the day is always in the
+ * result, where a maximum-total DP could drop it in favour of several
+ * merely-good ones.
  *
  * Cost is `O(n^2)` per pick over a session of at most ~79 bars (~3k
- * pairs), i.e. nothing, and it runs once at settlement.
+ * pairs), i.e. nothing, and both callers run it once, either at
+ * settlement (`topUpMoves`) or once up front from the full known bar
+ * array (`biggestSwings`, scheduling Bullet Time before playback even
+ * starts -- see `bullet-time.ts`).
  *
  * Overlap is treated as sharing any bar *interval*, not any bar index:
- * one move ending exactly where the next begins is two distinct moves
- * (you'd have sold and re-bought at that price), which is how the real
- * game's own toggles work too.
+ * one run ending exactly where the next begins is two distinct runs
+ * (you'd have sold and re-bought, or reversed, at that price), which is
+ * how the real game's own toggles work too.
+ */
+function findBestRuns(
+  bars: readonly SessionBar[],
+  count: number,
+  score: (returnFraction: number) => number | null,
+): { from: number; to: number; returnFraction: number }[] {
+  if (bars.length < 2) return [];
+
+  // At least one bar interval, so a very short session still reports
+  // something rather than nothing.
+  const maxSpan = Math.max(1, Math.floor((bars.length - 1) * MAX_MOVE_SPAN_FRACTION));
+  const taken: { from: number; to: number }[] = [];
+  const runs: { from: number; to: number; returnFraction: number }[] = [];
+
+  for (let pick = 0; pick < count; pick += 1) {
+    let best: { from: number; to: number; returnFraction: number; score: number } | null = null;
+
+    for (let from = 0; from < bars.length - 1; from += 1) {
+      for (let to = from + 1; to <= Math.min(from + maxSpan, bars.length - 1); to += 1) {
+        if (taken.some((range) => intervalsWithinGap(from, to, range.from, range.to))) continue;
+        const returnFraction = bars[to]!.close / bars[from]!.close - 1;
+        const runScore = score(returnFraction);
+        if (runScore === null) continue;
+        if (best === null || runScore > best.score) {
+          best = { from, to, returnFraction, score: runScore };
+        }
+      }
+    }
+
+    if (best === null) break;
+    taken.push({ from: best.from, to: best.to });
+    runs.push({ from: best.from, to: best.to, returnFraction: best.returnFraction });
+  }
+
+  return runs;
+}
+
+/**
+ * The session's best `count` non-overlapping up-moves, descending by
+ * return. See `findBestRuns` for the shared search this builds on.
  */
 export function topUpMoves(
   bars: readonly SessionBar[],
@@ -123,42 +217,58 @@ export function topUpMoves(
   capital: number,
   count: number = TOP_MOVE_COUNT,
 ): SessionMove[] {
-  if (bars.length < 2) return [];
+  const runs = findBestRuns(bars, count, (returnFraction) =>
+    returnFraction > 0 ? returnFraction : null,
+  );
+  return runs.map((run) => ({
+    ...runFields(bars, run),
+    benchmarkDollars: benchmarkDollarsFor(bars, capital, run.from, run.returnFraction),
+    playerHeld: heldThroughout(moveBarIndexes, run.from, run.to),
+  }));
+}
 
-  // At least one bar interval, so a very short session still reports
-  // something rather than nothing.
-  const maxSpan = Math.max(1, Math.floor((bars.length - 1) * MAX_MOVE_SPAN_FRACTION));
-  const taken: { from: number; to: number }[] = [];
-  const moves: SessionMove[] = [];
+/**
+ * One of the session's biggest price swings, in *either* direction --
+ * `biggestSwings`' own return shape. Unlike `SessionMove`, this carries
+ * no player-dependent fields (`playerHeld`/`benchmarkDollars`): Bullet
+ * Time's trigger scheduler (see `bullet-time.ts`) runs once, up front,
+ * from the full known bar array, before any moves exist to compare
+ * against.
+ */
+export interface SessionSwing {
+  /** Index of the bar the swing starts from. */
+  fromIndex: number;
+  /** Index of the bar the swing ends at. */
+  toIndex: number;
+  fromTime: string;
+  toTime: string;
+  /**
+   * `close[toIndex] / close[fromIndex] - 1`, **signed**: positive for an
+   * up-swing, negative for a down-swing. Never zero -- see `findBestRuns`'
+   * `score` callback below, which disqualifies a flat run the same way
+   * `topUpMoves` disqualifies a non-positive one.
+   */
+  returnFraction: number;
+}
 
-  for (let pick = 0; pick < count; pick += 1) {
-    let best: { from: number; to: number; returnFraction: number } | null = null;
-
-    for (let from = 0; from < bars.length - 1; from += 1) {
-      for (let to = from + 1; to <= Math.min(from + maxSpan, bars.length - 1); to += 1) {
-        if (taken.some((range) => from < range.to && range.from < to)) continue;
-        const returnFraction = bars[to]!.close / bars[from]!.close - 1;
-        if (returnFraction <= 0) continue;
-        if (best === null || returnFraction > best.returnFraction) {
-          best = { from, to, returnFraction };
-        }
-      }
-    }
-
-    if (best === null) break;
-    taken.push({ from: best.from, to: best.to });
-    moves.push({
-      fromIndex: best.from,
-      toIndex: best.to,
-      fromTime: bars[best.from]!.time,
-      toTime: bars[best.to]!.time,
-      returnFraction: best.returnFraction,
-      benchmarkDollars: benchmarkDollarsFor(bars, capital, best.from, best.returnFraction),
-      playerHeld: heldThroughout(moveBarIndexes, best.from, best.to),
-    });
-  }
-
-  return moves;
+/**
+ * The session's biggest `count` non-overlapping price swings, in either
+ * direction, descending by magnitude -- the direction-agnostic sibling
+ * `topUpMoves` doesn't provide, needed by Bullet Time (issue #224) to
+ * schedule its trigger against a real up-or-down move rather than only
+ * ever an up-move. Same underlying window search as `topUpMoves` (see
+ * `findBestRuns`), just scored by `Math.abs(returnFraction)` instead of
+ * `returnFraction` itself, so the single biggest move in the session --
+ * whichever way it broke -- always wins the first pick.
+ */
+export function biggestSwings(
+  bars: readonly SessionBar[],
+  count: number = TOP_MOVE_COUNT,
+): SessionSwing[] {
+  const runs = findBestRuns(bars, count, (returnFraction) =>
+    returnFraction === 0 ? null : Math.abs(returnFraction),
+  );
+  return runs.map((run) => runFields(bars, run));
 }
 
 /**
