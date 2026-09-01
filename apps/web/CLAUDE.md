@@ -6739,6 +6739,225 @@ a regression test.
 The temporary `playwright` devDependency and both verification scripts
 were reverted before committing, per this file's own convention.
 
+## Beat the Bench: Bullet Time (issue #224)
+
+The fix for this game's own "too easy to just watch the market swing the
+whole day" complaint -- a design review (linked from the issue, a
+published Artifact) diagnosed the pre-#224 mechanic (a single reversible
+in/out toggle, all feedback withheld until settlement) as playable
+entirely passively, walked four candidate directions, and recommended
+"Bullet Time": right before one of a session's real big swings, playback
+drops into slow motion, the player has to commit -- "Ride it out" or
+"Step aside" -- before the swing resolves, and the call is graded the
+instant it does. Two new files, both pure and independently tested, no
+change to `beat-the-bench.ts`'s settlement math or `Holding`/`Position`
+model at all -- exactly what the design review's own "Engine changes
+needed: None to settlement math" comparison row promised.
+
+| module                        | owns                                                                                                    |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `lib/beat-the-bench-moves.ts` | gained `biggestSwings` (below) alongside the existing `topUpMoves`, sharing a new `findBestRuns` helper |
+| `lib/bullet-time.ts`          | trigger scheduling, phase/pacing derivation, live call resolution -- the whole mechanic, no React       |
+
+### The direction-agnostic run-finder: a new sibling function, not a generalization of `topUpMoves`
+
+The issue left this call open. Decided: **`biggestSwings` is a new,
+separate exported function**, not a widened `topUpMoves` (e.g. an
+`includeDown` flag). Reasoning: the two have different callers with
+different needs -- `topUpMoves` is a per-player, per-capital
+narrative (`playerHeld`/`benchmarkDollars`, both derived from the
+player's own `moveBarIndexes`), read only at settlement; `biggestSwings`
+runs once, up front, before any player moves exist at all, and has no
+player-dependent fields to compute. Forcing one signature to cover both
+would mean either a player-shaped return `topUpMoves` doesn't need or an
+optional-fields return type neither caller could trust without checking.
+Both now share one private `findBestRuns(bars, count, score)` -- the
+identical `O(n^2)` greedy window search, parameterized only by how a run
+is scored (`topUpMoves`: `returnFraction` itself, disqualifying anything
+<= 0; `biggestSwings`: `Math.abs(returnFraction)`, disqualifying only an
+exact zero) -- so the actual search logic can't drift between the two,
+only the shape of what each returns from it.
+
+### Real thresholds, validated against a real 41-session pool, not asserted
+
+Per the issue's own explicit instruction (the same rigor issue #207's
+own daily-selection algorithm used) -- a real local pipeline run
+(`local-run.ts`, the default 20-ticker sample, real Yahoo network calls)
+produced a real 41-session Beat the Bench mystery pool plus
+`today.json` (42 real sessions total, all 78-79-bar regular SPY
+sessions). A throwaway Node script (not `local-run.ts` itself -- deleted
+before committing) computed `biggestSwings` against every one and swept
+candidate thresholds:
+
+- **Each session's own single biggest swing (either direction) ranged
+  0.215%-1.757%, median 0.483%.**
+- **`BULLET_TIME_MIN_SWING_MAGNITUDE = 0.003` (0.30%)**: 37 of 41 real
+  sessions (90%) have >=1 qualifying swing with enough lead room; 20 of
+  41 (49%) qualify for the full 2. A lower threshold (0.15-0.20%) pushed
+  the qualifying rate to ~95-100%, which stopped reading as "a real
+  occasion" (the design review's own "Risks" note) at all; the
+  remaining ~10% with nothing large enough is the real, valid "no
+  swing to trigger" outcome the issue's own acceptance criteria call
+  out -- not a gap to work around.
+- **`BULLET_TIME_LEAD_BARS = 2`, `BULLET_TIME_MIN_TRIGGER_GAP_BARS = 6`,
+  `BULLET_TIME_APPROACH_TICK_MS = 4500`, `BULLET_TIME_CATCHUP_TICK_MS =
+150`, `BULLET_TIME_DECISION_WINDOW_MS = 4000`**: tuned together and
+  re-validated against the same real pool for their actual real-time
+  cost, not chosen in isolation. The approach pace (4500ms/bar) is
+  deliberately, noticeably slower than even the existing 0.1x speed
+  option's own 3000ms/bar (its own constant, per the issue's own
+  scope -- never derived from `PLAYBACK_SPEEDS`); the catch-up pace
+  (150ms/bar, half of 1x's 300ms) claws some of that back rather than
+  letting every phase compound into pure overhead. Real worst case
+  across the pool (a session that schedules the full 2 events): **+20.4s
+  of total wall-clock time at 1x speed on top of a ~23.4s base session
+  -- a full playthrough of ~43.9s.** Median real triggering session:
+  +17.6s. See `bullet-time.ts`'s own `BULLET_TIME_APPROACH_TICK_MS` doc
+  comment for the exact same numbers kept in the code, not just here.
+
+### The decision window: two absolute buttons, not the toggle's own relative labels
+
+The issue left this open too: "Sell, go to cash"/"Buy back in" (the
+existing toggle's own state-dependent labels) vs. "Ride it out"/"Step
+aside" (the design review's own mockup framing). **Chose the latter.**
+The existing toggle labels are exactly right for a single, always-
+available flip -- but Bullet Time wants two absolute stances always on
+screen together, so a player unsure what they currently hold can still
+commit unambiguously, and clicking the choice that happens to already
+match their position is still a real, explicit call (`handleRideItOut`/
+`handleStepAside`, `BeatTheBench.tsx`) rather than a dead button. Both
+map onto the exact same `Holding`/toggle model underneath -- `moves` only
+grows when the choice actually changes the position, exactly matching
+this app's own "no fees, no slippage" honesty.
+
+### The phase state machine is entirely derived, no separate state to keep in sync
+
+`bulletTimeStatusAt(events, barIndex)` (pure) answers "what phase, if
+any, right now" purely from `barIndex` and the fixed, once-computed
+`events` schedule -- `"approaching"` from an event's own `triggerIndex`
+up to (not including) its swing's own `fromIndex`, `"deciding"` exactly
+at `fromIndex` (playback force-paused there, regardless of the player's
+own `paused` state, via a `deciding` guard added to the existing tick
+effect), `"catchup"` from `fromIndex + 1` through (not including)
+`toIndex`, and back to `"none"` exactly at `toIndex` -- the event has
+resolved. **Live call resolution is the same "derive, don't store"
+posture**: `evaluateBulletTimeCall(positionAfterBar(moves,
+event.swing.toIndex), event.swing)` is a pure function of `moves` and
+the event's own fixed `toIndex`, so there's no separate "has this
+resolved yet" flag to keep in sync with `barIndex` -- once
+`barIndex >= toIndex`, the call is just always computable, correctly,
+whether it's read once at that exact bar or again later at settlement.
+`resolvedBulletTimeCalls` (used by `FinalSettlement`'s own tally) is
+the identical function applied to every scheduled event at once.
+
+The one place this genuinely needed a small, deliberate exception to
+"no extra state": the live "Called it"/"Not this time" badge lingers a
+few bars past resolution rather than vanishing the instant `barIndex`
+advances past `toIndex`, so a player can actually read it.
+`BULLET_TIME_BADGE_LINGER_BARS` (a bar count, not a wall-clock timer) is
+still purely derived (`barIndex - event.swing.toIndex <=
+BULLET_TIME_BADGE_LINGER_BARS`), not stored state -- see that
+constant's own doc comment for why a bar count is the right unit here
+(it naturally lingers longer at a slower chosen speed, shorter at a
+faster one, which is the right behavior either way).
+
+### The decision auto-lock timer, and why the countdown UI is a plain CSS bar, not the mockup's SVG ring
+
+"No decision when it closes locks to whatever position the player is
+already holding" (a real, honest no-op, never a penalty -- the same
+"no fees, no slippage" honesty this app's copy already establishes) is
+a genuine `window.setTimeout` in `SessionGame`, set up only while
+`deciding && !reducedMotion`, that simply advances `barIndex` by one
+with no move recorded. The **visible** countdown, though, is a plain
+CSS width-shrinking bar (`.bullet-time-countdown-bar`, `globals.css`),
+not the design review's own SVG ring sketch -- a deliberate simplicity
+choice: the bar is purely decorative (it has no bearing on the real
+timer above, which would auto-lock identically whether or not the bar
+existed at all), so a second animated SVG element plus its own keyframe
+math would be real added complexity for zero behavioral difference.
+`key`-ed by the current event's own index so a fresh decision window
+always restarts it, the same "a fresh DOM node is what restarts a CSS
+mount animation" mechanism this app's other keyed reveal animations
+already rely on (see e.g. `results-fade-in`'s own note above).
+
+### Reduced motion: extends the established pattern, doesn't invent a new one
+
+Per the issue's own scope: no slow-motion animation, a clear explicit
+prompt, an explicit tap instead of a timer. `bulletTimeTickIntervalMs`
+falls back to the player's own chosen speed for every phase under
+reduced motion (no approach slow-down, no catch-up speed-up); the
+decision auto-lock `useEffect` above is gated `!reducedMotion`, so there
+is no timer at all -- only an explicit "Ride it out"/"Step aside" click,
+or clicking "Step forward one bar" (already this game's own established
+reduced-motion escape hatch, unchanged), which behaves as the identical
+honest no-op the timer would have. `BulletTimeDecisionPanel` itself
+omits the countdown bar entirely under reduced motion (its own
+`!reducedMotion &&` guard) and swaps its footer line to name the Step
+button explicitly, since there's no countdown left to imply a deadline.
+
+### Live-verified via the established throwaway-debug-route + no-root-headless-Chromium technique
+
+A debug route stubbed `/api/beat-the-bench` with a hand-built session
+carrying one clean +10.04% up-swing (bars 2->7) and one clean -10.13%
+down-swing (bars 12->20), both comfortably above the real validated
+threshold, plus a second, flat-price fixture for the "never triggers"
+case. Confirmed, with **zero console errors and zero `pageerror`
+events across every pass**:
+
+- **Approach cue**: "Big swing incoming…" text above the chart, plain
+  readouts/toggle still live underneath, right from bar 1.
+- **The slowed decision state**: the full `BulletTimeDecisionPanel` --
+  heading, subtitle, a real shrinking countdown bar, both buttons -- in
+  place of the normal readouts/toggle.
+- **A correct-call resolution**: clicking "Ride it out" into a real
+  up-swing, stepped through to the swing's own end bar, showed the gold
+  "★ Called it -- the swing from 9:40 AM to 10:05 AM moved +10.04%, and
+  you were positioned for it." badge.
+- **An incorrect-call resolution**: the identical swing, "Step aside"
+  clicked instead, showed the plain (not red/critical) "Not this time
+  -- the swing from 9:40 AM to 10:05 AM moved +10.04% while you were
+  positioned the other way." -- earnest, never a scold, matching
+  `outcomeDetail`'s own established register.
+- **The settlement's new tally line**: "Bullet Time calls: 1 of 2
+  correct." rendered in `FinalSettlement`, additive alongside the
+  unchanged biggest-runs/percentile analysis -- and a genuinely
+  instructive real result: the settlement's own top stamp still read
+  "Along for the ride" (zero real toggles were ever recorded, since
+  both Bullet Time calls happened to match the position the player was
+  already in), confirming live that Bullet Time's own tally is a
+  strictly additional, orthogonal analysis layered on top of the
+  unmodified zero-move-tie invariant, not a change to it.
+- **The reduced-motion equivalent**: session starts paused, the chooser
+  names reduced motion up front, the deciding state renders with **zero**
+  `.bullet-time-countdown-bar` elements in the DOM (asserted, not just
+  eyeballed) and the Step-button footer copy, and a correct-call
+  resolution reads identically to the normal-motion case.
+- **Zero Bullet Time UI for a session with nothing large enough to
+  qualify** (the issue's own explicit acceptance criterion, confirmed
+  live, not just reasoned about): stepped a flat-price 25-bar session
+  start to finish -- no "Big swing incoming" text, no countdown bar, no
+  "Called it"/"Not this time" badge, and no "Bullet Time calls" tally
+  line ever appeared anywhere in the DOM at any point.
+
+A real, live-caught bug during this pass, fixed before it ever reached
+a committed test or the app: the debug fixture's own first-draft
+timestamp generator (`` `09:${30 + i * 5}` ``) rolled straight past
+minute 59 into a literal `"09:70:00"`, which `formatTime` silently
+rendered as `"Invalid Date"` -- caught by an actual screenshot, not
+reasoned about in advance. Fixed in both the (deleted) debug fixture and
+`bullet-time.test.ts`'s own `barsWithTwoCleanSwings` (real hour-rollover
+arithmetic instead) -- worth remembering for the next hand-built
+five-minute-bar fixture in this codebase: a naive `30 + i * 5` string
+concatenation is wrong past bar 6.
+
+The debug route and the temporary `playwright` devDependency were both
+reverted before committing, per this file's own established convention;
+confirmed via `git status`/`git diff --stat` on
+`package.json`/`pnpm-lock.yaml` showing no trace afterward, and `.next`
+was cleared before the final typecheck run (this file's own issue #96
+follow-up round four already documents why: `next typegen` otherwise
+keeps a stale reference to the deleted debug route).
+
 ## The hero count-up no longer moves the page (issue #147)
 
 The fix for the jitter issue #124's spike measured. The hero's 1.2s

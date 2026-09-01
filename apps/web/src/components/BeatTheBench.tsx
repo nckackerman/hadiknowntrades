@@ -75,6 +75,15 @@
 // (`DailyRitual.tsx`) -- itself removed outright in a later pass, once
 // the recap disclosure it fed was also removed (see apps/web/CLAUDE.md's
 // own "'Today's recap' removed outright" section).
+//
+// **Bullet Time (issue #224)**: right before one of a session's real big
+// price swings, playback drops into slow motion, and the player has to
+// commit -- "Ride it out" or "Step aside" -- before the swing resolves.
+// See `lib/bullet-time.ts` for the whole scheduling/phase/resolution
+// engine (a genuine sibling to `lib/beat-the-bench.ts`, not a change to
+// it -- settlement math is completely untouched) and apps/web/CLAUDE.md's
+// own "Beat the Bench: Bullet Time" section for the design decisions and
+// the real thresholds they're validated against.
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 
@@ -93,11 +102,22 @@ import {
   sessionDurationMs,
   settleSession,
   STARTING_CAPITAL,
-  tickIntervalMs,
   type PlaybackSpeed,
   type Settlement as SessionSettlement,
 } from "@/lib/beat-the-bench";
 import { biggestMissedMove, missedMoveSentence, topUpMoves } from "@/lib/beat-the-bench-moves";
+import {
+  BULLET_TIME_BADGE_LINGER_BARS,
+  BULLET_TIME_DECISION_WINDOW_MS,
+  bulletTimeCallSentence,
+  bulletTimeStatusAt,
+  bulletTimeTallyLine,
+  bulletTimeTickIntervalMs,
+  evaluateBulletTimeCall,
+  resolvedBulletTimeCalls,
+  scheduleBulletTimeEvents,
+  type BulletTimeEvent,
+} from "@/lib/bullet-time";
 import {
   comparePercentile,
   mulberry32,
@@ -752,6 +772,37 @@ function SessionGame({
   const settlement = settleSession(bars, moves, STARTING_CAPITAL);
   const position = positionAfterBar(moves, barIndex);
 
+  // Bullet Time (issue #224): scheduled once, up front, from the full
+  // known bar array -- this is a replay of a real closed session, so the
+  // whole thing is already known and there's nothing to predict live.
+  // `bulletTimeEvents` never changes across this component's own
+  // lifetime (it's a pure function of `bars`, which is fixed for the
+  // whole session), so `biStatus` is a cheap, fully derived read every
+  // render, not separate state to keep in sync with `barIndex`.
+  const bulletTimeEvents = useMemo(() => scheduleBulletTimeEvents(bars), [bars]);
+  const biStatus = bulletTimeStatusAt(bulletTimeEvents, barIndex);
+  // Playback pauses unconditionally while deciding, regardless of the
+  // player's own `paused` state -- a decision has to actually be made
+  // (or the window has to run out) before bars advance again.
+  const deciding = biStatus.phase === "deciding";
+  // The one thing a lingering "Called it"/"Not this time" badge needs:
+  // the most recently resolved event still inside its own linger
+  // window, and the call it actually resolved to (computed at its own
+  // `swing.toIndex`, not "now" -- see BULLET_TIME_BADGE_LINGER_BARS'
+  // own doc comment for why a bar count, not a timer).
+  const recentlyResolvedEvent = bulletTimeEvents.find(
+    (event) =>
+      barIndex >= event.swing.toIndex &&
+      barIndex - event.swing.toIndex <= BULLET_TIME_BADGE_LINGER_BARS,
+  );
+  const recentlyResolvedCall =
+    recentlyResolvedEvent === undefined
+      ? null
+      : evaluateBulletTimeCall(
+          positionAfterBar(moves, recentlyResolvedEvent.swing.toIndex),
+          recentlyResolvedEvent.swing,
+        );
+
   // THE rule (issue #132): `null` until the session has actually settled,
   // which means no request for the id -> date index until then.
   const revealState = useMysteryReveal(settled ? session.sessionId : null);
@@ -808,17 +859,55 @@ function SessionGame({
   // Advance one bar per tick. `atEnd` (not `barIndex`) is in the dep
   // array on purpose: depending on the index itself would tear down and
   // rebuild the interval on every single tick, so each tick's real
-  // spacing would drift by however long the render took.
+  // spacing would drift by however long the render took. `deciding` is
+  // in the dep array for the same reason `atEnd` is -- it flips the
+  // interval off (a forced pause, regardless of the player's own
+  // `paused`) and back on again exactly at the two bars that matter
+  // (entering/leaving the decision window), not on every tick.
   const atEnd = settled;
+  const effectiveTickMs = bulletTimeTickIntervalMs(biStatus.phase, speed, reducedMotion);
   useEffect(() => {
-    if (paused || atEnd) return;
+    if (paused || atEnd || deciding) return;
     const id = window.setInterval(() => {
       setBarIndex((current) => Math.min(current + 1, lastIndex));
-    }, tickIntervalMs(speed));
+    }, effectiveTickMs);
     return () => {
       window.clearInterval(id);
     };
-  }, [paused, atEnd, speed, lastIndex]);
+  }, [paused, atEnd, deciding, effectiveTickMs, lastIndex]);
+
+  // The decision window's own auto-lock: unanswered, it advances past
+  // the swing's own start bar on its own after BULLET_TIME_DECISION_WINDOW_MS
+  // -- a real, honest no-op (matches this app's "no fees, no slippage"
+  // copy), never a penalty, since no move is recorded here. Only set up
+  // while genuinely deciding, and never under reduced motion -- issue
+  // #224's own scope calls for an explicit tap there, not an animated
+  // countdown that silently resolves itself.
+  useEffect(() => {
+    if (!deciding || reducedMotion) return;
+    const id = window.setTimeout(() => {
+      setBarIndex((current) => Math.min(current + 1, lastIndex));
+    }, BULLET_TIME_DECISION_WINDOW_MS);
+    return () => {
+      window.clearTimeout(id);
+    };
+  }, [deciding, reducedMotion, lastIndex]);
+
+  // The decision window's two explicit choices -- absolute stances, not
+  // a toggle: "Ride it out" ensures the player ends up holding (a move
+  // is only recorded if they're currently in cash), "Step aside" ensures
+  // they end up in cash (a move only if currently holding). Either way,
+  // making a choice is what advances past the deciding bar; the
+  // resulting position -- explicit or auto-locked -- is all
+  // evaluateBulletTimeCall ever looks at.
+  function handleRideItOut() {
+    if (position === "cash") setMoves((current) => [...current, barIndex]);
+    setBarIndex((current) => Math.min(current + 1, lastIndex));
+  }
+  function handleStepAside() {
+    if (position === "holding") setMoves((current) => [...current, barIndex]);
+    setBarIndex((current) => Math.min(current + 1, lastIndex));
+  }
 
   // Replays this same session from its opening bar. Not a mount-time
   // concern: choosing a mode is what starts a session, so this component
@@ -861,12 +950,46 @@ function SessionGame({
         positions={positionsThroughBar(moves, barIndex)}
       />
 
+      {/* Bullet Time's approach/catch-up cue -- a plain line of text
+          above the readouts, not an on-chart element (see
+          BeatTheBenchChart's own note on why it draws no in-SVG time
+          labels; the same "too small to read, and it'd overprint the
+          chart's own live dot" reasoning applies to any new on-chart
+          element). The decision window itself replaces the readouts
+          entirely, below -- there's no "Big swing incoming" banner text
+          duplicated in both places. */}
+      {biStatus.phase === "approaching" && (
+        <p className="text-sm font-medium text-[var(--text-secondary)]">Big swing incoming…</p>
+      )}
+      {biStatus.phase === "catchup" && (
+        <p className="text-sm font-medium text-[var(--text-secondary)]">Catching up…</p>
+      )}
+      {recentlyResolvedEvent !== undefined && recentlyResolvedCall !== null && (
+        <p
+          className={`text-sm font-medium ${
+            recentlyResolvedCall === "correct"
+              ? "text-[var(--accent-reward)]"
+              : "text-[var(--text-secondary)]"
+          }`}
+        >
+          {recentlyResolvedCall === "correct" && <span aria-hidden="true">★ </span>}
+          {bulletTimeCallSentence(recentlyResolvedCall, recentlyResolvedEvent.swing)}
+        </p>
+      )}
+
       {/* The live readouts and the trade control belong to a session in
           progress. Once it settles they're replaced by the settlement
           card below rather than left on screen greyed out: they'd
           otherwise restate the same two balances a second time, one
           rounded pair of figures directly above another. */}
-      {!settled && (
+      {!settled && deciding && (
+        <BulletTimeDecisionPanel
+          reducedMotion={reducedMotion}
+          onRideItOut={handleRideItOut}
+          onStepAside={handleStepAside}
+        />
+      )}
+      {!settled && !deciding && (
         <>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             <Readout label={`${session.ticker} price`} value={`$${currentBar.close.toFixed(2)}`} />
@@ -901,6 +1024,7 @@ function SessionGame({
           session={session}
           settlement={settlement}
           moveBarIndexes={moves}
+          bulletTimeEvents={bulletTimeEvents}
           revealPending={revealState === null ? false : revealState.status === "loading"}
           revealedDate={revealedDate}
           poolRotated={poolRotated}
@@ -925,13 +1049,99 @@ function SessionGame({
 
       {/* Position changes and the final settlement are announced; the
           per-bar tick deliberately is not -- announcing 78 price changes
-          would make the page unusable with a screen reader. */}
+          would make the page unusable with a screen reader. Bullet
+          Time's own deciding prompt and live resolution are announced
+          too, the same "a discrete moment, not a per-frame value" rule
+          the rest of this region already follows. */}
       <p role="status" aria-live="polite" className="sr-only">
         {settled
           ? `Session over. ${outcomeHeadline(settlement)}. You finished at ${formatHeroCurrency(settlement.playerBalance)}, the bench at ${formatHeroCurrency(settlement.benchmarkBalance)}.`
-          : position === "holding"
-            ? "In the market."
-            : "In cash."}
+          : deciding
+            ? "Big swing incoming. Choose Ride it out or Step aside."
+            : recentlyResolvedEvent !== undefined && recentlyResolvedCall !== null
+              ? bulletTimeCallSentence(recentlyResolvedCall, recentlyResolvedEvent.swing)
+              : position === "holding"
+                ? "In the market."
+                : "In cash."}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Bullet Time's decision window -- replaces the live readouts and the
+ * ordinary toggle entirely while it's open (see `SessionGame`'s own
+ * `!deciding` gate), rather than sitting alongside them: this is the one
+ * moment the mechanic asks for an actual, absolute stance, not a
+ * relative flip.
+ *
+ * **Button copy is "Ride it out"/"Step aside," not the ordinary
+ * toggle's "Sell, go to cash"/"Buy back in" (issue #224's own explicit
+ * choice, decided here).** The existing toggle labels are phrased
+ * relative to whatever the player currently holds -- exactly right for
+ * a single, always-available flip, but wrong here: Bullet Time wants two
+ * *absolute* choices always on screen together, so a player who isn't
+ * sure what they're currently holding can still commit unambiguously,
+ * and clicking the choice that happens to already match their position
+ * is still a real, explicit call (see `SessionGame`'s own
+ * `handleRideItOut`/`handleStepAside`) rather than a dead button. The
+ * design review's own mockup used this exact framing.
+ *
+ * The countdown bar is the one piece gated on `!reducedMotion` -- see
+ * `.bullet-time-countdown-bar`'s own doc comment in globals.css for why
+ * it's a plain CSS animation rather than the design review's own SVG
+ * ring sketch, and this file's own top note for why reduced motion drops
+ * it (and the auto-lock timer behind it) entirely in favour of a plain,
+ * un-timed prompt.
+ */
+function BulletTimeDecisionPanel({
+  reducedMotion,
+  onRideItOut,
+  onStepAside,
+}: {
+  reducedMotion: boolean;
+  onRideItOut: () => void;
+  onStepAside: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-[var(--gridline)] bg-[var(--surface-2)] px-4 py-4">
+      <p className="font-display text-base font-semibold text-[var(--text-primary)]">
+        Big swing incoming
+      </p>
+      <p className="text-sm text-[var(--text-secondary)]">
+        Stay in the market, or step out before it moves.
+      </p>
+      {!reducedMotion && (
+        <div
+          aria-hidden="true"
+          className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--surface-1)]"
+        >
+          <div
+            className="bullet-time-countdown-bar h-full rounded-full bg-[var(--accent-selection)]"
+            style={{ animationDuration: `${BULLET_TIME_DECISION_WINDOW_MS}ms` }}
+          />
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={onRideItOut}
+          className={`${CONTROL_CLASS} bg-[var(--accent-selection)] text-white`}
+        >
+          Ride it out
+        </button>
+        <button
+          type="button"
+          onClick={onStepAside}
+          className={`${CONTROL_CLASS} bg-[var(--surface-1)] text-[var(--text-primary)]`}
+        >
+          Step aside
+        </button>
+      </div>
+      <p className="text-xs text-[var(--text-muted)]">
+        {reducedMotion
+          ? "Step forward if you'd rather not choose -- it locks you into whatever you're already holding, no penalty."
+          : "No choice locks you into whatever you're already holding -- no fees, no penalty."}
       </p>
     </div>
   );
@@ -1033,12 +1243,17 @@ function PlaybackControls({
  *
  * Gold (`--accent-reward`, issue #121) appears here and nowhere else in
  * this section, and only on a win -- it means "you earned this", so a
- * loss or a tie stamp stays in plain text.
+ * loss or a tie stamp stays in plain text. Bullet Time's own tally line
+ * (issue #224) is a deliberate exception: it earns the same treatment
+ * whenever every call landed correctly (see the tally paragraph below),
+ * the identical "you earned this" reasoning applied to a different
+ * figure.
  */
 function FinalSettlement({
   session,
   settlement,
   moveBarIndexes,
+  bulletTimeEvents,
   revealPending,
   revealedDate,
   poolRotated,
@@ -1049,6 +1264,7 @@ function FinalSettlement({
   session: PlayableSession;
   settlement: SessionSettlement;
   moveBarIndexes: readonly number[];
+  bulletTimeEvents: readonly BulletTimeEvent[];
   revealPending: boolean;
   revealedDate: string | null;
   poolRotated: boolean;
@@ -1063,6 +1279,18 @@ function FinalSettlement({
     [bars, moveBarIndexes],
   );
   const missed = biggestMissedMove(topMoves);
+
+  // Every event's own call is resolvable unconditionally here -- by the
+  // time a session has settled, every scheduled event's own
+  // `swing.toIndex` is already behind `barIndex` (see
+  // `resolvedBulletTimeCalls`'s own doc comment). `[]` for a session
+  // that never scheduled one renders no tally line at all, not a
+  // misleading "0 of 0" -- see `bulletTimeTallyLine`.
+  const bulletTimeResults = useMemo(
+    () => resolvedBulletTimeCalls(bulletTimeEvents, moveBarIndexes),
+    [bulletTimeEvents, moveBarIndexes],
+  );
+  const bulletTimeTally = bulletTimeTallyLine(bulletTimeResults);
 
   // Seeded from the session's own price path, never from the clock or
   // `Math.random()` -- so the number a player is reading can't move under
@@ -1103,6 +1331,18 @@ function FinalSettlement({
         />
       </div>
       <p className="text-sm text-[var(--text-secondary)]">{outcomeDetail(settlement)}</p>
+
+      {bulletTimeTally !== null && (
+        <p
+          className={`font-numeric text-sm tabular-nums ${
+            bulletTimeResults.every((result) => result === "correct")
+              ? "font-semibold text-[var(--accent-reward)]"
+              : "text-[var(--text-secondary)]"
+          }`}
+        >
+          {bulletTimeTally}
+        </p>
+      )}
 
       <BestMovesPanel topMoves={topMoves} missedSentence={missedMoveSentence(missed)} />
 
