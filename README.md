@@ -1,5 +1,10 @@
 # Had I Known Trades
 
+**Live now (temporary URL):** https://7wyjrkhxt5srua26agwb5egtfm0dkvqa.lambda-url.us-west-2.on.aws/
+
+This is an AWS Lambda Function URL, not the final CloudFront-fronted domain
+-- see [Status](#status) below for why.
+
 A "had I known" hindsight data visualizer: starting from $20 and using only
 closed (end-of-day) market data, what's the best possible outcome from **at
 most 3 sequential, all-in, long-only trades** across the entire S&P 500 over
@@ -121,18 +126,12 @@ is code-complete: the optimizer, nightly precompute pipeline, and the core
 visualization UI are all built and merged, and infra is deployed and
 running the real pipeline against real data.
 
-**Live now (temporary URL):**
-
-```
-https://7wyjrkhxt5srua26agwb5egtfm0dkvqa.lambda-url.us-west-2.on.aws/
-```
-
-This is an AWS Lambda Function URL, not the final CloudFront-fronted
-domain -- CloudFront itself is still blocked by an AWS account
+The URL at the top of this file is a **Lambda Function URL**, not the
+final domain -- CloudFront itself is still blocked by an AWS account
 verification step outside this repo's control (see `infra/CLAUDE.md`).
 It's a deliberate, reversible workaround (`bypassCloudFront` CDK context
 flag) that serves the real app directly from the web Lambda in the
 meantime. Once AWS clears the account, a plain `cdk deploy` (no flag)
-will pick up the already-declared CloudFront distribution and this URL
-will be replaced by the real domain. See that milestone and the
-`backlog`-labeled issues for what's next.
+will pick up the already-declared CloudFront distribution and this
+temporary URL will be replaced by the real domain. See that milestone
+and the `backlog`-labeled issues for what's next.

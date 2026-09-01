@@ -466,7 +466,43 @@ export class HadIKnownTradesStack extends Stack {
     // for the identical bucket -- calling it once per path pattern inside
     // the .map() below silently created one redundant origin+OAC pair per
     // extra pattern instead of sharing the one this bucket actually needs.
-    const webAssetsOrigin = origins.S3BucketOrigin.withOriginAccessControl(webAssetsBucket);
+    //
+    // `withOriginAccessControl` also unconditionally adds an extra
+    // bucket-policy *statement* granting CloudFront's own service
+    // principal read access, scoped via a `Condition` that embeds
+    // `Ref: Distribution830FAC52` -- a real, previously-undiscovered bug
+    // found by a real deploy (not reasoned about in advance): CDK bundles
+    // every `addToResourcePolicy` call for one bucket into a single
+    // `AWS::S3::BucketPolicy` resource, and CloudFormation computes that
+    // resource's dependencies from *every* statement inside it, not per
+    // statement -- so as long as this bucket's policy carries the OAC
+    // grant at all, the *whole* policy (including the completely
+    // unrelated public-read grant `bypassCloudFront` needs, and the
+    // SSL-enforcement deny) can never be created until `Distribution`
+    // itself finishes -- which, during the bypass window, it never does
+    // (see this file's own `bypassCloudFront` doc comment). The result:
+    // every `bypassCloudFront=true` deploy left `webAssetsBucket` with NO
+    // policy at all, so every `_next/static/*` request 403'd and the
+    // page rendered blank (confirmed live: a real deployed page's
+    // `_next/static/*` requests to the public bucket returned S3's own
+    // `AccessDenied`, and `aws s3api get-bucket-policy` returned
+    // `NoSuchBucketPolicy` even though the bucket itself was
+    // `CREATE_COMPLETE`).
+    //
+    // Fixed by using `withBucketDefaults` (no OAC, adds no bucket-policy
+    // statement at all -- relies purely on the bucket's own existing
+    // settings) whenever `bypassCloudFront` is true: the bucket is
+    // already public in that mode (see `webAssetsBucket`'s own
+    // `publicReadAccess` above), so CloudFront needs no special grant to
+    // read it either, and the public-read grant's own bucket policy no
+    // longer has anything referencing `Distribution` for CloudFormation
+    // to wait on. `withOriginAccessControl` (OAC, the current default)
+    // stays exactly as before for the real, non-bypass path -- this
+    // mirrors `webFnOrigin`'s own established bypass/real split below,
+    // not a new pattern.
+    const webAssetsOrigin = bypassCloudFront
+      ? origins.S3BucketOrigin.withBucketDefaults(webAssetsBucket)
+      : origins.S3BucketOrigin.withOriginAccessControl(webAssetsBucket);
     // CDK itself refuses to synthesize `FunctionUrlOrigin.withOriginAccessControl`
     // paired with anything but an AWS_IAM-authed Function URL (a real,
     // synth-time error caught while first testing bypassCloudFront=true,

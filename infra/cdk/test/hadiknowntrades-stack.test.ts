@@ -164,6 +164,60 @@ describe("HadIKnownTradesStack", () => {
     bypassTemplate.resourceCountIs("AWS::CloudFront::Distribution", 1);
   });
 
+  it("bypassCloudFront=true drops the web-assets bucket's CloudFront OAC grant, so its bucket policy never depends on Distribution", () => {
+    // Regression test for a real, previously-shipped bug (found live, not
+    // in review): every bypassCloudFront=true deploy left webAssetsBucket
+    // with NO bucket policy at all -- `withOriginAccessControl` bundles a
+    // CloudFront-service-principal grant, scoped via a Condition that
+    // embeds `Ref: <Distribution's logical id>`, into the SAME
+    // AWS::S3::BucketPolicy resource as the public-read grant this mode
+    // actually needs. CloudFormation computes a resource's dependencies
+    // from every statement inside it, not per statement -- so as long as
+    // that CloudFront grant was present at all, the whole policy (public
+    // read included) could never be created until Distribution itself
+    // finished, which it never does during the bypass window. See this
+    // stack's own webAssetsOrigin doc comment for the full story.
+    const bypassTemplate = synthTemplate({ bypassCloudFront: "true" });
+
+    // Only one OAC left (the web Lambda's Function URL keeps AWS_IAM/OAC
+    // in the *non*-bypass template only -- in bypass mode it's NONE-authed
+    // and uses a plain FunctionUrlOrigin instead, see webFnOrigin above --
+    // so the only OAC left here, if any, would have to be the assets
+    // bucket's, and this asserts there isn't one).
+    bypassTemplate.resourceCountIs("AWS::CloudFront::OriginAccessControl", 0);
+
+    // No AWS::S3::BucketPolicy statement anywhere in this template grants
+    // CloudFront's own service principal read access -- the actual shape
+    // of the grant that created the circular dependency.
+    const policies = bypassTemplate.findResources("AWS::S3::BucketPolicy");
+    const allStatements = Object.values(policies).flatMap(
+      (policy) =>
+        (
+          policy as {
+            Properties: { PolicyDocument: { Statement: Array<{ Principal?: unknown }> } };
+          }
+        ).Properties.PolicyDocument.Statement,
+    );
+    for (const statement of allStatements) {
+      expect(statement.Principal).not.toEqual({ Service: "cloudfront.amazonaws.com" });
+    }
+
+    // The public-read grant bypassCloudFront actually needs is still
+    // there -- confirms the fix didn't accidentally drop this too while
+    // removing the CloudFront grant.
+    bypassTemplate.hasResourceProperties("AWS::S3::BucketPolicy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Effect: "Allow",
+            Action: "s3:GetObject",
+            Principal: { AWS: "*" },
+          }),
+        ]),
+      },
+    });
+  });
+
   it("scopes the pipeline Lambda's S3 permission to the results/ prefix only", () => {
     // Bucket.grantPut() expands to the put-object action family (plain
     // put + the legal-hold/retention/tagging/multipart-abort variants
