@@ -753,6 +753,82 @@ describe("BeatTheBench", () => {
     });
   });
 
+  // SPY_DOWN_SESSION_BARS schedules two real events under the real
+  // constants (confirmed against the live implementation, not assumed):
+  // a down-swing at bars 27->32, and a second down-swing at bars 64->77
+  // -- the session's own last bar. That second event's own toIndex
+  // landing exactly on the session's last bar is what makes this fixture
+  // useful beyond Mystery Day's own existing use of it: it's the exact
+  // "resolves within the settlement badge's own linger window" case
+  // issue #224's code review flagged (a code-review finding, fixed --
+  // see `SessionGame`'s own `recentlyResolvedEvent` doc comment).
+  describe("Bullet Time (issue #224)", () => {
+    /**
+     * Renders, picks Mystery Day (which serves `SPY_DOWN_SESSION_BARS`),
+     * pauses immediately, and switches to fake timers -- a local sibling
+     * of `enterMysterySession` rather than that same helper, since this
+     * describe block deliberately runs under normal (not reduced)
+     * motion: only `Step forward one bar` is clicked below, never
+     * `advance()`, so the real tick interval is irrelevant either way,
+     * but pausing first keeps a stray real `setInterval` callback from
+     * firing between clicks.
+     */
+    async function enterMysteryUnderNormalMotion(): Promise<void> {
+      stubRoutedFetch();
+      render(<BeatTheBench />);
+      clickCompactCard();
+      click(/play a mystery day/i);
+      await screen.findByText(/bar 1 of 78/);
+      click("Pause");
+      vi.useFakeTimers();
+    }
+
+    it("never shows the live 'Called it'/'Not this time' badge once the session has settled, even when the last event resolves on the session's own final bar", async () => {
+      await enterMysteryUnderNormalMotion();
+      // Never clicks Ride it out/Step aside for either event -- both
+      // resolve via the honest "no decision locks to whatever you're
+      // already holding" no-op (Step, clicked here, behaves identically
+      // to letting the countdown run out). The player starts holding and
+      // never moves, so both down-swing calls resolve "incorrect."
+      await stepToClose();
+
+      expect(screen.queryByText(/Not this time/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Called it/)).not.toBeInTheDocument();
+      // The settlement's own tally line is unaffected by that gate --
+      // it's a separate computation (resolvedBulletTimeCalls), not the
+      // live-lingering badge.
+      expect(screen.getByText("Bullet Time calls: 0 of 2 correct.")).toBeInTheDocument();
+    });
+
+    it("shows the decision panel and a live resolution badge mid-session, then the settlement's own tally line once settled", async () => {
+      await enterMysteryUnderNormalMotion();
+
+      // Step to the first event's own deciding bar (fromIndex 27).
+      for (let i = 0; i < 27; i += 1) click("Step forward one bar");
+      expect(screen.getByText("Big swing incoming")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Ride it out" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Step aside" })).toBeInTheDocument();
+
+      // A down-swing: "Step aside" (ending up in cash) is the correct call.
+      click("Step aside");
+      // Step through the rest of the swing to its own resolution bar (32).
+      for (let i = 0; i < 5; i += 1) click("Step forward one bar");
+
+      // Two matches, deliberately: the visible badge and the sr-only
+      // aria-live announcement share the identical sentence (computed
+      // once, per this issue's own code-review fix -- see
+      // `recentlyResolvedSentence`'s own doc comment).
+      expect(screen.getAllByText(/Called it/).length).toBeGreaterThan(0);
+
+      // Never explicitly chosen again for the second event -- the
+      // player is still in cash from the first call, and staying there
+      // (the honest no-op) happens to be correct again, since the
+      // second event is also a down-swing.
+      await stepToClose();
+      expect(screen.getByText("Bullet Time calls: 2 of 2 correct.")).toBeInTheDocument();
+    });
+  });
+
   describe("touch targets", () => {
     // Measured for real at 375px in a browser during live verification;
     // asserted here as the class contract that produces it, since jsdom

@@ -103,6 +103,7 @@ import {
   settleSession,
   STARTING_CAPITAL,
   type PlaybackSpeed,
+  type Position,
   type Settlement as SessionSettlement,
 } from "@/lib/beat-the-bench";
 import { biggestMissedMove, missedMoveSentence, topUpMoves } from "@/lib/beat-the-bench-moves";
@@ -789,12 +790,19 @@ function SessionGame({
   // the most recently resolved event still inside its own linger
   // window, and the call it actually resolved to (computed at its own
   // `swing.toIndex`, not "now" -- see BULLET_TIME_BADGE_LINGER_BARS'
-  // own doc comment for why a bar count, not a timer).
-  const recentlyResolvedEvent = bulletTimeEvents.find(
-    (event) =>
-      barIndex >= event.swing.toIndex &&
-      barIndex - event.swing.toIndex <= BULLET_TIME_BADGE_LINGER_BARS,
-  );
+  // own doc comment for why a bar count, not a timer). `undefined` once
+  // `settled` -- without this, an event resolving in the last few bars
+  // of a session would leave the badge visibly stuck on screen forever
+  // once `barIndex` stops advancing at settlement, duplicating the exact
+  // information `FinalSettlement`'s own tally line already states for
+  // good.
+  const recentlyResolvedEvent = settled
+    ? undefined
+    : bulletTimeEvents.find(
+        (event) =>
+          barIndex >= event.swing.toIndex &&
+          barIndex - event.swing.toIndex <= BULLET_TIME_BADGE_LINGER_BARS,
+      );
   const recentlyResolvedCall =
     recentlyResolvedEvent === undefined
       ? null
@@ -802,6 +810,14 @@ function SessionGame({
           positionAfterBar(moves, recentlyResolvedEvent.swing.toIndex),
           recentlyResolvedEvent.swing,
         );
+  // Computed once, reused by both the visible badge and the aria-live
+  // announcement below, rather than each independently re-checking the
+  // same compound null/undefined condition and calling
+  // bulletTimeCallSentence a second time for byte-identical output.
+  const recentlyResolvedSentence =
+    recentlyResolvedEvent !== undefined && recentlyResolvedCall !== null
+      ? bulletTimeCallSentence(recentlyResolvedCall, recentlyResolvedEvent.swing)
+      : null;
 
   // THE rule (issue #132): `null` until the session has actually settled,
   // which means no request for the id -> date index until then.
@@ -882,7 +898,23 @@ function SessionGame({
   // copy), never a penalty, since no move is recorded here. Only set up
   // while genuinely deciding, and never under reduced motion -- issue
   // #224's own scope calls for an explicit tap there, not an animated
-  // countdown that silently resolves itself.
+  // countdown that silently resolves itself (see `bulletTimeTickIntervalMs`'s
+  // own reduced-motion fallback and `BulletTimeDecisionPanel`'s own
+  // `!reducedMotion` guard on the countdown bar -- all three sites
+  // enforce the same "no timer, no slow motion, under reduced motion"
+  // rule, so a future change to any one of them should check the other
+  // two too).
+  //
+  // **`PlaybackControls`' own "Step forward one bar" is a second,
+  // equally valid way to reach this same no-op, deliberately, for every
+  // player regardless of motion preference** -- it already just
+  // advances `barIndex` unconditionally with no move recorded, so
+  // clicking it during `deciding` behaves identically to the timer
+  // running out. Not a bypass of the mechanic: "no decision" is a real,
+  // honest, always-available outcome per this app's own established
+  // "Step is a complete way to play" guarantee (see `beat-the-bench.ts`'s
+  // own header comment) -- it was never meant to be reachable only via
+  // waiting out a timer.
   useEffect(() => {
     if (!deciding || reducedMotion) return;
     const id = window.setTimeout(() => {
@@ -900,13 +932,15 @@ function SessionGame({
   // making a choice is what advances past the deciding bar; the
   // resulting position -- explicit or auto-locked -- is all
   // evaluateBulletTimeCall ever looks at.
-  function handleRideItOut() {
-    if (position === "cash") setMoves((current) => [...current, barIndex]);
+  function commitBulletTimeChoice(target: Position) {
+    if (position !== target) setMoves((current) => [...current, barIndex]);
     setBarIndex((current) => Math.min(current + 1, lastIndex));
   }
+  function handleRideItOut() {
+    commitBulletTimeChoice("holding");
+  }
   function handleStepAside() {
-    if (position === "holding") setMoves((current) => [...current, barIndex]);
-    setBarIndex((current) => Math.min(current + 1, lastIndex));
+    commitBulletTimeChoice("cash");
   }
 
   // Replays this same session from its opening bar. Not a mount-time
@@ -964,7 +998,7 @@ function SessionGame({
       {biStatus.phase === "catchup" && (
         <p className="text-sm font-medium text-[var(--text-secondary)]">Catching up…</p>
       )}
-      {recentlyResolvedEvent !== undefined && recentlyResolvedCall !== null && (
+      {recentlyResolvedSentence !== null && (
         <p
           className={`text-sm font-medium ${
             recentlyResolvedCall === "correct"
@@ -973,7 +1007,7 @@ function SessionGame({
           }`}
         >
           {recentlyResolvedCall === "correct" && <span aria-hidden="true">★ </span>}
-          {bulletTimeCallSentence(recentlyResolvedCall, recentlyResolvedEvent.swing)}
+          {recentlyResolvedSentence}
         </p>
       )}
 
@@ -984,6 +1018,7 @@ function SessionGame({
           rounded pair of figures directly above another. */}
       {!settled && deciding && (
         <BulletTimeDecisionPanel
+          eventIndex={biStatus.eventIndex}
           reducedMotion={reducedMotion}
           onRideItOut={handleRideItOut}
           onStepAside={handleStepAside}
@@ -1058,8 +1093,8 @@ function SessionGame({
           ? `Session over. ${outcomeHeadline(settlement)}. You finished at ${formatHeroCurrency(settlement.playerBalance)}, the bench at ${formatHeroCurrency(settlement.benchmarkBalance)}.`
           : deciding
             ? "Big swing incoming. Choose Ride it out or Step aside."
-            : recentlyResolvedEvent !== undefined && recentlyResolvedCall !== null
-              ? bulletTimeCallSentence(recentlyResolvedCall, recentlyResolvedEvent.swing)
+            : recentlyResolvedSentence !== null
+              ? recentlyResolvedSentence
               : position === "holding"
                 ? "In the market."
                 : "In cash."}
@@ -1095,10 +1130,13 @@ function SessionGame({
  * un-timed prompt.
  */
 function BulletTimeDecisionPanel({
+  eventIndex,
   reducedMotion,
   onRideItOut,
   onStepAside,
 }: {
+  /** The current event's own index within its session's schedule -- keyed onto the countdown bar below so a fresh decision window always gets a fresh DOM node, guaranteeing its CSS animation restarts from full even if this panel component itself ever stayed mounted across two different events. */
+  eventIndex: number;
   reducedMotion: boolean;
   onRideItOut: () => void;
   onStepAside: () => void;
@@ -1117,6 +1155,7 @@ function BulletTimeDecisionPanel({
           className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--surface-1)]"
         >
           <div
+            key={eventIndex}
             className="bullet-time-countdown-bar h-full rounded-full bg-[var(--accent-selection)]"
             style={{ animationDuration: `${BULLET_TIME_DECISION_WINDOW_MS}ms` }}
           />

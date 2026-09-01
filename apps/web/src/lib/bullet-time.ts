@@ -33,7 +33,7 @@
 
 import type { SessionBar } from "@hadiknowntrades/core";
 
-import { biggestSwings, type SessionSwing } from "./beat-the-bench-moves";
+import { biggestSwings, intervalsWithinGap, type SessionSwing } from "./beat-the-bench-moves";
 import { formatSessionPercent } from "./format-currency";
 import { formatTime } from "./format-date";
 import {
@@ -67,9 +67,13 @@ export const BULLET_TIME_MIN_SWING_MAGNITUDE = 0.003;
  * At most this many Bullet Time events per session -- deliberately low
  * (the design review's own "Risks" note) so this stays a real occasion
  * rather than constant interruption. Against the same real 41-session
- * pool: 20 of 41 sessions (49%) qualify for 2 events at the thresholds
- * above; the rest get 0 or 1. Average 1.39 events per session across the
- * whole pool.
+ * pool, measured against the real `scheduleBulletTimeEvents`
+ * implementation (including its own whole-window anti-crowding check --
+ * see `BULLET_TIME_MIN_TRIGGER_GAP_BARS`'s own doc comment for the real
+ * bug an earlier, trigger-point-only version of that check had, and
+ * which these numbers reflect the fix for): 9 of 41 sessions (22%)
+ * qualify for the full 2 events at the thresholds above; the rest get 0
+ * or 1. Average 1.12 events per session across the whole pool.
  */
 export const BULLET_TIME_MAX_EVENTS = 2;
 
@@ -85,14 +89,20 @@ export const BULLET_TIME_MAX_EVENTS = 2;
 export const BULLET_TIME_LEAD_BARS = 2;
 
 /**
- * Minimum bar-index gap required between two scheduled events' own
- * trigger points, so two events can never crowd into the same stretch of
- * a session. `biggestSwings` already guarantees its returned swings
- * never share a bar *interval* with each other (see that function's own
- * doc comment), but two adjacent, non-overlapping swings could still
- * have trigger points close enough together to feel like one long,
- * un-breathable event rather than two distinct occasions -- this is the
- * extra buffer that prevents that.
+ * Minimum bar gap required between two scheduled events' own *whole
+ * active windows* (`triggerIndex` through `swing.toIndex`), not just
+ * their trigger points -- `scheduleBulletTimeEvents` checks this via
+ * `intervalsWithinGap`. `biggestSwings` already guarantees its returned
+ * swings never share a bar *interval* with each other (see that
+ * function's own doc comment), but two adjacent, non-overlapping swings
+ * could still have trigger points far enough apart to pass a naive
+ * trigger-to-trigger check while one event's own window (a long swing's
+ * own `toIndex` can sit well past its `triggerIndex`) still swallows the
+ * next event's entire approach phase -- checking whole windows, not just
+ * points, is what actually prevents that (a real bug an earlier version
+ * of this check had; see `scheduleBulletTimeEvents`' own inline comment
+ * and `bullet-time.test.ts`'s own regression test for a concrete
+ * example).
  */
 export const BULLET_TIME_MIN_TRIGGER_GAP_BARS = 6;
 
@@ -114,15 +124,19 @@ const CANDIDATE_COUNT = 5;
  *
  * **Validated against real session data for its actual time cost, not
  * just chosen in isolation.** Against the real 41-session pool, at
- * `BULLET_TIME_LEAD_BARS = 2`: the worst real case (a session that
- * schedules the maximum 2 events) adds 20.45s of total wall-clock time
- * at 1x speed on top of that session's own ~23.4s base length --
- * pushing a full playthrough to ~43.9s, a real but bounded cost for what
- * the design review calls this mechanic's own "central dramatic beat."
- * The median real triggering session adds 17.6s. See
- * `BULLET_TIME_CATCHUP_TICK_MS`'s own doc comment for how the catch-up
- * pace claws some of this back rather than letting every phase add pure
- * overhead.
+ * `BULLET_TIME_LEAD_BARS = 2`, measured against the real
+ * `scheduleBulletTimeEvents` (its own whole-window anti-crowding check
+ * included -- see `BULLET_TIME_MIN_TRIGGER_GAP_BARS`'s own doc comment):
+ * the worst real case (a session that schedules the maximum 2 events)
+ * adds 22.1s of total wall-clock time at 1x speed on top of that
+ * session's own ~23.4s base length -- pushing a full playthrough to
+ * ~45.5s, a real but bounded cost for what the design review calls this
+ * mechanic's own "central dramatic beat." The median real *triggering*
+ * session (37 of 41 real sessions trigger at least one event; most of
+ * those get exactly one, not two -- see `BULLET_TIME_MAX_EVENTS`'s own
+ * doc comment) adds 9.25s. See `BULLET_TIME_CATCHUP_TICK_MS`'s own doc
+ * comment for how the catch-up pace claws some of this back rather than
+ * letting every phase add pure overhead.
  */
 export const BULLET_TIME_APPROACH_TICK_MS = 4500;
 
@@ -198,8 +212,24 @@ export function scheduleBulletTimeEvents(bars: readonly SessionBar[]): BulletTim
   const events: BulletTimeEvent[] = [];
   for (const swing of candidates) {
     const triggerIndex = swing.fromIndex - BULLET_TIME_LEAD_BARS;
-    const tooClose = events.some(
-      (event) => Math.abs(triggerIndex - event.triggerIndex) < BULLET_TIME_MIN_TRIGGER_GAP_BARS,
+    // Checked against each already-accepted event's own *whole active
+    // window* (triggerIndex through swing.toIndex), not just the two
+    // trigger points -- comparing trigger-to-trigger alone let a
+    // candidate's own window still fall inside an earlier event's own
+    // still-active window whenever its swing was long enough, silently
+    // swallowing the later event's entire approach phase (bulletTimeStatusAt
+    // resolves an overlap to whichever event sorts first). Reuses
+    // beat-the-bench-moves.ts's own intervalsWithinGap -- the identical
+    // primitive findBestRuns uses for its own overlap check, just with a
+    // real buffer instead of gap 0.
+    const tooClose = events.some((event) =>
+      intervalsWithinGap(
+        triggerIndex,
+        swing.toIndex,
+        event.triggerIndex,
+        event.swing.toIndex,
+        BULLET_TIME_MIN_TRIGGER_GAP_BARS,
+      ),
     );
     if (tooClose) continue;
     events.push({ triggerIndex, swing });

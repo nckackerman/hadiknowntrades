@@ -22,17 +22,26 @@ import { SPY_SESSION_BARS } from "@/test-fixtures/spy-session-bars";
 import type { SessionBar } from "@hadiknowntrades/core";
 
 /**
- * A synthetic 25-bar session with one clean, well-separated up-swing
- * (bar 2 -> 7, +10.04%) and one clean down-swing (bar 12 -> 20, -10.13%,
- * per `MAX_MOVE_SPAN_FRACTION`'s own span cap -- the trough is at bar 20,
- * but the cap only lets a "from" as early as bar 12 reach it in one run;
+ * A synthetic 31-bar session with one clean, well-separated up-swing
+ * (bar 2 -> 7, +10.04%) and one clean down-swing (bar 16 -> 26, -10.13%,
+ * per `MAX_MOVE_SPAN_FRACTION`'s own span cap -- the trough is at bar 26,
+ * but the cap only lets a "from" as early as bar 16 reach it in one run;
  * confirmed against the real implementation, not hand-derived, since
  * `findBestRuns`' own span-cap/tie-break interaction is exactly the kind
  * of thing worth checking against the real function rather than assumed).
  * The leading noise (bars 0-1) exists so the up-run's own true low (bar
  * 2) is the unambiguous best start, not tied with an earlier flat bar --
  * a tie would otherwise resolve to the *earliest* tied index (bar 0),
- * which has no room for `BULLET_TIME_LEAD_BARS` before it.
+ * which has no room for `BULLET_TIME_LEAD_BARS` before it. The 15-bar
+ * plateau between the two swings (not the 9 an earlier version of this
+ * fixture used) is deliberately wide: with only 9, the down-swing's own
+ * *window* (triggerIndex through its own toIndex) came within
+ * `BULLET_TIME_MIN_TRIGGER_GAP_BARS` of the up-swing's own window even
+ * though their *trigger points* were comfortably far apart -- exactly
+ * the real overlap bug `scheduleBulletTimeEvents`' own inline comment
+ * documents, caught by this fixture itself once the fix landed. Widened
+ * so this fixture keeps testing "two real, well-separated events," not
+ * the overlap case (which has its own dedicated test, below).
  */
 function barsWithTwoCleanSwings(): SessionBar[] {
   const values = [
@@ -44,23 +53,12 @@ function barsWithTwoCleanSwings(): SessionBar[] {
     105,
     107,
     109.6, // 3-7: a clean +10.04% up-run from bar 2
-    109.6,
-    109.6,
-    109.6,
-    109.6,
-    109.6,
-    109.6,
-    109.6,
-    109.6,
-    109.6, // 8-16: flat plateau
+    ...Array<number>(15).fill(109.6), // 8-22: flat plateau
     107,
     104,
     101,
-    98.5, // 17-20: a clean down-run into a trough
-    98.5,
-    98.5,
-    98.5,
-    98.5, // 21-24: flat tail
+    98.5, // 23-26: a clean down-run into a trough
+    ...Array<number>(4).fill(98.5), // 27-30: flat tail
   ];
   // Real HH:MM:SS, rolling the hour over past minute 59 -- a naive
   // `09:${30 + i * 5}` string (tried first, then caught live via the
@@ -105,7 +103,7 @@ describe("scheduleBulletTimeEvents", () => {
     const events = scheduleBulletTimeEvents(bars);
     const downEvent = events.find((event) => event.swing.returnFraction < 0);
     expect(downEvent).toBeDefined();
-    expect(downEvent!.swing.fromIndex).toBe(12);
+    expect(downEvent!.swing.fromIndex).toBe(16);
   });
 
   it("schedules both, in chronological order, when a session has two real qualifying swings far enough apart", () => {
@@ -129,15 +127,54 @@ describe("scheduleBulletTimeEvents", () => {
     expect(events.length).toBeLessThanOrEqual(BULLET_TIME_MAX_EVENTS);
   });
 
-  it("never schedules two events whose trigger points are closer together than BULLET_TIME_MIN_TRIGGER_GAP_BARS", () => {
+  it("never schedules two events whose whole active windows come within BULLET_TIME_MIN_TRIGGER_GAP_BARS of each other -- not just their trigger points", () => {
+    // Checking only trigger-to-trigger distance is not enough on its own
+    // (see the adversarial fixture below for a concrete counter-example)
+    // -- this checks the real invariant that matters: no two events'
+    // whole windows (triggerIndex through swing.toIndex) come within
+    // the gap of each other.
     for (const bars of [SPY_UP_SESSION_BARS, SPY_DOWN_SESSION_BARS, SPY_SESSION_BARS]) {
       const events = scheduleBulletTimeEvents(bars);
       for (let i = 1; i < events.length; i += 1) {
-        expect(events[i]!.triggerIndex - events[i - 1]!.triggerIndex).toBeGreaterThanOrEqual(
+        const previous = events[i - 1]!;
+        const current = events[i]!;
+        expect(current.triggerIndex - previous.swing.toIndex).toBeGreaterThanOrEqual(
           BULLET_TIME_MIN_TRIGGER_GAP_BARS,
         );
       }
     }
+  });
+
+  it("never schedules a second event whose own window would overlap an already-scheduled event's own still-active window, even when their trigger points alone are far enough apart", () => {
+    // A real counter-example (found in code review): an up-swing spanning
+    // bars 2->9 (triggerIndex 0) directly followed by a down-swing
+    // starting exactly where it ends, bars 9->17 (triggerIndex 7). The
+    // two trigger points are 7 bars apart -- comfortably clearing
+    // BULLET_TIME_MIN_TRIGGER_GAP_BARS (6) on a naive trigger-to-trigger
+    // check -- but the first event's own window (0 through 9) is still
+    // active well past the second event's own trigger point (7), so a
+    // trigger-only check would have scheduled both, silently swallowing
+    // the second event's entire approach phase (bulletTimeStatusAt
+    // resolves an overlap to whichever event sorts first). Only one
+    // event should be scheduled.
+    const values: number[] = [101, 100.5, 99.6];
+    let price = 99.6;
+    for (let i = 0; i < 7; i += 1) {
+      price *= 1.02;
+      values.push(price);
+    }
+    for (let i = 0; i < 8; i += 1) {
+      price *= 0.98;
+      values.push(price);
+    }
+    while (values.length < 25) values.push(price);
+    const bars: SessionBar[] = values.map((close, i) => ({ time: `t${i}`, close }));
+
+    const events = scheduleBulletTimeEvents(bars);
+    expect(events).toHaveLength(1);
+    // The down-swing is the slightly larger-magnitude candidate, so it's
+    // the one that wins; the up-swing is correctly rejected as too close.
+    expect(events[0]).toMatchObject({ triggerIndex: 7, swing: { fromIndex: 9, toIndex: 17 } });
   });
 
   it("never schedules an event without BULLET_TIME_LEAD_BARS of room before its own swing", () => {

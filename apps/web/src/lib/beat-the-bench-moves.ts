@@ -95,6 +95,52 @@ export function benchmarkDollarsFor(
 }
 
 /**
+ * Whether bar-interval `[aFrom, aTo)` and `[bFrom, bTo)` come within
+ * `gap` bars of each other -- `gap = 0` (the default) is exact interval
+ * overlap, the same check `findBestRuns` uses inline to keep its own
+ * picks from sharing a bar. Exported so a caller scheduling something
+ * *around* a run -- Bullet Time's own trigger scheduler
+ * (`bullet-time.ts`), which needs two events' whole active windows kept
+ * `BULLET_TIME_MIN_TRIGGER_GAP_BARS` apart, not just their own trigger
+ * points -- can reuse the identical primitive instead of writing a
+ * second, differently-shaped "close enough to conflict" check.
+ */
+export function intervalsWithinGap(
+  aFrom: number,
+  aTo: number,
+  bFrom: number,
+  bTo: number,
+  gap = 0,
+): boolean {
+  return aFrom < bTo + gap && bFrom < aTo + gap;
+}
+
+/**
+ * The shared shape `topUpMoves` and `biggestSwings` each build their own
+ * return objects from -- one place computing `fromTime`/`toTime` off
+ * `bars` so the two can't quietly disagree about how a run's own time
+ * span is read from the same array.
+ */
+function runFields(
+  bars: readonly SessionBar[],
+  run: { from: number; to: number; returnFraction: number },
+): {
+  fromIndex: number;
+  toIndex: number;
+  fromTime: string;
+  toTime: string;
+  returnFraction: number;
+} {
+  return {
+    fromIndex: run.from,
+    toIndex: run.to,
+    fromTime: bars[run.from]!.time,
+    toTime: bars[run.to]!.time,
+    returnFraction: run.returnFraction,
+  };
+}
+
+/**
  * The greedy window-search shared by `topUpMoves` and `biggestSwings`
  * (issue #224): take the single best-scoring `(from, to)` run in the
  * session, then the best-scoring run that doesn't overlap it, and so on,
@@ -143,7 +189,7 @@ function findBestRuns(
 
     for (let from = 0; from < bars.length - 1; from += 1) {
       for (let to = from + 1; to <= Math.min(from + maxSpan, bars.length - 1); to += 1) {
-        if (taken.some((range) => from < range.to && range.from < to)) continue;
+        if (taken.some((range) => intervalsWithinGap(from, to, range.from, range.to))) continue;
         const returnFraction = bars[to]!.close / bars[from]!.close - 1;
         const runScore = score(returnFraction);
         if (runScore === null) continue;
@@ -175,11 +221,7 @@ export function topUpMoves(
     returnFraction > 0 ? returnFraction : null,
   );
   return runs.map((run) => ({
-    fromIndex: run.from,
-    toIndex: run.to,
-    fromTime: bars[run.from]!.time,
-    toTime: bars[run.to]!.time,
-    returnFraction: run.returnFraction,
+    ...runFields(bars, run),
     benchmarkDollars: benchmarkDollarsFor(bars, capital, run.from, run.returnFraction),
     playerHeld: heldThroughout(moveBarIndexes, run.from, run.to),
   }));
@@ -226,13 +268,7 @@ export function biggestSwings(
   const runs = findBestRuns(bars, count, (returnFraction) =>
     returnFraction === 0 ? null : Math.abs(returnFraction),
   );
-  return runs.map((run) => ({
-    fromIndex: run.from,
-    toIndex: run.to,
-    fromTime: bars[run.from]!.time,
-    toTime: bars[run.to]!.time,
-    returnFraction: run.returnFraction,
-  }));
+  return runs.map((run) => runFields(bars, run));
 }
 
 /**
