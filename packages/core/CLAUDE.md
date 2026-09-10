@@ -40,6 +40,56 @@ Using **Yahoo Finance's unofficial chart endpoint** instead
   empirical research process from issue #3 rather than assuming Stooq
   is fine again.
 
+## S&P 500 index weights: SSGA's SPY holdings file, not iShares' IVV (issue #230)
+
+`sp500-constituents.ts`'s `weight` field is sourced from **State Street's
+published SPY holdings file**, verified live the same way the Yahoo-vs-
+Stooq decision was (see above) — checked empirically, not assumed:
+
+- The real, fetchable URL is
+  `https://www.ssga.com/us/en/intermediary/library-content/products/fund-data/etfs/us/holdings-daily-us-en-spy.xlsx`
+  — an **`.xlsx` spreadsheet, not a `.csv`** (the same path with a `.csv`
+  extension 404s; SSGA doesn't publish a CSV variant of this particular
+  file despite "CSV" being the generic term used loosely for this kind of
+  holdings-file download). A plain unauthenticated `curl` gets a real
+  HTTP 200 `.xlsx` file — no browser-like `User-Agent` needed at all
+  (unlike Yahoo's chart endpoint above), no bot-blocking, no HTML
+  interstitial.
+- **iShares' IVV holdings endpoint does NOT clear this same bar** — its
+  `.../1467271812596.ajax?fileType=csv&fileName=IVV_holdings&dataType=fund`
+  URL advertises `Content-Type: text/csv` but a plain GET actually
+  returns an HTML interstitial page (iShares' own site chrome), not CSV
+  holdings data. Don't reach for IVV as a drop-in cross-check without
+  first re-verifying it actually downloads cleanly (e.g. a session
+  cookie or different request shape might unblock it) — as of this
+  writing it hasn't been made to work with a plain fetch, so SSGA is the
+  only one of the two sources actually used for the snapshot.
+- **The join to this file's existing `symbol` list needed no ticker
+  translation at all** — SSGA's own "Ticker" column already uses the
+  same dot convention this app's symbols use for share classes (`BRK.B`,
+  `BF.B`), unlike Yahoo's chart endpoint which needs `toYahooSymbol()`'s
+  dot-to-hyphen mapping. All 503 of this file's existing symbols matched
+  an SSGA ticker exactly on the snapshot date (2026-09-10) — a full,
+  clean 1:1 join, not a partial one needing a fallback/manual-mapping
+  path. Don't assume this always holds on a future refresh (a genuinely
+  new S&P 500 addition could show up in this file before SSGA's next
+  daily holdings update, or vice versa) — re-verify the join is still
+  clean (or handle the gap) rather than assuming it silently still is.
+- SPY's full published holdings file has ~505 real holding lines (plus a
+  handful of trailing legal/disclaimer text rows in the same worksheet,
+  easy to mistake for data if you don't filter on a parseable numeric
+  weight) summing to ~99.95% weight; this file's 503-symbol universe
+  (which correctly excludes SPY's couple of non-S&P-500 residual/legacy
+  lines, e.g. a tiny post-acquisition holdover position) sums to
+  ~99.78%. Both figures are expected to be a bit under 100, not a parsing
+  bug — the remainder is cash/other.
+- Parsing an SSGA `.xlsx` doesn't need a heavyweight XLSX library for a
+  one-off manual refresh — it's a zipped OOXML package; the holdings
+  table is plain in `xl/worksheets/sheet1.xml` with string values
+  indexed into `xl/sharedStrings.xml`, both parseable with any XML
+  parser (verified this way for the #230 refresh, no `openpyxl`/`xlsx`
+  npm package installed for it).
+
 ## Internal imports: no `.js` extension on relative specifiers
 
 `src/*.ts` files import each other with plain extensionless relative
