@@ -89,6 +89,51 @@ Stooq decision was (see above) — checked empirically, not assumed:
   indexed into `xl/sharedStrings.xml`, both parseable with any XML
   parser (verified this way for the #230 refresh, no `openpyxl`/`xlsx`
   npm package installed for it).
+- **A parser must read each cell's own `r="E405"`-style reference
+  (column + row), not assume a fixed positional index per row** — a
+  sparse XLSX row only emits `<c>` elements for columns that actually
+  have a value, so a row missing an earlier column silently shifts every
+  later column's positional index. Not yet observed to actually occur
+  in a real SSGA holdings file (every row here has all 8 columns
+  populated), but this was checked explicitly (a post-merge review
+  raised it as the likely explanation for a suspicious duplicate weight,
+  see below) rather than assumed safe — re-verify this if a future
+  refresh's row shape ever looks sparse.
+- **`IP` and `ZBH` genuinely share the identical published weight,
+  0.027834, in SSGA's real source file — confirmed, not a parsing bug**
+  (a post-merge code review flagged this exact-to-6-decimals match
+  across two unrelated companies as suspicious, and it was worth
+  checking rather than dismissing). Verified four independent ways: (1)
+  the raw `sheet1.xml` shows two separate rows (405, 406) with distinct
+  cell styles and distinct "Shares Held" figures (6,460,208 vs
+  2,365,258) each carrying their own independent numeric `<v>` cell —
+  not a shared/reused reference; (2) a fresh re-download of the same
+  SSGA URL came back byte-for-byte identical, ruling out a corrupted or
+  partial first fetch; (3) a live cross-check against real Yahoo prices
+  and these exact SPY share-held counts put both tickers' implied
+  weights within ~1.3% of 0.027834 (ZBH's implied weight, 0.027826,
+  landed almost exactly on it); (4) of this file's 503 constituents, 116
+  sit packed into just the [0.02, 0.04] weight band (~0.0001–0.0002
+  apart) — dense enough that one coincidental exact tie to 6 decimals
+  among 503 real values isn't actually improbable. `sp500-constituents
+.test.ts` has a test enforcing that this is the _only_ exact-weight
+  collision in the file — treat a newly-failing run of that test as a
+  real signal (a join/parsing regression), not something to loosen by
+  just adding another symbol to its allowlist without re-verifying the
+  same way this one was.
+- **`EXC` (0.068) and `LITE` (0.117) genuinely have only 3 significant
+  decimal digits in SSGA's real source file, versus 5–6 for effectively
+  every other entry — also confirmed, not a truncation bug.** The raw
+  `sheet1.xml` cells for both are stored as plain numeric (`t="n"`)
+  values with exactly those literal digits (`<v>0.068</v>`,
+  `<v>0.117</v>`), not a display-formatted string truncated during
+  parsing. A live price cross-check (real Yahoo prices x these tickers'
+  SPY share-held counts) landed both within a few percent of these
+  values (consistent with ordinary single-day price drift between
+  SSGA's snapshot and the live check), so nothing about either value
+  looks wrong — SSGA's own feed appears to just publish fewer
+  significant digits for these two specific holdings. Left as-sourced,
+  per this file's own "stored as-sourced" rule for `weight`.
 
 ## Internal imports: no `.js` extension on relative specifiers
 
