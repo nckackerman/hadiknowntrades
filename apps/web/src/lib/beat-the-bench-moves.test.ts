@@ -4,12 +4,16 @@ import { balanceAtBar, STARTING_CAPITAL } from "./beat-the-bench";
 import {
   benchmarkDollarsFor,
   biggestMissedMove,
+  biggestSwings,
   heldThroughout,
   missedMoves,
   missedMoveSentence,
   topUpMoves,
 } from "./beat-the-bench-moves";
-import { SPY_UP_SESSION_BARS } from "@/test-fixtures/spy-trending-session-bars";
+import {
+  SPY_DOWN_SESSION_BARS,
+  SPY_UP_SESSION_BARS,
+} from "@/test-fixtures/spy-trending-session-bars";
 import type { SessionBar } from "@hadiknowntrades/core";
 
 /** A tiny hand-built session with one obvious run in the middle, so the picks are checkable by eye. */
@@ -145,5 +149,113 @@ describe("missedMoveSentence", () => {
     const moves = topUpMoves(SHAPED, [1, 2], STARTING_CAPITAL, 1);
     expect(moves[0]!.playerHeld).toBe(false);
     expect(missedMoveSentence(moves[0]!)).toContain("weren't in the market for all of");
+  });
+});
+
+// The direction-agnostic sibling `topUpMoves` doesn't provide (issue
+// #224) -- same shared window search (`findBestRuns`), scored by
+// magnitude instead of signed return, so the biggest move in *either*
+// direction always wins the first pick. Bullet Time's own trigger
+// scheduler (`bullet-time.ts`) builds directly on this.
+describe("biggestSwings", () => {
+  const UP_ONLY: SessionBar[] = [
+    { time: "09:30:00", close: 100 },
+    { time: "09:35:00", close: 101 },
+    { time: "09:40:00", close: 102.5 },
+    { time: "09:45:00", close: 104 },
+    { time: "09:50:00", close: 106 },
+  ];
+
+  const DOWN_ONLY: SessionBar[] = [
+    { time: "09:30:00", close: 106 },
+    { time: "09:35:00", close: 104 },
+    { time: "09:40:00", close: 102.5 },
+    { time: "09:45:00", close: 101 },
+    { time: "09:50:00", close: 100 },
+  ];
+
+  const FLAT: SessionBar[] = [
+    { time: "09:30:00", close: 100 },
+    { time: "09:35:00", close: 100 },
+    { time: "09:40:00", close: 100 },
+    { time: "09:45:00", close: 100 },
+  ];
+
+  it("finds only up-swings, never a down-swing, on a session that only ever rose", () => {
+    const swings = biggestSwings(UP_ONLY, 3);
+    expect(swings.length).toBeGreaterThan(0);
+    for (const swing of swings) {
+      expect(swing.returnFraction).toBeGreaterThan(0);
+    }
+    // The single biggest is the one adjacent-bar step with the largest
+    // gain (MAX_MOVE_SPAN_FRACTION caps a run's own span the same way it
+    // does for topUpMoves -- a 5-bar session's own cap is a single bar,
+    // so "the whole session as one run" is never a candidate here).
+    expect(swings[0]!.returnFraction).toBeCloseTo(106 / 104 - 1, 12);
+  });
+
+  it("finds only down-swings, never an up-swing, on a session that only ever fell -- signed negative", () => {
+    const swings = biggestSwings(DOWN_ONLY, 3);
+    expect(swings.length).toBeGreaterThan(0);
+    for (const swing of swings) {
+      expect(swing.returnFraction).toBeLessThan(0);
+    }
+    expect(swings[0]!.returnFraction).toBeCloseTo(104 / 106 - 1, 12);
+  });
+
+  it("picks the biggest swing in either direction first, regardless of sign -- a session with both", () => {
+    // SHAPED's own biggest single-bar move (by magnitude) is the
+    // +11.11% run from 99 -> 110; its second-biggest is the -4.55% run
+    // right after it, 110 -> 105. topUpMoves would never surface that
+    // second one at all (it's a loss, not a gain) -- this is exactly
+    // what biggestSwings adds.
+    const swings = biggestSwings(SHAPED, 2);
+    expect(swings).toHaveLength(2);
+    expect(swings[0]).toMatchObject({ fromIndex: 1, toIndex: 2 });
+    expect(swings[0]!.returnFraction).toBeCloseTo(110 / 99 - 1, 12);
+    expect(swings[1]).toMatchObject({ fromIndex: 2, toIndex: 3 });
+    expect(swings[1]!.returnFraction).toBeCloseTo(105 / 110 - 1, 12);
+    expect(swings[1]!.returnFraction).toBeLessThan(0);
+  });
+
+  it("returns nothing at all for a session with nothing large enough to qualify -- a flat session", () => {
+    expect(biggestSwings(FLAT, 3)).toEqual([]);
+  });
+
+  it("returns nothing for a session too short to contain a swing", () => {
+    expect(biggestSwings([{ time: "09:30:00", close: 100 }], 3)).toEqual([]);
+  });
+
+  it("never returns two swings sharing a bar interval, even across a real, noisy real session", () => {
+    const swings = biggestSwings(SPY_UP_SESSION_BARS, 5);
+    for (let i = 0; i < swings.length; i += 1) {
+      for (let j = i + 1; j < swings.length; j += 1) {
+        const a = swings[i]!;
+        const b = swings[j]!;
+        const overlaps = a.fromIndex < b.toIndex && b.fromIndex < a.toIndex;
+        expect(overlaps).toBe(false);
+      }
+    }
+  });
+
+  it("finds a real down-swing on a real down-trending session, which topUpMoves cannot represent at all", () => {
+    const swings = biggestSwings(SPY_DOWN_SESSION_BARS, 3);
+    expect(swings.length).toBeGreaterThan(0);
+    // The real session's own overall drift is negative (-1.418%, see the
+    // fixture's own doc comment) -- its single biggest swing should be
+    // a down-swing, not an up-swing, and topUpMoves (up-only by design)
+    // has no way to represent that same swing at all.
+    expect(swings[0]!.returnFraction).toBeLessThan(0);
+    expect(topUpMoves(SPY_DOWN_SESSION_BARS, [], STARTING_CAPITAL, 3)).not.toContainEqual(
+      expect.objectContaining({ fromIndex: swings[0]!.fromIndex, toIndex: swings[0]!.toIndex }),
+    );
+  });
+
+  it("respects the same span cap as topUpMoves, for the same reason", () => {
+    const swings = biggestSwings(SPY_UP_SESSION_BARS, 5);
+    const lastIndex = SPY_UP_SESSION_BARS.length - 1;
+    for (const swing of swings) {
+      expect(swing.toIndex - swing.fromIndex).toBeLessThanOrEqual(Math.floor(lastIndex / 3));
+    }
   });
 });

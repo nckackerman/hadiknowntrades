@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { beatTheBenchKey } from "@/lib/beat-the-bench-storage";
+import { BULLET_TIME_DECISION_WINDOW_MS } from "@/lib/bullet-time";
 import { stubPrefersReducedMotion } from "@/lib/stub-prefers-reduced-motion.test-util";
 import { SPY_SESSION_BARS } from "@/test-fixtures/spy-session-bars";
 import { SPY_DOWN_SESSION_BARS } from "@/test-fixtures/spy-trending-session-bars";
@@ -750,6 +751,116 @@ describe("BeatTheBench", () => {
         screen.getByText(/traders who moved at random through the same session/),
       ).toBeVisible();
       expect(screen.getByText(/a control group for timing, not a model/)).toBeInTheDocument();
+    });
+  });
+
+  // SPY_DOWN_SESSION_BARS schedules two real events under the real
+  // constants (confirmed against the live implementation, not assumed):
+  // a down-swing at bars 27->32, and a second down-swing at bars 64->77
+  // -- the session's own last bar. That second event's own toIndex
+  // landing exactly on the session's last bar is what makes this fixture
+  // useful beyond Mystery Day's own existing use of it: it's the exact
+  // "resolves within the settlement badge's own linger window" case
+  // issue #224's code review flagged (a code-review finding, fixed --
+  // see `SessionGame`'s own `recentlyResolvedEvent` doc comment).
+  describe("Bullet Time (issue #224)", () => {
+    /**
+     * Renders, picks Mystery Day (which serves `SPY_DOWN_SESSION_BARS`),
+     * pauses immediately, and switches to fake timers -- a local sibling
+     * of `enterMysterySession` rather than that same helper, since this
+     * describe block deliberately runs under normal (not reduced)
+     * motion: only `Step forward one bar` is clicked below, never
+     * `advance()`, so the real tick interval is irrelevant either way,
+     * but pausing first keeps a stray real `setInterval` callback from
+     * firing between clicks.
+     */
+    async function enterMysteryUnderNormalMotion(): Promise<void> {
+      stubRoutedFetch();
+      render(<BeatTheBench />);
+      clickCompactCard();
+      click(/play a mystery day/i);
+      await screen.findByText(/bar 1 of 78/);
+      click("Pause");
+      vi.useFakeTimers();
+    }
+
+    it("never shows the live 'Called it'/'Not this time' badge once the session has settled, even when the last event resolves on the session's own final bar", async () => {
+      await enterMysteryUnderNormalMotion();
+      // Never clicks Ride it out/Step aside for either event -- both
+      // resolve via the honest "no decision locks to whatever you're
+      // already holding" no-op (Step, clicked here, behaves identically
+      // to letting the countdown run out). The player starts holding and
+      // never moves, so both down-swing calls resolve "incorrect."
+      await stepToClose();
+
+      expect(screen.queryByText(/Not this time/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Called it/)).not.toBeInTheDocument();
+      // The settlement's own tally line is unaffected by that gate --
+      // it's a separate computation (resolvedBulletTimeCalls), not the
+      // live-lingering badge.
+      expect(screen.getByText("Bullet Time calls: 0 of 2 correct.")).toBeInTheDocument();
+    });
+
+    it("shows the decision panel and a live resolution badge mid-session, then the settlement's own tally line once settled", async () => {
+      await enterMysteryUnderNormalMotion();
+
+      // Step to the first event's own deciding bar (fromIndex 27).
+      for (let i = 0; i < 27; i += 1) click("Step forward one bar");
+      expect(screen.getByText("Big swing incoming")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Ride it out" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Step aside" })).toBeInTheDocument();
+
+      // A down-swing: "Step aside" (ending up in cash) is the correct call.
+      click("Step aside");
+      // Step through the rest of the swing to its own resolution bar (32).
+      for (let i = 0; i < 5; i += 1) click("Step forward one bar");
+
+      // Two matches, deliberately: the visible badge and the sr-only
+      // aria-live announcement share the identical sentence (computed
+      // once, per this issue's own code-review fix -- see
+      // `recentlyResolvedSentence`'s own doc comment).
+      expect(screen.getAllByText(/Called it/).length).toBeGreaterThan(0);
+
+      // Never explicitly chosen again for the second event -- the
+      // player is still in cash from the first call, and staying there
+      // (the honest no-op) happens to be correct again, since the
+      // second event is also a down-swing.
+      await stepToClose();
+      expect(screen.getByText("Bullet Time calls: 2 of 2 correct.")).toBeInTheDocument();
+    });
+
+    // A real bug, found by an independent code review: the decision
+    // auto-lock timer's own guard used to check only `deciding`/
+    // `reducedMotion`, not the player's own `paused` state -- a player
+    // who paused, then used "Step forward one bar" (always available) to
+    // step into a trigger bar, would have a real wall-clock timer
+    // silently counting down while the game visibly looked paused to
+    // them. `enterMysteryUnderNormalMotion` already leaves the session
+    // paused (it clicks "Pause" once, up front), so stepping straight
+    // into the deciding bar reproduces the exact scenario -- no extra
+    // pause click needed here.
+    it("does not auto-lock the decision window while the player is paused, and resumes counting down once they unpause", async () => {
+      await enterMysteryUnderNormalMotion();
+
+      // 27 steps from the opening bar (barIndex 0) lands on barIndex 27
+      // -- the first event's own fromIndex, displayed as "bar 28".
+      for (let i = 0; i < 27; i += 1) click("Step forward one bar");
+      expect(screen.getByText("Big swing incoming")).toBeInTheDocument();
+      expect(screen.getByText(/bar 28 of 78/)).toBeInTheDocument();
+
+      // Well past the real decision window -- if the timer were still
+      // running despite `paused`, it would have fired by now.
+      advance(BULLET_TIME_DECISION_WINDOW_MS + 1000);
+      expect(screen.getByText("Big swing incoming")).toBeInTheDocument();
+      expect(screen.getByText(/bar 28 of 78/)).toBeInTheDocument();
+
+      // Unpausing restarts the effect with a fresh window (not a resumed
+      // partial one, per this fix's own doc comment) -- advancing by
+      // exactly that window now lets the real auto-lock fire.
+      click("Play");
+      advance(BULLET_TIME_DECISION_WINDOW_MS);
+      expect(screen.queryByText("Big swing incoming")).not.toBeInTheDocument();
+      expect(screen.getByText(/bar 29 of 78/)).toBeInTheDocument();
     });
   });
 
