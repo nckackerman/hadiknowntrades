@@ -1450,3 +1450,102 @@ overwrite the key."
   of truth every other display name in this app already reads from, not
   a second hand-typed copy the way `spec-the-order.md`'s own now-
   superseded 240-name allowlist needed its own curated names for.
+
+## The Cut: cap-weighted prefix-selection algorithm (issue #231)
+
+`src/sp500-prefix-selection.ts`'s `computeSp500PrefixSelection` is The
+Cut's core domain algorithm -- see `docs/design/the-cut-2026-09/README.md`'s
+"The mechanic" section for the full derivation. Pure, no I/O, no pipeline
+wiring (that's a separate follow-on issue) -- exactly the "packages/core
+selection module" precedent `lineup-selection.ts`/`order-selection.ts`
+already established.
+
+- **Exact signature**:
+  `computeSp500PrefixSelection(input: Sp500PrefixSelectionInput): Sp500PrefixSelectionResult`,
+  where `Sp500PrefixSelectionInput` is `{ orderedTickers:
+readonly Sp500PrefixTicker[]; closesByTicker: ReadonlyMap<string,
+readonly DailyClose[]>; rangeStartString: string; endDateString: string;
+startingCapital: number }` (`Sp500PrefixTicker` is `{ symbol: string;
+weight: number }`), and `Sp500PrefixSelectionResult` is `{ bestN: number
+| null; bestPortfolioReturn: number | null; bestEndingBalance: number |
+null; curve: Sp500PrefixCurvePoint[] }` (`Sp500PrefixCurvePoint` is `{ n:
+number; portfolioReturn: number; endingBalance: number; cumWeight:
+number }`). All exported from `index.ts`. **This function does not sort
+  `orderedTickers` itself** -- the caller (the pipeline-integration issue)
+  must pass them already ranked #1..#N by real weight descending, e.g.
+  `[...SP500_CONSTITUENTS].sort((a, b) => b.weight - a.weight)`.
+- **Algorithm: two O(n) prefix-sum arrays built in one pass, then a third
+  O(n) pass reads off portfolioReturn(N) and the argmax** -- three
+  sequential O(n) loops total (per-ticker ratio/effectiveWeight, the
+  prefix sums themselves, then curve+argmax), never O(n^2) or per-N
+  recomputation from scratch. Ties in `portfolioReturn` across different
+  N break toward the smallest N purely by using a strict `>` (never `>=`)
+  comparison in the argmax loop -- the first (smallest) N to reach a given
+  maximum is never displaced by a later N that only ties it.
+- **`rangeStartString`/`endDateString` are both required, non-nullable
+  strings -- unlike `apps/pipeline`'s `computeBenchmark`, whose own
+  `rangeStartString` is `string | null` (null meaning "no lower bound,"
+  used for the MAX range).** There's no well-defined "no lower bound" case
+  under this module's exact-boundary-date-match rule (see next bullet), so
+  the caller must resolve MAX's own start into a real concrete date before
+  calling this (e.g. the earliest date common to the fetched universe) --
+  deliberately left to the pipeline-integration issue rather than solved
+  here, since it needs real fetched data to answer.
+- **Exact boundary-date matching for `effectiveWeight_i`, deliberately
+  stricter than `computeBenchmark`'s own "earliest/latest point that falls
+  somewhere inside the window" scan.** A ticker's ratio is only valid --
+  and its real weight only counted -- if its own close history has an
+  entry whose `date` is _exactly_ `rangeStartString` and _exactly_
+  `endDateString`; a close history that starts later (not yet IPO'd by
+  `rangeStartString`) or ends earlier (delisted by `endDateString`) than
+  those two exact dates is treated as fully missing for that window
+  (`effectiveWeight_i = 0`), not given a truncated/partial-window ratio.
+  This is a deliberate, load-bearing divergence from `computeBenchmark`'s
+  own tolerance (which accepts a truncated window for its one SPY ticker
+  and flags it via a separate `truncated` field) -- the design doc's own
+  "missing/delisted mid-window" exclusion rule needs a real
+  all-or-nothing per-ticker validity check, not a benchmark-style
+  approximation, and exact-match achieves that without needing a shared
+  trading calendar to detect "delisted before the window's real end."
+  **Correctness precondition worth restating for whoever wires this into
+  the pipeline**: both boundary dates must be real, actually-observed
+  trading dates (e.g. `endDateString` should be something like the
+  pipeline's own `dataAsOf`, not a nominal preset-range boundary that
+  might land on a weekend/holiday) -- if `rangeStartString`/`endDateString`
+  themselves aren't real trading days, _every_ ticker's ratio computes as
+  `null` and the whole result comes back `bestN: null`, which is a loud,
+  easy-to-notice failure rather than a silently wrong one, but still worth
+  getting right at the call site.
+- **The "every company in this prefix lacks data" guard is a plain
+  `cumWeight[i] <= 0` skip in the final pass** -- that N contributes
+  neither a `curve` entry nor an argmax candidate. Since every real
+  `weight` is non-negative, `cumWeight` is monotonically non-decreasing,
+  so this only ever fires for a leading run of N's (the lowest-ranked
+  companies in a prefix can't independently zero out a `cumWeight` that a
+  higher-ranked company already made positive) -- verified by a dedicated
+  test (`sp500-prefix-selection.test.ts`'s "excludes a whole leading
+  prefix..." case) rather than just asserted.
+- **`bestN: null` is a real, reachable return value, not just a defensive
+  type** -- it fires when every N from 1..`orderedTickers.length` has
+  `cumWeight[N] === 0`, i.e. the whole given universe lacks window data
+  entirely. Unreachable against a real, mostly-populated S&P 500 fetch,
+  but a real possibility against a small/degenerate test or dev fixture,
+  and callers (the pipeline-integration issue, then the web API) must
+  handle it rather than assume it can't happen.
+- **`startingCapital` is a required input field, not a hardcoded
+  constant** -- this module has no opinion on this app's own $20
+  convention (`apps/pipeline`'s `DEFAULT_STARTING_CAPITAL`); the caller
+  supplies it.
+- Tests mirror `lineup-selection.test.ts`/`order-selection.test.ts`'s
+  house style: a hand-computed known-best-N fixture, a genuine
+  N=1-vs-N=3 tie (deliberately with a non-tied N=2 in between, to prove
+  the tie-break isn't just "the two highest N" but the true smallest-N
+  argmax), a mid-list missing/delisted ticker (excluded, `cumWeight`
+  provably unchanged across that N), a ticker absent from `closesByTicker`
+  entirely (same treatment as one present-but-missing-a-boundary-close), a
+  non-positive/non-finite boundary close (same treatment again, via
+  `isValidPrice`), the whole-leading-prefix-excluded guard, the
+  whole-universe-`bestN: null` guard, and an N=full-length
+  self-consistency invariant (the last curve point, with zero exclusions,
+  independently recomputed as a plain weighted average outside the
+  function under test).
