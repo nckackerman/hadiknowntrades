@@ -34,7 +34,8 @@ CloudFront, `RemovalPolicy.DESTROY` + auto-delete since this is a
 sandbox project regenerating its data nightly), a CloudFront
 distribution (Lambda Function URL default origin via OAC, S3 origin for
 `/_next/static/*`), the pipeline Lambda + a nightly EventBridge rule
-targeting it, and a placeholder web-hosting Lambda.
+targeting it, and a real OpenNext-built web-hosting Lambda (see "Current
+deployment state" below).
 
 ## Current deployment state (2026-08-21)
 
@@ -141,18 +142,24 @@ and how to actually get anything deployed here at all.
   role construct id is `PipelineFunctionRole` (its own explicit `Role`),
   not CDK's default `PipelineFunctionServiceRole` naming for an unnamed
   one.
-- **The web Lambda is still the placeholder** (`cdk/lambda/web-placeholder/`),
-  not a real OpenNext build -- this is now the main gap, not apps/web's
-  own code. apps/web itself is a real app as of issues #7/#8/#10 (the
-  results API, the range/chart/trade-list UI, the on-site methodology
-  section) and has been live-verified against this exact deployed S3
-  bucket -- the placeholder Lambda is purely an infra-side gap (no
-  `open-next.config.ts`, no OpenNext build step, nothing in
-  `webAssetsBucket`), not a reflection of apps/web's own state. See
-  that file's header comment for exactly what needs to change (add
-  `open-next.config.ts` + a build step to apps/web, then point the
-  stack's `entry`/`code` at the real build output and sync
-  `.open-next/assets` into `webAssetsBucket`).
+- **The web Lambda is a real OpenNext build, not the placeholder** (PR
+  #222 shipped this — the `cdk/lambda/web-placeholder/` directory this
+  file used to point at no longer exists; `WebFunction` now points
+  `Code.fromAsset` at `apps/web/.open-next/server-functions/default.zip`,
+  produced by `apps/web`'s `build:lambda`/`build:lambda:bypass` scripts,
+  with `webAssetsBucket` synced from `.open-next/assets`). **This
+  introduced a real gap that shipped broken for ~10 days before being
+  caught**: CI's own `pnpm build` step only runs `next build` (via the
+  root `pnpm -r --if-present build`), never the OpenNext bundle+zip, so
+  `infra/cdk`'s stack test — which does a real `Code.fromAsset` read of
+  that zip — failed on every fresh checkout with `CannotFindAsset` from
+  PR #222 onward (see `.github/workflows/CLAUDE.md`'s own note on the
+  fix: a dedicated `pnpm --filter web build:lambda` CI step, added after
+  this had already broken main). It silently passed on developer
+  machines with a stale `.open-next/` left over from an earlier manual
+  build, which is exactly why it went unnoticed — a live CI run is the
+  only trustworthy signal here, a clean local `pnpm test` on a
+  been-worked-in checkout is not.
 - Env var contract the pipeline Lambda expects: `RESULTS_BUCKET` (set
   by the stack from the actual `resultsBucket.bucketName` token — no
   hardcoded bucket name anywhere). Bucket names themselves are

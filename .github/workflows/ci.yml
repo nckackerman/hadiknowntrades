@@ -64,6 +64,22 @@ jobs:
         continue-on-error: true
         run: pnpm build
 
+      # infra/cdk's stack test does a real Code.fromAsset(...) read of
+      # apps/web's OpenNext server-function zip (see
+      # hadiknowntrades-stack.ts's WEB_SERVER_FUNCTION_ZIP) -- plain
+      # `pnpm build` above only runs apps/web's `next build`, not the
+      # OpenNext bundle+zip, so without this step the Test step below
+      # fails on a fresh checkout with CannotFindAsset even though
+      # nothing is actually broken. Confirmed live: this silently
+      # passed locally on a workstation with a stale .open-next/ left
+      # over from a previous manual build, which is exactly why it
+      # went unnoticed and broke every PR's CI (including docs-only
+      # ones) from PR #222 onward.
+      - name: Build web lambda bundle
+        id: build-web-lambda
+        continue-on-error: true
+        run: pnpm --filter web build:lambda
+
       - name: Test
         id: test
         continue-on-error: true
@@ -76,12 +92,14 @@ jobs:
              [ "${{ steps.typecheck.outcome }}" != "success" ] || \
              [ "${{ steps.format-check.outcome }}" != "success" ] || \
              [ "${{ steps.build.outcome }}" != "success" ] || \
+             [ "${{ steps.build-web-lambda.outcome }}" != "success" ] || \
              [ "${{ steps.test.outcome }}" != "success" ]; then
             echo "One or more checks failed:"
-            echo "  lint:         ${{ steps.lint.outcome }}"
-            echo "  typecheck:    ${{ steps.typecheck.outcome }}"
-            echo "  format-check: ${{ steps.format-check.outcome }}"
-            echo "  build:        ${{ steps.build.outcome }}"
-            echo "  test:         ${{ steps.test.outcome }}"
+            echo "  lint:             ${{ steps.lint.outcome }}"
+            echo "  typecheck:        ${{ steps.typecheck.outcome }}"
+            echo "  format-check:     ${{ steps.format-check.outcome }}"
+            echo "  build:            ${{ steps.build.outcome }}"
+            echo "  build-web-lambda: ${{ steps.build-web-lambda.outcome }}"
+            echo "  test:             ${{ steps.test.outcome }}"
             exit 1
           fi
