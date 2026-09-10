@@ -1545,7 +1545,34 @@ number }`). All exported from `index.ts`. **This function does not sort
   entirely (same treatment as one present-but-missing-a-boundary-close), a
   non-positive/non-finite boundary close (same treatment again, via
   `isValidPrice`), the whole-leading-prefix-excluded guard, the
-  whole-universe-`bestN: null` guard, and an N=full-length
-  self-consistency invariant (the last curve point, with zero exclusions,
-  independently recomputed as a plain weighted average outside the
-  function under test).
+  whole-universe-`bestN: null` guard, a duplicate-dated boundary entry
+  (see the next bullet), and an N=full-length self-consistency invariant
+  (the last curve point, with zero exclusions, independently recomputed
+  as a plain weighted average outside the function under test).
+- **`tickerWindowRatio`'s internal boundary-date scan is first-match-wins
+  and breaks early once both boundaries are found -- a real, code-
+  review-caught bug in the first version of this file, not a design
+  choice re-litigated after the fact.** The original loop had no
+  duplicate-date handling at all (`if (point.date === rangeStartString)
+startClose = point.close`, unconditionally, for every matching entry) --
+  a `closes` array with more than one entry dated exactly
+  `rangeStartString` or `endDateString` silently produced a ratio from
+  whichever duplicate happened to appear _last_, not first, which is
+  exactly the kind of thing that would have flowed into every N from
+  that ticker's rank onward and could have flipped `bestN` itself. Worth
+  restating since it's easy to assume "a ticker only ever has one close
+  per date" and skip handling it: this package's own CLAUDE.md already
+  documents (see "Data source" above) that `fetchDailyCloses`'s return
+  order/uniqueness isn't a guaranteed contract, and other selection code
+  in this same package already treats that as real -- `lineup-
+selection.ts`'s `computeCandidates` resolves an analogous "this
+  ticker's entry for a given date" lookup via a first-match `findIndex`,
+  not an unconditional last-write-wins scan, which is the established
+  pattern this function's fix now matches. The early-break-once-both-
+  found change is bundled with the same fix for efficiency, not
+  correctness: cheap for the small synthetic fixtures in this file's own
+  tests, but meaningfully avoids a full multi-year-history scan per
+  ticker once a real caller passes each ticker's full fetched history
+  rather than an already-window-sliced one (the follow-on pipeline-
+  integration issue is expected to do exactly that, per this repo's
+  fetch-once-slice-locally convention).

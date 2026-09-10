@@ -142,6 +142,20 @@ export interface Sp500PrefixSelectionResult {
  *
  * Returns `null` if either boundary date is missing from `closes`, or
  * either close found there isn't a valid positive finite price.
+ *
+ * **First match wins for each boundary date, and the scan stops as soon
+ * as both are found** -- `closes`' own order/uniqueness isn't a
+ * guaranteed contract (this package's own CLAUDE.md documents
+ * `fetchDailyCloses`'s return order as exactly that), so a caller-
+ * supplied array with more than one entry dated `rangeStartString` or
+ * `endDateString` must resolve deterministically rather than silently
+ * taking whichever duplicate happens to appear last. This mirrors
+ * `lineup-selection.ts`'s own `computeCandidates`, which resolves an
+ * analogous "find this ticker's entry for a given date" lookup via a
+ * first-match `findIndex`, not a last-write-wins scan. Stopping early
+ * once both boundaries are found also keeps this a bounded, not
+ * full-array, scan for the common case of a caller passing a ticker's
+ * full multi-year history rather than an already-window-sliced one.
  */
 function tickerWindowRatio(
   closes: readonly DailyClose[] | undefined,
@@ -152,8 +166,9 @@ function tickerWindowRatio(
   let startClose: number | null = null;
   let endClose: number | null = null;
   for (const point of closes) {
-    if (point.date === rangeStartString) startClose = point.close;
-    if (point.date === endDateString) endClose = point.close;
+    if (startClose === null && point.date === rangeStartString) startClose = point.close;
+    if (endClose === null && point.date === endDateString) endClose = point.close;
+    if (startClose !== null && endClose !== null) break;
   }
   if (startClose === null || endClose === null) return null;
   if (!isValidPrice(startClose) || !isValidPrice(endClose)) return null;

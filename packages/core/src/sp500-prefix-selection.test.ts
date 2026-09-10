@@ -253,6 +253,37 @@ describe("computeSp500PrefixSelection", () => {
     expect(result.bestN).toBe(1);
   });
 
+  it("uses the first close matching each boundary date when a ticker's history has a duplicate-dated entry, not the last", () => {
+    // DUPE's own close array (order/uniqueness isn't a guaranteed
+    // contract -- see packages/core/CLAUDE.md's fetchDailyCloses note)
+    // has two entries dated START (100, then a bogus later 999) and two
+    // dated END (200, then a bogus later 111). First match must win for
+    // both boundaries -- ratio 200/100 = 2, never 111/999.
+    const orderedTickers: Sp500PrefixTicker[] = [{ symbol: "DUPE", weight: 100 }];
+    const closesByTicker = new Map<string, DailyClose[]>([
+      [
+        "DUPE",
+        [
+          { date: START, close: 100 },
+          { date: END, close: 200 },
+          { date: START, close: 999 }, // duplicate START -- must be ignored
+          { date: END, close: 111 }, // duplicate END -- must be ignored
+        ],
+      ],
+    ]);
+    const result = computeSp500PrefixSelection({
+      orderedTickers,
+      closesByTicker,
+      rangeStartString: START,
+      endDateString: END,
+      startingCapital: STARTING_CAPITAL,
+    });
+
+    expect(result.bestN).toBe(1);
+    expect(result.bestPortfolioReturn).toBeCloseTo(2, 10); // 200/100, not 111/999 or any other combination
+    expect(result.bestEndingBalance).toBeCloseTo(STARTING_CAPITAL * 2, 10);
+  });
+
   it("is deterministic: identical input always produces identical output", () => {
     const orderedTickers: Sp500PrefixTicker[] = [
       { symbol: "A", weight: 40 },
