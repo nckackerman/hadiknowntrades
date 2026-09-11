@@ -183,6 +183,19 @@ describe("CallBoard: the 3-slot board", () => {
     expect(list!.className).toContain("grid-cols-1");
     expect(list!.className).toContain("sm:grid-cols-3");
   });
+
+  it("reads each slot's own 4 buckets as a 2x2 grid at every width, not a single stacked column", async () => {
+    // A direct user request: "the up/down buttons are vertically
+    // stacked, can we change that to horizontal by default?" -- the
+    // group's own grid must stay 2-across at every width the board
+    // renders at, not fall back to a single column from `sm` up.
+    freezeClock(WEDNESDAY_BEFORE_OPEN);
+    await renderBoard();
+
+    const group = screen.getByRole("group", { name: "Your call for Aug 26, 2026" });
+    expect(group.className).toContain("grid-cols-2");
+    expect(group.className).not.toMatch(/sm:grid-cols-1\b/);
+  });
 });
 
 describe("CallBoard: hydration safety", () => {

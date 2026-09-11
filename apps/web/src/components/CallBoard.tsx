@@ -683,17 +683,35 @@ export function CallBoard() {
                     <div
                       role="group"
                       aria-label={`Your call for ${dateLabel}`}
-                      // Two across at phone widths (where a slot spans the
-                      // full column and each button lands around 130px),
-                      // one per row from `sm` up (where three slots share
-                      // the row and a two-across grid leaves only ~90px --
-                      // narrow enough that "Down big" wrapped onto a
-                      // second line, making the 2x2 grid visibly ragged;
-                      // caught by a real screenshot, not by the DOM
-                      // assertions). A single column at that width also
-                      // reads as a bullish-to-bearish ladder, which is the
-                      // order CALL_BUCKETS is already in.
-                      className="grid grid-cols-2 gap-2 sm:grid-cols-1"
+                      // A 2x2 grid at every width the board actually
+                      // renders at, not a single vertical column from `sm`
+                      // up -- reads horizontally rather than as one tall
+                      // stack, per direct user feedback ("the up/down
+                      // buttons are vertically stacked, can we change
+                      // that to horizontal by default?").
+                      //
+                      // At phone widths a slot spans the full column and
+                      // each button lands around 130px; from `sm` up three
+                      // slots share the row and a two-across grid leaves
+                      // only ~90px per button. That ~90px width is
+                      // exactly what made issue #129's original design
+                      // switch to a single column at `sm` -- under this
+                      // button's *original* px-2/text-sm sizing, "Down
+                      // big" wrapped onto a second line there. It no
+                      // longer does: the button's own padding/type size
+                      // were trimmed (px-2 py-2 text-sm -> px-1 py-2
+                      // text-xs) specifically to fit a real ~90px button
+                      // without wrapping, with the label text itself left
+                      // unchanged -- verified by a real 375px/390px/1280px
+                      // screenshot, not just reasoned about, since ~90px
+                      // is exactly the width issue #129's own note
+                      // already flagged as tight. A 2x2 grid still reads
+                      // as a bullish-to-bearish ladder top-to-bottom then
+                      // left-to-right, the same property the single-
+                      // column design had, since CALL_BUCKETS' own
+                      // most-bullish-first order fills the grid in
+                      // row-major order.
+                      className="grid grid-cols-2 gap-1.5"
                     >
                       {CALL_BUCKETS.map((bucket) => {
                         const isSelected = call.pick === bucket;
@@ -710,7 +728,7 @@ export function CallBoard() {
                             // #129 requires at a 375px viewport, set explicitly
                             // rather than left to whatever the padding happens
                             // to produce.
-                            className={`flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-md px-2 py-2 text-sm font-medium whitespace-nowrap transition-colors ${
+                            className={`flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-md px-1 py-2 text-xs font-medium whitespace-nowrap transition-colors ${
                               isSelected
                                 ? // --accent-selection, not --accent-reward: a
                                   // filled slot means "you picked", not "you
