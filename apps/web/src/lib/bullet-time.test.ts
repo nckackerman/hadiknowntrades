@@ -163,16 +163,18 @@ describe("scheduleBulletTimeEvents", () => {
 
   it("never schedules a second event whose own window would overlap an already-scheduled event's own still-active window, even when their trigger points alone are far enough apart", () => {
     // A real counter-example (found in code review): an up-swing spanning
-    // bars 2->9 (triggerIndex 0) directly followed by a down-swing
-    // starting exactly where it ends, bars 9->17 (triggerIndex 7). The
-    // two trigger points are 7 bars apart -- comfortably clearing
-    // BULLET_TIME_MIN_TRIGGER_GAP_BARS (6) on a naive trigger-to-trigger
-    // check -- but the first event's own window (0 through 9) is still
-    // active well past the second event's own trigger point (7), so a
-    // trigger-only check would have scheduled both, silently swallowing
-    // the second event's entire approach phase (bulletTimeStatusAt
-    // resolves an overlap to whichever event sorts first). Only one
-    // event should be scheduled.
+    // bars 2->9 (triggerIndex 1, at the current BULLET_TIME_LEAD_BARS = 1)
+    // directly followed by a down-swing starting exactly where it ends,
+    // bars 9->17 (triggerIndex 8). The two windows genuinely share bar 8
+    // -- a real overlap, not just a gap-buffer violation -- so this stays
+    // a real regression case even at BULLET_TIME_MIN_TRIGGER_GAP_BARS's
+    // own current floor of 0 (intervalsWithinGap at gap 0 is exact-
+    // overlap detection, see that function's own doc comment). A
+    // trigger-only check would have scheduled both anyway (their trigger
+    // points, 1 and 8, are 7 bars apart), silently swallowing the second
+    // event's entire approach phase (bulletTimeStatusAt resolves an
+    // overlap to whichever event sorts first). Only one event should be
+    // scheduled.
     const values: number[] = [101, 100.5, 99.6];
     let price = 99.6;
     for (let i = 0; i < 7; i += 1) {
@@ -190,7 +192,7 @@ describe("scheduleBulletTimeEvents", () => {
     expect(events).toHaveLength(1);
     // The down-swing is the slightly larger-magnitude candidate, so it's
     // the one that wins; the up-swing is correctly rejected as too close.
-    expect(events[0]).toMatchObject({ triggerIndex: 7, swing: { fromIndex: 9, toIndex: 17 } });
+    expect(events[0]).toMatchObject({ triggerIndex: 8, swing: { fromIndex: 9, toIndex: 17 } });
   });
 
   it("never schedules an event without BULLET_TIME_LEAD_BARS of room before its own swing", () => {

@@ -762,12 +762,16 @@ describe("BeatTheBench", () => {
     });
   });
 
-  // SPY_DOWN_SESSION_BARS schedules two real events under the real
-  // constants (confirmed against the live implementation, not assumed):
-  // a down-swing at bars 27->32, and a second down-swing at bars 64->77
-  // -- the session's own last bar. That second event's own toIndex
-  // landing exactly on the session's last bar is what makes this fixture
-  // useful beyond Mystery Day's own existing use of it: it's the exact
+  // SPY_DOWN_SESSION_BARS schedules three real events under the real,
+  // second-revamp-round constants (confirmed against the live
+  // implementation, not assumed -- this was two events, both down-
+  // swings, before BULLET_TIME_LEAD_BARS/BULLET_TIME_MIN_TRIGGER_GAP_BARS
+  // shrank from 2/6 to 1/0; the tighter spacing now finds room for a
+  // third, an up-swing, between them): a down-swing at bars 27->32, an
+  // up-swing at bars 38->63, and a second down-swing at bars 64->77 --
+  // the session's own last bar. That last event's own toIndex landing
+  // exactly on the session's last bar is what makes this fixture useful
+  // beyond Mystery Day's own existing use of it: it's the exact
   // "resolves within the settlement badge's own linger window" case
   // issue #224's code review flagged (a code-review finding, fixed --
   // see `SessionGame`'s own `recentlyResolvedEvent` doc comment).
@@ -794,11 +798,14 @@ describe("BeatTheBench", () => {
 
     it("never shows the live 'Called it'/'Not this time' badge once the session has settled, even when the last event resolves on the session's own final bar", async () => {
       await enterMysteryUnderNormalMotion();
-      // Never clicks Ride it out/Step aside for either event -- both
-      // resolve via the honest "no decision locks to whatever you're
-      // already holding" no-op (Step, clicked here, behaves identically
-      // to letting the countdown run out). The player starts holding and
-      // never moves, so both down-swing calls resolve "incorrect."
+      // Never clicks Ride it out/Step aside for any of the three events
+      // -- all three resolve via the honest "no decision locks to
+      // whatever you're already holding" no-op (Step, clicked here,
+      // behaves identically to letting the countdown run out). The
+      // player starts holding and never moves: the first (down) and
+      // third (down) calls resolve "incorrect" (holding through a
+      // decline), the middle (up) call resolves "correct" (holding
+      // through a rally) -- 1 of 3 correct.
       await stepToClose();
 
       expect(screen.queryByText(/Not this time/)).not.toBeInTheDocument();
@@ -806,7 +813,7 @@ describe("BeatTheBench", () => {
       // The settlement's own tally line is unaffected by that gate --
       // it's a separate computation (resolvedBulletTimeCalls), not the
       // live-lingering badge.
-      expect(screen.getByText("Bullet Time calls: 0 of 2 correct.")).toBeInTheDocument();
+      expect(screen.getByText("Bullet Time calls: 1 of 3 correct.")).toBeInTheDocument();
     });
 
     it("shows the decision panel and a live resolution badge mid-session, then the settlement's own tally line once settled", async () => {
@@ -829,12 +836,15 @@ describe("BeatTheBench", () => {
       // `recentlyResolvedSentence`'s own doc comment).
       expect(screen.getAllByText(/Called it/).length).toBeGreaterThan(0);
 
-      // Never explicitly chosen again for the second event -- the
-      // player is still in cash from the first call, and staying there
-      // (the honest no-op) happens to be correct again, since the
-      // second event is also a down-swing.
+      // Never explicitly chosen again for the second or third events --
+      // the player is still in cash from the first call. Staying in
+      // cash is *wrong* for the second event (an up-swing, bars 38-63:
+      // being in cash through a rally is the incorrect side) and
+      // *correct* again for the third (a down-swing, bars 64-77) -- 2 of
+      // 3 correct overall, the same real tally the live implementation
+      // produces for this exact fixture.
       await stepToClose();
-      expect(screen.getByText("Bullet Time calls: 2 of 2 correct.")).toBeInTheDocument();
+      expect(screen.getByText("Bullet Time calls: 2 of 3 correct.")).toBeInTheDocument();
     });
 
     // A real bug, found by an independent code review: the decision
