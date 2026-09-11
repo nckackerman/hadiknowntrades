@@ -6,6 +6,13 @@ import { describe, expect, it, vi } from "vitest";
 import { CutRangeSelector } from "./CutRangeSelector";
 
 describe("CutRangeSelector (issue #238)", () => {
+  it("has its own distinct aria-label, not RangeSelector's own 'Preset date range' (code review finding)", () => {
+    render(<CutRangeSelector selected="1D" onSelect={() => {}} />);
+
+    expect(screen.getByRole("group", { name: "The Cut date range" })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Preset date range" })).not.toBeInTheDocument();
+  });
+
   it("renders a button for every CUT_RANGES entry, including 1D", () => {
     render(<CutRangeSelector selected="1D" onSelect={() => {}} />);
 

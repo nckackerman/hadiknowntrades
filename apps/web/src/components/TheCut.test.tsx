@@ -109,7 +109,7 @@ describe("TheCut", () => {
     const panel = await expandBoard();
 
     expect(panel.getByText("NVDA")).toBeInTheDocument(); // real rank #1 by weight
-    expect(panel.getByRole("group", { name: "Preset date range" })).toBeInTheDocument();
+    expect(panel.getByRole("group", { name: "The Cut date range" })).toBeInTheDocument();
     expect(panel.queryByText(/too high|too low/i)).not.toBeInTheDocument();
     expect(panel.getByText(/6 guesses left/i)).toBeInTheDocument(); // CUT_MAX_ATTEMPTS, no guesses yet
   });

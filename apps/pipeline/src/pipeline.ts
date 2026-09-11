@@ -1408,6 +1408,120 @@ function resolveCommonDates(
  * multi-day holiday) -- which is what "yesterday's close vs. today's
  * close" actually means in a market that doesn't trade every day.
  */
+/**
+ * One range's own resolved start boundary, truncation flag, and SPY
+ * benchmark -- bundled together (rather than resolved independently at
+ * up to three separately-scattered call sites, one per decision) so "is
+ * this the 1D range" is checked exactly once per range, by
+ * buildSp500PrefixResults' own single `range === "1D"` branch below, not
+ * re-derived a second and third time later in the same function (code
+ * review finding, fixed) -- see resolveOneDayBoundary/resolvePresetBoundary,
+ * the two functions that build one of these.
+ */
+interface RangeBoundary {
+  startDate: string;
+  truncated: boolean;
+  benchmark: BenchmarkResult | null;
+}
+
+/**
+ * Resolves "1D"'s own start/truncated/benchmark together -- see
+ * buildSp500PrefixResults' own doc comment for why "1D" needs a
+ * *backward* lookup (not the forward-snapped-nominal-start
+ * resolvePresetBoundary below uses) and why its own benchmark can't
+ * reuse the PresetRange-keyed benchmarksByRange map at all.
+ */
+function resolveOneDayBoundary(
+  commonDates: readonly string[],
+  earliestCommonDate: string,
+  commonEndDate: string,
+  benchmarkCloses: readonly DailyClose[],
+  startingCapital: number,
+): RangeBoundary {
+  // The real trading day immediately preceding commonEndDate -- see
+  // this function's own doc comment for why this is a *backward*
+  // lookup, not the forward-snapped-nominal-start resolvePresetBoundary
+  // uses.
+  const previousIndex = commonDates.length - 2;
+  if (previousIndex < 0) {
+    // Fewer than two majority-shared trading dates exist at all -- no
+    // real previous trading day to compare against. Unreachable against
+    // a real, historically-deep fetch (the whole point of fetching each
+    // ticker's full history -- see this file's own module header); a
+    // defensive fallback, not a case expected to fire live.
+    const startDate = earliestCommonDate;
+    // startDate === commonEndDate here (only one common date exists at
+    // all) -- a genuinely zero-width window. The SPY benchmark computed
+    // against that same pair must agree it's truncated too:
+    // computeBenchmark's own "nearest point in [start, end]" check has
+    // no way to detect a *zero-width* range as truncated on its own (SPY
+    // almost certainly still has a real close on that single date), so
+    // without this override a reader checking only benchmark.truncated
+    // alone would miss the warning the top-level flag already carries
+    // (code review finding, fixed).
+    const benchmark = computeBenchmark(benchmarkCloses, startDate, commonEndDate, startingCapital);
+    return {
+      startDate,
+      truncated: true,
+      benchmark: benchmark ? { ...benchmark, truncated: true } : null,
+    };
+  }
+  const startDate = commonDates[previousIndex]!;
+  return {
+    startDate,
+    truncated: false,
+    benchmark: computeBenchmark(benchmarkCloses, startDate, commonEndDate, startingCapital),
+  };
+}
+
+/**
+ * Resolves one PresetRange's own start/truncated/benchmark together --
+ * see RangeBoundary's own doc comment for why bundling these (rather
+ * than resolving "is this range 1D" more than once) is what this file's
+ * code review asked for.
+ */
+function resolvePresetBoundary(
+  range: PresetRange,
+  asOf: Date,
+  commonDates: readonly string[],
+  earliestCommonDate: string,
+  benchmarksByRange: ReadonlyMap<PresetRange, BenchmarkResult | null>,
+): RangeBoundary {
+  const nominalStart = presetRangeStartDate(range, asOf);
+  const nominalStartString = nominalStart ? toDateString(nominalStart) : null;
+  // Array#find, not a binary search: called at most 6 times per run
+  // (once per range) against a real ~5,000-entry array at the 21-year
+  // MAX depth -- ~30,000 comparisons total, negligible next to this
+  // pipeline's real compute cost (see packages/core/CLAUDE.md's own
+  // custom-anchor benchmark for what actually matters at this pipeline's
+  // scale), unlike lowerBoundByDate/upperBoundByDate's binary search,
+  // which earns its keep by running per-ticker, per-anchor, up to
+  // ~1,255 times a run.
+  const foundStart = nominalStartString
+    ? commonDates.find((d) => d >= nominalStartString)
+    : undefined;
+  const startDate = foundStart ?? earliestCommonDate;
+  // Same derivation as BenchmarkResult.truncated, generalized from SPY
+  // alone to the whole fetched universe's own majority-shared calendar
+  // (see Sp500PrefixResult.truncated's own doc comment) -- plus a third
+  // case that derivation has no equivalent of (code review finding,
+  // fixed): `foundStart === undefined` means no common date at or after
+  // the nominal boundary exists at all (only reachable when the
+  // majority-shared calendar's own freshest date sits *before* a short
+  // bounded range's nominal start -- e.g. the fetched data is stale by
+  // more than 1W's own 7-day window), so `startDate` fell back to
+  // `earliestCommonDate` -- potentially a much *earlier* date than the
+  // range name implies, silently widening the window far beyond what
+  // was requested. This can't be caught by `earliestCommonDate >
+  // nominalStartString` alone: that condition is false in exactly this
+  // case (the fallback only triggers when `earliestCommonDate` is
+  // already <=, not >, `nominalStartString`), so it needs its own
+  // explicit check.
+  const truncated =
+    nominalStartString === null || earliestCommonDate > nominalStartString || !foundStart;
+  return { startDate, truncated, benchmark: benchmarksByRange.get(range) ?? null };
+}
+
 function buildSp500PrefixResults(options: {
   history: Map<string, DailyClose[]>;
   asOf: Date;
@@ -1452,62 +1566,20 @@ function buildSp500PrefixResults(options: {
   const commonEndDate = commonDates.at(-1)!;
 
   return CUT_RANGES.map((range) => {
-    let startDate: string;
-    let truncated: boolean;
-
-    if (range === "1D") {
-      // The real trading day immediately preceding commonEndDate -- see
-      // this function's own doc comment for why this is a *backward*
-      // lookup, not the forward-snapped-nominal-start every PresetRange
-      // below uses.
-      const previousIndex = commonDates.length - 2;
-      if (previousIndex >= 0) {
-        startDate = commonDates[previousIndex]!;
-        truncated = false;
-      } else {
-        // Fewer than two majority-shared trading dates exist at all --
-        // no real previous trading day to compare against. Unreachable
-        // against a real, historically-deep fetch (the whole point of
-        // fetching each ticker's full history -- see this file's own
-        // module header); a defensive fallback, not a case expected to
-        // fire live.
-        startDate = earliestCommonDate;
-        truncated = true;
-      }
-    } else {
-      const nominalStart = presetRangeStartDate(range, asOf);
-      const nominalStartString = nominalStart ? toDateString(nominalStart) : null;
-      // Array#find, not a binary search: called at most 6 times per run
-      // (once per range) against a real ~5,000-entry array at the 21-year
-      // MAX depth -- ~30,000 comparisons total, negligible next to this
-      // pipeline's real compute cost (see packages/core/CLAUDE.md's own
-      // custom-anchor benchmark for what actually matters at this
-      // pipeline's scale), unlike lowerBoundByDate/upperBoundByDate's
-      // binary search, which earns its keep by running per-ticker,
-      // per-anchor, up to ~1,255 times a run.
-      const foundStart = nominalStartString
-        ? commonDates.find((d) => d >= nominalStartString)
-        : undefined;
-      startDate = foundStart ?? earliestCommonDate;
-      // Same derivation as BenchmarkResult.truncated, generalized from SPY
-      // alone to the whole fetched universe's own majority-shared calendar
-      // (see Sp500PrefixResult.truncated's own doc comment) -- plus a
-      // third case that derivation has no equivalent of (code review
-      // finding, fixed): `foundStart === undefined` means no common date
-      // at or after the nominal boundary exists at all (only reachable
-      // when the majority-shared calendar's own freshest date sits
-      // *before* a short bounded range's nominal start -- e.g. the
-      // fetched data is stale by more than 1W's own 7-day window), so
-      // `startDate` fell back to `earliestCommonDate` -- potentially a
-      // much *earlier* date than the range name implies, silently
-      // widening the window far beyond what was requested. This can't be
-      // caught by `earliestCommonDate > nominalStartString` alone: that
-      // condition is false in exactly this case (the fallback only
-      // triggers when `earliestCommonDate` is already <=, not >,
-      // `nominalStartString`), so it needs its own explicit check.
-      truncated =
-        nominalStartString === null || earliestCommonDate > nominalStartString || !foundStart;
-    }
+    // The one place "is this range 1D" is decided -- see RangeBoundary's
+    // own doc comment for why the two resolver functions below each
+    // bundle start/truncated/benchmark together instead of this check
+    // being repeated once per decision.
+    const { startDate, truncated, benchmark } =
+      range === "1D"
+        ? resolveOneDayBoundary(
+            commonDates,
+            earliestCommonDate,
+            commonEndDate,
+            benchmarkCloses,
+            startingCapital,
+          )
+        : resolvePresetBoundary(range, asOf, commonDates, earliestCommonDate, benchmarksByRange);
 
     const selection = computeSp500PrefixSelection({
       orderedTickers,
@@ -1517,16 +1589,6 @@ function buildSp500PrefixResults(options: {
       startingCapital,
     });
 
-    // "1D" has no entry in benchmarksByRange (that map is keyed by the 6
-    // PresetRange entries alone, each using its own *nominal* start) --
-    // computed here instead, directly against this range's own resolved
-    // (backward-looked-up) startDate/commonEndDate pair, for the same
-    // reason the curve itself needed a resolved pair rather than a
-    // nominal one (see this function's own doc comment).
-    const benchmark =
-      range === "1D"
-        ? computeBenchmark(benchmarkCloses, startDate, commonEndDate, startingCapital)
-        : (benchmarksByRange.get(range) ?? null);
     const n500Point = selection.curve.find((point) => point.n === universeSize) ?? null;
     const n500VsSpyPctDiff =
       n500Point && benchmark ? (n500Point.endingBalance / benchmark.endingBalance - 1) * 100 : null;

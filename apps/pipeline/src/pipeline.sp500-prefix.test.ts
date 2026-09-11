@@ -616,4 +616,68 @@ describe("The Cut: 1D range (issue #238)", () => {
     expect(oneDay.benchmark!.endDate).toBe(MON);
     expect(oneDay.benchmark!.endingBalance).toBeCloseTo(20 * 1.05, 8);
   });
+
+  it("keeps the SPY benchmark's own truncated flag in agreement with the top-level one in the defensive zero-width fallback (regression, code review finding)", async () => {
+    // Only ONE majority-shared trading date exists at all -- every
+    // ticker (NVDA/AAPL/MSFT/SPY) has exactly one close, all on the
+    // same date, so resolveOneDayBoundary's own defensive fallback
+    // (fewer than two common dates) fires: startDate collapses to
+    // commonEndDate, a genuine zero-width window, and the top-level
+    // `truncated` is correctly `true`. Before this fix, the SPY
+    // benchmark computed against that same zero-width pair derived its
+    // own `truncated` independently via computeBenchmark's ordinary
+    // "nearest point in [start, end]" logic, which has no way to detect
+    // a *zero-width* range as truncated on its own (SPY still has a
+    // real close on that single date) -- so `benchmark.truncated` came
+    // back `false`, silently disagreeing with the top-level flag. A
+    // reader that only checks `benchmark.truncated` would miss the
+    // warning entirely.
+    const ONLY_DATE = "2024-06-17";
+    const asOf = new Date("2024-06-17T00:00:00Z");
+
+    const dailyFixture = new Map<string, DailyClose[]>([
+      ["NVDA", [{ date: ONLY_DATE, close: 100 }]],
+      ["AAPL", [{ date: ONLY_DATE, close: 200 }]],
+      ["MSFT", [{ date: ONLY_DATE, close: 50 }]],
+      ["SPY", [{ date: ONLY_DATE, close: 100 }]],
+    ]);
+    const intradayFixture = new Map<string, IntradayBar[]>(
+      TICKERS.map((symbol) => [
+        symbol,
+        [
+          { date: `${ONLY_DATE}T09:30:00`, close: 100 },
+          { date: `${ONLY_DATE}T10:30:00`, close: 101 },
+        ],
+      ]),
+    );
+
+    const store = memoryStore();
+    await runPipeline({
+      tickers: TICKERS,
+      fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
+      fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+      fetchFiveMinuteBars: noIntradayData,
+      fetchIntraday1mBars: noIntradayData,
+      store,
+      asOf,
+    });
+
+    const oneDay = parseSp500Prefix(store, "1D");
+
+    // The genuine zero-width collapse: only one common date exists, so
+    // startDate === dataAsOf === endDate, and the top-level flag says so.
+    expect(oneDay.startDate).toBe(ONLY_DATE);
+    expect(oneDay.startDate).toBe(oneDay.dataAsOf);
+    expect(oneDay.truncated).toBe(true);
+    // A same-day ratio is exactly 1.0 -- confirms this really is the
+    // degenerate zero-width case, not a real 1-day comparison.
+    expect(oneDay.curve[0]).toMatchObject({ n: 1, portfolioReturn: 1 });
+
+    // The fix under test: benchmark.truncated agrees with the top-level
+    // flag for this same degenerate window, not independently false.
+    expect(oneDay.benchmark).not.toBeNull();
+    expect(oneDay.benchmark!.startDate).toBe(ONLY_DATE);
+    expect(oneDay.benchmark!.endDate).toBe(ONLY_DATE);
+    expect(oneDay.benchmark!.truncated).toBe(true);
+  });
 });

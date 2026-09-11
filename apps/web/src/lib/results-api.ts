@@ -79,11 +79,24 @@ function errorResponse(status: number, error: ApiErrorCode, message: string): Re
   return Response.json({ error, message }, { status, headers: { "Cache-Control": "no-store" } });
 }
 
-/** Case-insensitively matches a raw query-string value against PRESET_RANGES, or returns null if it doesn't match any of them. */
-export function parseRange(raw: string | null): PresetRange | null {
+/**
+ * Case-insensitively matches a raw query-string value against a fixed set
+ * of valid string values, or returns null if it doesn't match any of them
+ * -- the shared parsing rule behind both `parseRange` (PRESET_RANGES) and
+ * `parseCutRange` (CUT_RANGES) below, so the actual match logic (uppercase,
+ * membership check, cast on match) lives in exactly one place rather than
+ * two near-identical copies differing only in which array/type they check
+ * against.
+ */
+function parseFromSet<T extends string>(raw: string | null, values: readonly T[]): T | null {
   if (!raw) return null;
   const upper = raw.toUpperCase();
-  return (PRESET_RANGES as readonly string[]).includes(upper) ? (upper as PresetRange) : null;
+  return (values as readonly string[]).includes(upper) ? (upper as T) : null;
+}
+
+/** Case-insensitively matches a raw query-string value against PRESET_RANGES, or returns null if it doesn't match any of them. */
+export function parseRange(raw: string | null): PresetRange | null {
+  return parseFromSet(raw, PRESET_RANGES);
 }
 
 /**
@@ -118,9 +131,7 @@ export function isCanonicalRange(raw: string): raw is PresetRange {
  * rules out.
  */
 export function parseCutRange(raw: string | null): CutRange | null {
-  if (!raw) return null;
-  const upper = raw.toUpperCase();
-  return (CUT_RANGES as readonly string[]).includes(upper) ? (upper as CutRange) : null;
+  return parseFromSet(raw, CUT_RANGES);
 }
 
 /**
