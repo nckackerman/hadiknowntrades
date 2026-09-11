@@ -36,6 +36,7 @@ import {
   type CutDirection,
 } from "@/lib/the-cut-scoring";
 import { useCutGame, type CutView } from "@/lib/use-cut-game";
+import { useResetWhenChanged } from "@/lib/use-reset-when-changed";
 import { useSp500Prefix } from "@/lib/use-sp500-prefix";
 import { GamePanelHeader } from "@/components/GamePanelHeader";
 import { RangeSelector } from "@/components/RangeSelector";
@@ -180,8 +181,8 @@ function CutErrorState() {
   );
 }
 
-function tileStatusLine(view: CutView): string {
-  if (!view.hydrated || view.state === null) return "Loading…";
+function tileStatusLine(view: CutView, fetchFailed: boolean): string {
+  if (!view.hydrated || view.state === null) return fetchFailed ? "Couldn't load" : "Loading…";
   if (!view.state.done) return `Attempt ${view.state.guesses.length + 1} of ${CUT_MAX_ATTEMPTS}`;
   return view.state.won ? "Solved" : "Revealed";
 }
@@ -267,16 +268,14 @@ function CutBoard({
   const sliderId = useId();
   const [draft, setDraft] = useState(() => Math.ceil(universeSize / 2));
   // A different range (a different universeSize, and a fresh game to
-  // guess against) resets the draft to a sensible midpoint -- the
-  // "adjust state during render when a prop changes" idiom this app uses
-  // elsewhere (use-results.ts's own trackedUrl, StartingCapitalInput.tsx's
-  // own trackedValue), not a useEffect (which react-hooks/set-state-in-effect
-  // correctly flags for an unconditional setState at the top of its body).
-  const [trackedRange, setTrackedRange] = useState(range);
-  if (range !== trackedRange) {
-    setTrackedRange(range);
-    setDraft(Math.ceil(universeSize / 2));
-  }
+  // guess against) resets the draft to a sensible midpoint -- via the
+  // shared use-reset-when-changed.ts helper (the "adjust state during
+  // render when a value changes" idiom this app uses elsewhere,
+  // centralized after being hand-copied at six sites -- see that
+  // file's own doc comment), not a useEffect (which
+  // react-hooks/set-state-in-effect correctly flags for an
+  // unconditional setState at the top of its body).
+  useResetWhenChanged([range], () => setDraft(Math.ceil(universeSize / 2)));
 
   if (bestN === null || bestEndingBalance === null || n500EndingBalance === null) {
     return (
@@ -468,6 +467,29 @@ function CutBoard({
  * The Cut section. Takes no props (issue #122) -- owns its own range
  * picker rather than reading the outer page's ?range=, and fetches
  * independently of /api/results.
+ *
+ * **`hasOpenedPanel` is a one-way latch, not a plain `ready` check --
+ * this is the fix for a real regression found in review.** Picking a
+ * different range from the in-panel `RangeSelector` makes
+ * `useSp500Prefix` reset to `{status: "loading"}` for the new range in
+ * the same render (`use-results.ts`'s own `useFetchResultsState`), so
+ * `result` goes back to `null` and `ready` alone would flip `false` --
+ * which, if that also controlled which top-level element renders, would
+ * swap the mounted (and possibly already-open) `<details>` out for
+ * `<CutPlaceholder />`'s plain `<div>`, unmounting it. When the new
+ * range's data resolves, a brand-new `<details>` would mount with no
+ * `open` attribute -- closed, even though the player never closed
+ * anything. `hasOpenedPanel` latches `true` the first time real data
+ * ever loads and never goes back to `false`, so the `<details>` shell
+ * -- and therefore its own native open/closed state -- stays mounted
+ * through every subsequent range switch, loading state, or transient
+ * fetch failure; only the panel's *inner* content (the summary status
+ * line, and the board vs. a loading/error message) reacts to `ready`/
+ * `fetchFailed` from here on. Only the very first load (before anything
+ * has ever rendered) still shows the separate `CutPlaceholder`/
+ * `CutErrorState` elements, matching every other daily-hub game's own
+ * "no `<details>` in the tree until there's something real to show"
+ * convention.
  */
 export function TheCut() {
   const headingId = useId();
@@ -485,6 +507,11 @@ export function TheCut() {
     resultState.status !== "loading" &&
     !(resultState.status === "success" && isValidSp500PrefixResult(resultState.data));
 
+  const [hasOpenedPanel, setHasOpenedPanel] = useState(false);
+  if (ready && !hasOpenedPanel) {
+    setHasOpenedPanel(true);
+  }
+
   const n500Point = result ? n500CurvePoint(result.curve, result.universeSize) : null;
 
   return (
@@ -493,10 +520,12 @@ export function TheCut() {
         {TITLE}
       </h2>
 
-      {fetchFailed ? (
-        <CutErrorState />
-      ) : !ready ? (
-        <CutPlaceholder />
+      {!hasOpenedPanel ? (
+        fetchFailed ? (
+          <CutErrorState />
+        ) : (
+          <CutPlaceholder />
+        )
       ) : (
         <details className="group">
           <summary
@@ -504,7 +533,10 @@ export function TheCut() {
             style={TILE_GRADIENT_STYLE}
             className={`${CARD_BASE_CLASSNAME} ${TILE_SHADOW_CLASSNAME} cursor-pointer list-none transition-transform duration-150 group-open:rounded-b-none hover:-translate-y-0.5 hover:scale-[1.015] group-open:hover:translate-y-0 group-open:hover:scale-100 active:translate-y-0 active:scale-[0.99]`}
           >
-            <TileSummaryRow headingId={`${headingId}-tile`} statusLine={tileStatusLine(view)} />
+            <TileSummaryRow
+              headingId={`${headingId}-tile`}
+              statusLine={tileStatusLine(view, fetchFailed)}
+            />
           </summary>
 
           <div
@@ -539,6 +571,11 @@ export function TheCut() {
                 onSubmit={submitGuess}
                 onPlayAgain={playAgain}
               />
+            ) : fetchFailed ? (
+              <p className="text-sm text-[var(--text-muted)]">
+                Couldn&apos;t load The Cut for this range -- try a different one, or reload in a
+                bit.
+              </p>
             ) : (
               <p className="text-sm text-[var(--text-muted)]">Loading…</p>
             )}

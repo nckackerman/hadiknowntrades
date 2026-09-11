@@ -74,17 +74,31 @@ function gradeGuesses(guesses: readonly number[], result: Sp500PrefixResult): Cu
   );
 }
 
+/**
+ * `history` is filtered to `range` before being handed to
+ * `computeCutStreak` -- that function itself stays a generic "streak
+ * over whatever history it's given" computation (its own tests exercise
+ * it that way), but `CutCompletedGame.history` is a single, shared,
+ * cross-range list (the-cut-storage.ts's own doc comment), and the
+ * streak figures rendered right next to a specific range's own best-N/
+ * chart stats (`CutBoard`) must reflect only that range's own games --
+ * not every game played across all 6 preset ranges lumped together,
+ * which would silently misattribute another range's own streak to
+ * whichever range happens to be on screen.
+ */
 function viewFor(
   state: CutGameState,
+  range: PresetRange,
   result: Sp500PrefixResult,
   history: readonly CutCompletedGame[],
 ): CutView {
   const feedback = gradeGuesses(state.guesses, result);
+  const historyForRange = history.filter((game) => game.range === range);
   return {
     hydrated: true,
     state,
     feedback,
-    streak: computeCutStreak(history),
+    streak: computeCutStreak(historyForRange),
     attemptsRemaining: Math.max(0, CUT_MAX_ATTEMPTS - state.guesses.length),
   };
 }
@@ -127,7 +141,7 @@ export function useCutGame(range: PresetRange, result: Sp500PrefixResult | null)
         return;
       }
       const existing = getCutGameState(range);
-      setView(viewFor(existing ?? freshGameState(), result, getCutGameHistory()));
+      setView(viewFor(existing ?? freshGameState(), range, result, getCutGameHistory()));
     });
   }, [range, result]);
 
@@ -146,7 +160,7 @@ export function useCutGame(range: PresetRange, result: Sp500PrefixResult | null)
         const feedback = gradeGuesses(guesses, result);
         const lastEdgeCapturedPct = feedback.at(-1)?.edgeCapturedPct ?? 0;
         recordCutCompletion(range, correct, lastEdgeCapturedPct);
-        setView(viewFor(nextState, result, getCutGameHistory()));
+        setView(viewFor(nextState, range, result, getCutGameHistory()));
         return;
       }
       // Not done yet -- the streak history is unaffected, so there's no
@@ -165,7 +179,7 @@ export function useCutGame(range: PresetRange, result: Sp500PrefixResult | null)
   const playAgain = useCallback(() => {
     clearCutGameState(range);
     if (result !== null) {
-      setView(viewFor(freshGameState(), result, getCutGameHistory()));
+      setView(viewFor(freshGameState(), range, result, getCutGameHistory()));
     }
   }, [range, result]);
 

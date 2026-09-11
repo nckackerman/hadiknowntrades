@@ -2,7 +2,12 @@ import { RESULTS_SCHEMA_VERSION, type Sp500PrefixResult } from "@hadiknowntrades
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getCutGameHistory, saveCutGameState, type CutGameState } from "@/lib/the-cut-storage";
+import {
+  getCutGameHistory,
+  recordCutCompletion,
+  saveCutGameState,
+  type CutGameState,
+} from "@/lib/the-cut-storage";
 import { TheCut } from "./TheCut";
 
 const RANGE = "1Y";
@@ -207,5 +212,62 @@ describe("TheCut", () => {
     await waitFor(() => {
       expect(screen.getByTestId("the-cut-summary")).toHaveTextContent(/attempt 3 of 6/i);
     });
+  });
+
+  it("scopes the current/best streak to the currently-viewed range, not every range's combined history (regression)", async () => {
+    // Two wins recorded under a different range (5Y) must never inflate
+    // 1Y's own displayed streak -- computeCutStreak must be scoped per
+    // range, not run over the whole cross-range history unfiltered.
+    recordCutCompletion("5Y", true, 100);
+    recordCutCompletion("5Y", true, 100);
+    saveCutGameState(RANGE, freshState());
+    const panel = await expandBoard();
+
+    submit(panel, 3); // wins the 1Y game -- a real, first streak entry for 1Y
+
+    const currentStreakLabel = panel.getByText("Current streak");
+    // Would read "3" (2 stray 5Y wins + this 1Y win) without the fix.
+    expect(currentStreakLabel.previousElementSibling).toHaveTextContent("1");
+    const bestStreakLabel = panel.getByText("Best streak");
+    expect(bestStreakLabel.previousElementSibling).toHaveTextContent("1");
+  });
+
+  it("keeps the expanded panel open across a mid-panel range switch, even while the new range's data is still loading (regression)", async () => {
+    let releaseSecondFetch!: (value: Response) => void;
+    let fetchCallCount = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => {
+        fetchCallCount += 1;
+        if (fetchCallCount === 1) {
+          return Promise.resolve(new Response(JSON.stringify(RESULT), { status: 200 }));
+        }
+        // The second (range-switch) fetch stays pending until the test
+        // explicitly resolves it, so the assertion below runs while
+        // useSp500Prefix is genuinely mid-"loading" for the new range.
+        return new Promise<Response>((resolve) => {
+          releaseSecondFetch = resolve;
+        });
+      }),
+    );
+
+    const panel = await expandBoard();
+    expect(screen.getByTestId("the-cut-panel")).toBeInTheDocument();
+
+    fireEvent.click(panel.getByRole("button", { name: "5Y" }));
+
+    // The panel (and its <details> shell) must still be mounted and
+    // open -- not swapped out for the collapsed placeholder -- while
+    // the new range's fetch is still pending.
+    expect(screen.getByTestId("the-cut-summary")).toBeInTheDocument();
+    expect(screen.getByTestId("the-cut-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("the-cut-error")).not.toBeInTheDocument();
+
+    releaseSecondFetch(new Response(JSON.stringify(RESULT), { status: 200 }));
+    await waitFor(() => {
+      expect(screen.getByTestId("the-cut-panel")).toBeInTheDocument();
+    });
+    // Still the same open panel afterward -- no collapse-then-reopen-closed cycle.
+    expect(screen.getByTestId("the-cut-summary")).toBeInTheDocument();
   });
 });
