@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   BULLET_TIME_LEAD_BARS,
   BULLET_TIME_MAX_EVENTS,
+  BULLET_TIME_MIN_EVENTS,
+  BULLET_TIME_MIN_SWING_MAGNITUDE,
   BULLET_TIME_MIN_TRIGGER_GAP_BARS,
   bulletTimeCallSentence,
   bulletTimeStatusAt,
@@ -114,8 +116,22 @@ describe("scheduleBulletTimeEvents", () => {
     expect(events[1]!.swing.returnFraction).toBeLessThan(0);
   });
 
-  it("schedules nothing at all for a session with nothing large enough to qualify -- a real, valid outcome", () => {
-    expect(scheduleBulletTimeEvents(barelyMovingBars())).toEqual([]);
+  it("backfills to the hard floor of BULLET_TIME_MIN_EVENTS even when nothing clears the magnitude bar -- the deliberate, accepted flat-session behavior", () => {
+    // Every step here is a fraction of a basis point -- none of them
+    // clear BULLET_TIME_MIN_SWING_MAGNITUDE, so pass 1 (magnitude-
+    // qualifying) finds nothing at all. Per the hard-floor requirement,
+    // pass 2 backfills with the biggest remaining spacing-valid
+    // candidates regardless of magnitude: the 2 least-flat wiggles in
+    // this session become real events, not an empty schedule.
+    const events = scheduleBulletTimeEvents(barelyMovingBars());
+    expect(events).toHaveLength(BULLET_TIME_MIN_EVENTS);
+    for (const event of events) {
+      expect(Math.abs(event.swing.returnFraction)).toBeLessThan(BULLET_TIME_MIN_SWING_MAGNITUDE);
+    }
+    // Still spacing-valid, even in backfill -- never relaxed.
+    expect(events[1]!.triggerIndex - events[0]!.swing.toIndex).toBeGreaterThanOrEqual(
+      BULLET_TIME_MIN_TRIGGER_GAP_BARS,
+    );
   });
 
   it("schedules nothing for a session too short to contain a swing", () => {
@@ -194,7 +210,9 @@ describe("scheduleBulletTimeEvents", () => {
     // still find one if the path genuinely has one.
     const events = scheduleBulletTimeEvents(SPY_SESSION_BARS);
     for (const event of events) {
-      expect(Math.abs(event.swing.returnFraction)).toBeGreaterThanOrEqual(0.003);
+      expect(Math.abs(event.swing.returnFraction)).toBeGreaterThanOrEqual(
+        BULLET_TIME_MIN_SWING_MAGNITUDE,
+      );
     }
   });
 });

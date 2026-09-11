@@ -523,19 +523,27 @@ describe("BeatTheBench", () => {
     expect(screen.getByText(/You moved once/)).toBeInTheDocument();
   });
 
+  // Deliberately confined to bars 0-2 -- the real SPY_SESSION_BARS
+  // fixture now schedules a real Bullet Time event with a trigger at
+  // barIndex 3 (issue #225's lowered BULLET_TIME_MIN_SWING_MAGNITUDE
+  // means this exact fixture qualifies where it didn't before), whose
+  // own "approaching" phase ticks at BULLET_TIME_APPROACH_TICK_MS
+  // (4500ms), not the normal 300ms -- advancing past it would make this
+  // generic pause/resume test's timing assertions about Bullet Time's
+  // own pacing instead of about pause/resume itself.
   it("pauses and resumes without losing the player's place", async () => {
     await renderChooser();
     click(/play today's close/i);
-    advance(300 * 4);
-    expect(barReadout()).toMatch(/bar 5 of 79/);
+    advance(300 * 2);
+    expect(barReadout()).toMatch(/bar 3 of 79/);
 
     click("Pause");
     advance(300 * 20);
-    expect(barReadout()).toMatch(/bar 5 of 79/);
+    expect(barReadout()).toMatch(/bar 3 of 79/);
 
     click("Play");
     advance(300);
-    expect(barReadout()).toMatch(/bar 6 of 79/);
+    expect(barReadout()).toMatch(/bar 4 of 79/);
   });
 
   it("remembers a played session and offers it again", async () => {

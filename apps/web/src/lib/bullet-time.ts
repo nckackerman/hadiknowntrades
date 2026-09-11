@@ -17,8 +17,14 @@
 //   - Up to BULLET_TIME_MAX_EVENTS swings are scheduled once, up front,
 //     from the full known bar array (this is a replay of a real closed
 //     session -- the whole thing is already known, so there's no live
-//     prediction to do). A session with no swing large enough to qualify
-//     simply never schedules one; that's a real, valid outcome.
+//     prediction to do). A hard floor of BULLET_TIME_MIN_EVENTS is
+//     guaranteed for every session, no exceptions: a session with too
+//     few swings clearing the magnitude bar backfills with its biggest
+//     remaining spacing-valid candidates regardless of magnitude -- even
+//     a perfectly flat session's own few-basis-point wiggles become real
+//     events. See scheduleBulletTimeEvents' own doc comment for the
+//     two-pass mechanism, and BULLET_TIME_MIN_EVENTS' for the one real,
+//     rare, accepted case where even that floor can't be reached.
 //   - A scheduled event has three phases as playback reaches it:
 //     "approaching" (a few bars of dramatic slow-motion before the
 //     swing's own start), "deciding" (playback pauses at the swing's own
@@ -44,38 +50,110 @@ import {
 } from "./beat-the-bench";
 
 /**
- * Minimum `|returnFraction|` a swing must clear to be Bullet-Time-worthy.
+ * Minimum `|returnFraction|` a swing must clear to be Bullet-Time-worthy
+ * on the *magnitude-qualifying* pass (see `scheduleBulletTimeEvents`'s
+ * own two-pass doc comment) -- lowered from the original 0.30% now that
+ * the target is 4 events per session, not 2 (a direct user request,
+ * re-litigating the earlier design review's "stay a rare occasion"
+ * framing on purpose).
  *
- * **Validated against a real 41-session pool** (a real local pipeline
- * run's own Beat the Bench mystery pool, issue #127 -- 78-79-bar regular
- * SPY sessions, no synthetic data): each session's own single biggest
- * swing (in either direction) ranged from 0.215% to 1.757%, median
- * 0.483%. At 0.30%, 37 of the 41 real sessions (90%) have at least one
- * qualifying swing with enough lead room -- a real, common occasion, not
- * a rare one -- while the remaining ~10% genuinely have nothing large
- * enough, exactly the "a session with no swing large enough simply never
- * triggers one" case this module's own scheduler treats as valid rather
- * than worked around. A lower threshold (e.g. 0.15-0.20%) pushed the
- * qualifying rate to ~95-100% of sessions, which stopped reading as "a
- * real occasion" at all -- see `BULLET_TIME_MAX_EVENTS`'s own doc
- * comment for the other half of that same "occasion, not constant
- * interruption" reasoning.
+ * **Re-validated against a fresh real 41-session pool** (a real local
+ * pipeline run's own Beat the Bench mystery pool, the same technique the
+ * original 0.30% validation used -- 78-bar regular SPY sessions, no
+ * synthetic data): each session's own single biggest swing ranged
+ * 0.215%-1.757% (median 0.476%); the *5th*-biggest candidate -- roughly
+ * the floor of what `CANDIDATE_COUNT` below needs to still find a real
+ * swing -- ranged 0.020%-0.297% (median 0.143%). At 0.04% (0.0004), the
+ * magnitude-qualifying pass alone (no floor backfill) reaches the full
+ * `BULLET_TIME_MAX_EVENTS` (4) in 2 of 41 sessions (4.9%), 3 in 18
+ * (43.9%), 2 in 20 (48.8%), and only 1 in 1 (2.4%, requiring the floor-2
+ * backfill pass) -- averaging **2.51 qualifying events per session**,
+ * more than double the 1.02 the old 0.30%/2-event design measured
+ * against this same technique on a comparable pool.
+ *
+ * **A real, load-bearing finding from this same validation, worth
+ * stating plainly rather than overclaiming "4 is now the common
+ * outcome": no magnitude threshold, however low, can make most real
+ * days reach 4.** Re-run at `minMagnitude = 0` (fully permissive,
+ * magnitude ignored entirely) against the identical pool and the
+ * identical spacing/lead-bar constants: still only 2 of 41 sessions
+ * (4.9%) can ever contain 4 mutually `BULLET_TIME_MIN_TRIGGER_GAP_BARS`-
+ * separated qualifying windows inside a session's ~78 bars -- a hard
+ * ceiling set by `BULLET_TIME_LEAD_BARS`/`BULLET_TIME_MIN_TRIGGER_GAP_BARS`
+ * here and `beat-the-bench-moves.ts`'s own `MAX_MOVE_SPAN_FRACTION`
+ * (none of which changed for this pass -- the spacing/overlap
+ * requirement stays inviolable, per the same explicit instruction that
+ * introduced the hard floor below), not something this constant can
+ * move further. 0.04% was chosen specifically because it already
+ * reaches each session's own real spacing-imposed ceiling in 36 of 41
+ * sessions (88%) -- lowering it further (checked down to 0.02%, the real
+ * minimum observed swing in the pool) gains at most 1-2 more sessions
+ * reaching their own ceiling and would start admitting swings barely
+ * above literal price noise, for no further practical gain. See
+ * `BULLET_TIME_MAX_EVENTS`'s own doc comment for the fuller distribution
+ * this produces, and `BULLET_TIME_MIN_EVENTS`'s for the floor-backfill
+ * pass this threshold is deliberately *not* required to guarantee on
+ * its own.
  */
-export const BULLET_TIME_MIN_SWING_MAGNITUDE = 0.003;
+export const BULLET_TIME_MIN_SWING_MAGNITUDE = 0.0004;
 
 /**
- * At most this many Bullet Time events per session -- deliberately low
- * (the design review's own "Risks" note) so this stays a real occasion
- * rather than constant interruption. Against the same real 41-session
- * pool, measured against the real `scheduleBulletTimeEvents`
- * implementation (including its own whole-window anti-crowding check --
- * see `BULLET_TIME_MIN_TRIGGER_GAP_BARS`'s own doc comment for the real
- * bug an earlier, trigger-point-only version of that check had, and
- * which these numbers reflect the fix for): 9 of 41 sessions (22%)
- * qualify for the full 2 events at the thresholds above; the rest get 0
- * or 1. Average 1.12 events per session across the whole pool.
+ * At most this many Bullet Time events per session -- raised from 2 to
+ * 4 (a direct user request): with `BULLET_TIME_MIN_EVENTS`'s hard floor
+ * now guaranteeing at least 2 every session, 4 is meant to be the real,
+ * common ceiling on a normal trading day, not a rare best case reserved
+ * for the busiest sessions alone.
+ *
+ * **Re-validated against the same real 41-session pool
+ * `BULLET_TIME_MIN_SWING_MAGNITUDE`'s own doc comment describes**,
+ * against the real `scheduleBulletTimeEvents` two-pass implementation
+ * (its own whole-window anti-crowding check included -- see
+ * `BULLET_TIME_MIN_TRIGGER_GAP_BARS`'s own doc comment for the real bug
+ * an earlier, trigger-point-only version of that check had): the
+ * magnitude-qualifying pass alone reaches the full 4 in 2 of 41 sessions
+ * (4.9%), 3 in 18 (43.9%), 2 in 20 (48.8%), 1 in 1 (2.4%, backfilled to 2
+ * by `BULLET_TIME_MIN_EVENTS`), and 0 in none -- every real session in
+ * the pool now schedules at least one event, and the hard floor's own
+ * backfill pass (see that constant's own doc comment) closes the one
+ * remaining gap. Average 2.51 events per session across the whole pool
+ * (up from 1.02 under the prior 0.30%/2-event/5-candidate design,
+ * measured the identical way).
  */
-export const BULLET_TIME_MAX_EVENTS = 2;
+export const BULLET_TIME_MAX_EVENTS = 4;
+
+/**
+ * The hard floor: every session schedules **at least** this many Bullet
+ * Time events, no exceptions -- even a perfectly flat one (a direct,
+ * explicit user request; see `scheduleBulletTimeEvents`'s own two-pass
+ * doc comment for the exact mechanism). If the magnitude-qualifying
+ * pass alone (`BULLET_TIME_MIN_SWING_MAGNITUDE`-filtered) comes up short
+ * of this floor, a second pass backfills with the session's biggest
+ * remaining spacing-valid candidates *regardless of magnitude* -- in the
+ * extreme case of a genuinely flat session, this means the 2 least-flat
+ * few-basis-point wiggles in that session become real Bullet Time
+ * events. That is the accepted, deliberate behavior, not a bug to avoid.
+ *
+ * **Confirmed against the real 41-session pool that this floor is
+ * almost always met by the magnitude-qualifying pass alone, and that
+ * the one real case where it isn't is a genuine, rare, accepted edge
+ * case, not a hypothetical one worth building special-case handling
+ * for.** Only 1 of 41 real sessions (2.4%) needed the backfill pass at
+ * all -- and that same session (its own greedy, gap-0 partition of the
+ * whole 78-bar session happens to leave exactly one spacing-valid
+ * window once `BULLET_TIME_LEAD_BARS`/`BULLET_TIME_MIN_TRIGGER_GAP_BARS`
+ * are applied) is also the one case where the floor of 2 is genuinely
+ * *unreachable* even with magnitude ignored entirely -- confirmed by
+ * re-running the backfill pass against that exact session at
+ * `minMagnitude = 0`: still only 1 event, because every other real
+ * candidate window in that session either starts at bar 0 (no room for
+ * `BULLET_TIME_LEAD_BARS`) or falls within `BULLET_TIME_MIN_TRIGGER_GAP_BARS`
+ * of the one window that does qualify. `scheduleBulletTimeEvents` itself
+ * has no special-case code for this -- the two-pass loop simply returns
+ * whatever it could find, which is 1 here, exactly the documented "or,
+ * in a truly pathological case ... document that as an accepted, rare
+ * edge case" allowance.
+ */
+export const BULLET_TIME_MIN_EVENTS = 2;
 
 /**
  * How many bars before a qualifying swing's own start index the approach
@@ -108,11 +186,24 @@ export const BULLET_TIME_MIN_TRIGGER_GAP_BARS = 6;
 
 /**
  * How many of the session's biggest swings the scheduler considers
- * before filtering by magnitude/lead-room/gap -- generous enough that
- * losing a couple of candidates to insufficient lead room or a gap
- * conflict still leaves real ones to pick from.
+ * before filtering by magnitude/lead-room/gap -- raised from 5 to 10 now
+ * that the scheduler needs to plausibly find up to `BULLET_TIME_MAX_EVENTS`
+ * (4) magnitude-qualifying, spacing-valid candidates, or fall back to
+ * finding `BULLET_TIME_MIN_EVENTS` (2) spacing-valid ones regardless of
+ * magnitude.
+ *
+ * **Validated against the same real 41-session pool this file's other
+ * constants cite**: raising `CANDIDATE_COUNT` further (checked at 12,
+ * 15, and 20) found zero additional qualifying events anywhere in the
+ * pool beyond what 10 already finds -- `biggestSwings`' own greedy
+ * window search genuinely runs out of real, non-overlapping candidates
+ * in a ~78-bar session well before reaching a 10th pick, for every
+ * session tested. Lowering it to 8 measurably lost real candidates: two
+ * of the pool's 41 sessions that reach the full 4 events at 10 dropped
+ * to 3 at 8. 10 is the smallest value that loses nothing observed in
+ * this pool.
  */
-const CANDIDATE_COUNT = 5;
+const CANDIDATE_COUNT = 10;
 
 /**
  * Milliseconds per bar during the approach -- its own constant, not
@@ -122,21 +213,38 @@ const CANDIDATE_COUNT = 5;
  * real, noticeable step down from the app's own most patient existing
  * pace, not just a marginal one.
  *
- * **Validated against real session data for its actual time cost, not
- * just chosen in isolation.** Against the real 41-session pool, at
+ * **Re-validated against the same real 41-session pool for its actual
+ * time cost at 4 events, not just chosen in isolation.** At
  * `BULLET_TIME_LEAD_BARS = 2`, measured against the real
- * `scheduleBulletTimeEvents` (its own whole-window anti-crowding check
- * included -- see `BULLET_TIME_MIN_TRIGGER_GAP_BARS`'s own doc comment):
- * the worst real case (a session that schedules the maximum 2 events)
- * adds 22.1s of total wall-clock time at 1x speed on top of that
- * session's own ~23.4s base length -- pushing a full playthrough to
- * ~45.5s, a real but bounded cost for what the design review calls this
- * mechanic's own "central dramatic beat." The median real *triggering*
- * session (37 of 41 real sessions trigger at least one event; most of
- * those get exactly one, not two -- see `BULLET_TIME_MAX_EVENTS`'s own
- * doc comment) adds 9.25s. See `BULLET_TIME_CATCHUP_TICK_MS`'s own doc
- * comment for how the catch-up pace claws some of this back rather than
- * letting every phase add pure overhead.
+ * `scheduleBulletTimeEvents` (its own two-pass floor-backfill and
+ * whole-window anti-crowding check included -- see
+ * `BULLET_TIME_MIN_TRIGGER_GAP_BARS`'s own doc comment), summing each
+ * bar's own real tick interval (approach/catchup/decision-window-worst-
+ * case) against a plain (event-free) baseline session:
+ *
+ * - **At 1x speed**: the worst real case (a real 4-event session) adds
+ *   **+43.0s** on top of that session's own ~23.1s base length --
+ *   pushing a full playthrough to **~66.1s**. The median real
+ *   *triggering* session (every one of the 41 real sessions in the pool
+ *   now triggers at least one event) adds **+21.8s**.
+ * - **At the new 0.25x default speed** (`DEFAULT_SPEED`,
+ *   `beat-the-bench.ts`): the fixed-pace catchup phase
+ *   (`BULLET_TIME_CATCHUP_TICK_MS` = 150ms/bar) is *faster* than the
+ *   player's own chosen 1200ms/bar pace at 0.25x, so a long swing's
+ *   catchup stretch claws back more time than the approach/decision
+ *   phases add -- net overhead is usually *negative* (median across the
+ *   41 real sessions: **-11.7s**, i.e. Bullet Time typically finishes a
+ *   0.25x session *faster* than a plain playthrough would). The real
+ *   worst case (the session with the largest *added* time, not the
+ *   longest total) adds a comparatively small **+2.0s** on top of a
+ *   ~92.4s base, for a total of **~94.4s**.
+ *
+ * This is a real, measured, non-obvious asymmetry between the two
+ * speeds, not a hand-wave: at 1x, every phase of Bullet Time reliably
+ * adds overhead; at 0.25x, the catchup phase's fixed pace usually
+ * *outpaces* the player's own chosen speed for long swings, so the net
+ * effect flips. See `BULLET_TIME_CATCHUP_TICK_MS`'s own doc comment for
+ * why the catch-up pace exists at all.
  */
 export const BULLET_TIME_APPROACH_TICK_MS = 4500;
 
@@ -187,42 +295,64 @@ export interface BulletTimeEvent {
 }
 
 /**
- * Schedules up to `BULLET_TIME_MAX_EVENTS` Bullet Time events from the
- * full known bar array, once, up front -- this is a replay of a real
- * closed session, so the whole thing is already known and there is
- * nothing to predict live. Greedy by swing magnitude (the biggest
- * qualifying swing is always considered first): a candidate is skipped
- * if it doesn't have `BULLET_TIME_LEAD_BARS` of room before its own
- * start, or if its trigger point falls within
- * `BULLET_TIME_MIN_TRIGGER_GAP_BARS` of an already-scheduled one.
+ * Schedules Bullet Time events from the full known bar array, once, up
+ * front -- this is a replay of a real closed session, so the whole
+ * thing is already known and there is nothing to predict live. **Two
+ * passes, per the hard-floor requirement's own explicit design**:
+ *
+ * 1. **Magnitude-qualifying pass**: greedy by swing magnitude (the
+ *    biggest qualifying swing is always considered first) over
+ *    candidates that clear `BULLET_TIME_MIN_SWING_MAGNITUDE`, up to
+ *    `BULLET_TIME_MAX_EVENTS`. A candidate is skipped if it doesn't have
+ *    `BULLET_TIME_LEAD_BARS` of room before its own start, or if its
+ *    whole active window (see below) falls within
+ *    `BULLET_TIME_MIN_TRIGGER_GAP_BARS` of an already-accepted one.
+ * 2. **Hard-floor backfill, only if pass 1 came up short of
+ *    `BULLET_TIME_MIN_EVENTS`**: continues down the *same* candidate
+ *    list, this time ignoring the magnitude filter entirely (but never
+ *    the lead-room or spacing checks -- see `BULLET_TIME_MIN_EVENTS`'s
+ *    own doc comment for why the spacing/overlap requirement must never
+ *    be relaxed even here), adding the biggest remaining spacing-valid
+ *    candidates until the floor is met. If genuinely no more
+ *    spacing-valid candidates exist in the session, this pass simply
+ *    can't reach the floor -- a real, rare, accepted edge case (see
+ *    `BULLET_TIME_MIN_EVENTS`'s own doc comment for how often this
+ *    actually happens against real data).
+ *
+ * **The whole-window anti-crowding check applies identically to both
+ * passes** -- both compare a candidate's own whole active window
+ * (`triggerIndex` through `swing.toIndex`), never just the two trigger
+ * points, against every already-accepted event's own whole window (see
+ * `BULLET_TIME_MIN_TRIGGER_GAP_BARS`'s own doc comment for the real bug
+ * an earlier, trigger-point-only version of this check had). Reuses
+ * `beat-the-bench-moves.ts`'s own `intervalsWithinGap` -- the identical
+ * primitive `findBestRuns` uses for its own overlap check, just with a
+ * real buffer instead of gap 0.
  *
  * Returns events in **chronological** order (ascending `triggerIndex`),
  * not by magnitude -- the shape a caller actually walks a session with.
- * Returns `[]` when nothing in the session qualifies -- a real, valid
- * outcome (see `BULLET_TIME_MIN_SWING_MAGNITUDE`'s own doc comment), not
- * a bug to work around.
+ * Returns `[]` only for a session too short to contain even one real
+ * swing (see `biggestSwings`). **Not a hard guarantee of
+ * `BULLET_TIME_MIN_EVENTS` for every other session, despite that being
+ * the goal**: the backfill pass can still come up short in a genuinely
+ * pathological session where fewer than `BULLET_TIME_MIN_EVENTS`
+ * spacing-valid candidates exist at all -- see `BULLET_TIME_MIN_EVENTS`'s
+ * own doc comment for the one real, rare (2.4% of a validated 41-session
+ * pool) case this happens in. Don't assume
+ * `scheduleBulletTimeEvents(bars).length >= BULLET_TIME_MIN_EVENTS`
+ * holds unconditionally for any `bars` long enough to contain one swing.
  */
 export function scheduleBulletTimeEvents(bars: readonly SessionBar[]): BulletTimeEvent[] {
-  const candidates = biggestSwings(bars, CANDIDATE_COUNT).filter(
-    (swing) =>
-      Math.abs(swing.returnFraction) >= BULLET_TIME_MIN_SWING_MAGNITUDE &&
-      swing.fromIndex >= BULLET_TIME_LEAD_BARS,
+  const allCandidates = biggestSwings(bars, CANDIDATE_COUNT).filter(
+    (swing) => swing.fromIndex >= BULLET_TIME_LEAD_BARS,
   );
 
-  const events: BulletTimeEvent[] = [];
-  for (const swing of candidates) {
-    const triggerIndex = swing.fromIndex - BULLET_TIME_LEAD_BARS;
-    // Checked against each already-accepted event's own *whole active
-    // window* (triggerIndex through swing.toIndex), not just the two
-    // trigger points -- comparing trigger-to-trigger alone let a
-    // candidate's own window still fall inside an earlier event's own
-    // still-active window whenever its swing was long enough, silently
-    // swallowing the later event's entire approach phase (bulletTimeStatusAt
-    // resolves an overlap to whichever event sorts first). Reuses
-    // beat-the-bench-moves.ts's own intervalsWithinGap -- the identical
-    // primitive findBestRuns uses for its own overlap check, just with a
-    // real buffer instead of gap 0.
-    const tooClose = events.some((event) =>
+  function isTooClose(
+    events: readonly BulletTimeEvent[],
+    triggerIndex: number,
+    swing: SessionSwing,
+  ): boolean {
+    return events.some((event) =>
       intervalsWithinGap(
         triggerIndex,
         swing.toIndex,
@@ -231,9 +361,32 @@ export function scheduleBulletTimeEvents(bars: readonly SessionBar[]): BulletTim
         BULLET_TIME_MIN_TRIGGER_GAP_BARS,
       ),
     );
-    if (tooClose) continue;
+  }
+
+  const events: BulletTimeEvent[] = [];
+  const used = new Set<SessionSwing>();
+
+  // Pass 1: magnitude-qualifying candidates, up to BULLET_TIME_MAX_EVENTS.
+  for (const swing of allCandidates) {
+    if (Math.abs(swing.returnFraction) < BULLET_TIME_MIN_SWING_MAGNITUDE) continue;
+    const triggerIndex = swing.fromIndex - BULLET_TIME_LEAD_BARS;
+    if (isTooClose(events, triggerIndex, swing)) continue;
     events.push({ triggerIndex, swing });
+    used.add(swing);
     if (events.length >= BULLET_TIME_MAX_EVENTS) break;
+  }
+
+  // Pass 2: hard-floor backfill, magnitude-agnostic, spacing/overlap
+  // requirement unchanged -- only runs if pass 1 came up short.
+  if (events.length < BULLET_TIME_MIN_EVENTS) {
+    for (const swing of allCandidates) {
+      if (events.length >= BULLET_TIME_MIN_EVENTS) break;
+      if (used.has(swing)) continue;
+      const triggerIndex = swing.fromIndex - BULLET_TIME_LEAD_BARS;
+      if (isTooClose(events, triggerIndex, swing)) continue;
+      events.push({ triggerIndex, swing });
+      used.add(swing);
+    }
   }
 
   return events.sort((a, b) => a.triggerIndex - b.triggerIndex);

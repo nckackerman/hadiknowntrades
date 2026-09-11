@@ -7117,6 +7117,164 @@ before any fix was written.
 - All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
   1139 passing, `pnpm format:check`) re-ran green after the fix.
 
+## Bullet Time revamp: 4 events per session, a hard floor of 2 (direct user request, not a filed issue)
+
+Three explicit, pre-decided asks, not re-litigated here: raise
+`BULLET_TIME_MAX_EVENTS` from 2 to 4 as the _common_ outcome on a normal
+trading day, not a rare best case; lower `BULLET_TIME_MIN_SWING_MAGNITUDE`
+so most real days reach that naturally; and add a hard floor --
+`BULLET_TIME_MIN_EVENTS = 2` -- guaranteeing at least 2 events every
+session, no exceptions, via a magnitude-agnostic backfill pass when the
+magnitude-qualifying pass alone comes up short. All three constants, plus
+`CANDIDATE_COUNT` (5 -> 10), live in `lib/bullet-time.ts`; see each
+constant's own doc comment for the exact real numbers behind it -- not
+repeated here, per this file's own "don't duplicate a decision record"
+convention (see e.g. the "Design tokens" section's own pointer to
+`globals.css`).
+
+- **`scheduleBulletTimeEvents` restructured into two explicit passes**:
+  pass 1 is the original magnitude-qualifying, spacing-checked greedy
+  loop (unchanged in shape, now capped at 4 instead of 2); pass 2 runs
+  only if pass 1 comes up short of the floor, and repeats the identical
+  spacing/lead-room checks (via the same `intervalsWithinGap` helper, now
+  factored into a small shared `isTooClose` closure so the two passes
+  literally can't drift on what counts as "too close") against the
+  _same_ candidate list, this time ignoring magnitude. **The
+  whole-window anti-crowding check applies identically to both passes,
+  by construction** -- there is no second, cheaper check that could
+  silently reintroduce this file's own previously-shipped
+  trigger-point-only bug (see the "Bullet Time (issue #224)" section's
+  own code-review entry above) for the backfill path specifically.
+- **A real, load-bearing finding from validating decision #2 against
+  real data, worth restating here since it directly qualifies the
+  "should be the common outcome" framing**: no magnitude threshold,
+  however low, can make 4 events the outcome on _most_ real days.
+  Re-run at `minMagnitude = 0` (fully permissive) against the real
+  41-session pool this file already validates its other Bullet Time
+  constants against: still only 2 of 41 sessions (4.9%) can ever contain
+  4 mutually `BULLET_TIME_MIN_TRIGGER_GAP_BARS`-separated windows inside
+  a session's ~78 bars -- a hard ceiling set by
+  `BULLET_TIME_LEAD_BARS`/`BULLET_TIME_MIN_TRIGGER_GAP_BARS` and
+  `beat-the-bench-moves.ts`'s own `MAX_MOVE_SPAN_FRACTION`, none of
+  which changed here (the spacing/overlap requirement stays inviolable,
+  per the third explicit decision). **4 is the new real ceiling, reached
+  whenever a session's own structure allows it -- most real days land on
+  2 or 3, not 4.** At the chosen threshold (0.04%), the real
+  distribution across the pool is 0% / 2.4% / 48.8% / 43.9% / 4.9% for
+  0/1/2/3/4 events respectively (average 2.51 events/session, up from
+  1.02 under the prior 0.30%/2-event/5-candidate design measured the
+  identical way) -- see `BULLET_TIME_MIN_SWING_MAGNITUDE`'s own doc
+  comment for the full validation.
+- **The one real pool session needing the floor-2 backfill pass (1 of
+  41, 2.4%) is also the one case where the floor is genuinely
+  unreachable even with magnitude ignored entirely** -- confirmed by
+  re-running the backfill pass against that exact session at
+  `minMagnitude = 0`: still only 1 event, because the session's own
+  greedy, gap-0 partition into candidate runs leaves exactly one window
+  clear of both `BULLET_TIME_LEAD_BARS` and
+  `BULLET_TIME_MIN_TRIGGER_GAP_BARS`. This is the "truly pathological
+  case where even 2 spacing-valid windows genuinely can't be found"
+  scenario -- checked against real data rather than assumed, and it's
+  real, rare (2.4%), and accepted, not special-cased in code.
+  `scheduleBulletTimeEvents` has no branch for it; the two-pass loop
+  simply returns whatever it found.
+- **Timing re-measured at 4 events, both at 1x and the new 0.25x
+  default speed (issue #178's speed default already changed earlier the
+  same day) -- a real, non-obvious asymmetry between the two, not a
+  hand-wave.** At 1x, every Bullet Time phase reliably adds overhead: a
+  real 4-event session's worst case adds **+43.0s** on a ~23.1s base
+  (**~66.1s** total); the median real triggering session (all 41 of 41
+  sessions in the pool now trigger at least one event) adds **+21.8s**.
+  At 0.25x, `BULLET_TIME_CATCHUP_TICK_MS`'s fixed 150ms/bar pace is
+  _faster_ than the player's own chosen 1200ms/bar pace, so a long
+  swing's catchup stretch claws back more time than the approach/
+  decision phases add -- net overhead is usually _negative_ (median
+  **-11.7s**, i.e. Bullet Time typically finishes a 0.25x session
+  _faster_ than a plain playthrough); the real worst case (largest
+  _added_ time, not longest total) adds a comparatively small **+2.0s**
+  on a ~92.4s base (**~94.4s** total). See
+  `BULLET_TIME_APPROACH_TICK_MS`'s own doc comment for the identical
+  numbers kept in the code.
+- **`resolvedBulletTimeCalls`/`bulletTimeTallyLine` and the settlement's
+  own "Bullet Time calls: N of M correct" copy needed zero changes** --
+  confirmed rather than assumed: both were already parameterized over
+  `events.length`, and `BeatTheBench.tsx`/`BeatTheBench.test.tsx` had no
+  hardcoded "2"/"at most 2" anywhere (checked via grep before concluding
+  this, not just by reading the two files once).
+- **One real, pre-existing test broke as a direct, expected consequence
+  of the lower magnitude threshold, not a bug in this change**:
+  `BeatTheBench.test.tsx`'s "pauses and resumes without losing the
+  player's place" test used the real `SPY_SESSION_BARS` fixture (shared
+  broadly across that file) and asserted plain 300ms-per-tick timing a
+  few bars in -- but that exact fixture now genuinely qualifies for a
+  real Bullet Time event with a trigger at barIndex 3, whose own
+  approach phase ticks at `BULLET_TIME_APPROACH_TICK_MS` (4500ms), not
+  300ms. Fixed by confining the test to bars 0-2 (still safely before
+  the real trigger), not by changing the fixture -- `SPY_SESSION_BARS`
+  stays the one shared real fixture the rest of that file already
+  depends on. Worth remembering for the next tick-precision playback
+  test added to this file: **any bar range can now genuinely intersect
+  a real Bullet Time window**, since the hard floor guarantees at least
+  2 events on effectively every real session with enough bars, not just
+  the ones a test happens to expect one on.
+- **`bullet-time.test.ts`'s own "schedules nothing at all for a session
+  with nothing large enough to qualify" test was rewritten, not deleted
+  -- its old assertion (`toEqual([])`) is now the literal behavior
+  decision #3 explicitly overrides.** The renamed test now asserts the
+  real floor-backfill outcome: exactly `BULLET_TIME_MIN_EVENTS` events,
+  each with a real sub-threshold magnitude, still spacing-valid --
+  matching this file's own "the 2 least-flat few-basis-point wiggles...
+  become real events" acceptance language verbatim.
+- **Live-verified against real data, not synthetic fixtures alone, per
+  this issue's own explicit ask.** The permanent `LOCAL_RESULTS_DIR`
+  workflow (`LOCAL_TICKER_COUNT=20`, real Yahoo network calls, no S3
+  write) produced the same real 41-session Beat the Bench mystery pool
+  this section's own numbers are validated against, then `next
+build`/`next start` (not `next dev` -- see this file's own repeatedly-
+  documented note on why headless Chromium can't hydrate a dev-mode page
+  in this sandbox) plus the documented no-root headless-Chromium
+  workaround, with `page.route()` intercepting `/api/beat-the-bench`
+  (Today's Close) to force a specific _real_ pooled session's own bars
+  into the Today's Close slot -- the same throwaway technique this
+  file's own history already establishes for forcing a specific fixture
+  through a real fetch path, just with genuinely real market data
+  swapped in rather than a hand-built one. Two real sessions, both
+  played through to genuine settlement:
+  - **A real, reasonably volatile session (pool slot s20, independently
+    confirmed via the same analysis script to schedule the full 4
+    events)**: screenshotted the "Big swing incoming…" approach cue, the
+    full slow-motion `BulletTimeDecisionPanel` (heading, countdown bar,
+    both buttons, footer copy), a live "Not this time" resolution badge
+    with real dollar figures and a real swing description, and the
+    final settlement reading **"Bullet Time calls: 2 of 4 correct."**
+    -- confirming all four phases (approaching, deciding, catchup,
+    resolution) work exactly as before, just with more of them. Zero
+    console errors, zero `pageerror` events.
+  - **A synthetic near-flat session, constructed rather than found**:
+    the real 41-session pool from this exact local pipeline run has no
+    session that both _needs_ and _succeeds at_ the floor-2 backfill (only
+    1 of 41 needs it, and that one is the pathological unreachable case
+    documented above) -- so no real pool session actually demonstrates a
+    _successful_ backfill live. Built a synthetic 78-bar session with
+    real 5-minute-bar timestamps and sub-basis-point wiggles throughout
+    (mirroring this file's own `barelyMovingBars` unit-test precedent,
+    and the established codebase convention of a synthetic fixture for
+    an edge case real data doesn't happen to contain -- e.g. issue #108's
+    own "500,000x close" log-scale fixture). Played it through: the
+    "Big swing incoming…" cue and full decision panel rendered twice
+    (once per backfilled event), and the session settled reading
+    **"Bullet Time calls: 0 of 2 correct."** -- confirming the hard
+    floor of 2 genuinely kicks in on a real near-flat session rather
+    than showing zero or one. Zero console errors, zero `pageerror`
+    events.
+  - The temporary `playwright` devDependency and every scratch
+    verification script were reverted/deleted before committing, per
+    this file's own established convention; confirmed via `git
+status`/`git diff --stat` on `package.json`/`pnpm-lock.yaml` showing
+    no trace afterward.
+- All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
+  1232 passing, `pnpm format:check`) green on the resulting clean tree.
+
 ## The hero count-up no longer moves the page (issue #147)
 
 The fix for the jitter issue #124's spike measured. The hero's 1.2s
