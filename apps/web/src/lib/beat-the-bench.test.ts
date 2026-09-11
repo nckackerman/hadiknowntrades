@@ -5,6 +5,7 @@ import { SPY_SESSION_BARS } from "@/test-fixtures/spy-session-bars";
 import {
   balanceAtBar,
   BASE_TICK_MS,
+  DEFAULT_SPEED,
   gapPhrase,
   isPlayableSession,
   outcomeDetail,
@@ -141,10 +142,10 @@ describe("position tracking", () => {
 });
 
 describe("playback speeds", () => {
-  it("offers five genuinely different intervals, at real millisecond values", () => {
+  it("offers six genuinely different intervals, at real millisecond values", () => {
     const intervals = PLAYBACK_SPEEDS.map(tickIntervalMs);
 
-    expect(intervals).toEqual([3000, 600, 300, 150, 75]);
+    expect(intervals).toEqual([3000, 1200, 600, 300, 150, 75]);
     expect(new Set(intervals).size).toBe(PLAYBACK_SPEEDS.length);
     // Strictly decreasing: a "faster" setting must never hold a bar on
     // screen longer than a slower one.
@@ -166,6 +167,7 @@ describe("playback speeds", () => {
 
   it("scales the whole session's length by exactly the speed multiplier", () => {
     expect(sessionDurationMs(BARS.length, 0.1)).toBe(234_000);
+    expect(sessionDurationMs(BARS.length, 0.25)).toBe(93_600);
     expect(sessionDurationMs(BARS.length, 0.5)).toBe(46_800);
     expect(sessionDurationMs(BARS.length, 2)).toBe(11_700);
     expect(sessionDurationMs(BARS.length, 4)).toBe(5_850);
@@ -174,6 +176,15 @@ describe("playback speeds", () => {
   it("has no ticks to run for a session of one bar", () => {
     expect(sessionDurationMs(1, 1)).toBe(0);
     expect(sessionDurationMs(0, 1)).toBe(0);
+  });
+
+  it("defaults to 0.25x -- a deliberately patient first-touch pace, not the 1x baseline", () => {
+    expect(DEFAULT_SPEED).toBe(0.25);
+    expect(PLAYBACK_SPEEDS).toContain(DEFAULT_SPEED);
+    // 78 ticks at 1200ms each -- slower than the 1x target's own
+    // "under 30 seconds" pace, on purpose (see DEFAULT_SPEED's own doc
+    // comment in beat-the-bench.ts).
+    expect(sessionDurationMs(BARS.length, DEFAULT_SPEED)).toBe(93_600);
   });
 });
 
