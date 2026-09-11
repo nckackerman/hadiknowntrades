@@ -16,6 +16,7 @@ import {
   resultKey,
   customResultKey,
   RESULTS_SCHEMA_VERSION,
+  sp500PrefixResultKey,
   THE_ORDER_KEY,
   THE_ORDER_TICKER_COUNT,
   TODAYS_CLOSE_SESSION_KEY,
@@ -27,6 +28,7 @@ import {
   type MysterySession,
   type PrecomputedResult,
   type PresetRange,
+  type Sp500PrefixResult,
   type TheOrderPuzzle,
   type TodaysCloseSession,
 } from "@hadiknowntrades/core";
@@ -575,6 +577,67 @@ export async function getTheOrderResponse(reader: ResultReader | null): Promise<
   }
 
   return Response.json(puzzle as unknown as TheOrderPuzzle, {
+    headers: { "Cache-Control": CACHE_CONTROL },
+  });
+}
+
+/**
+ * Handles GET /api/sp500-prefix?range=... (issue #233) -- serves The
+ * Cut's per-range precomputed result (packages/core's Sp500PrefixResult,
+ * written to results/sp500-prefix/{RANGE}.json by apps/pipeline's own
+ * buildSp500PrefixResults, issue #232) so TheCut.tsx can play it.
+ *
+ * **Not a `ResultRouteConfig` instantiation of getPrecomputedResultResponse**,
+ * unlike getResultsResponse/getCustomResultsResponse -- that helper's own
+ * `TResult extends { schemaVersion: number; model: unknown }` constraint
+ * assumes a `model`-discriminated result, and Sp500PrefixResult has no
+ * `model` field at all (it's a single-shape object per range, not a
+ * discriminated union the way PrecomputedResult is -- see that type's own
+ * doc comment). Reuses `readCurrentSchemaObject` directly instead, the
+ * same shape getLineupResponse/getTheOrderResponse already establish for
+ * a stored object with no `model` to check.
+ *
+ * Checks `curve` is an array and `bestN`/`bestPortfolioReturn`/
+ * `bestEndingBalance` are consistently null-or-not (mirroring
+ * validateSp500PrefixResult's own triplet check, packages/core) on top of
+ * `readCurrentSchemaObject`'s own checks -- the same light, non-redundant
+ * "already passed the pipeline's own write-time validator, this is just a
+ * defensive floor against a partially-written S3 object" posture every
+ * other fixed-shape route in this file already applies.
+ */
+export async function getSp500PrefixResponse(
+  rawRange: string | null,
+  reader: ResultReader | null,
+): Promise<Response> {
+  const range = parseRange(rawRange);
+  if (range === null) {
+    return errorResponse(
+      400,
+      "invalid_range",
+      `Unsupported or missing "range" query parameter. Expected one of: ${PRESET_RANGES.join(", ")} (case-insensitive). Received: ${rawRange ?? "(none)"}.`,
+    );
+  }
+
+  const outcome = await readCurrentSchemaObject(
+    sp500PrefixResultKey(range),
+    reader,
+    `The Cut result for range ${range}`,
+    `No Cut result is available yet for range "${range}" -- it hasn't been published by a pipeline run.`,
+  );
+  if (!outcome.ok) return outcome.response;
+  const result = outcome.value;
+
+  const bestNFieldsConsistent =
+    result.bestN === null
+      ? result.bestPortfolioReturn === null && result.bestEndingBalance === null
+      : typeof result.bestPortfolioReturn === "number" &&
+        typeof result.bestEndingBalance === "number";
+  if (!Array.isArray(result.curve) || !bestNFieldsConsistent) {
+    console.error(`[api/sp500-prefix] stored result for range ${range} has a malformed shape`);
+    return errorResponse(502, "schema_mismatch", "Stored results are in an unrecognized format.");
+  }
+
+  return Response.json(result as unknown as Sp500PrefixResult, {
     headers: { "Cache-Control": CACHE_CONTROL },
   });
 }
