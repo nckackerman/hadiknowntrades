@@ -139,10 +139,11 @@ describe("runPipeline: write-time self-validation (issue #47)", () => {
     expect(store.objects.has("results/1M.json")).toBe(true);
     expect(store.objects.has("results/3M.json")).toBe(true);
     expect(store.objects.has("results/1Y.json")).toBe(true);
-    // 5 valid preset ranges + The Cut's own 6 per-range results (issue
-    // #232, validated by its own validateSp500PrefixResult -- unaffected
-    // by this file's validatePrecomputedResult mock).
-    expect(store.objects.size).toBe(5 + 6);
+    // 5 valid preset ranges + The Cut's own 7 per-range results (issue
+    // #232, extended to CUT_RANGES' 7th "1D" entry by issue #238;
+    // validated by its own validateSp500PrefixResult -- unaffected by
+    // this file's validatePrecomputedResult mock).
+    expect(store.objects.size).toBe(5 + 7);
   });
 
   it("reports every independently-failing range, not just the first, while still writing every other valid range", async () => {
@@ -202,9 +203,10 @@ describe("runPipeline: write-time self-validation (issue #47)", () => {
     expect(store.objects.has("results/1W.json")).toBe(true);
     expect(store.objects.has("results/1M.json")).toBe(true);
     expect(store.objects.has("results/3M.json")).toBe(true);
-    // 4 valid preset ranges + The Cut's own 6 per-range results (issue
-    // #232, validated by its own validateSp500PrefixResult -- unaffected
-    // by this file's validatePrecomputedResult mock).
-    expect(store.objects.size).toBe(4 + 6);
+    // 4 valid preset ranges + The Cut's own 7 per-range results (issue
+    // #232, extended to CUT_RANGES' 7th "1D" entry by issue #238;
+    // validated by its own validateSp500PrefixResult -- unaffected by
+    // this file's validatePrecomputedResult mock).
+    expect(store.objects.size).toBe(4 + 7);
   });
 });

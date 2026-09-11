@@ -1,7 +1,8 @@
-// Pipeline integration coverage for The Cut's nightly result (issue #232)
-// -- mirrors pipeline.beat-the-bench.test.ts's own precedent: a small,
-// real-ticker fixture driven through the real runPipeline, with expected
-// output hand-computed independently (via the exact formula
+// Pipeline integration coverage for The Cut's nightly result (issue #232;
+// extended to a 7th range, "1D", by issue #238) -- mirrors
+// pipeline.beat-the-bench.test.ts's own precedent: a small, real-ticker
+// fixture driven through the real runPipeline, with expected output
+// hand-computed independently (via the exact formula
 // docs/design/the-cut-2026-09/README.md's "The mechanic" section
 // documents), not by re-running the pipeline's own computeSp500PrefixSelection
 // under test. computeSp500PrefixSelection's own exhaustive unit coverage
@@ -9,7 +10,9 @@
 // file only checks the *wiring*: real S&P 500 ranking (SP500_CONSTITUENTS,
 // not options.tickers), real boundary-date resolution against the
 // already-fetched window history, the new S3 key convention, and the
-// non-fatal-compute/fatal-write posture.
+// non-fatal-compute/fatal-write posture. The dedicated "1D" describe block
+// near the bottom of this file covers issue #238's own backward-lookup
+// boundary resolution specifically -- see its own header comment.
 //
 // **Uses real S&P 500 ticker symbols, not fictional ones** -- unlike
 // every other per-game builder in this file (which mostly tolerate an
@@ -194,6 +197,11 @@ describe("The Cut: nightly pipeline integration (issue #232)", () => {
       expect(store.objects.has(sp500PrefixResultKey(range))).toBe(true);
       expect(store.objects.has(`results/${range}.json`)).toBe(true);
     }
+    // "1D" (issue #238) at its own key too -- but with no flat
+    // results/1D.json counterpart, since "1D" is a Cut-only range, not
+    // one of the 6 PRESET_RANGES the main results page writes/reads.
+    expect(store.objects.has(sp500PrefixResultKey("1D"))).toBe(true);
+    expect(store.objects.has("results/1D.json")).toBe(false);
 
     const oneYear = parseSp500Prefix(store, "1Y");
     expect(oneYear.schemaVersion).toBe(RESULTS_SCHEMA_VERSION);
@@ -299,6 +307,14 @@ describe("The Cut: nightly pipeline integration (issue #232)", () => {
     const store = await run();
 
     const expectedStartDates: Record<string, string> = {
+      // "1D" (issue #238) resolves *backward* from D_END to the nearest
+      // earlier common date, which happens to be D_1W in this fixture's
+      // own sparse 7-date calendar (there's nothing between D_1W and
+      // D_END) -- not because 1D and 1W share any real economic meaning,
+      // just a coincidence of this fixture's coarse date choices. The
+      // dedicated "1D" describe block below covers the backward-lookup
+      // mechanism itself with a fixture built to exercise it directly.
+      "1D": D_1W,
       "1W": D_1W,
       "1M": D_1M,
       "3M": D_3M,
@@ -347,7 +363,7 @@ describe("The Cut: nightly pipeline integration (issue #232)", () => {
       asOf: ASOF,
     });
 
-    for (const range of ["1W", "1M", "3M", "1Y", "5Y", "MAX"] as const) {
+    for (const range of ["1D", "1W", "1M", "3M", "1Y", "5Y", "MAX"] as const) {
       const result = parseSp500Prefix(store, range);
       // The resolved end boundary is still D_END (shared by all 3
       // tickers), not NVDA's own one-ticker-only 2024-06-16 -- and
@@ -482,8 +498,186 @@ describe("The Cut: nightly pipeline integration (issue #232)", () => {
       }),
     ).rejects.toThrow();
 
-    for (const range of ["1W", "1M", "3M", "1Y", "5Y", "MAX"] as const) {
+    for (const range of ["1D", "1W", "1M", "3M", "1Y", "5Y", "MAX"] as const) {
       expect(store.objects.has(sp500PrefixResultKey(range))).toBe(false);
     }
+  });
+});
+
+describe("The Cut: 1D range (issue #238)", () => {
+  it("resolves \"1D\"'s own start to commonDates' entry immediately preceding the resolved end date, matching 1W's own curve/bestN in this fixture's sparse calendar", async () => {
+    const store = await run();
+
+    const oneDay = parseSp500Prefix(store, "1D");
+    const oneWeek = parseSp500Prefix(store, "1W");
+
+    // D_1W is the common date immediately preceding D_END in this
+    // fixture's own sparse 7-date calendar (see this file's own header
+    // comment) -- so "1D"'s backward lookup and "1W"'s forward-snapped
+    // nominal start land on the exact same real startDate here, and
+    // therefore compute an identical curve/bestN/benchmark. This is a
+    // coincidence of this fixture's coarse dates, not a claim that 1D
+    // and 1W mean the same thing -- the dedicated fixture in the next
+    // test exercises the backward lookup on its own, realistic terms.
+    expect(oneDay.startDate).toBe(D_1W);
+    expect(oneDay.dataAsOf).toBe(D_END);
+    expect(oneDay.endDate).toBe(D_END);
+    expect(oneDay.truncated).toBe(false);
+    expect(oneDay.bestN).toBe(oneWeek.bestN);
+    expect(oneDay.curve).toEqual(oneWeek.curve);
+    expect(oneDay.benchmark).toEqual(oneWeek.benchmark);
+  });
+
+  it("resolves the true previous trading day when the nominal 1-day-back date is a weekend, instead of collapsing to a zero-width window (regression, issue #238)", async () => {
+    // FRI is the real previous trading day; SAT/SUN (the nominal "1
+    // calendar day before asOf") have no data at all, reproducing the
+    // exact "yesterday is a weekend" case issue #238's own acceptance
+    // criteria calls out. Before the backward-lookup fix, forward-
+    // snapping this nominal start would have walked forward past the
+    // gap and landed on MON itself, collapsing "1D" to a zero-width
+    // (startDate === endDate) window instead of a real 1-trading-day one.
+    const FRI = "2024-06-14";
+    const MON = "2024-06-17";
+    const asOf = new Date("2024-06-17T00:00:00Z");
+
+    const dailyFixture = new Map<string, DailyClose[]>([
+      [
+        "NVDA",
+        [
+          { date: FRI, close: 100 },
+          { date: MON, close: 110 }, // +10%
+        ],
+      ],
+      [
+        "AAPL",
+        [
+          { date: FRI, close: 200 },
+          { date: MON, close: 180 }, // -10%
+        ],
+      ],
+      [
+        "MSFT",
+        [
+          { date: FRI, close: 50 },
+          { date: MON, close: 55 }, // +10%
+        ],
+      ],
+      [
+        "SPY",
+        [
+          { date: FRI, close: 100 },
+          { date: MON, close: 105 }, // +5%
+        ],
+      ],
+    ]);
+    const intradayFixture = new Map<string, IntradayBar[]>(
+      TICKERS.map((symbol) => [
+        symbol,
+        [
+          { date: `${MON}T09:30:00`, close: 100 },
+          { date: `${MON}T10:30:00`, close: 101 },
+        ],
+      ]),
+    );
+
+    const store = memoryStore();
+    await runPipeline({
+      tickers: TICKERS,
+      fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
+      fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+      fetchFiveMinuteBars: noIntradayData,
+      fetchIntraday1mBars: noIntradayData,
+      store,
+      asOf,
+    });
+
+    const oneDay = parseSp500Prefix(store, "1D");
+
+    // Not collapsed to zero width -- the real previous trading day (FRI),
+    // not MON itself.
+    expect(oneDay.startDate).toBe(FRI);
+    expect(oneDay.startDate).not.toBe(oneDay.dataAsOf);
+    expect(oneDay.dataAsOf).toBe(MON);
+    expect(oneDay.endDate).toBe(MON);
+    expect(oneDay.truncated).toBe(false);
+
+    // N=1 (NVDA alone, real S&P 500 rank #1 by weight): a real,
+    // hand-computed +10% return, not a degenerate 1.0 (which a
+    // collapsed FRI/FRI or MON/MON window would have produced instead).
+    expect(oneDay.curve[0]).toMatchObject({ n: 1, portfolioReturn: 1.1 });
+
+    // The SPY benchmark resolves the exact same real FRI -> MON window,
+    // for the identical reason (see buildSp500PrefixResults' own "1D"
+    // branch, which computes it directly rather than reusing
+    // benchmarksByRange's nominal-start-based entries) -- also not
+    // collapsed to zero width.
+    expect(oneDay.benchmark).not.toBeNull();
+    expect(oneDay.benchmark!.startDate).toBe(FRI);
+    expect(oneDay.benchmark!.endDate).toBe(MON);
+    expect(oneDay.benchmark!.endingBalance).toBeCloseTo(20 * 1.05, 8);
+  });
+
+  it("keeps the SPY benchmark's own truncated flag in agreement with the top-level one in the defensive zero-width fallback (regression, code review finding)", async () => {
+    // Only ONE majority-shared trading date exists at all -- every
+    // ticker (NVDA/AAPL/MSFT/SPY) has exactly one close, all on the
+    // same date, so resolveOneDayBoundary's own defensive fallback
+    // (fewer than two common dates) fires: startDate collapses to
+    // commonEndDate, a genuine zero-width window, and the top-level
+    // `truncated` is correctly `true`. Before this fix, the SPY
+    // benchmark computed against that same zero-width pair derived its
+    // own `truncated` independently via computeBenchmark's ordinary
+    // "nearest point in [start, end]" logic, which has no way to detect
+    // a *zero-width* range as truncated on its own (SPY still has a
+    // real close on that single date) -- so `benchmark.truncated` came
+    // back `false`, silently disagreeing with the top-level flag. A
+    // reader that only checks `benchmark.truncated` would miss the
+    // warning entirely.
+    const ONLY_DATE = "2024-06-17";
+    const asOf = new Date("2024-06-17T00:00:00Z");
+
+    const dailyFixture = new Map<string, DailyClose[]>([
+      ["NVDA", [{ date: ONLY_DATE, close: 100 }]],
+      ["AAPL", [{ date: ONLY_DATE, close: 200 }]],
+      ["MSFT", [{ date: ONLY_DATE, close: 50 }]],
+      ["SPY", [{ date: ONLY_DATE, close: 100 }]],
+    ]);
+    const intradayFixture = new Map<string, IntradayBar[]>(
+      TICKERS.map((symbol) => [
+        symbol,
+        [
+          { date: `${ONLY_DATE}T09:30:00`, close: 100 },
+          { date: `${ONLY_DATE}T10:30:00`, close: 101 },
+        ],
+      ]),
+    );
+
+    const store = memoryStore();
+    await runPipeline({
+      tickers: TICKERS,
+      fetchDailyCloses: async (symbol) => dailyFixture.get(symbol) ?? [],
+      fetchIntradayBars: async (symbol) => intradayFixture.get(symbol) ?? [],
+      fetchFiveMinuteBars: noIntradayData,
+      fetchIntraday1mBars: noIntradayData,
+      store,
+      asOf,
+    });
+
+    const oneDay = parseSp500Prefix(store, "1D");
+
+    // The genuine zero-width collapse: only one common date exists, so
+    // startDate === dataAsOf === endDate, and the top-level flag says so.
+    expect(oneDay.startDate).toBe(ONLY_DATE);
+    expect(oneDay.startDate).toBe(oneDay.dataAsOf);
+    expect(oneDay.truncated).toBe(true);
+    // A same-day ratio is exactly 1.0 -- confirms this really is the
+    // degenerate zero-width case, not a real 1-day comparison.
+    expect(oneDay.curve[0]).toMatchObject({ n: 1, portfolioReturn: 1 });
+
+    // The fix under test: benchmark.truncated agrees with the top-level
+    // flag for this same degenerate window, not independently false.
+    expect(oneDay.benchmark).not.toBeNull();
+    expect(oneDay.benchmark!.startDate).toBe(ONLY_DATE);
+    expect(oneDay.benchmark!.endDate).toBe(ONLY_DATE);
+    expect(oneDay.benchmark!.truncated).toBe(true);
   });
 });

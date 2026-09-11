@@ -1588,3 +1588,32 @@ selection.ts`'s `computeCandidates` resolves an analogous "this
   section for the real, live-verified case (a single ticker out of 503)
   and the fix (require a boundary date at least 90% of the universe
   actually shares, not merely one the raw date union contains).
+- **Confirmed for issue #238 (The Cut's new 1D range): `computeSp500PrefixSelection`/
+  `tickerWindowRatio` have no implicit "needs N+ days of history" assumption
+  at all.** Both are pure string-date comparisons (`findCloseOnDate`'s
+  binary search against exact `rangeStartString`/`endDateString` values) --
+  nothing here counts elapsed days, requires a minimum gap, or otherwise
+  cares how far apart the two boundary dates are. A genuinely 1-day-apart
+  pair (or even, in principle, the same date passed for both) works exactly
+  like any other pair: this module needed **zero changes** for issue #238,
+  which instead only had to teach its caller (`apps/pipeline`'s
+  `buildSp500PrefixResults`) to resolve a real, non-degenerate 1-day
+  boundary pair in the first place -- see `apps/pipeline/CLAUDE.md`'s own
+  "The Cut: 1-day range (issue #238)" section for why that resolution
+  needed genuinely different (backward, not forward) logic from every
+  other range's own boundary snap.
+- **`CutRange` (`preset-ranges.ts`, issue #238) is The Cut's own range
+  type -- `"1D" | PresetRange`, exported alongside `CUT_RANGES` (`["1D",
+...PRESET_RANGES]`)** -- deliberately NOT a widening of `PresetRange`/
+  `PRESET_RANGES` themselves (see `CutRange`'s own doc comment for the
+  full reasoning: that union is closed and exhaustively switched on all
+  over this codebase for a purpose "1D" has no meaning for). Only
+  `Sp500PrefixResult.range`/`sp500PrefixResultKey`/
+  `validateSp500PrefixResult` (`results-schema.ts`) were widened to
+  `CutRange` -- safe specifically because `Sp500PrefixResult` was already
+  its own sibling object family (never a `PrecomputedResult` union
+  member), the same precedent `CustomWindowResult.anchorDate` already
+  established for "a feature needs `PresetRange` plus one more value."
+  Every other `PresetRange` consumer in this package
+  (`presetRangeStartDate`, the main results page's own machinery) is
+  completely untouched.

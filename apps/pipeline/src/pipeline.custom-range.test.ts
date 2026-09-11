@@ -124,10 +124,11 @@ describe("runPipeline custom-range anchors (issue #11, day-granularity since iss
 
     // The preset ranges (6) are unaffected/still written normally
     // alongside the 3 custom anchors, plus the new manifest object, plus
-    // The Cut's own 6 per-range results (issue #232, reusing this same
+    // The Cut's own 7 per-range results (issue #232, extended to
+    // CUT_RANGES' 7th "1D" entry by issue #238, reusing this same
     // fixture's real AAPL data -- see results/sp500-prefix/*.json below).
     expect(summary.results).toHaveLength(6);
-    expect(store.objects.size).toBe(6 + 3 + 1 + 6);
+    expect(store.objects.size).toBe(6 + 3 + 1 + 7);
 
     // The manifest publishes exactly the 3 written anchors, ascending.
     const manifest = JSON.parse(store.objects.get("results/custom/index.json")!);
@@ -203,10 +204,11 @@ describe("runPipeline custom-range anchors (issue #11, day-granularity since iss
     });
 
     expect(summary.customResults).toEqual([]);
-    // 6 preset ranges + The Cut's own 6 per-range results (issue #232) --
+    // 6 preset ranges + The Cut's own 7 per-range results (issue #232,
+    // extended to CUT_RANGES' 7th "1D" entry by issue #238) --
     // unaffected by computeCustomAnchors, since it reuses the window
     // path's fetch independently of the custom-anchor feature.
-    expect(store.objects.size).toBe(6 + 6);
+    expect(store.objects.size).toBe(6 + 7);
     expect([...store.objects.keys()].some((key) => key.startsWith("results/custom/"))).toBe(false);
   });
 
@@ -319,11 +321,12 @@ describe("runPipeline custom-range anchors (issue #11, day-granularity since iss
 
     expect(error.message).toMatch(/custom:2019-07-01: simulated S3 failure/);
     // The 6 preset ranges, the other custom anchor, the manifest, and The
-    // Cut's own 6 per-range results (issue #232) all still landed despite
-    // the one custom-anchor write failure -- "write whatever succeeded"
-    // is preserved across every family, not just within the preset-range
+    // Cut's own 7 per-range results (issue #232, extended to CUT_RANGES'
+    // 7th "1D" entry by issue #238) all still landed despite the one
+    // custom-anchor write failure -- "write whatever succeeded" is
+    // preserved across every family, not just within the preset-range
     // set.
-    expect(objects.size).toBe(6 + 1 + 1 + 6);
+    expect(objects.size).toBe(6 + 1 + 1 + 7);
     expect(objects.has("results/custom/2019-07-01.json")).toBe(false);
     expect(objects.has("results/custom/2024-06-14.json")).toBe(true);
     expect(objects.has("results/custom/index.json")).toBe(true);

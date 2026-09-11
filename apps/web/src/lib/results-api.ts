@@ -6,6 +6,7 @@
 import {
   anchorDateToDate,
   CUSTOM_ANCHORS_MANIFEST_KEY,
+  CUT_RANGES,
   LINEUP_LATEST_KEY,
   LINEUP_SIZE,
   MYSTERY_INDEX_KEY,
@@ -23,6 +24,7 @@ import {
   type AnchorDate,
   type CustomAnchorsManifest,
   type CustomWindowResult,
+  type CutRange,
   type LineupResult,
   type MysteryIndexEntry,
   type MysterySession,
@@ -77,11 +79,24 @@ function errorResponse(status: number, error: ApiErrorCode, message: string): Re
   return Response.json({ error, message }, { status, headers: { "Cache-Control": "no-store" } });
 }
 
-/** Case-insensitively matches a raw query-string value against PRESET_RANGES, or returns null if it doesn't match any of them. */
-export function parseRange(raw: string | null): PresetRange | null {
+/**
+ * Case-insensitively matches a raw query-string value against a fixed set
+ * of valid string values, or returns null if it doesn't match any of them
+ * -- the shared parsing rule behind both `parseRange` (PRESET_RANGES) and
+ * `parseCutRange` (CUT_RANGES) below, so the actual match logic (uppercase,
+ * membership check, cast on match) lives in exactly one place rather than
+ * two near-identical copies differing only in which array/type they check
+ * against.
+ */
+function parseFromSet<T extends string>(raw: string | null, values: readonly T[]): T | null {
   if (!raw) return null;
   const upper = raw.toUpperCase();
-  return (PRESET_RANGES as readonly string[]).includes(upper) ? (upper as PresetRange) : null;
+  return (values as readonly string[]).includes(upper) ? (upper as T) : null;
+}
+
+/** Case-insensitively matches a raw query-string value against PRESET_RANGES, or returns null if it doesn't match any of them. */
+export function parseRange(raw: string | null): PresetRange | null {
+  return parseFromSet(raw, PRESET_RANGES);
 }
 
 /**
@@ -101,6 +116,22 @@ export function parseRange(raw: string | null): PresetRange | null {
  */
 export function isCanonicalRange(raw: string): raw is PresetRange {
   return (PRESET_RANGES as readonly string[]).includes(raw);
+}
+
+/**
+ * Case-insensitively matches a raw query-string value against CUT_RANGES
+ * (PresetRange plus "1D") -- The Cut's own `getSp500PrefixResponse` uses
+ * this instead of `parseRange` above (issue #238). A dedicated sibling,
+ * not a widening of `parseRange`/`isCanonicalRange` themselves: both of
+ * those are also relied on by every non-Cut route in this file (the main
+ * results page's `/api/results`, `/api/og/[range]`), and none of them
+ * has any meaning for a 1-day window -- see `CutRange`'s own doc comment
+ * (packages/core's preset-ranges.ts) for why widening the shared
+ * `PresetRange` union itself is exactly what this issue's own scope
+ * rules out.
+ */
+export function parseCutRange(raw: string | null): CutRange | null {
+  return parseFromSet(raw, CUT_RANGES);
 }
 
 /**
@@ -604,17 +635,22 @@ export async function getTheOrderResponse(reader: ResultReader | null): Promise<
  * "already passed the pipeline's own write-time validator, this is just a
  * defensive floor against a partially-written S3 object" posture every
  * other fixed-shape route in this file already applies.
+ *
+ * **Parses via `parseCutRange`, not `parseRange` (issue #238)** -- The
+ * Cut accepts its own 7th range, "1D", which `parseRange`/`PRESET_RANGES`
+ * deliberately don't (see `parseCutRange`'s own doc comment for why that
+ * split, not a widened `parseRange`, is the right shape here).
  */
 export async function getSp500PrefixResponse(
   rawRange: string | null,
   reader: ResultReader | null,
 ): Promise<Response> {
-  const range = parseRange(rawRange);
+  const range = parseCutRange(rawRange);
   if (range === null) {
     return errorResponse(
       400,
       "invalid_range",
-      `Unsupported or missing "range" query parameter. Expected one of: ${PRESET_RANGES.join(", ")} (case-insensitive). Received: ${rawRange ?? "(none)"}.`,
+      `Unsupported or missing "range" query parameter. Expected one of: ${CUT_RANGES.join(", ")} (case-insensitive). Received: ${rawRange ?? "(none)"}.`,
     );
   }
 

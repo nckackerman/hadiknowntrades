@@ -10,7 +10,8 @@ import {
 } from "@/lib/the-cut-storage";
 import { TheCut } from "./TheCut";
 
-const RANGE = "1Y";
+// The Cut's own default range as of issue #238 -- see THE_CUT_DEFAULT_RANGE.
+const RANGE = "1D";
 
 // A small, hand-computed fixture: universeSize=5, bestN=3 ($30 from $20),
 // the N=5 (whole-index) baseline at $22 -- matching the-cut-scoring.test.ts's
@@ -108,7 +109,7 @@ describe("TheCut", () => {
     const panel = await expandBoard();
 
     expect(panel.getByText("NVDA")).toBeInTheDocument(); // real rank #1 by weight
-    expect(panel.getByRole("group", { name: "Preset date range" })).toBeInTheDocument();
+    expect(panel.getByRole("group", { name: "The Cut date range" })).toBeInTheDocument();
     expect(panel.queryByText(/too high|too low/i)).not.toBeInTheDocument();
     expect(panel.getByText(/6 guesses left/i)).toBeInTheDocument(); // CUT_MAX_ATTEMPTS, no guesses yet
   });

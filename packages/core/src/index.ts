@@ -59,8 +59,8 @@ export type {
   OptimizeIntradayResult,
 } from "./intraday-optimizer";
 
-export { PRESET_RANGES, presetRangeStartDate } from "./preset-ranges";
-export type { PresetRange } from "./preset-ranges";
+export { PRESET_RANGES, CUT_RANGES, presetRangeStartDate } from "./preset-ranges";
+export type { PresetRange, CutRange } from "./preset-ranges";
 
 export { toDateString, daysBeforeUtc } from "./date-utils";
 

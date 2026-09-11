@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import { toDateString } from "./date-utils.js";
-import { presetRangeStartDate } from "./preset-ranges.js";
+import { CUT_RANGES, PRESET_RANGES, presetRangeStartDate } from "./preset-ranges.js";
+
+describe("CUT_RANGES (issue #238)", () => {
+  it("is every PresetRange plus 1D, with 1D sorted first", () => {
+    expect(CUT_RANGES).toEqual(["1D", ...PRESET_RANGES]);
+  });
+
+  it("does not mutate PRESET_RANGES itself", () => {
+    expect(PRESET_RANGES).toEqual(["1W", "1M", "3M", "1Y", "5Y", "MAX"]);
+  });
+});
 
 describe("presetRangeStartDate", () => {
   const asOf = new Date("2024-06-15T00:00:00Z");

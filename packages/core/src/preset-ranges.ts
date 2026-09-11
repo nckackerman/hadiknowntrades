@@ -9,6 +9,31 @@ export const PRESET_RANGES = ["1W", "1M", "3M", "1Y", "5Y", "MAX"] as const;
 export type PresetRange = (typeof PRESET_RANGES)[number];
 
 /**
+ * The Cut's own range set (issue #238): every `PresetRange` plus a real
+ * 1-day window -- **not** a widening of `PRESET_RANGES`/`PresetRange`
+ * itself. That union is closed and exhaustively iterated all over this
+ * codebase (this array itself, `apps/pipeline`'s `WINDOW_RANGES`/
+ * `INTRADAY_RANGES` split, `apps/web`'s `isCanonicalRange`/`parseRange`,
+ * the main results page's own range picker) for a *6-way* switch that has
+ * no meaning for a 1-day window (there's no intraday/window model split,
+ * no benchmark-truncation-at-1993 concern, nothing) -- adding "1D" to any
+ * of those would be pure scope creep for a feature (The Cut) those call
+ * sites don't even know exists. `results-schema.ts`'s own
+ * `CustomWindowResult` already established the precedent this follows:
+ * a feature that needs "PresetRange plus one more value" gets its own
+ * sibling type instead, so the *shared* union's blast radius stays
+ * exactly what it was.
+ *
+ * `"1D"` sorts first -- shortest-duration-first, the same ordinal
+ * convention `PRESET_RANGES` itself already follows (1W < 1M < ... < MAX),
+ * which is also the order every Cut-specific range picker/lookup below
+ * renders and iterates in.
+ */
+export const CUT_RANGES = ["1D", ...PRESET_RANGES] as const;
+
+export type CutRange = (typeof CUT_RANGES)[number];
+
+/**
  * Subtracts months and/or years from a UTC date, clamping the day of
  * month if it would otherwise overflow into a later month.
  *
