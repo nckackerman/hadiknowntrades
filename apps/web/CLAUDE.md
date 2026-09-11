@@ -10569,3 +10569,194 @@ typegen` otherwise keeps a stale reference to the deleted debug route
   exact gotcha; hit again here, same fix).
 - All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
   1096 passing, `pnpm format:check`) green on the resulting clean tree.
+
+## The Cut: a real, playable %-edge-captured guessing game (issue #233)
+
+`components/TheCut.tsx` + `lib/the-cut-scoring.ts` (pure grading logic) +
+`lib/the-cut-storage.ts` (range-keyed game state + streak history) +
+`lib/use-cut-game.ts`/`lib/use-sp500-prefix.ts` (the React/fetch glue) --
+the web half of The Cut (see `docs/design/the-cut-2026-09/README.md` for
+the full mechanic, and `packages/core/CLAUDE.md`'s/this file's own pointer
+comments for the #230-#232 data/algorithm/pipeline build chain this reads
+from). A 5th daily-hub game tile, added after The Order/The Lineup/Beat
+the Bench/The Call Board -- same grid position/tile pattern issue #122
+already establishes, plus its own new `GET /api/sp500-prefix?range=...`
+route (`lib/results-api.ts`'s `getSp500PrefixResponse`, mirroring
+`getLineupResponse`/`getTheOrderResponse`'s own "fixed-key stored object,
+no `model` field to check" shape -- `Sp500PrefixResult` isn't a
+`model`-discriminated union member, so this can't be a `ResultRouteConfig`
+instantiation of `getPrecomputedResultResponse` the way `getResultsResponse`
+is).
+
+- **Not a daily-rotating puzzle, and not keyed by date at all** -- the
+  design doc's own "Naming and scope" section rules that out for v1. The
+  Cut owns its own range picker (a plain `useState<PresetRange>`,
+  defaulting to `THE_CUT_DEFAULT_RANGE = "1Y"`, reusing `RangeSelector.tsx`
+  directly rather than a second picker component) independent of the
+  outer page's `?range=`/`?anchor=` -- picking a different window just
+  refetches `/api/sp500-prefix?range=` for that range and loads (or
+  starts fresh) that range's own persisted game. `the-cut-storage.ts`
+  keys per-range game state at `hikt:the-cut:game:{range}`, and the
+  completed-game history (for streak derivation, same "derive don't
+  store" discipline `order-storage.ts`'s own `computeOrderStreak`
+  establishes) is a plain ascending list with **no de-dup key at all** --
+  unlike a daily puzzle's one-entry-per-date history, replaying the same
+  range is a genuinely new game each time, not a re-render of the same
+  one, so `recordCutCompletion` always appends rather than checking for
+  an existing entry first.
+- **A Wordle-style up-to-6-attempt loop (`CUT_MAX_ATTEMPTS`), not either
+  sibling game's one-shot mechanic** -- chosen because directional
+  feedback (too high/too low) across several guesses is what makes a
+  1..~500 search tractable at all; a single guess with no feedback loop
+  would be close to unplayable at that range. The game ends the instant a
+  guess exactly equals `bestN` (a win) or once all 6 attempts are used
+  without one (a loss, but still shows the real reveal/score) --
+  "win," for streak purposes, is strictly an exact match, the same
+  binary win condition The Order's/The Lineup's own exact-match mechanics
+  already establish, not the % score (which is shown regardless of win/
+  loss as the game's own primary, continuous stat).
+- **Two-part feedback per guess**: a direction (too-high/too-low,
+  `DIRECTION_STYLES`, glyph+text, WCAG 1.4.1) and a named closeness band
+  on rank-distance (`closenessBand`, `the-cut-scoring.ts`) -- **scaled to
+  the universe's own size as a fraction, not an absolute rank-distance
+  threshold**: `hot <= 0.02`, `warm <= 0.08`, `cold <= 0.2`, else
+  `ice-cold`. This keeps the same four bands meaningful whether
+  `universeSize` is the real ~503 or a much smaller test fixture, and
+  matters because the design doc's own scoring section is explicit that
+  a fixed absolute distance means something very different depending on
+  how large the universe is.
+- **Scoring is `edgeCapturedPct`, not raw rank-distance** -- exactly the
+  design doc's own emphasis: "a guess 50 ranks off in a flat stretch of
+  the curve can be nearly free; 5 ranks off across a steep stretch can
+  cost the whole edge." `edgeCapturedPct(guessEndingBalance,
+n500EndingBalance, bestEndingBalance)` is `(guessed - baseline) /
+(best - baseline) * 100`, clamped to `[0, 100]`, and returns `100`
+  unconditionally when there's no real edge to capture at all
+  (`bestN === universeSize`, i.e. holding the whole index was already
+  optimal) -- live-verified against a real local pipeline run's own real
+  1Y curve (see below) that this isn't just a hypothetical: a guess in
+  the flat pre-ramp stretch of a real curve genuinely scored 0% captured
+  while sitting only 2 ranks off the real best, a concrete confirmation
+  the design doc's own "steep stretch" framing describes a real,
+  reachable case, not just a theoretical one.
+- **`curvePointAtOrBelow(curve, n)`** -- the last curve entry with
+  `n <= guess`, not a bare exact-`n` lookup -- is what both the scoring
+  function and `TheCutChart.tsx`'s own marker placement call, so a
+  guess/bestN that has no exact curve entry (only reachable when a
+  leading run of the highest-ranked companies all lack window data --
+  see `computeSp500PrefixSelection`'s own doc comment, `packages/core`)
+  falls back consistently to the same value everywhere it's used, rather
+  than the chart's marker silently disagreeing with the number the score
+  was actually computed from. Falls back further to `startingCapital`
+  (a flat 1x/no-op return) when the guess is below the curve's own
+  smallest `n` entirely.
+- **`TheCutChart.tsx` is a new, small, hand-rolled SVG chart** -- no
+  existing chart fits an N-on-x-axis domain (see this file's own "Chart:
+  hand-rolled SVG, no library" section above for the identical reasoning
+  `PortfolioChart.tsx` already established). Reuses `chart-scales.ts`'s
+  `buildLogScale`/`niceLogTicks` for the y-axis (portfolio value can span
+  a wide range across N=1..universeSize, same reason `PortfolioChart`'s
+  own value axis is log-scaled) -- a small private `buildLinearScale`
+  for the x-axis (N itself has no comparable multi-order-of-magnitude
+  spread, so no log scale is needed there). **Deliberately simpler than
+  `PortfolioChart`**: static, no hover/tap crosshair, no keyboard point
+  inspection, no reveal animation -- this renders once, at the end of a
+  finished game, not as an ongoing interactive exploration surface. A
+  screen-reader user gets the same information via a plain sr-only
+  summary paragraph, not a `PortfolioChart`-style accessible data table
+  (the curve can have close to 500 points; a table that size would be
+  its own UI problem, and the three numbers that actually matter -- the
+  guess, the real best N, and the baseline -- are already stated in
+  plain text just above the chart by `TheCut.tsx` itself). Marks the
+  real best N (gold, `--accent-reward`), the player's own final guess
+  (blue, `--accent-selection` -- omitted entirely when it coincides
+  exactly with the best N, to avoid drawing two markers on top of each
+  other with no visual distinction), and the N=universeSize
+  (whole-index) baseline as a dashed, muted reference line, per the
+  design doc's own "Reveal" section wording.
+- **Number formatting reuses `format-currency.ts`'s existing
+  `formatHeroCurrency`/`formatAxisCurrency`/`formatMultiplier` directly**
+  -- no new currency-formatting logic, per this file's own documented
+  recurring-bug precedent from duplicated formatters.
+- **The pre-guess ticker strip (`TickerStrip`, inside `TheCut.tsx`) is
+  rank + symbol only -- no company names, no logos**, ranked by real
+  weight descending (`[...SP500_CONSTITUENTS].sort((a, b) => b.weight -
+a.weight)`, computed once at module scope, the exact ordering
+  `apps/pipeline`'s own `buildSp500PrefixResults` ranks against). It
+  auto-scrolls (`scrollIntoView({ inline: "center", block: "nearest" })`)
+  to keep the live, not-yet-submitted slider value in view, guarded the
+  same two ways this app's other `scrollIntoView` call sites already are
+  (a `typeof element.scrollIntoView === "function"` check, and
+  `behavior: "auto"` under `prefersReducedMotion()`) -- see
+  `DayOverview.tsx`'s own precedent (issue #80/#193) for the identical
+  guard shape, just for horizontal rather than vertical scroll.
+  Live-verified at both 1280px and 390px that the strip scrolls smoothly
+  as the slider/numeric input changes and never causes horizontal page
+  overflow.
+- **Two lint fixes worth remembering for the next range-keyed/result-
+  keyed hook in this app**: both `CutBoard`'s own "reset the draft guess
+  to a sensible midpoint when the range changes" and `useCutGame`'s own
+  "reset to `UNHYDRATED_VIEW` when `result` goes back to `null`" first
+  drafts used a plain `useEffect` with an unconditional `setState` call
+  at the top of the body -- `react-hooks/set-state-in-effect` correctly
+  flagged both. Fixed two different ways, matching each case's own
+  shape: the draft reset is a genuine "adjust local state when a prop
+  changes" case, so it became the render-time `trackedRange` comparison
+  idiom this file already documents for `use-results.ts`'s own
+  `trackedUrl`/`StartingCapitalInput.tsx`'s own `trackedValue` (no
+  `useEffect` needed at all); the hydration-reset case needed a real
+  effect (it does an async-ish localStorage read), so the fix was
+  deferring the _entire_ effect body -- including the `result === null`
+  branch, not just the non-null branch -- into one `queueMicrotask` call,
+  matching `use-order-game.ts`'s own established shape for this exact
+  lint.
+- **`ResultsPage.test.tsx` needed a real update, not just a new
+  assertion, per this file's own repeatedly-documented pattern for this
+  exact test**: the "does not also fetch a preset range's own result
+  while in anchor mode" test filters every requested URL containing the
+  substring `"range="` -- and `/api/sp500-prefix?range=1Y` (The Cut's own
+  default-range fetch, fired unconditionally on mount just like the Call
+  Board's/daily hero's own fixed-range fetches already are) matches that
+  filter too, despite being a completely different route. `THE_CUT_DEFAULT_RANGE`
+  is exported from `TheCut.tsx` specifically so this test can name it
+  rather than hardcoding `"1Y"` a second time; the expected array's own
+  order was determined by actually running the test and reading the real
+  call order, not guessed from render order alone.
+- **Live-verified against a real local pipeline run** (`local-run.ts`,
+  `LOCAL_TICKER_COUNT=25`, real Yahoo network calls, no S3 write --
+  including a real `results/sp500-prefix/{RANGE}.json` for all 6 ranges)
+  plus `next build`/`next start` (not `next dev` -- see this file's own
+  repeatedly-documented note on why headless Chromium can't hydrate a
+  dev-mode page in this sandbox) and the documented no-root headless-
+  Chromium workaround. The real 1Y result's own curve (full 503-ticker
+  universe ranking, `bestN=14`, $20 -> $30.40, 1.5x; N=503 baseline
+  $28.73) drove all four states end to end through real UI interaction:
+  **idle** (ticker strip showing real ranked tickers -- NVDA #1, AAPL #2,
+  MSFT #3 -- the slider/numeric input in sync, 6 guesses available),
+  **mid-guess feedback** (a real "too high"/"ice cold" through "too
+  low"/"hot" progression as the guess narrowed in), **win** (guessing the
+  real N=14 exactly: gold "★ Correct!" feedback row, 100% edge captured,
+  0 ranks off, a 1/1 streak, the reveal chart's single gold marker), and
+  **lose** (6 attempts exhausted 2 ranks off the real best: 0% edge
+  captured -- the real curve's own steep ramp right at N=14 means a
+  guess just short of it, in the flatter stretch below, genuinely
+  captures none of the edge, live confirmation of the design doc's own
+  "steep stretch" framing) -- at both 1280px desktop and 390px mobile.
+  Zero console errors or `pageerror` events across every run;
+  `document.documentElement.scrollWidth === clientWidth` exactly at
+  390px on every screenshot. The temporary `playwright` devDependency
+  and the `apt-get download`/`dpkg-deb -x`-extracted shared libraries
+  were both reverted/discarded before committing, per this file's own
+  established convention; confirmed via `git status`/`git diff --stat`
+  on `package.json`/`pnpm-lock.yaml` showing no trace afterward.
+- **Deviation from a literal reading of the issue's own scope, noted
+  explicitly**: the issue's Background section describes reusing
+  `order-storage.ts`'s exact precedent for streak derivation, which is
+  true here (`computeCutStreak` mirrors `computeOrderStreak` exactly) --
+  but unlike every other daily-hub game, The Cut's own completed-game
+  history has no per-day dedup key at all, since (per the design doc's
+  own explicit "no daily rotation" scope) there is no calendar day to
+  key against; a player can rack up several real completed games for the
+  same range in one sitting, each one a genuinely new streak-eligible
+  entry. This is a deliberate, considered consequence of the design
+  doc's own "not a daily puzzle" framing, not an oversight.

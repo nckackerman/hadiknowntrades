@@ -18,6 +18,7 @@ import { CallBoard } from "@/components/CallBoard";
 import { DailyHero } from "@/components/DailyHero";
 import { TheOrder } from "@/components/TheOrder";
 import { TheLineup } from "@/components/TheLineup";
+import { TheCut } from "@/components/TheCut";
 import { CustomRangeSelector } from "@/components/CustomRangeSelector";
 import { ModeToggle } from "@/components/ModeToggle";
 import { RangeSelector } from "@/components/RangeSelector";
@@ -287,6 +288,17 @@ export function ResultsPage() {
         )}
         <TheOrder />
         <TheLineup />
+        {/* The Cut (issue #233): a 5th game tile, added after The
+            Order/The Lineup filled out the grid's second row -- there's
+            no 6th tile to pair it with, so it simply renders alone on a
+            new row (grid auto-placement leaves column 2 empty there),
+            same as every other tile here taking no PrecomputedResult/
+            range/mode/selectedDay props of its own (issue #122). Its own
+            expanded panel is a native `<details open>` too, so the
+            existing `has-[details[open]]:grid-cols-1` rule already
+            collapses the grid the instant it opens -- no new CSS
+            needed. */}
+        <TheCut />
       </div>
 
       {/* "Explore other windows" (issue #165): the entire pre-existing

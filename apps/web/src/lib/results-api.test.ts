@@ -5,6 +5,7 @@ import {
   mysterySessionKey,
   PRESET_RANGES,
   RESULTS_SCHEMA_VERSION,
+  sp500PrefixResultKey,
   TODAYS_CLOSE_SESSION_KEY,
   type CustomWindowResult,
   type PrecomputedResult,
@@ -18,6 +19,7 @@ import {
   getMysteryRevealResponse,
   getMysterySessionResponse,
   getResultsResponse,
+  getSp500PrefixResponse,
   getTodaysCloseSessionResponse,
   isCanonicalRange,
   isMysterySessionId,
@@ -701,6 +703,179 @@ describe("getLineupResponse", () => {
     const responses = await Promise.all([
       getLineupResponse(null),
       getLineupResponse(memoryReader(new Map())),
+    ]);
+
+    for (const response of responses) {
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+    }
+  });
+});
+
+describe("getSp500PrefixResponse", () => {
+  // The Cut's read path (issue #233) -- serves apps/pipeline's per-range
+  // Sp500PrefixResult (results/sp500-prefix/{RANGE}.json, issue #232).
+  // Not a ResultRouteConfig instantiation like getResultsResponse
+  // (Sp500PrefixResult has no `model` field), so this has its own
+  // dedicated describe block rather than sharing getResultsResponse's.
+  const range = "1Y" as const;
+  const result = {
+    schemaVersion: RESULTS_SCHEMA_VERSION,
+    range,
+    generatedAt: "2026-09-10T00:00:00.000Z",
+    dataAsOf: "2026-09-09",
+    endDate: "2026-09-10",
+    startDate: "2025-09-09",
+    startingCapital: 20,
+    universeSize: 3,
+    truncated: false,
+    bestN: 2,
+    bestPortfolioReturn: 1.5,
+    bestEndingBalance: 30,
+    curve: [
+      { n: 1, portfolioReturn: 1.2, endingBalance: 24, cumWeight: 0.5 },
+      { n: 2, portfolioReturn: 1.5, endingBalance: 30, cumWeight: 0.8 },
+      { n: 3, portfolioReturn: 1.1, endingBalance: 22, cumWeight: 1 },
+    ],
+    benchmark: null,
+    n500VsSpyPctDiff: null,
+  };
+
+  it("returns a clear 400 error for a missing range", async () => {
+    const response = await getSp500PrefixResponse(null, memoryReader(new Map()));
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("invalid_range");
+  });
+
+  it("returns a clear 400 error for an unsupported range", async () => {
+    const response = await getSp500PrefixResponse("2Y", memoryReader(new Map()));
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("invalid_range");
+  });
+
+  it("accepts range case-insensitively, same as getResultsResponse", async () => {
+    const objects = new Map([[sp500PrefixResultKey(range), JSON.stringify(result)]]);
+
+    const response = await getSp500PrefixResponse("1y", memoryReader(objects));
+
+    expect(response.status).toBe(200);
+  });
+
+  it("returns a 500 when no reader is configured (RESULTS_BUCKET unset)", async () => {
+    const response = await getSp500PrefixResponse(range, null);
+
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body.error).toBe("server_misconfigured");
+  });
+
+  it("returns a 404 before any pipeline run has published this range", async () => {
+    const response = await getSp500PrefixResponse(range, memoryReader(new Map()));
+
+    expect(response.status).toBe(404);
+    const body = await response.json();
+    expect(body.error).toBe("not_found");
+  });
+
+  it("returns a 502 when the read fails", async () => {
+    const reader: ResultReader = {
+      getObject: vi.fn().mockRejectedValue(new Error("access denied")),
+    };
+
+    const response = await getSp500PrefixResponse(range, reader);
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("upstream_error");
+  });
+
+  it("returns a 502 when the stored result isn't valid JSON", async () => {
+    const objects = new Map([[sp500PrefixResultKey(range), "{not json"]]);
+
+    const response = await getSp500PrefixResponse(range, memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("corrupt_data");
+  });
+
+  it("returns a 502 when schemaVersion doesn't match", async () => {
+    const objects = new Map([
+      [sp500PrefixResultKey(range), JSON.stringify({ ...result, schemaVersion: 999 })],
+    ]);
+
+    const response = await getSp500PrefixResponse(range, memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("schema_mismatch");
+  });
+
+  it("returns a 502 when curve isn't an array", async () => {
+    const objects = new Map([
+      [sp500PrefixResultKey(range), JSON.stringify({ ...result, curve: "nope" })],
+    ]);
+
+    const response = await getSp500PrefixResponse(range, memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("schema_mismatch");
+  });
+
+  it("returns a 502 when bestN/bestPortfolioReturn/bestEndingBalance disagree on null-ness", async () => {
+    const objects = new Map([
+      [
+        sp500PrefixResultKey(range),
+        JSON.stringify({ ...result, bestN: null, bestPortfolioReturn: 1.5 }),
+      ],
+    ]);
+
+    const response = await getSp500PrefixResponse(range, memoryReader(objects));
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("schema_mismatch");
+  });
+
+  it("accepts a genuinely null bestN triplet (the whole universe lacks window data)", async () => {
+    const objects = new Map([
+      [
+        sp500PrefixResultKey(range),
+        JSON.stringify({
+          ...result,
+          bestN: null,
+          bestPortfolioReturn: null,
+          bestEndingBalance: null,
+        }),
+      ],
+    ]);
+
+    const response = await getSp500PrefixResponse(range, memoryReader(objects));
+
+    expect(response.status).toBe(200);
+  });
+
+  it("reads the published key and returns the whole result with caching headers", async () => {
+    const objects = new Map([[sp500PrefixResultKey(range), JSON.stringify(result)]]);
+
+    const response = await getSp500PrefixResponse(range, memoryReader(objects));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(result);
+    const cacheControl = response.headers.get("Cache-Control");
+    expect(cacheControl).toContain("max-age=300");
+    expect(cacheControl).toContain("stale-while-revalidate");
+  });
+
+  it("sets Cache-Control: no-store on every error response", async () => {
+    const responses = await Promise.all([
+      getSp500PrefixResponse(null, memoryReader(new Map())),
+      getSp500PrefixResponse(range, null),
+      getSp500PrefixResponse(range, memoryReader(new Map())),
     ]);
 
     for (const response of responses) {

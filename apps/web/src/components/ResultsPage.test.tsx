@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stubMatchMedia } from "@/lib/stub-match-media.test-util";
 import { DAILY_CHALLENGE_RANGE } from "@/lib/use-daily-challenge";
 import { CALL_BOARD_SERIES_RANGE } from "@/lib/use-call-board";
+import { THE_CUT_DEFAULT_RANGE } from "@/components/TheCut";
 
 const replace = vi.fn();
 let search = "";
@@ -331,13 +332,20 @@ describe("ResultsPage", () => {
       // completed trading day, via the same useDailyChallenge(mode) hook
       // (issue #161/#187) -- and all three always ask for the same fixed
       // range (1W) regardless of what the page is showing, so none of
-      // them can be confused for the view's own result fetch.
+      // them can be confused for the view's own result fetch. The Cut
+      // (issue #233) fetches its own dedicated `/api/sp500-prefix?range=`
+      // too -- a genuinely different route, but its URL also happens to
+      // contain the substring this filter matches on, so it shows up
+      // here too, at its own default range (independent of the outer
+      // page's ?range=/?anchor= entirely -- see TheCut.tsx's own range
+      // picker).
       const requested = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.map(
         (call) => call[0] as string,
       );
       expect(requested.filter((url) => url.includes("range="))).toEqual([
         `/api/results?range=${CALL_BOARD_SERIES_RANGE}`,
         `/api/results?range=${DAILY_CHALLENGE_RANGE}`,
+        `/api/sp500-prefix?range=${THE_CUT_DEFAULT_RANGE}`,
         `/api/results?range=${DAILY_CHALLENGE_RANGE}`,
       ]);
     });
