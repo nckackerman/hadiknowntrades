@@ -1281,7 +1281,7 @@ function PlaybackControls({
         <span id={speedGroupId} className="text-sm text-[var(--text-muted)]">
           Speed
         </span>
-        {/* A wrapping row of five fixed settings, each its own >=44px
+        {/* A wrapping row of six fixed settings, each its own >=44px
             target -- the row breaks onto a second line at narrow widths
             rather than shrinking any of them. */}
         <div role="group" aria-labelledby={speedGroupId} className="flex flex-wrap gap-2">
