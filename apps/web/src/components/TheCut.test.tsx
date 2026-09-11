@@ -64,13 +64,20 @@ async function expandBoard() {
   return within(await screen.findByTestId("the-cut-panel"));
 }
 
+// A leading-anchored regex, not the exact string -- the Explore panel's
+// own instance of each control carries a real, code-review-added
+// "(Explore other windows)" accessible-name suffix (see TheCut.tsx's
+// own CutBoardProps.accessibleNameSuffix doc comment) to disambiguate it
+// from the main game's own identically-purposed controls when both are
+// mounted at once. A prefix match keeps these two helpers working
+// unchanged against either scope.
 function guessInput(panel: ReturnType<typeof within>) {
-  return panel.getByRole("spinbutton", { name: "Your guess, as a number" });
+  return panel.getByRole("spinbutton", { name: /^Your guess, as a number/ });
 }
 
 function submit(panel: ReturnType<typeof within>, value: number) {
   fireEvent.change(guessInput(panel), { target: { value: String(value) } });
-  fireEvent.click(panel.getByRole("button", { name: "Submit guess" }));
+  fireEvent.click(panel.getByRole("button", { name: /^Submit guess/ }));
 }
 
 /**
@@ -567,6 +574,29 @@ describe("TheCut", () => {
       expect(explore.getByRole("group", { name: "The Cut date range" })).toBeInTheDocument();
     });
 
+    // Code-review finding: Tailwind's default (unnamed) `.group`/
+    // `group-open:` variant has no nearest-ancestor scoping -- it's
+    // satisfied by ANY ancestor `.group[open]`, not just the nearest
+    // one. Since this nested disclosure only ever renders while the
+    // OUTER "The Cut" tile is already open, an unnamed `group-open:` on
+    // its own chevron would react to the outer tile's open state
+    // instead of its own, permanently rendering rotated. jsdom applies
+    // no stylesheet (this repo's own established test-environment
+    // limitation, documented repeatedly elsewhere in this file), so this
+    // can only assert the className strings carry the fix's own named
+    // group/variant pair, not that the wrong element visually rotates --
+    // see the PR description for the live-browser confirmation.
+    it("scopes its own chevron to a named group, not the outer tile's own unnamed one (regression)", async () => {
+      const panel = await expandBoard();
+      const details = panel.getByText("Explore other windows").closest("details");
+      expect(details).toHaveClass("group/explore");
+      expect(details?.className).not.toMatch(/(?:^|\s)group(?:\s|$)/);
+
+      const chevron = within(details!).getByText("▸");
+      expect(chevron).toHaveClass("group-open/explore:rotate-90");
+      expect(chevron.className).not.toMatch(/(?:^|\s)group-open:rotate-90(?:\s|$)/);
+    });
+
     it("offers every CUT_RANGES entry except '1D', which the main game already owns", async () => {
       const panel = await expandBoard();
       const explore = await openExplore(panel);
@@ -589,7 +619,7 @@ describe("TheCut", () => {
       // resolves. Scoped to `explore`, not `panel`: the main game's own
       // fresh, not-yet-done guess input shares the identical accessible
       // name.
-      await explore.findByRole("spinbutton", { name: "Your guess, as a number" });
+      await explore.findByRole("spinbutton", { name: /^Your guess, as a number/ });
       submit(explore, 3); // its own default range's bestN, from the shared RESULT fixture
 
       expect(await explore.findAllByText(/correct/i)).not.toHaveLength(0);
@@ -610,6 +640,34 @@ describe("TheCut", () => {
       // unaffected by Explore having mounted alongside it.
       expect(panel.getByText(/too high/i)).toBeInTheDocument();
       expect(explore.getByRole("button", { name: "1W" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    // Code-review finding: the main game's own guess input/submit
+    // button and Explore's own instance used to share the exact same
+    // accessible name, which threw a "multiple elements found" error
+    // the instant both were on screen and not-yet-done at once.
+    it("gives its own guess input and submit button a distinct accessible name from the main game's", async () => {
+      const panel = await expandBoard();
+      const explore = await openExplore(panel);
+      await explore.findByRole("spinbutton", { name: /^Your guess, as a number/ });
+
+      // Unscoped queries against the whole document must not throw --
+      // each control's own accessible name is unique across both games.
+      expect(
+        screen.getByRole("spinbutton", { name: "Your guess, as a number" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("spinbutton", { name: "Your guess, as a number (Explore other windows)" }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Submit guess" })).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Submit guess (Explore other windows)" }),
+      ).toBeInTheDocument();
+      // The visible text of Explore's own button is still plain "Submit
+      // guess" -- only its accessible name carries the suffix.
+      expect(
+        screen.getByRole("button", { name: "Submit guess (Explore other windows)" }),
+      ).toHaveTextContent("Submit guess");
     });
   });
 });

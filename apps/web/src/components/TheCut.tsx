@@ -49,7 +49,7 @@
 //      game's own reveal has moved to the new slide animation. See
 //      `CutExplorePanel`'s own doc comment for why it's lazily mounted.
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import {
   CUT_RANGES,
@@ -130,6 +130,14 @@ export const THE_CUT_DEFAULT_RANGE: CutRange = "1D";
  */
 const EXPLORE_RANGES: readonly CutRange[] = CUT_RANGES.filter((range) => range !== "1D");
 const EXPLORE_DEFAULT_RANGE: CutRange = EXPLORE_RANGES[0]!;
+
+/**
+ * `CutBoardProps.accessibleNameSuffix`'s real value for the Explore
+ * panel's own game -- a module constant (not a literal at the one call
+ * site) so it can never drift from the disclosure's own visible label
+ * ("Explore other windows").
+ */
+const EXPLORE_ACCESSIBLE_NAME_SUFFIX = "Explore other windows";
 
 /** Ranked #1..#universeSize by real S&P weight, descending -- the exact ordering apps/pipeline's own buildSp500PrefixResults ranks against (packages/core/CLAUDE.md's "The Cut" section), computed once at module scope since SP500_CONSTITUENTS is a static, versioned snapshot (see that file's own header comment). */
 const RANKED_TICKERS = [...SP500_CONSTITUENTS].sort((a, b) => b.weight - a.weight);
@@ -313,6 +321,22 @@ interface CutBoardProps {
   curve: Sp500PrefixCurvePoint[];
   /** Which reveal this game's own `CutReveal` renders once done -- see this file's own top-of-file comment for the full "why here, not there" reasoning. */
   revealVariant: CutRevealVariant;
+  /**
+   * Disambiguates this board's own guess controls' accessible names from
+   * any other `CutBoard` instance that might be mounted simultaneously
+   * -- a real code-review-found bug: the main game (fixed "1D") and
+   * "Explore other windows" (its own independent game, any other range)
+   * can both be on screen, not-yet-done, at once, and their guess
+   * `<input>`/"Submit guess" `<button>` used to share the exact same
+   * accessible name ("Your guess, as a number" / "Submit guess") --
+   * ambiguous for a screen-reader user's own forms/buttons list, and
+   * literally unresolvable by any `getByRole` query that isn't scoped to
+   * one panel's own subtree. `null` for the main game (keeps its
+   * existing, un-suffixed accessible name unchanged, matching every
+   * pre-existing test's own query); a real string ("Explore other
+   * windows") for the Explore panel's own instance.
+   */
+  accessibleNameSuffix: string | null;
   onSubmit: (guess: number) => void;
   onPlayAgain: () => void;
 }
@@ -378,8 +402,25 @@ const SLIDE_SETTLE_MS = 650;
  * identical reason `CutReveal`'s own doc comment already establishes for
  * this whole subtree: this component only ever mounts once a real guess
  * has been submitted, which cannot happen before hydration.
+ *
+ * **`memo`'d (code-review finding)**: `CutReveal`'s own four
+ * `useCountUp` tweens re-render it on every one of the dozens of RAF
+ * ticks their ~1.2s reveal drives, and this component's own props
+ * (`universeSize`/`bestN`/`guessedN`, all primitives) never change
+ * across that whole reveal -- without `memo`, every one of those ticks
+ * would needlessly re-run this component's own `RANKED_TICKERS.slice(...).flatMap(...)`
+ * and re-create up to ~500 `<li>` elements, the same class of hot-path
+ * waste this codebase's own `PortfolioChart`/`TradeEventTimeline`
+ * `React.memo` fixes already exist to avoid elsewhere (see this file's
+ * own "Trade replay"/"Window-model result: a trade-event timeline..."
+ * sections). Default shallow comparison is sufficient here since every
+ * prop is a plain number.
  */
-function CutRevealStrip({ universeSize, bestN, guessedN }: CutRevealStripProps) {
+const CutRevealStrip = memo(function CutRevealStrip({
+  universeSize,
+  bestN,
+  guessedN,
+}: CutRevealStripProps) {
   const cutLineRef = useRef<HTMLLIElement | null>(null);
   const reducedMotionAtMount = useReducedMotionAtMount();
   const [settled, setSettled] = useState(reducedMotionAtMount);
@@ -462,7 +503,7 @@ function CutRevealStrip({ universeSize, bestN, guessedN }: CutRevealStripProps) 
       </p>
     </div>
   );
-}
+});
 
 // Long enough to read as a deliberate count rather than a flicker, short
 // enough not to make people wait for the numbers they came for -- the
@@ -700,10 +741,24 @@ function CutBoard({
   n500EndingBalance,
   curve,
   revealVariant,
+  accessibleNameSuffix,
   onSubmit,
   onPlayAgain,
 }: CutBoardProps) {
   const sliderId = useId();
+  // See CutBoardProps.accessibleNameSuffix's own doc comment -- `null`
+  // (the main game) keeps the original, unsuffixed accessible names
+  // byte-for-byte; a real suffix (Explore) appends a disambiguating
+  // parenthetical. The *visible* button text always stays plain "Submit
+  // guess" -- an `aria-label` override changes the accessible name
+  // without changing what a sighted user reads, since the two boards
+  // are already visually separated by which panel they sit in.
+  const guessInputLabel = accessibleNameSuffix
+    ? `Your guess, as a number (${accessibleNameSuffix})`
+    : "Your guess, as a number";
+  const submitButtonLabel = accessibleNameSuffix
+    ? `Submit guess (${accessibleNameSuffix})`
+    : undefined;
   const [draft, setDraft] = useState(() => Math.ceil(universeSize / 2));
   // A different range (a different universeSize, and a fresh game to
   // guess against) resets the draft to a sensible midpoint -- via the
@@ -777,12 +832,13 @@ function CutBoard({
                 max={universeSize}
                 value={draft}
                 onChange={(event) => setDraft(clamp(Number(event.target.value) || 1))}
-                aria-label="Your guess, as a number"
+                aria-label={guessInputLabel}
                 className="font-numeric w-24 rounded-md border border-[var(--gridline)] bg-[var(--surface-1)] px-2 py-1.5 text-sm text-[var(--text-primary)]"
               />
               <button
                 type="button"
                 onClick={() => onSubmit(draft)}
+                aria-label={submitButtonLabel}
                 className="min-h-11 rounded-md bg-[var(--accent-selection)] px-4 text-sm font-semibold text-white"
               >
                 Submit guess
@@ -859,6 +915,8 @@ function CutBoard({
 interface CutGamePanelProps {
   range: CutRange;
   revealVariant: CutRevealVariant;
+  /** Passed straight through to `CutBoard` -- see `CutBoardProps.accessibleNameSuffix`'s own doc comment. */
+  accessibleNameSuffix: string | null;
   result: Sp500PrefixResult | null;
   fetchFailed: boolean;
   view: CutView;
@@ -879,6 +937,7 @@ interface CutGamePanelProps {
 function CutGamePanel({
   range,
   revealVariant,
+  accessibleNameSuffix,
   result,
   fetchFailed,
   view,
@@ -907,6 +966,7 @@ function CutGamePanel({
           n500EndingBalance={n500Point?.endingBalance ?? null}
           curve={result.curve}
           revealVariant={revealVariant}
+          accessibleNameSuffix={accessibleNameSuffix}
           onSubmit={onSubmit}
           onPlayAgain={onPlayAgain}
         />
@@ -946,13 +1006,30 @@ function CutExploreOtherWindows() {
 
   return (
     <details
-      className="group"
+      // `group/explore`, not the bare `group` TheCut()'s own outer
+      // <details> already uses -- a real code-review-found bug: Tailwind's
+      // default (unnamed) `.group`/`group-open:` variant is a plain
+      // descendant selector with no nearest-ancestor scoping
+      // (`:where(.group):is([open]) *`, not `:where(.group[open])
+      // :where(:not(.group) *)`), so an unnamed `group-open:` on this
+      // chevron would react to ANY ancestor `.group[open]` -- including
+      // the OUTER details, which is always open whenever this nested one
+      // is even visible at all (this whole subtree only renders once
+      // TheCut's own tile is expanded). The chevron would therefore have
+      // rendered permanently rotated ("expanded") from the moment the
+      // outer tile opened, regardless of whether this inner disclosure
+      // was actually open or closed. A named group scopes the selector
+      // to specifically this `<details>`'s own `[open]` state.
+      className="group/explore"
       onToggle={(event) => {
         if (event.currentTarget.open) setOpened(true);
       }}
     >
       <summary className="flex cursor-pointer list-none items-center gap-1.5 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
-        <span aria-hidden="true" className="text-xs transition-transform group-open:rotate-90">
+        <span
+          aria-hidden="true"
+          className="text-xs transition-transform group-open/explore:rotate-90"
+        >
           ▸
         </span>
         {/* Its own `<span>`, not a bare text node -- matches
@@ -993,6 +1070,7 @@ function CutExplorePanel() {
       <CutGamePanel
         range={range}
         revealVariant="chart"
+        accessibleNameSuffix={EXPLORE_ACCESSIBLE_NAME_SUFFIX}
         result={result}
         fetchFailed={fetchFailed}
         view={view}
@@ -1090,6 +1168,7 @@ export function TheCut() {
             <CutGamePanel
               range={range}
               revealVariant="slide"
+              accessibleNameSuffix={null}
               result={result}
               fetchFailed={fetchFailed}
               view={view}
