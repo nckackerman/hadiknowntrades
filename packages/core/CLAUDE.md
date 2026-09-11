@@ -1576,3 +1576,15 @@ selection.ts`'s `computeCandidates` resolves an analogous "this
   rather than an already-window-sliced one (the follow-on pipeline-
   integration issue is expected to do exactly that, per this repo's
   fetch-once-slice-locally convention).
+- **The follow-on pipeline-integration issue (#232) shipped, and its own
+  live verification surfaced a real correctness trap worth knowing before
+  reusing this function's exact-boundary-match contract elsewhere**:
+  resolving `rangeStartString`/`endDateString` to _some_ ticker's real
+  date isn't enough -- a single outlier ticker whose fetched data reaches
+  one calendar day further than the rest of the universe can silently
+  become the shared boundary, at which point the exact-match rule
+  (correctly) treats everyone else as missing data. See
+  `apps/pipeline/CLAUDE.md`'s "The Cut: pipeline integration + storage"
+  section for the real, live-verified case (a single ticker out of 503)
+  and the fix (require a boundary date at least 90% of the universe
+  actually shares, not merely one the raw date union contains).
