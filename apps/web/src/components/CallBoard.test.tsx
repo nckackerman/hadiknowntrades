@@ -588,7 +588,7 @@ describe("CallBoard: history strip", () => {
     expect(cell).toHaveTextContent(/Way off\.$/);
   });
 
-  it("describes every cell in text, so the four states never rely on color alone", async () => {
+  it("describes every cell in text, so the five states never rely on color alone", async () => {
     const cell = await renderOneCall(
       resolvedCall({
         date: "2026-08-25",
@@ -604,9 +604,62 @@ describe("CallBoard: history strip", () => {
     );
     // The legend repeats each glyph next to its meaning.
     const legend = screen.getByRole("list", { name: "What each mark means" });
-    for (const label of ["Exact call", "Right direction", "Just missed", "Way off"]) {
+    for (const label of ["Exact call", "Right direction", "Just missed", "Way off", "Skipped"]) {
       expect(within(legend).getByText(label)).toBeInTheDocument();
     }
+  });
+
+  it("colors a no-input day neutrally (not as a miss), and marks it with a dash", async () => {
+    const cell = await renderOneCall(
+      resolvedCall({
+        date: "2026-08-25",
+        pick: null,
+        actual: "down-strong",
+        moveFraction: -0.02,
+        score: 0,
+      }),
+    );
+
+    expect(cell).toHaveAttribute("data-outcome", "no-input");
+    // Neutral/muted, not any of the four graded outcomes' own colors.
+    expect(cell.className).toContain("text-[var(--text-muted)]");
+    expect(cell.className).not.toContain("text-[var(--status-critical)]");
+    expect(cell.className).not.toContain("text-[var(--text-secondary)]");
+    expect(cell).toHaveTextContent("–");
+    expect(cell).toHaveTextContent(
+      "Aug 25, 2026: no call was made, closed -2.0% (down big). Skipped.",
+    );
+  });
+
+  it("gives every history cell a visible native title matching its own sr-only description exactly", async () => {
+    const call = resolvedCall({
+      date: "2026-08-25",
+      pick: "up-strong",
+      actual: "up",
+      moveFraction: 0.002,
+      score: 1,
+    });
+    const cell = await renderOneCall(call);
+
+    const description = "Aug 25, 2026: called up big, closed +0.2% (up). Right direction.";
+    expect(cell).toHaveAttribute("title", description);
+    expect(cell.querySelector(".sr-only")).toHaveTextContent(description);
+  });
+
+  it("gives a no-input cell the identical description in its title and its sr-only span", async () => {
+    const cell = await renderOneCall(
+      resolvedCall({
+        date: "2026-08-25",
+        pick: null,
+        actual: "up",
+        moveFraction: 0.002,
+        score: 0,
+      }),
+    );
+
+    const description = "Aug 25, 2026: no call was made, closed +0.2% (up). Skipped.";
+    expect(cell).toHaveAttribute("title", description);
+    expect(cell.querySelector(".sr-only")).toHaveTextContent(description);
   });
 
   it("shows at most the ten most recent settled calls, newest last", async () => {
@@ -669,5 +722,55 @@ describe("callOutcomeFor", () => {
     expect(
       callOutcomeFor(resolvedCall({ date: "d", pick: "down", actual: "up-strong", score: 0 })),
     ).toBe("far-miss");
+  });
+
+  it("classifies a no-input day (pick: null) as 'no-input', not 'far-miss', even though both score 0", () => {
+    expect(
+      callOutcomeFor(resolvedCall({ date: "d", pick: null, actual: "up-strong", score: 0 })),
+    ).toBe("no-input");
+    // Distance-1 from `actual` too -- still no-input, not near-miss.
+    expect(callOutcomeFor(resolvedCall({ date: "d", pick: null, actual: "up", score: 0 }))).toBe(
+      "no-input",
+    );
+  });
+});
+
+describe("CallBoard: no-input day removed the distracting copy line", () => {
+  it("no longer renders 'A practice game...' anywhere in the expanded board", async () => {
+    freezeClock(WEDNESDAY_BEFORE_OPEN);
+    const user = await renderBoard();
+    await user.click(screen.getByTestId("call-board-summary"));
+
+    expect(
+      screen.queryByText(/A practice game for seeing how hard short-term calls are/),
+    ).toBeNull();
+  });
+});
+
+describe("CallBoard: a no-input day breaks the current streak, end to end", () => {
+  it("shows a broken streak once a skipped day settles between two wins", async () => {
+    saveResolvedCalls([
+      resolvedCall({ date: "2026-08-17", pick: "up", actual: "up", score: 2 }),
+      resolvedCall({ date: "2026-08-18", pick: "up", actual: "up", score: 2 }),
+      // No pick was ever made for 08-19 -- a real no-input entry.
+      resolvedCall({ date: "2026-08-19", pick: null, actual: "up", score: 0 }),
+      resolvedCall({ date: "2026-08-20", pick: "up", actual: "up", score: 2 }),
+    ]);
+    freezeClock(WEDNESDAY_BEFORE_OPEN);
+    await renderBoard();
+
+    // The most recent run is just the single win on 08-20 -- the skipped
+    // day in between broke the streak the same way a loss would have.
+    await waitFor(() => {
+      expect(screen.getByText("Current streak").previousElementSibling).toHaveTextContent("1");
+    });
+    expect(screen.getByText("Best streak").previousElementSibling).toHaveTextContent("2");
+    // The skipped day still counts toward the resolved total.
+    expect(screen.getByText("Calls resolved").previousElementSibling).toHaveTextContent("4");
+
+    const strip = screen.getByRole("list", { name: "Recently settled calls" });
+    const skippedCell = within(strip).getAllByRole("listitem")[2]!;
+    expect(skippedCell).toHaveAttribute("data-outcome", "no-input");
+    expect(skippedCell).toHaveTextContent("–");
   });
 });

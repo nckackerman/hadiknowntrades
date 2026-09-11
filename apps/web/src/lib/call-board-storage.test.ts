@@ -161,12 +161,17 @@ describe("syncCallBoard", () => {
     window.localStorage.clear();
   });
 
-  it("reports an empty board when nothing has been called", () => {
+  it("settles every closed day as a no-input entry when nothing has been called at all", () => {
+    // No picks were ever stored for any of 08-18/19/20, so every one of
+    // them settles as a real, pick: null history entry (rather than being
+    // left out of `resolved` entirely) -- the lookahead's own open calls
+    // (08-21 onward) are a separate, still-unresolved thing.
     const state = syncCallBoard(closes, BEFORE_OPEN);
 
-    expect(state.resolved).toEqual([]);
-    expect(state.stats.resolvedCalls).toBe(0);
-    expect(state.stats.winRate).toBeNull();
+    expect(state.resolved).toHaveLength(3);
+    expect(state.resolved.every((call) => call.pick === null && call.score === 0)).toBe(true);
+    expect(state.stats.resolvedCalls).toBe(3);
+    expect(state.stats.winRate).toBe(0);
     expect(state.openCalls).toEqual([
       { date: "2026-08-21", pick: null },
       { date: "2026-08-24", pick: null },
@@ -207,7 +212,7 @@ describe("syncCallBoard", () => {
     ]);
   });
 
-  it("keeps history that has aged out of the close window", () => {
+  it("keeps history that has aged out of the close window, alongside newly-settled (no-input) days", () => {
     saveResolvedCalls([
       {
         date: "2026-01-05",
@@ -220,8 +225,15 @@ describe("syncCallBoard", () => {
 
     const state = syncCallBoard(closes, BEFORE_OPEN);
 
-    expect(state.resolved.map((call) => call.date)).toEqual(["2026-01-05"]);
-    expect(state.stats.resolvedCalls).toBe(1);
+    // The aged-out real call is still there, plus the three no-input
+    // entries this close window now resolves for the first time.
+    expect(state.resolved.map((call) => call.date)).toEqual([
+      "2026-01-05",
+      "2026-08-18",
+      "2026-08-19",
+      "2026-08-20",
+    ]);
+    expect(state.stats.resolvedCalls).toBe(4);
   });
 
   it("never rescores or duplicates an already-settled day", () => {
@@ -233,7 +245,9 @@ describe("syncCallBoard", () => {
     const second = syncCallBoard(closes, BEFORE_OPEN);
 
     expect(second.resolved).toEqual(first.resolved);
-    expect(second.resolved).toHaveLength(1);
+    // 08-18 and 08-20 also settle (as no-input entries), alongside the one
+    // real pick made for 08-19 -- three total, not just the one real call.
+    expect(second.resolved).toHaveLength(3);
   });
 
   it("surfaces the picks already made for the open lookahead days", () => {

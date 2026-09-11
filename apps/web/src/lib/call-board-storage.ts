@@ -122,7 +122,9 @@ function isResolvedCall(value: unknown): value is ResolvedCall {
   return (
     typeof date === "string" &&
     date.length > 0 &&
-    isCallBucket(pick) &&
+    // `pick` is nullable (a no-input day, see ResolvedCall's own doc
+    // comment) -- `null` is exactly as valid a stored shape as a real bucket.
+    (pick === null || isCallBucket(pick)) &&
     isCallBucket(actual) &&
     isFiniteNumber(moveFraction) &&
     isCallScore(score)
@@ -178,10 +180,11 @@ export interface CallBoardState {
  *
  * Given the real SPY daily closes a `PrecomputedResult` carries
  * (`benchmarkSeries.closes`, issue #126) and the client's own clock, this:
- * resolves every stored pick the series now covers, folds those into the
- * persisted history (an already-settled date keeps its original entry, see
- * `mergeResolvedCalls`), writes the history back, and returns the merged
- * history alongside the current lookahead.
+ * resolves every trading day the series now covers -- both a real pick and
+ * a day that passed with none (see `resolveCalls`' own doc comment) --
+ * folds those into the persisted history (an already-settled date keeps
+ * its original entry, see `mergeResolvedCalls`), writes the history back,
+ * and returns the merged history alongside the current lookahead.
  *
  * **Stats are derived here, never persisted.** The issue's storage brief
  * lists them alongside picks and history, but computing them from the

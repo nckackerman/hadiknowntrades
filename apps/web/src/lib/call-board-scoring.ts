@@ -78,16 +78,50 @@ export function scoreCall(pick: CallBucket, actual: CallBucket): CallScore {
   return bucketDirection(pick) === bucketDirection(actual) ? 1 : 0;
 }
 
-/** One call the viewer made that has since been settled by a real closing price. */
+/**
+ * One trading day that has since been settled by a real closing price --
+ * either a call the viewer actually made, or a day that passed with none.
+ *
+ * **`pick` is nullable rather than this being a separate `NoInputCall` type
+ * merged into the same array.** A discriminated union (`{kind: "resolved",
+ * pick: CallBucket, score} | {kind: "no-input"}`) was the other real option
+ * considered, but a nullable `pick` is the more honest fit for this
+ * particular shape: every other field (`date`/`actual`/`moveFraction`) is
+ * identical and meaningful regardless of whether a call was made -- a day
+ * that passed with no input still has a real close-to-close move and a real
+ * bucket it landed in, it just has no `pick` to compare that against. A
+ * union would duplicate those three fields across two interfaces for no
+ * real benefit, and would force every consumer to narrow on `kind` before
+ * touching `date`/`actual`/`moveFraction` even though those never actually
+ * vary by kind. `pick === null` is the one, single place "was a call made"
+ * is asked from here on.
+ */
 export interface ResolvedCall {
   /** The trading day called, YYYY-MM-DD. */
   date: string;
-  /** What the viewer called before that day opened. */
-  pick: CallBucket;
+  /**
+   * What the viewer called before that day opened, or `null` if they never
+   * called it at all before it closed -- a distinct "no input provided"
+   * entry, not folded into an existing wrong-direction score. See
+   * `CallBoard.tsx`'s `CallOutcome`/`callOutcomeFor` for how the UI splits
+   * this apart from a genuine miss.
+   */
+  pick: CallBucket | null;
   /** What the day actually did, per its real close-to-close move. */
   actual: CallBucket;
   /** That day's fractional move, kept so the UI can show the real number rather than only the bucket. */
   moveFraction: number;
+  /**
+   * `0` for a no-input day (`pick === null`) -- there is no direction to
+   * score, and this is deliberately the *same* value a genuine wrong-side
+   * call already gets, so `computeCallBoardStats`' existing
+   * `score < WINNING_SCORE` streak-breaking check treats a skipped day
+   * exactly the same way it already treats a loss, with no separate branch
+   * needed. It still counts toward `resolvedCalls`/`winRate` the same way
+   * any other settled day does -- a day you didn't play is a real day that
+   * settled, and diluting your win rate by it is the honest outcome of
+   * that, not a bug to special-case around.
+   */
   score: CallScore;
 }
 
@@ -171,7 +205,21 @@ function isUsableClose(close: unknown): close is number {
 }
 
 /**
- * Settles every pick that a real closing price now covers.
+ * Settles every trading day the close series now covers -- both the days
+ * the viewer actually called, *and* the days that passed with no pick made
+ * at all.
+ *
+ * **A day with no stored pick is no longer silently skipped.** Before this
+ * was added, `picks[day.date] === undefined` meant `continue` -- a real
+ * trading day that passed with nothing called for it never appeared in
+ * `resolved` at all, so a viewer who missed a day saw no record of it and
+ * (more importantly) it never broke their streak. That entry now settles
+ * with `pick: null` and `score: 0` instead -- see `ResolvedCall`'s own doc
+ * comment for why a nullable `pick` (not a separate type) is what carries
+ * this, and why `score: 0` is deliberate rather than an arbitrary filler
+ * value: it's the exact value `computeCallBoardStats` already treats as
+ * streak-breaking for a genuine wrong-direction call, so a skipped day
+ * breaks the streak through that same existing check, not a new one.
  *
  * `closes` is a real SPY daily-close series -- in the shipped app, a
  * PrecomputedResult's `benchmarkSeries.closes` (issue #126), which is
@@ -199,8 +247,7 @@ export function resolveCalls(
   const resolved: ResolvedCall[] = [];
   for (let i = 1; i < usable.length; i += 1) {
     const day = usable[i]!;
-    const pick = picks[day.date];
-    if (pick === undefined) continue;
+    const pick = picks[day.date] ?? null;
     const moveFraction = dailyMoveFraction(usable[i - 1]!.close, day.close);
     const actual = bucketForMove(moveFraction);
     resolved.push({
@@ -208,7 +255,7 @@ export function resolveCalls(
       pick,
       actual,
       moveFraction,
-      score: scoreCall(pick, actual),
+      score: pick === null ? 0 : scoreCall(pick, actual),
     });
   }
   return resolved;
@@ -223,6 +270,16 @@ export function resolveCalls(
  * ~90-day close window it was resolved from, so a date can legitimately fall
  * out of that window and later reappear in a differently-sliced one; a
  * settled call should never quietly change score because of that.
+ *
+ * This holds identically for a no-input entry (`pick === null`): once a
+ * date has settled as "nothing was called," `saveCallBoardPick` can never
+ * retroactively fill it in either (that day's market has already opened by
+ * the time it's eligible to resolve at all, and the lock in
+ * `call-board-storage.ts` refuses any write past that boundary) -- so there
+ * is no code path that would ever hand this function a genuine, later
+ * pick for a date it has already recorded as skipped. The plain `Map`
+ * keyed by `date` here treats a no-input `ResolvedCall` exactly like any
+ * other: whichever one was recorded first for a date wins, full stop.
  */
 export function mergeResolvedCalls(
   existing: readonly ResolvedCall[],
