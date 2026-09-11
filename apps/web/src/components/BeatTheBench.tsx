@@ -796,9 +796,22 @@ function SessionGame({
   // once `barIndex` stops advancing at settlement, duplicating the exact
   // information `FinalSettlement`'s own tally line already states for
   // good.
+  //
+  // **`findLast`, not `find` (a real bug, found in code review after
+  // the second Bullet Time revamp round shrank the spacing constants):**
+  // `bulletTimeEvents` is chronological (ascending `triggerIndex`), and
+  // two events' own linger windows can now genuinely overlap at
+  // `BULLET_TIME_MIN_TRIGGER_GAP_BARS`'s own floor of 0 (a
+  // back-to-back pair, with zero bars between the earlier event's own
+  // `toIndex` and the later event's own `triggerIndex`) -- previously
+  // impossible, since the old wider gap (6) always exceeded
+  // `BULLET_TIME_BADGE_LINGER_BARS` (3). `find` returns the first
+  // (chronologically earliest, i.e. stalest) match; `findLast` returns
+  // the last (most recent) one, which is the one this badge is
+  // documented to show.
   const recentlyResolvedEvent = settled
     ? undefined
-    : bulletTimeEvents.find(
+    : bulletTimeEvents.findLast(
         (event) =>
           barIndex >= event.swing.toIndex &&
           barIndex - event.swing.toIndex <= BULLET_TIME_BADGE_LINGER_BARS,

@@ -530,22 +530,30 @@ describe("BeatTheBench", () => {
     expect(screen.getByText(/You moved once/)).toBeInTheDocument();
   });
 
+  // Deliberately confined to bars 0-2 -- the real SPY_SESSION_BARS
+  // fixture now schedules a real Bullet Time event with a trigger at
+  // barIndex 3 (issue #225's lowered BULLET_TIME_MIN_SWING_MAGNITUDE
+  // means this exact fixture qualifies where it didn't before), whose
+  // own "approaching" phase ticks at BULLET_TIME_APPROACH_TICK_MS
+  // (4500ms), not the normal 300ms -- advancing past it would make this
+  // generic pause/resume test's timing assertions about Bullet Time's
+  // own pacing instead of about pause/resume itself.
   it("pauses and resumes without losing the player's place", async () => {
     await renderChooser();
     click(/play today's close/i);
     // The default speed is 0.25x as of a later change, not 1x -- select
     // 1x explicitly so this test's own 300ms-tick math still holds.
     click(/^1x$/);
-    advance(300 * 4);
-    expect(barReadout()).toMatch(/bar 5 of 79/);
+    advance(300 * 2);
+    expect(barReadout()).toMatch(/bar 3 of 79/);
 
     click("Pause");
     advance(300 * 20);
-    expect(barReadout()).toMatch(/bar 5 of 79/);
+    expect(barReadout()).toMatch(/bar 3 of 79/);
 
     click("Play");
     advance(300);
-    expect(barReadout()).toMatch(/bar 6 of 79/);
+    expect(barReadout()).toMatch(/bar 4 of 79/);
   });
 
   it("remembers a played session and offers it again", async () => {
@@ -767,12 +775,16 @@ describe("BeatTheBench", () => {
     });
   });
 
-  // SPY_DOWN_SESSION_BARS schedules two real events under the real
-  // constants (confirmed against the live implementation, not assumed):
-  // a down-swing at bars 27->32, and a second down-swing at bars 64->77
-  // -- the session's own last bar. That second event's own toIndex
-  // landing exactly on the session's last bar is what makes this fixture
-  // useful beyond Mystery Day's own existing use of it: it's the exact
+  // SPY_DOWN_SESSION_BARS schedules three real events under the real,
+  // second-revamp-round constants (confirmed against the live
+  // implementation, not assumed -- this was two events, both down-
+  // swings, before BULLET_TIME_LEAD_BARS/BULLET_TIME_MIN_TRIGGER_GAP_BARS
+  // shrank from 2/6 to 1/0; the tighter spacing now finds room for a
+  // third, an up-swing, between them): a down-swing at bars 27->32, an
+  // up-swing at bars 38->63, and a second down-swing at bars 64->77 --
+  // the session's own last bar. That last event's own toIndex landing
+  // exactly on the session's last bar is what makes this fixture useful
+  // beyond Mystery Day's own existing use of it: it's the exact
   // "resolves within the settlement badge's own linger window" case
   // issue #224's code review flagged (a code-review finding, fixed --
   // see `SessionGame`'s own `recentlyResolvedEvent` doc comment).
@@ -799,11 +811,14 @@ describe("BeatTheBench", () => {
 
     it("never shows the live 'Called it'/'Not this time' badge once the session has settled, even when the last event resolves on the session's own final bar", async () => {
       await enterMysteryUnderNormalMotion();
-      // Never clicks Ride it out/Step aside for either event -- both
-      // resolve via the honest "no decision locks to whatever you're
-      // already holding" no-op (Step, clicked here, behaves identically
-      // to letting the countdown run out). The player starts holding and
-      // never moves, so both down-swing calls resolve "incorrect."
+      // Never clicks Ride it out/Step aside for any of the three events
+      // -- all three resolve via the honest "no decision locks to
+      // whatever you're already holding" no-op (Step, clicked here,
+      // behaves identically to letting the countdown run out). The
+      // player starts holding and never moves: the first (down) and
+      // third (down) calls resolve "incorrect" (holding through a
+      // decline), the middle (up) call resolves "correct" (holding
+      // through a rally) -- 1 of 3 correct.
       await stepToClose();
 
       expect(screen.queryByText(/Not this time/)).not.toBeInTheDocument();
@@ -811,7 +826,7 @@ describe("BeatTheBench", () => {
       // The settlement's own tally line is unaffected by that gate --
       // it's a separate computation (resolvedBulletTimeCalls), not the
       // live-lingering badge.
-      expect(screen.getByText("Bullet Time calls: 0 of 2 correct.")).toBeInTheDocument();
+      expect(screen.getByText("Bullet Time calls: 1 of 3 correct.")).toBeInTheDocument();
     });
 
     it("shows the decision panel and a live resolution badge mid-session, then the settlement's own tally line once settled", async () => {
@@ -834,12 +849,15 @@ describe("BeatTheBench", () => {
       // `recentlyResolvedSentence`'s own doc comment).
       expect(screen.getAllByText(/Called it/).length).toBeGreaterThan(0);
 
-      // Never explicitly chosen again for the second event -- the
-      // player is still in cash from the first call, and staying there
-      // (the honest no-op) happens to be correct again, since the
-      // second event is also a down-swing.
+      // Never explicitly chosen again for the second or third events --
+      // the player is still in cash from the first call. Staying in
+      // cash is *wrong* for the second event (an up-swing, bars 38-63:
+      // being in cash through a rally is the incorrect side) and
+      // *correct* again for the third (a down-swing, bars 64-77) -- 2 of
+      // 3 correct overall, the same real tally the live implementation
+      // produces for this exact fixture.
       await stepToClose();
-      expect(screen.getByText("Bullet Time calls: 2 of 2 correct.")).toBeInTheDocument();
+      expect(screen.getByText("Bullet Time calls: 2 of 3 correct.")).toBeInTheDocument();
     });
 
     // A real bug, found by an independent code review: the decision
@@ -874,6 +892,69 @@ describe("BeatTheBench", () => {
       advance(BULLET_TIME_DECISION_WINDOW_MS);
       expect(screen.queryByText("Big swing incoming")).not.toBeInTheDocument();
       expect(screen.getByText(/bar 29 of 78/)).toBeInTheDocument();
+    });
+
+    // A real bug, found in code review after the second Bullet Time
+    // revamp round shrank BULLET_TIME_MIN_TRIGGER_GAP_BARS to its own
+    // floor of 0: two events' own badge-linger windows can now genuinely
+    // overlap (a real, spacing-valid back-to-back pair, not just a
+    // hypothetical), and `recentlyResolvedEvent` used `.find()` --
+    // returning the *earliest* (stalest) match -- instead of `.findLast()`
+    // -- the *most recent* one, which is what the badge is documented to
+    // show.
+    //
+    // This fixture is hand-built (and confirmed against the real
+    // scheduler, not hand-derived) to reproduce it exactly: a clean +24%
+    // up-swing (bars 1->5) directly followed, with zero bars of gap, by
+    // a real +4.5% up-swing (bars 6->7) -- the second event's own
+    // toIndex is only 2 bars after the first's, well inside
+    // BULLET_TIME_BADGE_LINGER_BARS (3), so both events' linger windows
+    // are simultaneously active the instant the second resolves. The
+    // player rides the first event out (correct -- an up-swing) and
+    // steps aside for the second (incorrect -- also an up-swing), so the
+    // two badges read distinctly ("Called it" vs "Not this time") and a
+    // stale first badge is unambiguous from a correct, fresh second one.
+    it("shows the most recently resolved event's own badge, not a stale earlier one, when two linger windows overlap", async () => {
+      const values: number[] = [101, 99.6, 105, 111, 117, 123.5, 118, 123.3];
+      while (values.length < 20) values.push(123.3);
+      const bars = values.map((close, i) => {
+        const totalMinutes = 9 * 60 + 30 + i * 5;
+        return {
+          time: `${String(Math.floor(totalMinutes / 60)).padStart(2, "0")}:${String(totalMinutes % 60).padStart(2, "0")}:00`,
+          close,
+        };
+      });
+      stubSessionFetch({ ...SESSION, bars });
+
+      render(<BeatTheBench />);
+      clickCompactCard();
+      await screen.findByText(/20 bars/);
+      click(/play today's close/i);
+      await screen.findByText(/bar 1 of 20/);
+      click("Pause");
+      vi.useFakeTimers();
+
+      // Step to the first event's own deciding bar (fromIndex 1, "bar 2").
+      click("Step forward one bar");
+      expect(screen.getByText("Big swing incoming")).toBeInTheDocument();
+      // An up-swing: staying holding (the honest default) is correct.
+      click("Ride it out");
+      // Step through the rest of the swing to its own resolution bar (5),
+      // then on to the second event's own deciding bar (fromIndex 6).
+      for (let i = 0; i < 4; i += 1) click("Step forward one bar");
+      expect(screen.getByText("Big swing incoming")).toBeInTheDocument();
+      // Also an up-swing, but this time step aside -- going to cash
+      // through an up-swing is the incorrect call.
+      click("Step aside");
+
+      // Now at barIndex 7 (bar 8 of 20), the second event's own toIndex:
+      // it has just resolved "incorrect" ("Not this time"), while the
+      // first event's own "Called it" badge is still technically inside
+      // its own linger window (distance 2, <= 3). The badge shown must
+      // be the second, freshly resolved event's, not the stale first one.
+      expect(screen.getByText(/bar 8 of 20/)).toBeInTheDocument();
+      expect(screen.getAllByText(/Not this time/).length).toBeGreaterThan(0);
+      expect(screen.queryByText(/Called it/)).not.toBeInTheDocument();
     });
   });
 
