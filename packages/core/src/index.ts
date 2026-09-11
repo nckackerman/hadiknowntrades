@@ -94,6 +94,14 @@ export {
 } from "./order-selection";
 export type { OrderPick, OrderSelectionResult } from "./order-selection";
 
+export { computeSp500PrefixSelection } from "./sp500-prefix-selection";
+export type {
+  Sp500PrefixCurvePoint,
+  Sp500PrefixSelectionInput,
+  Sp500PrefixSelectionResult,
+  Sp500PrefixTicker,
+} from "./sp500-prefix-selection";
+
 export {
   resultKey,
   customResultKey,
