@@ -20,7 +20,7 @@
 // two are wired together for React in use-cut-game.ts -- this file is
 // the one place either gets called from a component.
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import {
   SP500_CONSTITUENTS,
@@ -358,11 +358,39 @@ function CutReveal({
   // `edgeCapturedPct` is the one signal driving both the gate and the
   // intensity ladder -- see the-cut-scoring.ts's own doc comment.
   const settled = animatedScorePct === lastFeedback.edgeCapturedPct;
-  const celebrationGateMet = meetsCutCelebrationGate(lastFeedback.edgeCapturedPct);
+  // The gate/tier decision is made against the *rounded* score -- the
+  // same integer the player actually sees (both the landed visible
+  // figure, `Math.round(animatedScorePct)`, and the sr-only twin,
+  // `.toFixed(0)`, round identically for a non-negative value). Gating
+  // against the raw, unrounded `edgeCapturedPct` instead would let a
+  // value just under a tier boundary (e.g. 59.6%) visibly read as
+  // "60%" while `meetsCutCelebrationGate` still said no (59.6 < 60) --
+  // a real, found-in-review mismatch between what's on screen and what
+  // the celebration actually keys off. Rounding once, here, and reusing
+  // that same integer for both the gate and the intensity ladder is
+  // what keeps the two from ever disagreeing with the display again.
+  // `celebrationGateMet`/`celebrationIntensity` are both derived purely
+  // from `lastFeedback.edgeCapturedPct`, a prop that never changes after
+  // mount -- but `CutReveal` re-renders on every one of the dozens of
+  // RAF ticks the four `useCountUp` calls above drive over the ~1.2s
+  // reveal. Memoized so that per-run-constant work isn't redone on every
+  // tick, the same pattern this app's own `TradeReplay.tsx`/
+  // `HeroStat.tsx` already establish for the identical class of value
+  // (see e.g. TradeReplay.tsx's own `endingBalanceDisplayValue`/
+  // `multiplier` memoization).
+  const { celebrationGateMet, celebrationIntensity } = useMemo(() => {
+    const roundedEdgeCapturedPct = Math.round(lastFeedback.edgeCapturedPct);
+    return {
+      celebrationGateMet: meetsCutCelebrationGate(roundedEdgeCapturedPct),
+      celebrationIntensity: cutCelebrationIntensity(roundedEdgeCapturedPct),
+    };
+  }, [lastFeedback.edgeCapturedPct]);
   const celebrate = shouldCelebrate(celebrationGateMet, settled);
-  const celebrationIntensity = cutCelebrationIntensity(lastFeedback.edgeCapturedPct);
 
-  const multiplier = bestEndingBalance / startingCapital;
+  const multiplier = useMemo(
+    () => bestEndingBalance / startingCapital,
+    [bestEndingBalance, startingCapital],
+  );
 
   return (
     <div className="flex flex-col gap-4 rounded-lg border border-[var(--gridline)] bg-[var(--surface-2)] p-4">
