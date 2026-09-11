@@ -1,5 +1,6 @@
 import { RESULTS_SCHEMA_VERSION, type Sp500PrefixResult } from "@hadiknowntrades/core";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -63,13 +64,51 @@ async function expandBoard() {
   return within(await screen.findByTestId("the-cut-panel"));
 }
 
+// A leading-anchored regex, not the exact string -- the Explore panel's
+// own instance of each control carries a real, code-review-added
+// "(Explore other windows)" accessible-name suffix (see TheCut.tsx's
+// own CutBoardProps.accessibleNameSuffix doc comment) to disambiguate it
+// from the main game's own identically-purposed controls when both are
+// mounted at once. A prefix match keeps these two helpers working
+// unchanged against either scope.
 function guessInput(panel: ReturnType<typeof within>) {
-  return panel.getByRole("spinbutton", { name: "Your guess, as a number" });
+  return panel.getByRole("spinbutton", { name: /^Your guess, as a number/ });
 }
 
 function submit(panel: ReturnType<typeof within>, value: number) {
   fireEvent.change(guessInput(panel), { target: { value: String(value) } });
-  fireEvent.click(panel.getByRole("button", { name: "Submit guess" }));
+  fireEvent.click(panel.getByRole("button", { name: /^Submit guess/ }));
+}
+
+/**
+ * Opens "Explore other windows" and returns a query scope for just its
+ * own nested `<details>` subtree -- the scoping is required, not just a
+ * convenience: the main game's own guess input/"Submit guess" button
+ * share the exact same accessible name as Explore's own (a second,
+ * fully independent game), so an unscoped `panel.getByRole(...)` for
+ * either throws a "multiple elements found" error the instant both are
+ * on screen at once (the main game's own fresh, not-yet-done state
+ * alongside Explore's own).
+ *
+ * **`userEvent.click`, not `fireEvent.click`, on the `<summary>`
+ * itself.** A plain `fireEvent.click` does synchronously flip the
+ * native `open` attribute (confirmed live -- jsdom's own default click
+ * action for a `<summary>`), but React's `onToggle` handler (which is
+ * what actually mounts `CutExplorePanel`, per `CutExploreOtherWindows`'s
+ * own `opened` latch) listens for the DOM `toggle` event, which fires
+ * queued rather than synchronously with the click -- an unawaited
+ * `fireEvent.click` leaves that queued event unflushed, so a synchronous
+ * assertion right after sees the `<details>` open but its own content
+ * still empty. `TradeReplay.test.tsx`'s own identical lazy-disclosure
+ * tests (issue #209's chart-open toggle) already establish `await
+ * user.click(...)` as this app's precedent for exactly this gap.
+ */
+async function openExplore(panel: ReturnType<typeof within>) {
+  const user = userEvent.setup();
+  await user.click(panel.getByText("Explore other windows"));
+  const details = panel.getByText("Explore other windows").closest("details");
+  if (!details) throw new Error("Explore other windows <details> not found");
+  return within(details);
 }
 
 /**
@@ -98,6 +137,7 @@ function landTheReveal() {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.useRealTimers();
   window.localStorage.clear();
 });
 
@@ -130,11 +170,16 @@ describe("TheCut", () => {
     expect(await screen.findByTestId("the-cut-error")).toBeInTheDocument();
   });
 
-  it("idle: shows the ticker strip, the range picker, and no guess feedback yet", async () => {
+  it("idle: shows the ticker strip and no guess feedback yet, with no visible range picker in the main flow", async () => {
     const panel = await expandBoard();
 
     expect(panel.getByText("NVDA")).toBeInTheDocument(); // real rank #1 by weight
-    expect(panel.getByRole("group", { name: "The Cut date range" })).toBeInTheDocument();
+    // No range picker in the main play experience any more (a direct
+    // user request, not a filed issue) -- every CUT_RANGES entry except
+    // "1D" now lives behind "Explore other windows" instead, closed by
+    // default.
+    expect(panel.queryByRole("group", { name: "The Cut date range" })).not.toBeInTheDocument();
+    expect(panel.getByText("Explore other windows")).toBeInTheDocument();
     expect(panel.queryByText(/too high|too low/i)).not.toBeInTheDocument();
     expect(panel.getByText(/6 guesses left/i)).toBeInTheDocument(); // CUT_MAX_ATTEMPTS, no guesses yet
   });
@@ -183,8 +228,12 @@ describe("TheCut", () => {
     expect(currentStreakLabel.previousElementSibling).toHaveTextContent("1");
     expect(getCutGameHistory()).toEqual([{ range: RANGE, won: true, edgeCapturedPct: 100 }]);
 
-    // The reveal chart renders (a real SVG, not a placeholder).
-    expect(panel.getByRole("img")).toBeInTheDocument();
+    // The main game's own default reveal is the animated ticker strip
+    // (a direct user request, not a filed issue) -- not the chart, which
+    // moved to "Explore other windows" (see the describe block below).
+    expect(panel.queryByRole("img")).not.toBeInTheDocument();
+    expect(panel.getByTestId("cut-reveal-strip")).toBeInTheDocument();
+    expect(panel.getByTestId("cut-reveal-cutline")).toBeInTheDocument();
     // "Play again" is offered.
     expect(panel.getByRole("button", { name: "Play again" })).toBeInTheDocument();
   });
@@ -272,21 +321,24 @@ describe("TheCut", () => {
     expect(bestStreakLabel.previousElementSibling).toHaveTextContent("1");
   });
 
-  it("keeps the expanded panel open across a mid-panel range switch, even while the new range's data is still loading (regression)", async () => {
-    let releaseSecondFetch!: (value: Response) => void;
+  it("keeps the outer tile mounted and open across a range switch inside 'Explore other windows', even while the new range's data is still loading (regression)", async () => {
+    let releaseThirdFetch!: (value: Response) => void;
     let fetchCallCount = 0;
     vi.stubGlobal(
       "fetch",
       vi.fn(() => {
         fetchCallCount += 1;
-        if (fetchCallCount === 1) {
+        // Call 1: the main game's own fixed-range fetch. Call 2:
+        // Explore's own default-range fetch, fired once it's opened.
+        // Both resolve immediately -- only the *third* (a range switch
+        // made from inside Explore) stays pending, so the assertion
+        // below runs while useSp500Prefix is genuinely mid-"loading"
+        // for that new range.
+        if (fetchCallCount <= 2) {
           return Promise.resolve(new Response(JSON.stringify(RESULT), { status: 200 }));
         }
-        // The second (range-switch) fetch stays pending until the test
-        // explicitly resolves it, so the assertion below runs while
-        // useSp500Prefix is genuinely mid-"loading" for the new range.
         return new Promise<Response>((resolve) => {
-          releaseSecondFetch = resolve;
+          releaseThirdFetch = resolve;
         });
       }),
     );
@@ -294,21 +346,28 @@ describe("TheCut", () => {
     const panel = await expandBoard();
     expect(screen.getByTestId("the-cut-panel")).toBeInTheDocument();
 
+    await openExplore(panel);
+    expect(panel.getByRole("group", { name: "The Cut date range" })).toBeInTheDocument();
+
     fireEvent.click(panel.getByRole("button", { name: "5Y" }));
 
-    // The panel (and its <details> shell) must still be mounted and
-    // open -- not swapped out for the collapsed placeholder -- while
-    // the new range's fetch is still pending.
+    // The outer tile (and its own <details> shell) must still be mounted
+    // and open -- not swapped out for the collapsed placeholder -- and
+    // the still-open Explore disclosure must still show its own picker,
+    // while the new range's fetch is still pending.
     expect(screen.getByTestId("the-cut-summary")).toBeInTheDocument();
     expect(screen.getByTestId("the-cut-panel")).toBeInTheDocument();
+    expect(panel.getByRole("group", { name: "The Cut date range" })).toBeInTheDocument();
     expect(screen.queryByTestId("the-cut-error")).not.toBeInTheDocument();
 
-    releaseSecondFetch(new Response(JSON.stringify(RESULT), { status: 200 }));
+    releaseThirdFetch(new Response(JSON.stringify(RESULT), { status: 200 }));
     await waitFor(() => {
-      expect(screen.getByTestId("the-cut-panel")).toBeInTheDocument();
+      expect(panel.getByRole("button", { name: "5Y" })).toHaveAttribute("aria-pressed", "true");
     });
-    // Still the same open panel afterward -- no collapse-then-reopen-closed cycle.
+    // Still the same open tile and open Explore panel afterward -- no
+    // collapse-then-reopen-closed cycle for either.
     expect(screen.getByTestId("the-cut-summary")).toBeInTheDocument();
+    expect(panel.getByRole("group", { name: "The Cut date range" })).toBeInTheDocument();
   });
 
   // Issue #239: the reveal panel's count-up + celebration burst, mirroring
@@ -410,6 +469,205 @@ describe("TheCut", () => {
       const burst = panel.getByTestId("celebration-burst");
       expect(burst.children.length).toBeGreaterThan(0);
       expect(burst.children.length).toBeLessThan(24);
+    });
+  });
+
+  // A direct user request, not a filed issue: the main game's own
+  // default reveal replaces TheCutChart with an animated "slide to the
+  // cut line" ticker strip.
+  describe("slide-to-the-cut-line reveal strip (main game default)", () => {
+    it("marks companies #1..bestN as held and the rest as excluded", async () => {
+      saveCutGameState(RANGE, freshState());
+      neverLandTheReveal();
+      const panel = await expandBoard();
+
+      submit(panel, 3); // bestN=3, universeSize=5
+
+      const chips = panel.getAllByTestId("cut-reveal-chip");
+      expect(chips).toHaveLength(5);
+      expect(chips.map((chip) => chip.dataset.held)).toEqual([
+        "true",
+        "true",
+        "true",
+        "false",
+        "false",
+      ]);
+      // The cut-line divider itself is present, right at the boundary.
+      expect(panel.getByTestId("cut-reveal-cutline")).toBeInTheDocument();
+    });
+
+    it("marks the player's own final guess distinctly from the cut line, when they differ", async () => {
+      saveCutGameState(RANGE, freshState());
+      neverLandTheReveal();
+      const panel = await expandBoard();
+
+      submit(panel, 5); // too high
+      submit(panel, 5);
+      submit(panel, 5);
+      submit(panel, 5);
+      submit(panel, 5);
+      submit(panel, 4); // final (6th) guess -- not bestN=3
+
+      const chips = panel.getAllByTestId("cut-reveal-chip");
+      const guessed = chips.find((chip) => chip.dataset.guess === "true");
+      expect(guessed).toHaveTextContent("AMZN"); // rank #4 in the fixture
+    });
+
+    it("under normal motion, adds the bounce+glow flourish only once the slide's own settle delay elapses", async () => {
+      saveCutGameState(RANGE, freshState());
+      neverLandTheReveal();
+      const panel = await expandBoard();
+      // Enabled only after expandBoard's own async findBy* calls have
+      // already resolved -- testing-library's async queries poll via a
+      // real setTimeout internally, which would otherwise hang forever
+      // against a faked clock nothing ever advances.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+
+      submit(panel, 3); // exact win
+
+      const cutline = panel.getByTestId("cut-reveal-cutline");
+      expect(cutline.className).not.toContain("cut-line-glow");
+      expect(cutline.className).not.toContain("cut-line-settle");
+
+      act(() => {
+        vi.advanceTimersByTime(650);
+      });
+
+      expect(cutline.className).toContain("cut-line-glow");
+      expect(cutline.className).toContain("cut-line-settle");
+    });
+
+    it("under reduced motion, lands on the cut line immediately -- no slide, no delay", async () => {
+      saveCutGameState(RANGE, freshState());
+      stubPrefersReducedMotion(true);
+      neverLandTheReveal();
+      const panel = await expandBoard();
+
+      submit(panel, 3);
+
+      const cutline = panel.getByTestId("cut-reveal-cutline");
+      expect(cutline.className).toContain("cut-line-glow");
+      expect(cutline.className).toContain("cut-line-settle");
+    });
+  });
+
+  // A direct user request, not a filed issue: every CUT_RANGES entry
+  // except "1D" moved behind this nested disclosure, still playing the
+  // exact same guess-then-reveal CutBoard mechanic, with its own reveal
+  // keeping the original TheCutChart.
+  describe('"Explore other windows"', () => {
+    it("is closed by default and does not fetch its own range until opened", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(new Response(JSON.stringify(RESULT), { status: 200 })),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const panel = await expandBoard();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith(`/api/sp500-prefix?range=${RANGE}`);
+      expect(panel.queryByRole("group", { name: "The Cut date range" })).not.toBeInTheDocument();
+
+      const explore = await openExplore(panel);
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      expect(fetchMock).toHaveBeenCalledWith("/api/sp500-prefix?range=1W"); // its own default range
+      expect(explore.getByRole("group", { name: "The Cut date range" })).toBeInTheDocument();
+    });
+
+    // Code-review finding: Tailwind's default (unnamed) `.group`/
+    // `group-open:` variant has no nearest-ancestor scoping -- it's
+    // satisfied by ANY ancestor `.group[open]`, not just the nearest
+    // one. Since this nested disclosure only ever renders while the
+    // OUTER "The Cut" tile is already open, an unnamed `group-open:` on
+    // its own chevron would react to the outer tile's open state
+    // instead of its own, permanently rendering rotated. jsdom applies
+    // no stylesheet (this repo's own established test-environment
+    // limitation, documented repeatedly elsewhere in this file), so this
+    // can only assert the className strings carry the fix's own named
+    // group/variant pair, not that the wrong element visually rotates --
+    // see the PR description for the live-browser confirmation.
+    it("scopes its own chevron to a named group, not the outer tile's own unnamed one (regression)", async () => {
+      const panel = await expandBoard();
+      const details = panel.getByText("Explore other windows").closest("details");
+      expect(details).toHaveClass("group/explore");
+      expect(details?.className).not.toMatch(/(?:^|\s)group(?:\s|$)/);
+
+      const chevron = within(details!).getByText("▸");
+      expect(chevron).toHaveClass("group-open/explore:rotate-90");
+      expect(chevron.className).not.toMatch(/(?:^|\s)group-open:rotate-90(?:\s|$)/);
+    });
+
+    it("offers every CUT_RANGES entry except '1D', which the main game already owns", async () => {
+      const panel = await expandBoard();
+      const explore = await openExplore(panel);
+
+      const group = within(explore.getByRole("group", { name: "The Cut date range" }));
+      expect(group.queryByRole("button", { name: "1D" })).not.toBeInTheDocument();
+      for (const label of ["1W", "1M", "3M", "1Y", "5Y", "Max"]) {
+        expect(group.getByRole("button", { name: label })).toBeInTheDocument();
+      }
+      expect(group.getByRole("button", { name: "1W" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("plays its own independent game, revealing with the original chart rather than the slide strip", async () => {
+      neverLandTheReveal();
+      const panel = await expandBoard();
+      const explore = await openExplore(panel);
+
+      // Same guess-then-reveal mechanic as the main game -- guess/submit
+      // controls exist for its own range too, once its own fetch
+      // resolves. Scoped to `explore`, not `panel`: the main game's own
+      // fresh, not-yet-done guess input shares the identical accessible
+      // name.
+      await explore.findByRole("spinbutton", { name: /^Your guess, as a number/ });
+      submit(explore, 3); // its own default range's bestN, from the shared RESULT fixture
+
+      expect(await explore.findAllByText(/correct/i)).not.toHaveLength(0);
+      // The chart, not the new strip -- exploring the full historical
+      // curve is where the chart still lives.
+      expect(explore.getByRole("img")).toBeInTheDocument();
+      expect(explore.queryByTestId("cut-reveal-strip")).not.toBeInTheDocument();
+    });
+
+    it("does not affect the main game's own state (independent per-range storage)", async () => {
+      saveCutGameState(RANGE, freshState({ guesses: [5], done: false }));
+      const panel = await expandBoard();
+      expect(await panel.findByText(/too high/i)).toBeInTheDocument();
+
+      const explore = await openExplore(panel);
+
+      // The main game's own "too high" feedback is still there,
+      // unaffected by Explore having mounted alongside it.
+      expect(panel.getByText(/too high/i)).toBeInTheDocument();
+      expect(explore.getByRole("button", { name: "1W" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    // Code-review finding: the main game's own guess input/submit
+    // button and Explore's own instance used to share the exact same
+    // accessible name, which threw a "multiple elements found" error
+    // the instant both were on screen and not-yet-done at once.
+    it("gives its own guess input and submit button a distinct accessible name from the main game's", async () => {
+      const panel = await expandBoard();
+      const explore = await openExplore(panel);
+      await explore.findByRole("spinbutton", { name: /^Your guess, as a number/ });
+
+      // Unscoped queries against the whole document must not throw --
+      // each control's own accessible name is unique across both games.
+      expect(
+        screen.getByRole("spinbutton", { name: "Your guess, as a number" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("spinbutton", { name: "Your guess, as a number (Explore other windows)" }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Submit guess" })).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Submit guess (Explore other windows)" }),
+      ).toBeInTheDocument();
+      // The visible text of Explore's own button is still plain "Submit
+      // guess" -- only its accessible name carries the suffix.
+      expect(
+        screen.getByRole("button", { name: "Submit guess (Explore other windows)" }),
+      ).toHaveTextContent("Submit guess");
     });
   });
 });

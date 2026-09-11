@@ -64,6 +64,15 @@ const RANGE_LABELS: Record<CutRange, string> = {
 interface CutRangeSelectorProps {
   selected: CutRange;
   onSelect: (range: CutRange) => void;
+  /**
+   * Which of CUT_RANGES render as pills -- defaults to every one.
+   * The Cut's own "Explore other windows" disclosure (a direct user
+   * request, not a filed issue) passes every CUT_RANGES entry except
+   * "1D" -- the main game's own fixed default range, hidden from that
+   * flow entirely -- see TheCut.tsx's own top-of-file doc comment for
+   * the full reasoning.
+   */
+  ranges?: readonly CutRange[];
 }
 
 /**
@@ -71,10 +80,14 @@ interface CutRangeSelectorProps {
  * controlled component, same as RangeSelector -- TheCut.tsx owns which
  * range is selected.
  */
-export function CutRangeSelector({ selected, onSelect }: CutRangeSelectorProps) {
+export function CutRangeSelector({
+  selected,
+  onSelect,
+  ranges = CUT_RANGES,
+}: CutRangeSelectorProps) {
   return (
     <RangeSelectorBase
-      ranges={CUT_RANGES}
+      ranges={ranges}
       labels={RANGE_LABELS}
       selected={selected}
       onSelect={onSelect}
