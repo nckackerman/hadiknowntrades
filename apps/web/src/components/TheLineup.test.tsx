@@ -266,6 +266,91 @@ describe("TheLineup: playing a fresh board", () => {
   });
 });
 
+describe("TheLineup: per-column past-guess history", () => {
+  it("shows nothing before a first round is submitted", async () => {
+    await renderAndExpand();
+    expect(screen.queryByLabelText(/Column 1 past guesses/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Past guesses appear below each column/)).not.toBeInTheDocument();
+  });
+
+  it("shows a past guess, letter by letter, still colored by its own real classification -- the user's own worked example", async () => {
+    await renderAndExpand();
+    // QCOM (a real 4-letter ticker) against TSLA (column 1): every letter
+    // is genuinely absent (see lineup-game.test.ts's own
+    // columnGuessHistory tests for why). The other 4 columns are guessed
+    // correctly (locking immediately) -- only their own real tickers, not
+    // "ZZZ", are legal guesses at all.
+    await typeGuesses(["IBM", "QCOM", "DIS", "MSFT", "CAT"]);
+    submit();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Column 2 past guesses")).toBeInTheDocument();
+    });
+    const history = screen.getByLabelText("Column 2 past guesses");
+    // Every one of QCOM's own letters shows up, each with its own
+    // sr-only "not in today's lineup" verdict -- not just a bare count.
+    for (const letter of ["Q", "C", "O", "M"]) {
+      expect(within(history).getAllByText(letter).length).toBeGreaterThan(0);
+    }
+    expect(
+      within(history).getByText(/Attempt 1, column 2, letter 1: letter Q, not in today's lineup\./),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps a solved column's own past wrong guesses visible after it locks", async () => {
+    await renderAndExpand();
+    // Round 1: a wrong guess for column 0 (IBM).
+    await typeGuesses(["AMZN", "TSLA", "DIS", "MSFT", "CAT"]);
+    submit();
+    await waitFor(() => expect(columnInput(1)).toBeDisabled());
+
+    // Round 2: solve column 0 for real.
+    await typeGuesses(["IBM", "IBM", "IBM", "IBM", "IBM"]);
+    submit();
+
+    await waitFor(() => {
+      const history = screen.getByLabelText("Column 1 past guesses");
+      // Both the earlier wrong guess and the solving guess are retained.
+      expect(within(history).getByText("A")).toBeInTheDocument(); // AMZN's own first letter
+    });
+  });
+
+  it("stops accumulating a column's own history once it locks -- no repeated echoed-answer rows", async () => {
+    await renderAndExpand();
+    // Round 1: solve column 0; leave the rest open.
+    await typeGuesses(["IBM", "AAPL", "AAPL", "AAPL", "AAPL"]);
+    submit();
+    await waitFor(() => expect(columnInput(0)).toBeDisabled());
+
+    // Round 2: column 0 is locked -- its own history shouldn't grow.
+    await typeGuesses(["QQQ", "AAPL", "AAPL", "AAPL", "AAPL"]);
+    submit();
+
+    await waitFor(() => {
+      const history = screen.getByLabelText("Column 1 past guesses");
+      expect(within(history).getAllByRole("listitem")).toHaveLength(1);
+    });
+  });
+
+  it("does not render any per-column history on the reconstructed cold-reload view (no persisted log to replay)", async () => {
+    saveLineupPlayedResult({
+      date: "2026-08-26",
+      outcome: "won",
+      guessesUsed: 3,
+      columnsSolved: 5,
+      tilesFilled: 17,
+      totalTiles: 17,
+      lockedColumns: [true, true, true, true, true],
+    });
+
+    await renderAndExpand();
+    await waitFor(() => {
+      expect(screen.getAllByText(/Solved all 5 in 3 of 7 rounds\./).length).toBeGreaterThan(0);
+    });
+    expect(screen.queryByLabelText(/Column 1 past guesses/)).not.toBeInTheDocument();
+  });
+});
+
 describe("TheLineup: return visit (already played today)", () => {
   it("reconstructs the finished grid from storage without a form, keyboard tracker, or log", async () => {
     saveLineupPlayedResult({

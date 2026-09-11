@@ -4,6 +4,7 @@ import {
   LINEUP_MAX_ATTEMPTS,
   classifyCell,
   classifyColumnGuess,
+  columnGuessHistory,
   columnsSolvedCount,
   createLineupBoard,
   noteLetterResult,
@@ -369,6 +370,65 @@ describe("reconstructFinishedCells", () => {
     const won = submitLineupRound(board, ANSWERS, anyGuessLegal).state;
     const reconstructed = reconstructFinishedCells(ANSWERS, [true, true, true, true, true]);
     expect(reconstructed).toEqual(won.cells);
+  });
+});
+
+describe("columnGuessHistory", () => {
+  it("returns nothing for a column with no log entries yet", () => {
+    const board = createLineupBoard(ANSWERS);
+    expect(columnGuessHistory(board, 0)).toEqual([]);
+  });
+
+  it("reconstructs a past wrong guess with its own real per-letter classification -- the user's own worked example (a whole guess coming back all-absent)", () => {
+    // Column 1's real answer is TSLA. QCOM (a genuine 4-letter S&P 500
+    // ticker) shares no letters with TSLA (T/S/L/A) at any row, and none
+    // of Q/C/O/M is any OTHER column's own row letter either -- a fully
+    // clean miss, matching the user's exact "every letter red" case.
+    let board = createLineupBoard(["IBM", "TSLA", "DIS", "MSFT", "CAT"]);
+    board = submitLineupRound(board, ["ZZZ", "QCOM", "ZZZ", "ZZZZ", "ZZZ"], anyGuessLegal).state;
+
+    const history = columnGuessHistory(board, 1);
+    expect(history).toHaveLength(1);
+    expect(history[0]).toEqual({
+      attempt: 1,
+      guess: "QCOM",
+      ranks: classifyColumnGuess("QCOM", 1, board.answers),
+    });
+    // Concretely: every one of QCOM's own letters against TSLA is absent.
+    expect(history[0]!.ranks).toEqual(["absent", "absent", "absent", "absent"]);
+  });
+
+  it("accumulates one entry per round a column stays unsolved", () => {
+    let board = createLineupBoard(ANSWERS);
+    board = submitLineupRound(board, ["ZZZ", "ZZZZ", "ZZZ", "ZZZZ", "ZZZ"], anyGuessLegal).state;
+    board = submitLineupRound(board, ["ZZZ", "AAPL", "ZZZ", "ZZZZ", "ZZZ"], anyGuessLegal).state;
+
+    const history = columnGuessHistory(board, 1);
+    expect(history.map((entry) => entry.attempt)).toEqual([1, 2]);
+    expect(history.map((entry) => entry.guess)).toEqual(["ZZZZ", "AAPL"]);
+  });
+
+  it("stops right after the round that solves the column -- later rounds' own locked-column echo of the real answer isn't a genuine guess", () => {
+    let board = createLineupBoard(ANSWERS);
+    // Round 1: solve column 0 (IBM); leave the rest open.
+    board = submitLineupRound(board, ["IBM", "ZZZZ", "ZZZ", "ZZZZ", "ZZZ"], anyGuessLegal).state;
+    expect(board.locked[0]).toBe(true);
+    // Round 2: column 0 is now locked, so submitLineupRound re-submits its
+    // own real answer for it regardless of drafts -- not a new guess.
+    board = submitLineupRound(board, ["QQQ", "AAPL", "ZZZ", "ZZZZ", "ZZZ"], anyGuessLegal).state;
+
+    const history = columnGuessHistory(board, 0);
+    // Just the one genuine round-1 guess that solved it -- not a second
+    // entry echoing "IBM" again for round 2.
+    expect(history).toEqual([{ attempt: 1, guess: "IBM", ranks: ["exact", "exact", "exact"] }]);
+  });
+
+  it("a column solved on the very first guess still gets a real one-entry history, not zero", () => {
+    const board = createLineupBoard(ANSWERS);
+    const result = submitLineupRound(board, ANSWERS, anyGuessLegal).state;
+
+    const history = columnGuessHistory(result, 0);
+    expect(history).toEqual([{ attempt: 1, guess: "IBM", ranks: ["exact", "exact", "exact"] }]);
   });
 });
 
