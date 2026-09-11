@@ -126,22 +126,24 @@ export const BULLET_TIME_MAX_EVENTS = 4;
  * change from the first revamp round's own pool (where 1 of 41 sessions,
  * a genuine spacing-pathological one, needed backfill and still
  * couldn't reach the floor even with magnitude ignored entirely -- see
- * this file's own `apps/web/CLAUDE.md` "Bullet Time revamp, round two"
- * section for that earlier session's own detail, since it's no longer
- * reproducible against the current constants). This does **not** mean
- * the backfill pass or the "floor genuinely unreachable" case are now
- * unreachable in general -- they remain real, load-bearing behavior for
- * a session structured differently than anything in this validation
- * pool (a genuinely flat one, or one whose few real swings all cluster
- * too close together for even magnitude-agnostic backfill to find a
- * second spacing-valid window) -- only that this specific real pool no
- * longer happens to exercise it. `bullet-time.test.ts`'s own synthetic
- * `barelyMovingBars` fixture (a session with nothing anywhere near the
- * magnitude bar) still exercises the backfill pass directly, and a
- * hand-built synthetic near-flat session was live-verified to reach the
- * floor of 2 via backfill (see that same `apps/web/CLAUDE.md` section)
- * -- the mechanism itself is unchanged and still real, just not
- * triggered by any of the 41 real sessions in this particular pool.
+ * this file's own `apps/web/CLAUDE.md` "Bullet Time revamp: 4 events
+ * per session, a hard floor of 2" section (the first round, not the
+ * "round two" section below it) for that earlier session's own detail,
+ * since it's no longer reproducible against the current constants).
+ * This does **not** mean the backfill pass or the "floor genuinely
+ * unreachable" case are now unreachable in general -- they remain real,
+ * load-bearing behavior for a session structured differently than
+ * anything in this validation pool (a genuinely flat one, or one whose
+ * few real swings all cluster too close together for even
+ * magnitude-agnostic backfill to find a second spacing-valid window) --
+ * only that this specific real pool no longer happens to exercise it.
+ * `bullet-time.test.ts`'s own synthetic `barelyMovingBars` fixture (a
+ * session with nothing anywhere near the magnitude bar) still exercises
+ * the backfill pass directly, and a hand-built synthetic near-flat
+ * session was live-verified to reach the floor of 2 via backfill (see
+ * that same first-round `apps/web/CLAUDE.md` section) -- the mechanism
+ * itself is unchanged and still real, just not triggered by any of the
+ * 41 real sessions in this particular (second-round) pool.
  */
 export const BULLET_TIME_MIN_EVENTS = 2;
 

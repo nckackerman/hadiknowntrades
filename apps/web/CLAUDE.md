@@ -7418,6 +7418,77 @@ status`/`git diff --stat` on `package.json`/`pnpm-lock.yaml` showing
   1232 passing, `pnpm format:check`) re-ran green on the resulting clean
   tree.
 
+### Code-review follow-up -- one real bug, one doc-pointer fix
+
+A `high` review of the round-two diff above found two things: a real,
+independently-confirmed bug in `BeatTheBench.tsx` that the round-two
+spacing shrink made newly reachable, and a doc-comment cross-reference
+that pointed at the wrong section of this file.
+
+- **`recentlyResolvedEvent` used `Array.prototype.find`, which returns
+  the chronologically _earliest_ matching event, not the most recently
+  resolved one -- and the round-two spacing shrink
+  (`BULLET_TIME_MIN_TRIGGER_GAP_BARS` 6 -> 0, `BULLET_TIME_LEAD_BARS`
+  2 -> 1) made two events' own badge-linger windows able to genuinely
+  overlap, where before they never could.** Two events' own resolution
+  bars (`swing.toIndex`) can now sit as few as 2 bars apart (a real,
+  spacing-valid back-to-back pair -- see `BULLET_TIME_MIN_TRIGGER_GAP_BARS`'s
+  own doc comment for the minimum-gap arithmetic), well inside
+  `BULLET_TIME_BADGE_LINGER_BARS` (3). At the exact bar the second event
+  resolves, both it and the still-lingering first event satisfy the
+  badge's own linger predicate simultaneously -- `.find()` returned the
+  array's first (older) match, silently showing the _stale_ first call's
+  own "Called it"/"Not this time" badge (and identical aria-live
+  announcement) instead of the one for the call that just resolved.
+  Under the pre-round-two constants (gap 6, lead 2) the minimum possible
+  spacing between two events' own `toIndex` values always exceeded the
+  3-bar linger window, so this was genuinely unreachable before this
+  same round's own spacing shrink -- not a latent bug this round merely
+  exposed testing for, a bug this round's own change made real. Fixed
+  with `.findLast()` instead of `.find()` -- `bulletTimeEvents` is
+  chronological (ascending `triggerIndex`), so the last matching entry
+  is the most recently resolved one, exactly what this badge is
+  documented to show.
+  - **Regression-tested with a hand-built fixture, confirmed against the
+    real scheduler (not hand-derived) and confirmed to actually fail
+    without the fix, not just pass with it** -- the same "reproduce
+    first" discipline this repo's own global instructions ask for on
+    any bug fix: a clean +24% up-swing (bars 1-5) directly followed,
+    with zero bars of gap, by a real +4.5% up-swing (bars 6-7) --
+    engineered so the second up-swing's own greedy-chosen start
+    (`biggestSwings`' own scoring) lands exactly at the first swing's
+    own `toIndex`, the precise back-to-back case the bug needs. Riding
+    the first event out (correct) and stepping aside for the second
+    (incorrect, also an up-swing) makes the two badges read distinctly
+    ("Called it" vs "Not this time"), so a stale first badge showing
+    through is unambiguous from a correct, fresh second one. Verified
+    by temporarily reverting to `.find()`: the test fails exactly as
+    predicted (the stale "Called it" sentence renders instead of "Not
+    this time"), then re-verified passing with `.findLast()` restored.
+  - **Constructing this fixture surfaced a real, non-obvious
+    constraint worth remembering for the next hand-built Bullet Time
+    fixture in this codebase**: for two swings to be recognized as
+    genuinely separate events by `biggestSwings`' own greedy search
+    (rather than merged into one longer run, or the second event's own
+    start snapping back to the first event's own peak), the second
+    swing's own direction has to be chosen so that starting _later_ is
+    what maximizes its magnitude, not starting _earlier_ -- true for an
+    up-swing starting at a local low, false for a down-swing starting
+    at a local high (a later start after a peak can only ever match or
+    shrink the drop's own magnitude versus starting right at the peak,
+    a real mathematical fact confirmed by hand before landing on an
+    up-then-up shape for this fixture instead of the up-then-down shape
+    tried first).
+- **`BULLET_TIME_MIN_EVENTS`'s own doc comment cited the wrong section
+  of this file for the first revamp round's one pathological-session
+  detail** -- it pointed at "Bullet Time revamp, round two" (this very
+  section's own parent), when that detail actually lives in the
+  earlier, un-suffixed "Bullet Time revamp: 4 events per session, a
+  hard floor of 2" section (the first round). Fixed at both of that doc
+  comment's own two references to the section.
+- All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
+  1233 passing, `pnpm format:check`) re-ran green after both fixes.
+
 ## The hero count-up no longer moves the page (issue #147)
 
 The fix for the jitter issue #124's spike measured. The hero's 1.2s

@@ -880,6 +880,69 @@ describe("BeatTheBench", () => {
       expect(screen.queryByText("Big swing incoming")).not.toBeInTheDocument();
       expect(screen.getByText(/bar 29 of 78/)).toBeInTheDocument();
     });
+
+    // A real bug, found in code review after the second Bullet Time
+    // revamp round shrank BULLET_TIME_MIN_TRIGGER_GAP_BARS to its own
+    // floor of 0: two events' own badge-linger windows can now genuinely
+    // overlap (a real, spacing-valid back-to-back pair, not just a
+    // hypothetical), and `recentlyResolvedEvent` used `.find()` --
+    // returning the *earliest* (stalest) match -- instead of `.findLast()`
+    // -- the *most recent* one, which is what the badge is documented to
+    // show.
+    //
+    // This fixture is hand-built (and confirmed against the real
+    // scheduler, not hand-derived) to reproduce it exactly: a clean +24%
+    // up-swing (bars 1->5) directly followed, with zero bars of gap, by
+    // a real +4.5% up-swing (bars 6->7) -- the second event's own
+    // toIndex is only 2 bars after the first's, well inside
+    // BULLET_TIME_BADGE_LINGER_BARS (3), so both events' linger windows
+    // are simultaneously active the instant the second resolves. The
+    // player rides the first event out (correct -- an up-swing) and
+    // steps aside for the second (incorrect -- also an up-swing), so the
+    // two badges read distinctly ("Called it" vs "Not this time") and a
+    // stale first badge is unambiguous from a correct, fresh second one.
+    it("shows the most recently resolved event's own badge, not a stale earlier one, when two linger windows overlap", async () => {
+      const values: number[] = [101, 99.6, 105, 111, 117, 123.5, 118, 123.3];
+      while (values.length < 20) values.push(123.3);
+      const bars = values.map((close, i) => {
+        const totalMinutes = 9 * 60 + 30 + i * 5;
+        return {
+          time: `${String(Math.floor(totalMinutes / 60)).padStart(2, "0")}:${String(totalMinutes % 60).padStart(2, "0")}:00`,
+          close,
+        };
+      });
+      stubSessionFetch({ ...SESSION, bars });
+
+      render(<BeatTheBench />);
+      clickCompactCard();
+      await screen.findByText(/20 bars/);
+      click(/play today's close/i);
+      await screen.findByText(/bar 1 of 20/);
+      click("Pause");
+      vi.useFakeTimers();
+
+      // Step to the first event's own deciding bar (fromIndex 1, "bar 2").
+      click("Step forward one bar");
+      expect(screen.getByText("Big swing incoming")).toBeInTheDocument();
+      // An up-swing: staying holding (the honest default) is correct.
+      click("Ride it out");
+      // Step through the rest of the swing to its own resolution bar (5),
+      // then on to the second event's own deciding bar (fromIndex 6).
+      for (let i = 0; i < 4; i += 1) click("Step forward one bar");
+      expect(screen.getByText("Big swing incoming")).toBeInTheDocument();
+      // Also an up-swing, but this time step aside -- going to cash
+      // through an up-swing is the incorrect call.
+      click("Step aside");
+
+      // Now at barIndex 7 (bar 8 of 20), the second event's own toIndex:
+      // it has just resolved "incorrect" ("Not this time"), while the
+      // first event's own "Called it" badge is still technically inside
+      // its own linger window (distance 2, <= 3). The badge shown must
+      // be the second, freshly resolved event's, not the stale first one.
+      expect(screen.getByText(/bar 8 of 20/)).toBeInTheDocument();
+      expect(screen.getAllByText(/Not this time/).length).toBeGreaterThan(0);
+      expect(screen.queryByText(/Called it/)).not.toBeInTheDocument();
+    });
   });
 
   describe("touch targets", () => {
