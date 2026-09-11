@@ -2181,7 +2181,14 @@ function validateSp500PrefixCurvePoint(
     return null;
   }
   const c = value as Record<string, unknown>;
-  if (!isNonNegativeInteger(c.n) || c.n < 1) {
+  // Tracked separately from the `problems.push` below, and gates the
+  // returned value at the bottom -- a caller (validateSp500PrefixResult's
+  // own ascending-n cross-check) must never receive an `n` that failed
+  // this check (e.g. NaN), since `NaN <= previousN` is always `false` and
+  // would silently disable that check for every subsequent curve entry
+  // (a real gap, caught in code review, not a defensive nicety).
+  const validN = isNonNegativeInteger(c.n) && c.n >= 1;
+  if (!validN) {
     problems.push(`${path}.n must be a positive integer, got ${describe(c.n)}`);
   }
   if (!isPositiveFiniteNumber(c.portfolioReturn)) {
@@ -2199,7 +2206,7 @@ function validateSp500PrefixCurvePoint(
       `${path}.cumWeight must be a positive finite number, got ${describe(c.cumWeight)}`,
     );
   }
-  return typeof c.n === "number" ? { n: c.n } : null;
+  return validN ? { n: c.n as number } : null;
 }
 
 /**

@@ -364,6 +364,108 @@ describe("The Cut: nightly pipeline integration (issue #232)", () => {
     expect(oneYear.bestPortfolioReturn).toBeCloseTo(NVDA_OLD_RATIO, 10);
   });
 
+  it("counts a duplicate-dated entry once per ticker, not once per entry, when deciding whether a date is majority-shared (regression)", async () => {
+    // Threshold math only leaves any slack once history.size >= 10
+    // (SP500_PREFIX_COMMON_DATE_THRESHOLD is 0.9, and ceil(0.9 * n) < n
+    // only once n >= 10) -- so this needs 10 real tickers, not 3, to make
+    // the dedup fix's effect observable at all.
+    const tenTickers = [
+      "NVDA",
+      "AAPL",
+      "MSFT",
+      "AMZN",
+      "GOOGL",
+      "AVGO",
+      "GOOG",
+      "META",
+      "MU",
+      "TSLA",
+    ];
+    const EARLY = "2024-06-14"; // every one of the 10 shares this date -- the correct common end date
+    const LATE = "2024-06-15"; // only 8 of the 10 genuinely share this date
+
+    const tenTickerFixture = new Map<string, DailyClose[]>(
+      tenTickers.map((symbol, i) => {
+        const closesForTicker: DailyClose[] = [{ date: EARLY, close: 100 }];
+        if (i < 8) closesForTicker.push({ date: LATE, close: 110 });
+        // NVDA (index 0, one of the 8 genuine LATE holders) also carries a
+        // literal duplicate LATE entry -- without per-ticker dedup, this
+        // inflates LATE's raw tally from 8 to 9, exactly meeting
+        // ceil(10 * 0.9) = 9 and wrongly qualifying LATE as majority-shared
+        // even though only 8 *distinct* tickers (80%) actually have it.
+        if (i === 0) closesForTicker.push({ date: LATE, close: 999 });
+        return [symbol, closesForTicker];
+      }),
+    );
+    const tenTickerIntraday = new Map<string, IntradayBar[]>(
+      tenTickers.map((symbol) => [
+        symbol,
+        [
+          { date: `${EARLY}T09:30:00`, close: 100 },
+          { date: `${EARLY}T10:30:00`, close: 101 },
+        ],
+      ]),
+    );
+
+    const store = memoryStore();
+    await runPipeline({
+      tickers: tenTickers,
+      fetchDailyCloses: async (symbol) => tenTickerFixture.get(symbol) ?? [],
+      fetchIntradayBars: async (symbol) => tenTickerIntraday.get(symbol) ?? [],
+      fetchFiveMinuteBars: noIntradayData,
+      fetchIntraday1mBars: noIntradayData,
+      store,
+      asOf: new Date("2024-06-16T00:00:00Z"),
+    });
+
+    // The resolved end boundary must be EARLY (genuinely 10/10, 100%),
+    // never LATE (correctly only 8/10, 80%, below the 90% threshold once
+    // NVDA's duplicate is no longer double-counted).
+    const result = parseSp500Prefix(store, "MAX");
+    expect(result.dataAsOf).toBe(EARLY);
+  });
+
+  it("flags truncated when the majority-shared calendar's own freshest date is older than a bounded range's own nominal start (regression)", async () => {
+    // Every ticker's history stops at ONLY_DATE, deliberately older than
+    // 1W's own 7-day lookback from asOf -- so no common date at or after
+    // 1W's nominal start exists at all, and startDate must fall back to
+    // ONLY_DATE (the earliest -- here, the *only* -- common date), a much
+    // earlier date than "1 week ago" implies. Before this fix, `truncated`
+    // stayed false in exactly this case (see buildSp500PrefixResults' own
+    // doc comment for why `earliestCommonDate > nominalStartString` alone
+    // can't catch it).
+    const asOf = new Date("2024-06-15T00:00:00Z");
+    const ONLY_DATE = "2024-06-01"; // older than 1W's own nominal start (2024-06-08)
+    const staleFixture = new Map<string, DailyClose[]>(
+      TICKERS.map((symbol) => [symbol, [{ date: ONLY_DATE, close: 100 }]]),
+    );
+    const staleIntraday = new Map<string, IntradayBar[]>(
+      TICKERS.map((symbol) => [
+        symbol,
+        [
+          { date: `${ONLY_DATE}T09:30:00`, close: 100 },
+          { date: `${ONLY_DATE}T10:30:00`, close: 101 },
+        ],
+      ]),
+    );
+
+    const store = memoryStore();
+    await runPipeline({
+      tickers: TICKERS,
+      fetchDailyCloses: async (symbol) => staleFixture.get(symbol) ?? [],
+      fetchIntradayBars: async (symbol) => staleIntraday.get(symbol) ?? [],
+      fetchFiveMinuteBars: noIntradayData,
+      fetchIntraday1mBars: noIntradayData,
+      store,
+      asOf,
+    });
+
+    const oneWeek = parseSp500Prefix(store, "1W");
+    expect(oneWeek.startDate).toBe(ONLY_DATE);
+    expect(oneWeek.dataAsOf).toBe(ONLY_DATE);
+    expect(oneWeek.truncated).toBe(true);
+  });
+
   it("writes nothing at all -- and doesn't fail the run -- when the window path itself has no usable data", async () => {
     const store = memoryStore();
     const noDailyData = async (): Promise<DailyClose[]> => [];

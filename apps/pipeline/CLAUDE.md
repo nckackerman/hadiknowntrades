@@ -1675,7 +1675,7 @@ rule then correctly (if uselessly) treated every _other_ ticker as
 lacking data there. Concretely, before the fix: universe coverage
 (`curve`'s own `cumWeight` at `n === universeSize`, out of the
 ~99.78-total-weight universe `packages/core/CLAUDE.md` documents) came
-back **~0.0366 for every single range** — and all five bounded ranges
+back **~0.0366 for every single range** -- and all five bounded ranges
 converged on the identical, meaningless `bestN=348`, purely an artifact
 of which handful of tickers happened to also share a stray close on
 that one outlier date, not a real economic answer.

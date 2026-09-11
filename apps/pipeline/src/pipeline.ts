@@ -1276,12 +1276,33 @@ const SP500_PREFIX_COMMON_DATE_THRESHOLD = 0.9;
  * actually has still appears in that union, which is exactly what made
  * this necessary in the first place (see resolveCommonDates' own doc
  * comment for the concrete case this was built to catch).
+ *
+ * **Dedupes each ticker's own dates before counting (code review
+ * finding, fixed) -- a real, if milder, version of the same problem this
+ * function exists to solve, not a defensive nicety.** This package's own
+ * docs, and `sp500-prefix-selection.ts`'s own `tickerWindowRatio`
+ * (guarding against exactly this after #235's own review), already
+ * establish that a fetched close series isn't guaranteed unique-by-date.
+ * Counting every `DailyClose` point unconditionally would let a single
+ * ticker with two entries dated the same day contribute 2 toward that
+ * date's tally instead of 1 -- for a date that's otherwise a genuine
+ * one-ticker outlier (the real `HUBB` case this file's own module
+ * header documents), a duplicate on that same ticker could push its
+ * count from 1 to 2, silently doubling how close it sits to
+ * `SP500_PREFIX_COMMON_DATE_THRESHOLD` for no real reason. Building a
+ * `Set` of each ticker's own dates first (one pass per ticker) makes
+ * "how many *tickers* share this date" exactly what gets counted,
+ * regardless of how many close entries any one of them has for it.
  */
 function buildDateCounts(history: ReadonlyMap<string, readonly DailyClose[]>): Map<string, number> {
   const counts = new Map<string, number>();
   for (const series of history.values()) {
+    const datesForThisTicker = new Set<string>();
     for (const point of series) {
-      counts.set(point.date, (counts.get(point.date) ?? 0) + 1);
+      datesForThisTicker.add(point.date);
+    }
+    for (const date of datesForThisTicker) {
+      counts.set(date, (counts.get(date) ?? 0) + 1);
     }
   }
   return counts;
@@ -1398,13 +1419,28 @@ function buildSp500PrefixResults(options: {
     // pipeline's scale), unlike lowerBoundByDate/upperBoundByDate's
     // binary search, which earns its keep by running per-ticker,
     // per-anchor, up to ~1,255 times a run.
-    const startDate =
-      (nominalStartString ? commonDates.find((d) => d >= nominalStartString) : undefined) ??
-      earliestCommonDate;
+    const foundStart = nominalStartString
+      ? commonDates.find((d) => d >= nominalStartString)
+      : undefined;
+    const startDate = foundStart ?? earliestCommonDate;
     // Same derivation as BenchmarkResult.truncated, generalized from SPY
     // alone to the whole fetched universe's own majority-shared calendar
-    // (see Sp500PrefixResult.truncated's own doc comment).
-    const truncated = nominalStartString === null || earliestCommonDate > nominalStartString;
+    // (see Sp500PrefixResult.truncated's own doc comment) -- plus a
+    // third case that derivation has no equivalent of (code review
+    // finding, fixed): `foundStart === undefined` means no common date
+    // at or after the nominal boundary exists at all (only reachable
+    // when the majority-shared calendar's own freshest date sits
+    // *before* a short bounded range's nominal start -- e.g. the
+    // fetched data is stale by more than 1W's own 7-day window), so
+    // `startDate` fell back to `earliestCommonDate` -- potentially a
+    // much *earlier* date than the range name implies, silently
+    // widening the window far beyond what was requested. This can't be
+    // caught by `earliestCommonDate > nominalStartString` alone: that
+    // condition is false in exactly this case (the fallback only
+    // triggers when `earliestCommonDate` is already <=, not >,
+    // `nominalStartString`), so it needs its own explicit check.
+    const truncated =
+      nominalStartString === null || earliestCommonDate > nominalStartString || !foundStart;
 
     const selection = computeSp500PrefixSelection({
       orderedTickers,
