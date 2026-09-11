@@ -202,104 +202,62 @@ export function ResultsPage() {
       <DailyHero mode={mode} />
 
       {/* Beat the Bench (issue #131; collapsed-by-default "Can you do
-          better?" card since issue #163) and The Call Board (issue
-          #129/#164) render as a 2-up grid (issue #178), matching the
-          mockup's own `.game-row` (`docs/design/gamified-hero-2026-08/
-          mockup-gamified-hero.html`) -- two bold NYT-Games-style tiles
-          (issues #176/#177) side by side, directly below the daily hero,
-          rather than two full-width stacked siblings. Still per issue
+          better?" card since issue #163), The Call Board (issue
+          #129/#164), The Order (issue #207), The Lineup (issue #208) and
+          The Cut (issue #233) all render as a single always-full-width
+          column (issue #178 originally shipped this as a 2-up grid at
+          desktop widths; a later direct user request simplified it to
+          one column, unconditionally -- see below). Still per issue
           #122's standing "section, not a route/branch inside
-          ResultsPanel" decision -- neither takes PrecomputedResult/range/
-          mode/selectedDay props, and both render regardless of how
-          /api/results goes, same reasoning DailyHero above relies on.
+          ResultsPanel" decision -- none of the five takes
+          PrecomputedResult/range/mode/selectedDay props, and all render
+          regardless of how /api/results goes, same reasoning DailyHero
+          above relies on.
 
           **The first two children are `gameTileOrder` (issue #196), not
           always literally `<BeatTheBench /><CallBoard />`** -- a
           viewer's own play-order preference, with whichever real tile is
           already played today sunk to the bottom, see
-          use-game-tile-order.ts. This is safe for the `:has()` mechanism
-          just below: both `has-*` selectors match on the *presence* of a
-          descendant (`[data-bench-expanded]`/`details[open]`) anywhere
-          inside this grid, not on which DOM position it occupies, so
-          which real tile renders in column 1 vs. column 2 is irrelevant
-          to whether either rule fires -- confirmed live (see this
-          issue's own apps/web/CLAUDE.md entry), not just reasoned about.
-          Swapping which real tile renders first is the entire visible
-          effect of this issue: CSS grid auto-placement fills column 1
-          with whichever child comes first in the DOM, so a viewer who
-          usually opens The Call Board first sees it on the left (or on
-          top, at a stacked mobile width) instead of Beat the Bench.
+          use-game-tile-order.ts. Swapping which real tile renders first
+          just changes which one appears higher up the single column now
+          (previously, which one claimed the grid's left/top position).
 
-          **The Order (issue #207) and The Lineup (issue #208) fill out
-          the same container's second row, always after the two real,
-          ordered tiles -- making this the full 2x2 grid the
-          daily-hub-condensed mockup was originally sketched with, not a
-          new grid of its own.** Both are real, playable games now (The
-          Order as of issue #207, see
-          docs/design/order-lineup-2026-08/README.md; The Lineup as of
-          issue #208, see components/TheLineup.tsx) -- neither is a
-          "coming soon" placeholder any more. Both render unconditionally
-          as the grid's 3rd/4th children, after whatever `gameTileOrder`
+          **The Order and The Lineup are real, playable games (issue
+          #207/#208 respectively), not "coming soon" placeholders**, and
+          The Cut (issue #233) is a 5th tile added after them -- all
+          three render unconditionally, after whatever `gameTileOrder`
           puts first: issue #196 is scoped to reordering only the two
           real, ordered tiles (Beat the Bench / The Call Board) by their
-          own play state -- The Order and The Lineup have no play state
-          #196's own ranking reads (see game-tile-order-storage.ts's own
-          `GameTileId` doc comment), and both stay pinned in place
-          regardless of whatever order #196 puts the first two in.
+          own play state -- neither The Order, The Lineup, nor The Cut
+          has play state #196's own ranking reads (see
+          game-tile-order-storage.ts's own `GameTileId` doc comment), and
+          all three stay pinned in place regardless of whatever order
+          #196 puts the first two in.
 
-          `has-[details[open]]:grid-cols-1` and
-          `has-[[data-bench-expanded]]:grid-cols-1` collapse the grid to
-          one column the instant any tile that has one expands into its
-          full game/board -- CallBoard's, The Order's, and The Lineup's
-          own expanded states are all a native `<details open>`,
-          detectable directly via `:has()` with no per-tile distinction
-          needed (the selector matches the *presence* of an open
-          `<details>` anywhere in the grid, not which one); BeatTheBench
-          has no native disclosure element to key off (its "expanded"
-          flag is a plain useState, issue #163), so its own
-          `BeatTheBenchFrame` wrapper carries a `data-bench-expanded`
-          marker attribute for the identical purpose. Two independent
-          `has-*` variants rather than one comma-joined selector,
-          deliberately -- this app has already been bitten once by
-          Tailwind's own bracket-value class-name parsing choking on an
-          unexpected character inside `[...]` (see BeatTheBench.tsx's own
-          doc comment on why its amber gradient is an inline `style`, not
-          a bracket class), so two simple single-selector variants were
-          chosen over one compound selector as the safer bet, verified
-          live rather than assumed. None of the four real tiles' own
-          expanded content (CallBoard's 3-slot picker/history strip,
-          BeatTheBench's playback controls, The Order's own row list/
-          history strip, The Lineup's 5-column guess grid + form) was
-          ever designed to fit in a 50%-width column -- all four render
-          full-width, stacked, once expanded; the two `has-*` rules keep
-          that true once they're grid children too, instead of squeezing
-          a fully expanded game into an unreadably narrow half-column.
-
-          `game-row-grid` is a plain marker class (no styling of its
-          own) so `globals.css` can target this exact container with a
-          `@supports not selector(:has(a))` fallback rule -- a browser
-          with no `:has()` support at all would otherwise never match
-          either `has-*` rule above and could keep the grid at two
-          columns forever, permanently squeezing an expanded game into
-          an unreadably narrow half-column with no error or console
-          signal. See that rule's own doc comment for the full
-          reasoning. */}
-      <div className="game-row-grid grid grid-cols-2 gap-4 has-[[data-bench-expanded]]:grid-cols-1 has-[details[open]]:grid-cols-1">
+          **Always `grid-cols-1`, unconditionally -- no `:has()` variants,
+          no per-tile expanded-state marker, and no `@supports` fallback
+          in globals.css any more (a direct user request, not a filed
+          issue).** Issue #178's original design was a 2-up grid at
+          desktop widths that collapsed itself to one column the instant
+          any tile expanded into its full game/board (via `:has()`
+          keyed on a native `<details open>` for CallBoard/The Order/The
+          Lineup/The Cut, or a `data-bench-expanded` marker attribute for
+          BeatTheBench, which has no native disclosure of its own) --
+          but that collapse-on-expand was exactly what caused a visible
+          "jump": opening one tile changed every sibling tile's own
+          column count, position, and width at the same instant. Since
+          this container is now always one column, there is nothing left
+          to collapse *from* -- opening a tile no longer changes the
+          grid's shape at all, so every sibling tile's position is
+          unaffected. `BeatTheBenchFrame`'s own `data-bench-expanded`
+          marker attribute (BeatTheBench.tsx) was removed outright once
+          this stopped being the mechanism it existed for. */}
+      <div className="grid grid-cols-1 gap-4">
         {gameTileOrder.map((tileId) =>
           tileId === "beat-the-bench" ? <BeatTheBench key={tileId} /> : <CallBoard key={tileId} />,
         )}
         <TheOrder />
         <TheLineup />
-        {/* The Cut (issue #233): a 5th game tile, added after The
-            Order/The Lineup filled out the grid's second row -- there's
-            no 6th tile to pair it with, so it simply renders alone on a
-            new row (grid auto-placement leaves column 2 empty there),
-            same as every other tile here taking no PrecomputedResult/
-            range/mode/selectedDay props of its own (issue #122). Its own
-            expanded panel is a native `<details open>` too, so the
-            existing `has-[details[open]]:grid-cols-1` rule already
-            collapses the grid the instant it opens -- no new CSS
-            needed. */}
         <TheCut />
       </div>
 
