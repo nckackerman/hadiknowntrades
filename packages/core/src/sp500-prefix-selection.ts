@@ -120,6 +120,80 @@ export interface Sp500PrefixSelectionResult {
 }
 
 /**
+ * Per-ticker sorted-ascending-by-date cache, keyed on the *closes array's
+ * own object identity* -- not a fresh sort per call. `computeSp500PrefixSelection`
+ * is called once per `PRESET_RANGES` entry (up to 6x) by
+ * `apps/pipeline`'s `buildSp500PrefixResults`, over the *same* unsliced,
+ * decades-long `closesByTicker` history each time (no new fetch, no
+ * re-slicing per range) -- so as long as the caller passes the same
+ * array reference for a given ticker across those calls (true for
+ * `apps/pipeline`'s own real call site: `windowFetch.history`'s
+ * per-ticker arrays aren't recreated between calls), the O(n log n) sort
+ * cost is paid once, not 6 times, and every one of the 6 calls' own
+ * boundary-date lookups becomes an O(log n) binary search instead of an
+ * O(n) linear scan -- the same "sort once, cache by reference, binary-
+ * search per call" pattern `apps/pipeline/src/pipeline.ts`'s own
+ * `sortedHistory`/`lowerBoundByDate`/`upperBoundByDate` already
+ * establish for the identical "called many times against the same
+ * shared history" shape (custom-range anchors). Kept local to this
+ * module (a `WeakMap`, not a shared cache with `apps/pipeline`'s own)
+ * since `packages/core` has no dependency on `apps/pipeline` to reuse
+ * its cache from, and this module's own "pure, no I/O" posture (see this
+ * file's header comment) is unaffected either way -- a `WeakMap` keyed
+ * on object identity is a pure memoization of a pure function's own
+ * result, not observable I/O or mutable shared state a caller could
+ * depend on.
+ */
+const sortedClosesCache = new WeakMap<readonly DailyClose[], readonly DailyClose[]>();
+
+/**
+ * Returns `closes` sorted ascending by date (cached -- see
+ * sortedClosesCache's own doc comment), via a **stable** sort
+ * (`Array.prototype.sort` has been spec-guaranteed stable since ES2019),
+ * which is exactly what preserves `tickerWindowRatio`'s own documented
+ * "first match wins" tie-break for a duplicate-dated entry without any
+ * extra dedup logic: two entries sharing a date keep their original
+ * relative order after sorting, so the leftmost of a matching date-group
+ * in the sorted output is always the one that appeared first in the
+ * *original*, possibly-unsorted `closes` array.
+ */
+function getSortedCloses(closes: readonly DailyClose[]): readonly DailyClose[] {
+  const cached = sortedClosesCache.get(closes);
+  if (cached !== undefined) return cached;
+  const sorted = [...closes].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  sortedClosesCache.set(closes, sorted);
+  return sorted;
+}
+
+/**
+ * The first index in a date-ascending-sorted array whose `date` is `>=
+ * dateString` (`series.length` if none qualify) -- the same shape as
+ * `apps/pipeline/src/pipeline.ts`'s own `lowerBoundByDate`, reimplemented
+ * here rather than imported (packages/core has no dependency on
+ * apps/pipeline to import it from).
+ */
+function lowerBoundByDate(series: readonly DailyClose[], dateString: string): number {
+  let lo = 0;
+  let hi = series.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (series[mid]!.date < dateString) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
+/** The exact close on `dateString` in a date-ascending-sorted `series` (see getSortedCloses), or `null` if no entry has that exact date. */
+function findCloseOnDate(series: readonly DailyClose[], dateString: string): number | null {
+  const index = lowerBoundByDate(series, dateString);
+  if (index >= series.length || series[index]!.date !== dateString) return null;
+  return series[index]!.close;
+}
+
+/**
  * One ticker's window buy-and-hold return ratio (end close / start
  * close), generalizing apps/pipeline's computeBenchmark (which computes
  * exactly this for a single ticker, SPY) across an arbitrary ticker.
@@ -143,19 +217,21 @@ export interface Sp500PrefixSelectionResult {
  * Returns `null` if either boundary date is missing from `closes`, or
  * either close found there isn't a valid positive finite price.
  *
- * **First match wins for each boundary date, and the scan stops as soon
- * as both are found** -- `closes`' own order/uniqueness isn't a
- * guaranteed contract (this package's own CLAUDE.md documents
- * `fetchDailyCloses`'s return order as exactly that), so a caller-
- * supplied array with more than one entry dated `rangeStartString` or
- * `endDateString` must resolve deterministically rather than silently
+ * **First match wins for each boundary date** -- `closes`' own order/
+ * uniqueness isn't a guaranteed contract (this package's own CLAUDE.md
+ * documents `fetchDailyCloses`'s return order as exactly that), so a
+ * caller-supplied array with more than one entry dated `rangeStartString`
+ * or `endDateString` must resolve deterministically rather than silently
  * taking whichever duplicate happens to appear last. This mirrors
  * `lineup-selection.ts`'s own `computeCandidates`, which resolves an
  * analogous "find this ticker's entry for a given date" lookup via a
- * first-match `findIndex`, not a last-write-wins scan. Stopping early
- * once both boundaries are found also keeps this a bounded, not
- * full-array, scan for the common case of a caller passing a ticker's
- * full multi-year history rather than an already-window-sliced one.
+ * first-match `findIndex`, not a last-write-wins scan. **Implemented via
+ * a binary search over a cached, stably-sorted copy of `closes`, not a
+ * linear scan (code review finding, fixed)** -- see getSortedCloses' own
+ * doc comment for why a per-call linear scan was a real inefficiency at
+ * this function's actual call pattern (up to 6 calls per pipeline run
+ * over the same unsliced, decades-long history), and for why sorting
+ * preserves this exact tie-break behavior rather than changing it.
  */
 function tickerWindowRatio(
   closes: readonly DailyClose[] | undefined,
@@ -163,13 +239,9 @@ function tickerWindowRatio(
   endDateString: string,
 ): number | null {
   if (!closes) return null;
-  let startClose: number | null = null;
-  let endClose: number | null = null;
-  for (const point of closes) {
-    if (startClose === null && point.date === rangeStartString) startClose = point.close;
-    if (endClose === null && point.date === endDateString) endClose = point.close;
-    if (startClose !== null && endClose !== null) break;
-  }
+  const sorted = getSortedCloses(closes);
+  const startClose = findCloseOnDate(sorted, rangeStartString);
+  const endClose = findCloseOnDate(sorted, endDateString);
   if (startClose === null || endClose === null) return null;
   if (!isValidPrice(startClose) || !isValidPrice(endClose)) return null;
   return endClose / startClose;

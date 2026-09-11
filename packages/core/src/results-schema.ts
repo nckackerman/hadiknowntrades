@@ -24,6 +24,7 @@ import { isValidPrice } from "./is-valid-price";
 import { anchorDateToDate, type AnchorDate } from "./custom-range-anchors";
 import { LINEUP_SIZE, TICKER_PATTERN, type LineupHistoryEntry } from "./lineup-selection";
 import { ORDER_POOL_SIZE } from "./order-selection";
+import type { Sp500PrefixCurvePoint } from "./sp500-prefix-selection";
 
 /**
  * Bumped whenever the shape of PrecomputedResult changes in a way a reader needs to know about.
@@ -202,6 +203,19 @@ export const THE_ORDER_KEY = "results/the-order.json";
  * file's own doc comment).
  */
 export const THE_ORDER_TICKER_COUNT = ORDER_POOL_SIZE;
+
+/**
+ * The S3 key The Cut's precomputed result (Sp500PrefixResult, below) is
+ * stored/read under for a given range (issue #232) -- same
+ * single-source-of-truth role as `resultKey`/`customResultKey` above,
+ * namespaced under its own `results/sp500-prefix/` prefix (not flat
+ * alongside the 6 preset `results/{RANGE}.json` keys) since this is a
+ * genuinely separate object family, not another `PrecomputedResult`
+ * union member -- see Sp500PrefixResult's own doc comment for why.
+ */
+export function sp500PrefixResultKey(range: PresetRange): string {
+  return `results/sp500-prefix/${range}.json`;
+}
 
 /** Which trading model produced a given PrecomputedResult -- see the module header comment. */
 export type ResultModel = "window" | "intraday-daily";
@@ -504,6 +518,123 @@ export interface CustomAnchorsManifest {
   schemaVersion: number;
   /** Every currently-published anchor, ascending (oldest first) -- deliberately NOT customRangeAnchors' own newest-first order, since a calendar UI wants to walk forward through months. */
   anchors: AnchorDate[];
+}
+
+// --- The Cut: nightly prefix-selection result (issue #232) -------------
+//
+// A new *sibling* result type, not a WindowResult/IntradayResult union
+// member and not a field bolted onto either -- same reasoning
+// BenchmarkResult/CustomWindowResult already established (see this
+// file's own module header and docs/design/the-cut-2026-09/README.md's
+// "Storage" section). Computed nightly in apps/pipeline
+// (buildSp500PrefixResults) from packages/core's computeSp500PrefixSelection
+// (issue #231), reusing the *same* already-fetched per-ticker daily-close
+// history the window path already reads -- no new fetch. Written to its
+// own S3 key per range (sp500PrefixResultKey, above), separate from the
+// 6 preset `results/{RANGE}.json` keys.
+//
+// **No RESULTS_SCHEMA_VERSION bump** -- brand-new objects at brand-new
+// keys nothing existing reads, the identical precedent Beat the Bench's
+// own objects and The Order's puzzle already established (see this
+// file's own "no version bump was needed" note on those). Still reuses
+// the same shared version constant for its own `schemaVersion` field,
+// for the same writer/reader-drift protection every other stored object
+// in this file gets.
+
+/**
+ * The Cut's precomputed result for one preset range (issue #232): the
+ * best real-weight-ranked prefix length N (see
+ * docs/design/the-cut-2026-09/README.md's "The mechanic" section),
+ * its own ending balance/return, the full N=1..universeSize curve (for a
+ * future reveal chart -- issue #232's own follow-on web issue), and a
+ * comparison against the existing SPY BenchmarkResult, all as of one
+ * pipeline run.
+ */
+export interface Sp500PrefixResult {
+  schemaVersion: number;
+  range: PresetRange;
+  generatedAt: string;
+  /**
+   * The real trading date fed to computeSp500PrefixSelection's own
+   * `endDateString` (that function requires a real, actually-observed
+   * trading date for its exact boundary-match rule -- see its own doc
+   * comment) -- the *majority-shared* last trading date across the
+   * fetched universe, not merely the single freshest date any one ticker
+   * happens to have. **Deliberately NOT the same value as every other
+   * PrecomputedResultBase.dataAsOf** on a run where they'd otherwise
+   * diverge: see apps/pipeline's `resolveCommonDates` for a real,
+   * live-verified case (a single outlier ticker whose fetched data
+   * reached one calendar day further than the other ~502) where using
+   * the raw pipeline-wide freshness fact here would have silently
+   * collapsed this game's own coverage to almost nothing.
+   */
+  dataAsOf: string;
+  /** The requested "as of" boundary for this run -- see `dataAsOf` for what data was actually available. */
+  endDate: string;
+  /**
+   * The real trading date fed to computeSp500PrefixSelection's own
+   * `rangeStartString` -- resolved from this range's nominal start (the
+   * earliest real trading date, across the whole fetched universe, on or
+   * after it), or, for MAX (whose own nominal start is unbounded), the
+   * single earliest trading date the whole fetched universe has at all.
+   * Never null, unlike WindowResult.startDate -- computeSp500PrefixSelection
+   * has no well-defined "no lower bound" case (see its own doc comment).
+   */
+  startDate: string;
+  startingCapital: number;
+  /** SP500_CONSTITUENTS.length -- the fixed size of the ranked universe The Cut draws its N=1..universeSize prefixes from, regardless of how many of those tickers actually had valid window data for this range (see `curve`'s own per-N `cumWeight` for that). */
+  universeSize: number;
+  /**
+   * Same meaning/derivation as BenchmarkResult.truncated, generalized
+   * from SPY alone to the whole fetched universe: true when `startDate`
+   * had to be pulled forward from this range's own nominal start because
+   * the fetched data doesn't reach back that far (unconditionally true
+   * for MAX, whose own nominal start is unbounded). A reader MUST
+   * reflect this in displayed copy when true, same requirement
+   * BenchmarkResult.truncated already carries.
+   */
+  truncated: boolean;
+  /**
+   * computeSp500PrefixSelection's own `bestN` -- `null` only when every
+   * N from 1..universeSize lacks window data entirely (unreachable
+   * against a real, mostly-populated S&P 500 fetch; see that function's
+   * own doc comment). `bestPortfolioReturn`/`bestEndingBalance` are null
+   * iff this is.
+   */
+  bestN: number | null;
+  bestPortfolioReturn: number | null;
+  bestEndingBalance: number | null;
+  /**
+   * The full N=1..universeSize curve (for a future reveal chart, see
+   * docs/design/the-cut-2026-09/README.md's "Reveal" section) -- one
+   * entry per N where `cumWeight[N] > 0`, ascending by `n` (see
+   * computeSp500PrefixSelection's own `curve` doc comment).
+   */
+  curve: Sp500PrefixCurvePoint[];
+  /**
+   * SPY's own whole-window buy-and-hold comparison (issue #12),
+   * duplicated here from the same already-computed per-range value every
+   * PrecomputedResult already carries -- so a reader of this object
+   * alone has the comparison baseline without a second fetch. Null under
+   * the exact same conditions BenchmarkResult itself is null (see that
+   * type's own doc comment).
+   */
+  benchmark: BenchmarkResult | null;
+  /**
+   * How closely this range's own N=universeSize case (the game's
+   * fully-held, real-weighted baseline -- see
+   * docs/design/the-cut-2026-09/README.md's "Baseline comparison"
+   * section) tracks the real SPY benchmark above, in percentage points:
+   * `((n500EndingBalance / benchmark.endingBalance) - 1) * 100`, where
+   * `n500EndingBalance` is `curve`'s own entry for `n === universeSize`.
+   * A real, explainable, non-zero gap is expected by design (see the
+   * design doc's own "Baseline comparison" section for why) -- this is
+   * NOT an exact-equality assertion. Null whenever either side is
+   * unavailable: `benchmark` is null, or `curve` has no entry for
+   * `n === universeSize` (the whole universe lacks window data at all --
+   * the same degenerate case `bestN: null` guards against).
+   */
+  n500VsSpyPctDiff: number | null;
 }
 
 // --- Beat the Bench session payloads (issue #127) ---------------------
@@ -2032,6 +2163,167 @@ export function validateTheOrderPuzzle(puzzle: TheOrderPuzzle): void {
   }
 
   throwIfProblems("TheOrderPuzzle", problems);
+}
+
+// --- The Cut validator (issue #232) ------------------------------------
+
+/**
+ * Validates one Sp500PrefixCurvePoint entry, appending to `problems` --
+ * shared by every `curve[i]` check in validateSp500PrefixResult below.
+ */
+function validateSp500PrefixCurvePoint(
+  value: unknown,
+  path: string,
+  problems: string[],
+): { n: number } | null {
+  if (value === null || typeof value !== "object") {
+    problems.push(`${path} must be an object, got ${describe(value)}`);
+    return null;
+  }
+  const c = value as Record<string, unknown>;
+  // Tracked separately from the `problems.push` below, and gates the
+  // returned value at the bottom -- a caller (validateSp500PrefixResult's
+  // own ascending-n cross-check) must never receive an `n` that failed
+  // this check (e.g. NaN), since `NaN <= previousN` is always `false` and
+  // would silently disable that check for every subsequent curve entry
+  // (a real gap, caught in code review, not a defensive nicety).
+  const validN = isNonNegativeInteger(c.n) && c.n >= 1;
+  if (!validN) {
+    problems.push(`${path}.n must be a positive integer, got ${describe(c.n)}`);
+  }
+  if (!isPositiveFiniteNumber(c.portfolioReturn)) {
+    problems.push(
+      `${path}.portfolioReturn must be a positive finite number, got ${describe(c.portfolioReturn)}`,
+    );
+  }
+  if (!isPositiveFiniteNumber(c.endingBalance)) {
+    problems.push(
+      `${path}.endingBalance must be a positive finite number, got ${describe(c.endingBalance)}`,
+    );
+  }
+  if (!isPositiveFiniteNumber(c.cumWeight)) {
+    problems.push(
+      `${path}.cumWeight must be a positive finite number, got ${describe(c.cumWeight)}`,
+    );
+  }
+  return validN ? { n: c.n as number } : null;
+}
+
+/**
+ * Validates a Sp500PrefixResult (The Cut, issue #232) immediately before
+ * its own putObject -- same "don't trust the compile-time type" posture
+ * as validatePrecomputedResult (see that function's own doc comment).
+ *
+ * `bestN`/`bestPortfolioReturn`/`bestEndingBalance` are checked as a
+ * triplet that must be null (or not) together -- computeSp500PrefixSelection's
+ * own contract (see Sp500PrefixResult.bestN's doc comment), not three
+ * independently-nullable fields. `curve` is checked for strictly
+ * ascending, in-range `n` and (since `cumWeight` is monotonically
+ * non-decreasing by construction -- see computeSp500PrefixSelection's own
+ * doc comment) non-decreasing `cumWeight` across entries.
+ */
+export function validateSp500PrefixResult(result: Sp500PrefixResult): void {
+  if (result === null || typeof result !== "object") {
+    throw new ResultValidationError(`result must be an object, got ${describe(result)}`);
+  }
+  const r = result as unknown as Record<string, unknown>;
+  const problems: string[] = [];
+
+  if (r.schemaVersion !== RESULTS_SCHEMA_VERSION) {
+    problems.push(
+      `schemaVersion must be exactly ${RESULTS_SCHEMA_VERSION}, got ${describe(r.schemaVersion)}`,
+    );
+  }
+  if (!(PRESET_RANGES as readonly string[]).includes(r.range as string)) {
+    problems.push(`range must be one of ${PRESET_RANGES.join(", ")}, got ${describe(r.range)}`);
+  }
+  if (!isNonEmptyString(r.generatedAt))
+    problems.push(`generatedAt must be a non-empty string, got ${describe(r.generatedAt)}`);
+  if (!isNonEmptyString(r.dataAsOf))
+    problems.push(`dataAsOf must be a non-empty string, got ${describe(r.dataAsOf)}`);
+  if (!isNonEmptyString(r.endDate))
+    problems.push(`endDate must be a non-empty string, got ${describe(r.endDate)}`);
+  if (!isNonEmptyString(r.startDate))
+    problems.push(`startDate must be a non-empty string, got ${describe(r.startDate)}`);
+  if (!isPositiveFiniteNumber(r.startingCapital)) {
+    problems.push(
+      `startingCapital must be a positive finite number, got ${describe(r.startingCapital)}`,
+    );
+  }
+  if (!isNonNegativeInteger(r.universeSize) || r.universeSize === 0) {
+    problems.push(`universeSize must be a positive integer, got ${describe(r.universeSize)}`);
+  }
+  if (typeof r.truncated !== "boolean") {
+    problems.push(`truncated must be a boolean, got ${describe(r.truncated)}`);
+  }
+
+  if (r.bestN === null) {
+    if (r.bestPortfolioReturn !== null) {
+      problems.push(
+        `bestPortfolioReturn must be null when bestN is null, got ${describe(r.bestPortfolioReturn)}`,
+      );
+    }
+    if (r.bestEndingBalance !== null) {
+      problems.push(
+        `bestEndingBalance must be null when bestN is null, got ${describe(r.bestEndingBalance)}`,
+      );
+    }
+  } else {
+    if (!isNonNegativeInteger(r.bestN) || r.bestN < 1) {
+      problems.push(`bestN must be null or a positive integer, got ${describe(r.bestN)}`);
+    }
+    if (!isPositiveFiniteNumber(r.bestPortfolioReturn)) {
+      problems.push(
+        `bestPortfolioReturn must be a positive finite number when bestN is set, got ${describe(r.bestPortfolioReturn)}`,
+      );
+    }
+    if (!isPositiveFiniteNumber(r.bestEndingBalance)) {
+      problems.push(
+        `bestEndingBalance must be a positive finite number when bestN is set, got ${describe(r.bestEndingBalance)}`,
+      );
+    }
+  }
+
+  if (!Array.isArray(r.curve)) {
+    problems.push(`curve must be an array, got ${describe(r.curve)}`);
+  } else {
+    let previousN = 0;
+    let previousCumWeight = 0;
+    r.curve.forEach((point, i) => {
+      const path = `curve[${i}]`;
+      const parsed = validateSp500PrefixCurvePoint(point, path, problems);
+      if (parsed === null) return;
+      if (parsed.n <= previousN) {
+        problems.push(
+          `${path}.n (${parsed.n}) must be strictly ascending, but does not exceed the previous entry's n (${previousN})`,
+        );
+      }
+      previousN = parsed.n;
+      const cumWeight = (point as Record<string, unknown>).cumWeight;
+      if (typeof cumWeight === "number" && cumWeight < previousCumWeight) {
+        problems.push(
+          `${path}.cumWeight (${cumWeight}) must not be less than the previous entry's cumWeight (${previousCumWeight}) -- cumWeight is monotonically non-decreasing by construction`,
+        );
+      }
+      if (typeof cumWeight === "number") previousCumWeight = cumWeight;
+    });
+  }
+
+  validateBenchmark(r.benchmark, problems);
+
+  // Not run through isPositiveFiniteNumber -- unlike every other numeric
+  // field on this type, a pct-diff is legitimately zero or negative (The
+  // Cut's N=universeSize baseline can trail SPY, not just beat it).
+  if (
+    r.n500VsSpyPctDiff !== null &&
+    (typeof r.n500VsSpyPctDiff !== "number" || !Number.isFinite(r.n500VsSpyPctDiff))
+  ) {
+    problems.push(
+      `n500VsSpyPctDiff must be null or a finite number, got ${describe(r.n500VsSpyPctDiff)}`,
+    );
+  }
+
+  throwIfProblems("Sp500PrefixResult", problems);
 }
 
 /**

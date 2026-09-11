@@ -72,6 +72,7 @@ import {
   buildIntradaySessions,
   collectTradingDates,
   computeOrderSelection,
+  computeSp500PrefixSelection,
   customRangeAnchors,
   isValidPrice,
   magSevenCompanyName,
@@ -95,6 +96,8 @@ import {
   mysterySessionKey,
   RESULTS_SCHEMA_VERSION,
   selectLineupTickers,
+  SP500_CONSTITUENTS,
+  sp500PrefixResultKey,
   THE_ORDER_KEY,
   TODAYS_CLOSE_SESSION_KEY,
   toDateString,
@@ -107,6 +110,7 @@ import {
   validateMysteryIndex,
   validateMysteryPoolManifest,
   validateMysterySession,
+  validateSp500PrefixResult,
   validateTheOrderPuzzle,
   validateTodaysCloseSession,
   type AnchorDate,
@@ -127,6 +131,8 @@ import {
   type OptimizationResult,
   type PrecomputedResult,
   type PresetRange,
+  type Sp500PrefixResult,
+  type Sp500PrefixTicker,
   type TheOrderPuzzle,
   type TodaysCloseSession,
   type WindowResult,
@@ -1218,6 +1224,263 @@ function shuffleInPlace<T>(items: T[], random: () => number): T[] {
     [items[i], items[j]] = [items[j]!, items[i]!];
   }
   return items;
+}
+
+// --- The Cut (issue #232) -----------------------------------------------
+//
+// The Cut's own nightly result, computed from the *same* already-fetched
+// windowFetch.history every other window-history-derived computation in
+// this file already reads -- no new fetch (see computeSp500PrefixSelection's
+// own doc comment, packages/core, for why it needs no I/O of its own).
+// Unlike buildWindowResults/buildIntradayResults, this needs no window/
+// intraday split at all: The Cut is a single whole-window, point-in-time
+// (start-close vs. end-close) comparison -- exactly the daily-close shape
+// the window path already fetches -- for every one of the 6 PRESET_RANGES,
+// not just the 2 WINDOW_RANGES or 4 INTRADAY_RANGES (see
+// docs/design/the-cut-2026-09/README.md's "The mechanic" section: this is
+// a whole-window question with no natural "what changes today" hook, same
+// reasoning that ruled out an intraday/daily-rotating design for it).
+//
+// **Non-fatal per-game failure posture (issue #232's own explicit scope),
+// same as Beat the Bench's sessions / The Order's puzzle / The Lineup's
+// selection above/below**: an unexpected exception degrades to "no Cut
+// data written this run" via the try/catch at this function's one real
+// call site in runPipeline, rather than aborting every other already-
+// computable range/game. A *write* failure for an already-built
+// Sp500PrefixResult is a different thing entirely, and IS held to this
+// pipeline's ordinary "must fail the run" standard (see sp500PrefixWriteJobs
+// below) -- same split every other non-fatal-compute/fatal-write game in
+// this file already draws.
+
+/**
+ * The minimum fraction of `history`'s own tickers that must share a
+ * candidate boundary date for buildSp500PrefixResults to treat it as
+ * usable (see resolveCommonDates' own doc comment for the real,
+ * live-verified bug this defends against). 0.9 is a deliberately generous
+ * "vast majority" bar, not a tightly-tuned threshold: the one real case
+ * observed (see below) was a single outlier ticker out of 503 (~0.2%),
+ * so even a much laxer bar would have caught it -- this just needs to be
+ * comfortably above "a handful of tickers routinely lag by a day" and
+ * comfortably below "virtually the whole universe agrees."
+ */
+const SP500_PREFIX_COMMON_DATE_THRESHOLD = 0.9;
+
+/**
+ * Builds a per-date "how many of `history`'s own tickers have an exact
+ * close on this date" count, in one O(total fetched data points) pass --
+ * the basis both of buildSp500PrefixResults' own boundary-date resolution
+ * below and of `truncated`'s derivation.
+ *
+ * **Not the same thing as `collectTradingDates`'s own ascending *union*
+ * of every ticker's dates** -- a date only one ticker out of hundreds
+ * actually has still appears in that union, which is exactly what made
+ * this necessary in the first place (see resolveCommonDates' own doc
+ * comment for the concrete case this was built to catch).
+ *
+ * **Dedupes each ticker's own dates before counting (code review
+ * finding, fixed) -- a real, if milder, version of the same problem this
+ * function exists to solve, not a defensive nicety.** This package's own
+ * docs, and `sp500-prefix-selection.ts`'s own `tickerWindowRatio`
+ * (guarding against exactly this after #235's own review), already
+ * establish that a fetched close series isn't guaranteed unique-by-date.
+ * Counting every `DailyClose` point unconditionally would let a single
+ * ticker with two entries dated the same day contribute 2 toward that
+ * date's tally instead of 1 -- for a date that's otherwise a genuine
+ * one-ticker outlier (the real `HUBB` case this file's own module
+ * header documents), a duplicate on that same ticker could push its
+ * count from 1 to 2, silently doubling how close it sits to
+ * `SP500_PREFIX_COMMON_DATE_THRESHOLD` for no real reason. Building a
+ * `Set` of each ticker's own dates first (one pass per ticker) makes
+ * "how many *tickers* share this date" exactly what gets counted,
+ * regardless of how many close entries any one of them has for it.
+ */
+function buildDateCounts(history: ReadonlyMap<string, readonly DailyClose[]>): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const series of history.values()) {
+    const datesForThisTicker = new Set<string>();
+    for (const point of series) {
+      datesForThisTicker.add(point.date);
+    }
+    for (const date of datesForThisTicker) {
+      counts.set(date, (counts.get(date) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
+/**
+ * Resolves the real, actually-observed trading dates computeSp500PrefixSelection's
+ * exact-boundary-match rule needs (see that function's own doc comment)
+ * to dates a *vast majority* of the fetched universe genuinely shares --
+ * not merely dates *some* ticker in the universe happens to have.
+ *
+ * **This distinction is a real, live-verified bug this function exists
+ * to fix, not a defensive nicety added speculatively.** An earlier
+ * version of buildSp500PrefixResults used `collectTradingDates`'s own
+ * ascending union directly (its plain max as `endDateString`, its
+ * per-range "first date >= nominal start" as `rangeStartString`) -- live
+ * verification against the real, full ~503-ticker S&P 500 universe
+ * (2026-09-10) found a real, single outlier ticker (`HUBB`) whose fetched
+ * data reached one calendar day further (2026-09-10) than all 502 others
+ * (2026-09-09, unanimous). Using the raw union's max as `endDateString`
+ * silently resolved to that one-ticker date, which the exact-match rule
+ * then correctly (if unhelpfully) treated as "every other ticker lacks
+ * data here" -- collapsing every range's `curve` to almost no real
+ * coverage (~0.04 of the ~99.78 total weight this file's own
+ * SP500_CONSTITUENTS docs record as expected) and making all five bounded
+ * ranges converge on the same degenerate `bestN`, purely an artifact of
+ * which handful of tickers happened to also have a stray close on that
+ * one outlier date -- not a real economic answer. Filtering to dates
+ * meeting SP500_PREFIX_COMMON_DATE_THRESHOLD fixes this: 2026-09-09
+ * (502/503, ~99.8%) clears it; 2026-09-10 (1/503, ~0.2%) does not, so
+ * `commonDates`'s own max correctly resolves to 2026-09-09 instead.
+ *
+ * Returns dates ascending, capped at `endDateString` (`history` itself
+ * can reach slightly past it -- fetchDailyCloses pads its own request
+ * window internally, same reasoning buildBeatTheBenchSessions/
+ * buildTheOrderPuzzle's own end-date caps already document).
+ */
+function resolveCommonDates(
+  history: ReadonlyMap<string, readonly DailyClose[]>,
+  endDateString: string,
+): string[] {
+  const threshold = Math.ceil(history.size * SP500_PREFIX_COMMON_DATE_THRESHOLD);
+  const counts = buildDateCounts(history);
+  return [...counts.entries()]
+    .filter(([date, count]) => date <= endDateString && count >= threshold)
+    .map(([date]) => date)
+    .sort();
+}
+
+/**
+ * Turns one run's already-fetched windowFetch.history into The Cut's
+ * per-range results (issue #232) -- one Sp500PrefixResult for every
+ * PRESET_RANGES entry, ranking the *fixed, real* SP500_CONSTITUENTS list
+ * by weight (descending), never `options.tickers` (which, for a small
+ * local/test ticker sample, may not even overlap with the real S&P 500 at
+ * all -- exactly the same reasoning fetchMagSevenCloses' own doc comment
+ * gives for The Order's dedicated fetch, except here there's no dedicated
+ * fetch to fall back on: a ticker in SP500_CONSTITUENTS absent from
+ * `history` is simply excluded from that ticker's own effectiveWeight,
+ * per computeSp500PrefixSelection's own documented "skip what's missing"
+ * contract -- there is nothing more to do about it here).
+ *
+ * **Both of computeSp500PrefixSelection's own required boundary dates are
+ * resolved to real, actually-observed, *majority-shared* trading dates
+ * here** (that function's own doc comment calls exact real-date
+ * resolution out as a correctness precondition, not an implementation
+ * detail -- see resolveCommonDates' own doc comment for why "shared by
+ * some ticker" isn't enough on its own): `endDateString` is
+ * `resolveCommonDates`' own latest entry (deliberately NOT `dataAsOf`,
+ * despite that field being reused verbatim for this object's own
+ * `dataAsOf` field below -- see that field's doc comment), and each
+ * range's own `rangeStartString` snaps its nominal start
+ * (presetRangeStartDate) *forward* to the nearest common date -- the same
+ * "snap a nominal boundary to the nearest real point" spirit
+ * computeBenchmark's own per-ticker scan already has, just requiring
+ * majority-agreement instead of a single reference ticker (unlike SPY,
+ * computeBenchmark's own anchor, there's no single ticker this game can
+ * pin its one shared boundary to). MAX's own nominal start (`null`)
+ * resolves to the single earliest common date -- the same date
+ * `truncated` (below) compares every other range's own nominal start
+ * against.
+ */
+function buildSp500PrefixResults(options: {
+  history: Map<string, DailyClose[]>;
+  asOf: Date;
+  endDateString: string;
+  generatedAt: string;
+  startingCapital: number;
+  benchmarksByRange: Map<PresetRange, BenchmarkResult | null>;
+}): Sp500PrefixResult[] {
+  const { history, asOf, endDateString, generatedAt, startingCapital, benchmarksByRange } = options;
+
+  const orderedTickers: Sp500PrefixTicker[] = [...SP500_CONSTITUENTS]
+    .sort((a, b) => b.weight - a.weight)
+    .map(({ symbol, weight }) => ({ symbol, weight }));
+  const universeSize = orderedTickers.length;
+
+  // Ascending, majority-shared dates only -- see resolveCommonDates' own
+  // doc comment for why this, not collectTradingDates' raw union, is
+  // what's actually safe to use as a shared exact-match boundary here.
+  const commonDates = resolveCommonDates(history, endDateString);
+  if (commonDates.length === 0) return [];
+  const earliestCommonDate = commonDates[0]!;
+  const commonEndDate = commonDates.at(-1)!;
+
+  return PRESET_RANGES.map((range) => {
+    const nominalStart = presetRangeStartDate(range, asOf);
+    const nominalStartString = nominalStart ? toDateString(nominalStart) : null;
+    // Array#find, not a binary search: called at most 6 times per run
+    // (once per range) against a real ~5,000-entry array at the 21-year
+    // MAX depth -- ~30,000 comparisons total, negligible next to this
+    // pipeline's real compute cost (see packages/core/CLAUDE.md's own
+    // custom-anchor benchmark for what actually matters at this
+    // pipeline's scale), unlike lowerBoundByDate/upperBoundByDate's
+    // binary search, which earns its keep by running per-ticker,
+    // per-anchor, up to ~1,255 times a run.
+    const foundStart = nominalStartString
+      ? commonDates.find((d) => d >= nominalStartString)
+      : undefined;
+    const startDate = foundStart ?? earliestCommonDate;
+    // Same derivation as BenchmarkResult.truncated, generalized from SPY
+    // alone to the whole fetched universe's own majority-shared calendar
+    // (see Sp500PrefixResult.truncated's own doc comment) -- plus a
+    // third case that derivation has no equivalent of (code review
+    // finding, fixed): `foundStart === undefined` means no common date
+    // at or after the nominal boundary exists at all (only reachable
+    // when the majority-shared calendar's own freshest date sits
+    // *before* a short bounded range's nominal start -- e.g. the
+    // fetched data is stale by more than 1W's own 7-day window), so
+    // `startDate` fell back to `earliestCommonDate` -- potentially a
+    // much *earlier* date than the range name implies, silently
+    // widening the window far beyond what was requested. This can't be
+    // caught by `earliestCommonDate > nominalStartString` alone: that
+    // condition is false in exactly this case (the fallback only
+    // triggers when `earliestCommonDate` is already <=, not >,
+    // `nominalStartString`), so it needs its own explicit check.
+    const truncated =
+      nominalStartString === null || earliestCommonDate > nominalStartString || !foundStart;
+
+    const selection = computeSp500PrefixSelection({
+      orderedTickers,
+      closesByTicker: history,
+      rangeStartString: startDate,
+      endDateString: commonEndDate,
+      startingCapital,
+    });
+
+    const benchmark = benchmarksByRange.get(range) ?? null;
+    const n500Point = selection.curve.find((point) => point.n === universeSize) ?? null;
+    const n500VsSpyPctDiff =
+      n500Point && benchmark ? (n500Point.endingBalance / benchmark.endingBalance - 1) * 100 : null;
+
+    const result: Sp500PrefixResult = {
+      schemaVersion: RESULTS_SCHEMA_VERSION,
+      range,
+      generatedAt,
+      // The real boundary this range's own computation actually used --
+      // deliberately NOT the pipeline-wide windowFetch.dataAsOf verbatim,
+      // which can be fresher than what a vast majority of the universe
+      // actually shares (see resolveCommonDates' own doc comment for the
+      // real, live-verified case -- a single outlier ticker -- this
+      // distinction exists to correctly not treat as "the" freshness
+      // fact for this specific, exact-match-dependent computation).
+      dataAsOf: commonEndDate,
+      endDate: endDateString,
+      startDate,
+      startingCapital,
+      universeSize,
+      truncated,
+      bestN: selection.bestN,
+      bestPortfolioReturn: selection.bestPortfolioReturn,
+      bestEndingBalance: selection.bestEndingBalance,
+      curve: selection.curve,
+      benchmark,
+      n500VsSpyPctDiff,
+    };
+    return result;
+  });
 }
 
 // --- The Lineup (issue #208) -------------------------------------------
@@ -2791,6 +3054,40 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
       ? `skipped ${orderFetch.skippedTickers.join(", ")}; ${orderBuild.failureReason ?? "ok"}`
       : (orderBuild.failureReason ?? "ok");
 
+  // The Cut's per-range results (issue #232) -- purely derived from the
+  // window path's own already-fetched daily-close history, gated on that
+  // fetch having succeeded the same way every other window-history-
+  // derived computation above already is. Wrapped in its own try/catch,
+  // like buildLineupResult's own call site above -- an unexpected
+  // exception here degrades to "no Cut data written this run" rather than
+  // aborting every other already-computable range/game (see
+  // buildSp500PrefixResults' own doc comment for the full non-fatal-
+  // compute/fatal-write posture this mirrors).
+  let sp500PrefixResults: Sp500PrefixResult[] = [];
+  let sp500PrefixFailureReason: string | null = null;
+  if (windowFetch.failureReason) {
+    sp500PrefixFailureReason = null;
+  } else {
+    try {
+      sp500PrefixResults = buildSp500PrefixResults({
+        history: windowFetch.history,
+        asOf,
+        endDateString,
+        generatedAt,
+        startingCapital,
+        benchmarksByRange,
+      });
+    } catch (error) {
+      sp500PrefixFailureReason = `The Cut selection threw unexpectedly: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      console.warn(`[pipeline] ${sp500PrefixFailureReason} -- no Cut data written this run`);
+    }
+  }
+  const sp500PrefixStatus = windowFetch.failureReason
+    ? "skipped (window path failed)"
+    : (sp500PrefixFailureReason ?? "ok");
+
   // The published anchors manifest (issue #75) is computed further
   // below, once the actual per-anchor S3 write outcomes are known --
   // NOT here from customBuild.results (compute success alone) -- see
@@ -3000,12 +3297,30 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
       ]
     : [];
 
+  // The Cut's own results (issue #232) -- appended after orderWriteJobs
+  // for the identical reason every write-job family above is appended in
+  // order, not interleaved: the anchors-manifest logic above correlates
+  // customResults[i] with primaryWriteOutcomes[presetWriteJobs.length + i]
+  // by shared index, so anything inserted ahead of customWriteJobs would
+  // silently break that correlation. Held to the same "must fail the run"
+  // write standard as every other write job here -- the *compute* that
+  // produced these is non-fatal (see buildSp500PrefixResults' own call
+  // site above), but a write failure for real, already-validated data is
+  // exactly this pipeline's only alerting mechanism's job to catch.
+  const sp500PrefixWriteJobs: WriteJob[] = sp500PrefixResults.map((result) => ({
+    key: sp500PrefixResultKey(result.range),
+    label: `sp500-prefix:${result.range}`,
+    validate: () => validateSp500PrefixResult(result),
+    body: JSON.stringify(result, null, 2),
+  }));
+
   const primaryWriteJobs = [
     ...presetWriteJobs,
     ...customWriteJobs,
     ...sessionWriteJobs,
     ...lineupWriteJobs,
     ...orderWriteJobs,
+    ...sp500PrefixWriteJobs,
   ];
 
   const primaryWriteOutcomes = await mapWithConcurrency(
@@ -3202,6 +3517,11 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     // Same non-fatal-fetch/compute visibility posture as the benchmark and
     // Beat the Bench session status lines above.
     const orderStatusLine = `The Order puzzle (Magnificent Seven, non-fatal): ${orderStatus}.`;
+    // Same non-fatal-compute visibility posture as the lines above -- see
+    // buildSp500PrefixResults' own call site for why a compute failure
+    // can't itself trigger this throw (only a *write* failure for an
+    // already-built Sp500PrefixResult can).
+    const sp500PrefixStatusLine = `The Cut (non-fatal): ${sp500PrefixStatus}.`;
     const writeFailureLines =
       failedWrites.length > 0
         ? ` Write failures (${failedWrites.length} of ${writeJobs.length} computed result(s)):\n` +
@@ -3244,7 +3564,11 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
     // counting against the run. The Order's puzzle (issue #207) is
     // counted the same way -- either 0 or 1 (orderWriteJobs.length), and
     // 0 is a legitimate, non-fatal outcome (see buildTheOrderPuzzle's own
-    // doc comment), not a gap worth counting against the run either.
+    // doc comment), not a gap worth counting against the run either. The
+    // Cut (issue #232) is counted the same way too -- sp500PrefixWriteJobs
+    // is normally all 6 PRESET_RANGES, but a non-fatal compute failure (or
+    // the window path itself failing) legitimately drops it to 0, which
+    // isn't a gap worth counting against the run on its own.
     const expectedResultCount =
       PRESET_RANGES.length +
       customAnchors.length -
@@ -3252,7 +3576,8 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
       (customAnchorsManifest ? 1 : 0) +
       sessionWriteJobs.length +
       lineupWriteJobs.length +
-      orderWriteJobs.length;
+      orderWriteJobs.length +
+      sp500PrefixWriteJobs.length;
     throw new Error(
       `pipeline: wrote ${writtenCount} of ${expectedResultCount} expected result(s) (${PRESET_RANGES.length} preset range(s), ${customAnchors.length} custom anchor(s) requested; ${writeJobs.length} actually computed), but at least one path or write failed -- ` +
         `failing this run so it doesn't silently succeed while that path goes stale. ` +
@@ -3263,6 +3588,7 @@ export async function runPipeline(options: RunPipelineOptions): Promise<Pipeline
         `${sessionStatusLine} ` +
         `${lineupStatusLine} ` +
         `${orderStatusLine} ` +
+        `${sp500PrefixStatusLine} ` +
         `Skipped tickers: ${skippedTickers.length > 0 ? skippedTickers.join(", ") : "(none)"}.` +
         writeFailureLines +
         computeFailureLines,

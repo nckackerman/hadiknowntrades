@@ -1619,3 +1619,145 @@ GOOGL +1.74%, AMZN +3.97%` -- which matches, ticker-for-ticker and
   this exact object back byte-for-byte through the running app (see
   `apps/web/CLAUDE.md`'s own "The Order" section for the full end-to-end
   verification).
+
+## The Cut: pipeline integration + storage (issue #232)
+
+`buildSp500PrefixResults` in `pipeline.ts` -- one `Sp500PrefixResult`
+(`packages/core/src/results-schema.ts`) per `PRESET_RANGES` entry (all
+6, not just the 2 `WINDOW_RANGES` or 4 `INTRADAY_RANGES` -- The Cut is a
+whole-window point-in-time comparison, needs no intraday granularity at
+all), written to its own new key `results/sp500-prefix/{RANGE}.json`
+(`sp500PrefixResultKey`). Calls `packages/core`'s
+`computeSp500PrefixSelection` (issue #231) directly against
+`windowFetch.history` -- no new fetch. **No `RESULTS_SCHEMA_VERSION`
+bump** -- a brand-new key nothing existing reads, the same precedent
+Beat the Bench's/The Order's own objects already established (still
+reuses the same version constant on the new object for writer/reader-
+drift protection).
+
+- **Ranks the fixed, real `SP500_CONSTITUENTS` list by weight
+  (descending), never `options.tickers`** -- unlike most other per-game
+  builders in this file, which mostly tolerate an arbitrary ticker
+  sample, The Cut's own ranking is a property of the real S&P 500, not
+  of whatever subset a given run happened to fetch. A `SP500_CONSTITUENTS`
+  entry absent from `windowFetch.history` (the common case for
+  `local-run.ts`'s small dev sample, or any test fixture smaller than
+  the full universe) is simply excluded from that ticker's own
+  `effectiveWeight` by `computeSp500PrefixSelection` itself -- nothing
+  extra needed here.
+- **Non-fatal per-game compute, fatal write** -- same split Beat the
+  Bench's sessions / The Order's puzzle / The Lineup's selection already
+  draw: an unexpected exception from `buildSp500PrefixResults` degrades
+  to "no Cut data written this run" (reported via `sp500PrefixStatus`),
+  gated the same way behind `windowFetch.failureReason` as every other
+  window-history-derived computation; `sp500PrefixWriteJobs` (appended
+  after `orderWriteJobs` in `primaryWriteJobs`, for the same
+  index-correlation-ordering reason every other write-job family here
+  already documents for itself) is held to the ordinary "must fail the
+  run" write standard.
+
+### A real, live-verified bug: a single outlier ticker's fresher data collapsed coverage to near-zero
+
+**This is the one genuinely hard part of this issue, found only by live
+verification against the real ~503-ticker universe -- not something a
+synthetic test fixture would ever surface, since it needs a real ticker
+whose fetch happens to disagree with virtually everyone else's.**
+`computeSp500PrefixSelection`'s own exact-boundary-match rule needs a
+`rangeStartString`/`endDateString` that's a _real, actually-observed_
+trading date -- the first draft resolved both via `collectTradingDates`
+(the plain ascending _union_ of every ticker's own dates), using its max
+as `endDateString`. Live-verified (real Yahoo data, full 503-ticker
+universe, 2026-09-10, no S3 write): **`HUBB` alone had a fetched close
+dated one calendar day later (2026-09-10) than all other 502 tickers
+(unanimous at 2026-09-09)** -- using the raw union's max silently
+resolved `endDateString` to that one-ticker date, and the exact-match
+rule then correctly (if uselessly) treated every _other_ ticker as
+lacking data there. Concretely, before the fix: universe coverage
+(`curve`'s own `cumWeight` at `n === universeSize`, out of the
+~99.78-total-weight universe `packages/core/CLAUDE.md` documents) came
+back **~0.0366 for every single range** -- and all five bounded ranges
+converged on the identical, meaningless `bestN=348`, purely an artifact
+of which handful of tickers happened to also share a stray close on
+that one outlier date, not a real economic answer.
+
+**Fixed via `resolveCommonDates`/`buildDateCounts`/
+`SP500_PREFIX_COMMON_DATE_THRESHOLD` (0.9)**: a per-date "how many of
+`history`'s own tickers have an exact close here" count, filtered to
+dates at least 90% of the fetched universe actually shares (a
+deliberately generous bar -- the one real case was a single ticker out
+of 503, ~0.2%, so even a much laxer threshold would have caught it).
+`endDateString` is this filtered set's own max; each range's own
+`rangeStartString` snaps its nominal start forward to the nearest date
+in that same filtered set (not the raw union) -- generalizing
+`computeBenchmark`'s own single-reference-ticker "nearest inWindow
+point" snap across the whole multi-ticker universe, since there's no
+one ticker (unlike SPY) this game can pin its boundary to.
+**`Sp500PrefixResult.dataAsOf` is this resolved, majority-shared date --
+deliberately NOT `windowFetch.dataAsOf` verbatim**, which can be
+fresher than what the vast majority of the universe actually shares (as
+`HUBB` demonstrated) and would misrepresent what date this specific,
+exact-match-dependent computation actually used.
+
+**Live-verified after the fix, same real run (full 503-ticker universe,
+real Yahoo + real weight data, `asOf` 2026-09-10, no S3 write, ~38.4s
+total -- consistent with this file's own historical ~37-40s full-run
+benchmarks)** -- real, observed numbers, not asserted:
+
+| Range | bestN          | best return | best ending balance | coverage (of universeSize) | N=500-vs-SPY |
+| ----- | -------------- | ----------- | ------------------- | -------------------------- | ------------ |
+| 1W    | 29             | 0.9955      | $19.91              | 99.78%                     | **+0.05%**   |
+| 1M    | 2              | 1.0311      | $20.62              | 99.78%                     | **+0.61%**   |
+| 3M    | 3              | 1.1290      | $22.58              | 99.71%                     | **+1.50%**   |
+| 1Y    | 59             | 1.6188      | $32.38              | 99.65%                     | **+26.90%**  |
+| 5Y    | 1 (NVDA alone) | 10.1302     | $202.60             | 98.54%                     | **+83.60%**  |
+| MAX   | 1 (NVDA alone) | 605.29      | $12,105.85          | 94.52%                     | **+116.76%** |
+
+- **The N=500-vs-SPY tolerance is small and tight for short windows, and
+  grows large for long ones -- both halves are the real, expected,
+  explainable shape `docs/design/the-cut-2026-09/README.md`'s "Baseline
+  comparison" section predicted, not a red flag.** 1W's ~0.05% gap is
+  about as close to "exact" as this structurally-different computation
+  (a static buy-and-hold at today's weight snapshot vs. SPY's own
+  continuous rebalancing) gets. The gap widens monotonically with window
+  length because today's weight snapshot gets applied further and
+  further back in time: over 5Y/MAX specifically, NVDA's own real,
+  massive AI-driven rally means today's (NVDA-heavy) weight applied
+  retroactively credits the _entire_ multi-year window with NVDA's
+  outsized current importance, while real SPY was actually much less
+  NVDA-weighted for most of that same window (continuous rebalancing) --
+  exactly the "today's weight is a bigger simplification the further
+  back you apply it" caveat the design doc's own "Weighting data"
+  section already calls out, now a real measured number instead of a
+  theoretical concern.
+- **MAX's own resolved `startDate` (2013-11-18) is neither the raw
+  universe union's earliest date nor any single ticker's own real
+  inception** -- a genuine, sensible consequence of the 90%-majority
+  threshold, not a bug: it's the earliest date at which _90% of the
+  current 503-constituent universe_ collectively has data, which is
+  necessarily later than any one constituent's own listing history
+  (some go back to the 1970s -- see `packages/core/CLAUDE.md`'s own
+  MAX-range notes) and later than the raw union's own earliest point (an
+  early version of this fix used the raw union directly and resolved
+  MAX's start to 1970-01-02, a date only a handful of the oldest
+  constituents actually have). This is the right behavior for a
+  multi-company "top-N portfolio" game specifically -- unlike SPY's own
+  single-ticker MAX (real inception 1993-01-29), The Cut's own MAX is
+  inherently bounded by how far back a large majority of _today's_
+  constituent list, as a group, has been trading.
+- Universe coverage (98.5%-99.8% for every range except MAX, 94.5% for
+  MAX) is close to, but a bit under, the ~99.78% total `packages/core/
+CLAUDE.md` documents for the full constituent list summed -- the
+  remainder is tickers genuinely missing an exact close on the resolved
+  boundary date for that specific range (a real, if small, data gap per
+  ticker, not a bug -- `computeSp500PrefixSelection`'s own exact-match
+  rule is deliberately strict about this, see that function's doc
+  comment).
+- Pipeline integration test: `pipeline.sp500-prefix.test.ts`, mirroring
+  `pipeline.beat-the-bench.test.ts`'s own precedent -- a small,
+  **real-ticker** fixture (NVDA/AAPL/MSFT, real S&P 500 rank #1/#2/#3 by
+  weight; a fictional fixture would make every constituent lack window
+  data and degenerate to `bestN: null`, per the ranking note above) with
+  hand-computed expected output (the design doc's own weighted-average
+  formula, computed independently in the test, not by re-running
+  `computeSp500PrefixSelection` under test), plus a dedicated regression
+  test reproducing the `HUBB`-shaped outlier-ticker bug at fixture scale.

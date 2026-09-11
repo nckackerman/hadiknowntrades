@@ -91,7 +91,9 @@ describe("runPipeline", () => {
       asOf,
     });
 
-    expect(store.objects.size).toBe(6);
+    // 6 preset ranges + The Cut's own 6 per-range results (issue #232,
+    // reusing this same fixture's real AAPL data).
+    expect(store.objects.size).toBe(6 + 6);
     expect(summary.results).toHaveLength(6);
 
     const generatedAts = new Set<string>();
@@ -164,7 +166,13 @@ describe("runPipeline", () => {
     // added to PRESET_RANGES without also assigning it to one of the two
     // paths' range lists, this catches it (it would otherwise silently
     // never get written, with no error and no other test noticing).
+    // Only the flat `results/{RANGE}.json` keys -- excludes The Cut's own
+    // `results/sp500-prefix/{RANGE}.json` keys (issue #232), which share
+    // the same 6 range names under a nested prefix and would otherwise
+    // pollute this specific window/intraday-coverage check with a false
+    // "MAX" duplicate (via a naive single `results/` strip).
     const writtenRanges = [...store.objects.keys()]
+      .filter((key) => /^results\/[^/]+\.json$/.test(key))
       .map((key) => key.replace("results/", "").replace(".json", ""))
       .sort();
     expect(writtenRanges).toEqual([...PRESET_RANGES].sort());
@@ -436,13 +444,17 @@ describe("runPipeline", () => {
           store,
           asOf,
         }),
-      ).rejects.toThrow(/wrote 2 of 6 expected result/);
+        // 8 of 12: 5Y/MAX (2) + The Cut's own 6 per-range results (issue
+        // #232, unaffected by the intraday path's own failure -- it only
+        // depends on the window path); 12 = 6 preset ranges (ideal) + 6
+        // sp500-prefix results (actually built).
+      ).rejects.toThrow(/wrote 8 of 12 expected result/);
 
       expect(store.objects.has("results/1W.json")).toBe(false);
       expect(store.objects.has("results/1M.json")).toBe(false);
       expect(store.objects.has("results/3M.json")).toBe(false);
       expect(store.objects.has("results/1Y.json")).toBe(false);
-      expect(store.objects.size).toBe(2); // 5Y/MAX still wrote successfully
+      expect(store.objects.size).toBe(2 + 6); // 5Y/MAX + The Cut's 6 results
     });
 
     it("computes a per-day worst-case counterpart, never better than that day's optimal endingBalance (issue #31)", async () => {
@@ -1549,13 +1561,17 @@ describe("runPipeline", () => {
         store,
         asOf,
       }),
-    ).rejects.toThrow(/wrote 2 of 6 expected result/);
+      // 8 of 12: 5Y/MAX (2) + The Cut's own 6 per-range results (issue
+      // #232, unaffected by the intraday path's own failure -- it only
+      // depends on the window path); 12 = 6 preset ranges (ideal) + 6
+      // sp500-prefix results (actually built).
+    ).rejects.toThrow(/wrote 8 of 12 expected result/);
 
     expect(store.objects.has("results/1W.json")).toBe(false);
     expect(store.objects.has("results/1M.json")).toBe(false);
     expect(store.objects.has("results/3M.json")).toBe(false);
     expect(store.objects.has("results/1Y.json")).toBe(false);
-    expect(store.objects.size).toBe(2);
+    expect(store.objects.size).toBe(2 + 6); // 5Y/MAX + The Cut's 6 results
   });
 
   it("aborts the entire run and writes nothing when BOTH paths fail", async () => {
