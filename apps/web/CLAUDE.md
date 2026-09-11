@@ -9205,6 +9205,16 @@ happen to share a page.
 
 ### The 2-up grid mechanism (issue #178's own scope)
 
+**Superseded for the grid-collapse mechanism specifically -- read this
+section for history (the 2-column layout itself, the tile styling, the
+live verification), but see this file's own "Game-tile column
+simplified to always single-width" section (near the end of this file)
+for what actually governs the grid today.** A later direct user request
+removed the `:has()`/`data-bench-expanded`/`@supports` collapse-on-
+expand mechanism this section describes entirely -- the grid is now
+always `grid-cols-1`, unconditionally, with none of the `has-*`
+selectors or the marker attribute below still present in the code.
+
 `ResultsPage.tsx` wraps `<BeatTheBench />` and `<CallBoard />` in one
 `grid grid-cols-2 gap-4` container, matching the mockup's own `.game-row`
 (`display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem`) at that
@@ -10128,7 +10138,13 @@ order: GameTileId[] }`), not the simpler `{date, gameId}` "just the
   "playing" this tile today any more than it's a real accepted call,
   and shouldn't count toward "usually played first" either.
 - **The `:has()`-based 2-up grid mechanism (issue #178) needed zero CSS
-  changes, and this was verified, not assumed.** That mechanism's two
+  changes, and this was verified, not assumed.** (This mechanism was
+  later removed entirely by a direct user request -- see this file's own
+  "Game-tile column simplified to always single-width" section; the
+  `has-*` selectors/rules named below no longer exist in the code, but
+  the reasoning about `:has()` being position-independent, which is why
+  `gameTileOrder` reordering was always safe against it, is still worth
+  knowing.) That mechanism's two
   `has-[[data-bench-expanded]]:grid-cols-1`/`has-[details[open]]:grid-cols-1`
   rules collapse the grid to one column the instant either tile expands,
   by matching on the _presence_ of a marker descendant anywhere inside
@@ -10393,12 +10409,19 @@ side. This section covers what wasn't obvious building the frontend.
   `useState` toggle) -- there's no running interval to stop on collapse,
   so leaving this game's React state mounted-but-hidden while collapsed
   is fine, and `local-storage.ts` already persists progress across a
-  real unmount/remount regardless. This is also what makes the existing
-  `has-[details[open]]:grid-cols-1` 2-up-grid-collapse selector
-  (issue #178) cover The Order for free the moment it's added as a grid
-  child -- `:has()` matches the _presence_ of an open `<details>`
-  anywhere in the grid, with no per-tile distinction needed, confirmed
-  in `ResultsPage.tsx`'s own updated doc comment and live (see below).
+  real unmount/remount regardless. At the time this shipped, this was
+  also what made the then-existing `has-[details[open]]:grid-cols-1`
+  2-up-grid-collapse selector (issue #178) cover The Order for free the
+  moment it's added as a grid child -- `:has()` matches the _presence_
+  of an open `<details>` anywhere in the grid, with no per-tile
+  distinction needed, confirmed in `ResultsPage.tsx`'s own updated doc
+  comment and live (see below). **That selector no longer exists** -- a
+  later direct user request replaced the whole collapse-on-expand
+  mechanism with an always-`grid-cols-1` column (see this file's own
+  "Game-tile column simplified to always single-width" section) -- but
+  `<details>`/`<summary>` is still the right collapse mechanism for this
+  tile regardless, for the unrelated "no running interval to stop"
+  reasoning above.
 - **The collapsed tile's own status pill deliberately does NOT match the
   design mock's pill behavior, and this is a real, considered
   deviation, not silent drift.** The mock's own `<script>`
@@ -11317,3 +11340,113 @@ gap-1` row (needed for `AnimatedFigure`'s internal `display: grid`,
   at once (Beat the Bench, The Call Board's own gold moments, the window
   model, The Cut), so a page-wide `celebration-burst` query is no longer
   a reliable proxy for "did _this_ mechanic's burst fire."
+
+## Game-tile column simplified to always single-width (direct user request, not a filed issue)
+
+The reported bug: "the card layout is attractive, but opening them
+leads to 'jumping' that's annoying." Traced to issue #178's own
+`:has()`-based 2-up grid (see this file's own "The 2-up grid mechanism"
+section above, plus the `has-*` mentions in the issue #196/#207
+sections that built on it) -- `ResultsPage.tsx`'s game-tile column
+(Beat the Bench, The Call Board, The Order, The Lineup, The Cut) was
+`grid grid-cols-2 gap-4 has-[[data-bench-expanded]]:grid-cols-1
+has-[details[open]]:grid-cols-1`, collapsing itself from two columns to
+one the instant any tile expanded into its full game/board. That
+collapse was the actual cause of the jump: opening one tile changed the
+whole grid's own column count at the same instant, so every sibling
+tile's position and width changed too, not just the tile that was
+clicked.
+
+**Fix: always `grid-cols-1`, unconditionally -- no `:has()` variants at
+all**, since there's no longer a column count to collapse _from_ once
+there's only one. `ResultsPage.tsx`'s column div is now plain `grid
+grid-cols-1 gap-4`. Removed along with the `has-*` mechanism: the
+`@supports not selector(:has(a))` fallback rule in `globals.css` (it
+existed solely to force the same collapse on a browser with no
+`:has()` support, which is moot once there's nothing left to collapse),
+the `game-row-grid` marker class the fallback rule targeted (no
+consumer left once the fallback rule was deleted), and
+`BeatTheBenchFrame`'s `data-bench-expanded="true"` marker attribute
+(`BeatTheBench.tsx`) -- its only reason to exist was feeding the
+`has-[[data-bench-expanded]]` selector.
+
+**The real, measured acceptance criterion: opening a tile causes zero
+position change to any sibling that isn't below it, and siblings below
+it shift down by exactly the height gained -- ordinary document flow,
+not a discontinuous jump.** Verified live (see below) with real
+`getBoundingClientRect()` measurements, not a visual glance: expanding
+a middle tile (The Call Board) left every tile _above_ it
+(`Beat the Bench`) at the exact same document-absolute position, delta
+`0`, at both a desktop and a mobile width; every tile _below_ it (The
+Order, The Lineup, The Cut) moved down by an amount that matched the
+expanded tile's own height growth to the pixel (`537px` at 1280px
+width, `1021px` at 375px width -- both cases the shift exactly equalled
+the height the expanded panel added, confirming no other element moved
+or resized as a side effect). The grid's own `getComputedStyle(...).
+gridTemplateColumns` stayed a single value (e.g. `"704px"` at 1280px,
+`"327px"` at 375px) before, during, and after expanding any tile --
+never two columns at any point. A first measurement pass used plain
+viewport-relative `getBoundingClientRect().top` and found what looked
+like a real regression (an _earlier_ sibling moving) purely because
+Playwright's own click-actionability check scrolls an off-screen
+target into view before clicking it on a short mobile viewport --
+switching to document-absolute coordinates (`rect.top + window.
+scrollY`) eliminated that measurement artifact and confirmed the true
+zero-delta result; worth remembering for the next before/after position
+measurement on a page tall enough that the target being clicked isn't
+already fully in view.
+
+**`TheCut` was already a 5th child inside this same grid, not a
+separate section outside it** (a detail that had gone stale in the
+original request's own understanding of "what's there today," since
+issue #233 added it as the grid's 5th tile, after The Order/The Lineup
+-- see this file's own "The Cut" section) -- confirmed by reading
+`ResultsPage.tsx` directly before making any change, not assumed from
+a prior description. It needed no special handling either way: a 5th
+child in a single-column grid is exactly as full-width as every other
+child, with nothing left to collapse.
+
+Doc comments describing the old 2-up/collapse mechanism were updated in
+place (`ResultsPage.tsx`'s own comment above the grid div, `globals.css`'s
+comment where the deleted `@supports` rule used to live,
+`BeatTheBenchFrame`'s own doc comment in `BeatTheBench.tsx`) rather than
+just deleted -- each now briefly explains what used to be there and why
+it's gone, matching this file's own established "Superseded" convention
+for a mechanism replaced rather than merely removed. The three
+historical sections above that described the old mechanism as current,
+live behavior (`### The 2-up grid mechanism (issue #178's own scope)`,
+part of the issue #196 section, and part of the "The Order" section)
+were each given a pointer note back to this section instead of being
+rewritten -- they're an accurate record of what shipped at the time,
+just no longer a description of the grid's current behavior.
+
+**Live-verified** against a real local pipeline run (`local-run.ts`,
+`LOCAL_TICKER_COUNT=20`, real Yahoo network calls, no S3 write -- 6
+preset results, 1,255 custom-anchor results, and the real
+beat-the-bench/lineup/the-order/sp500-prefix artifacts every game tile
+here reads) plus `next build`/`next start` (not `next dev` -- see issue
+#123's own repeatedly-documented note on why headless Chromium can't
+hydrate a dev-mode page in this sandbox) and the documented no-root
+headless-Chromium Playwright workaround (the shared libraries this
+technique extracts were already present system-wide in this sandbox
+session, so Chromium launched directly with no `apt-get download`/
+`dpkg-deb -x` step needed this time). Screenshotted the collapsed
+five-tile stack at both a 1280px desktop and a 375px mobile width --
+both read cleanly, no overflow, no visual regression from the 2-up
+layout's own established tile styling (issues #176/#177/#195/#197) --
+and screenshotted The Call Board expanded at both widths, confirming
+the connector devices (issue #195's flush corners/icon header) and
+every tile below it still render correctly, just pushed down. Zero
+console errors and zero `pageerror` events across every check. The
+temporary `playwright` devDependency was reverted afterward; confirmed
+via `git status`/`git diff --stat` on `package.json`/`pnpm-lock.yaml`
+showing no trace.
+
+**Accepted, expected consequence, not a regression**: the page is now
+taller by design than the pre-fix 2-up layout (five stacked full-width
+tiles instead of three rows of up to two), pushing "Explore other
+windows" further down the page. This is the direct, intended effect of
+"game cards are always the 'full width'" rather than a side effect to
+work around -- the same category of honest, disclosed trade-off this
+file's own issue #165/#135 sections already accept for similar
+below-the-fold measurements elsewhere on this page.
