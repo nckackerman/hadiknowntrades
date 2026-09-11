@@ -24,6 +24,8 @@
 
 import type { Sp500PrefixCurvePoint, Sp500PrefixResult } from "@hadiknowntrades/core";
 
+import { FULL_CELEBRATION_INTENSITY, type CelebrationIntensity } from "./celebration-magnitude";
+
 /** Up to 6 guesses per game (docs/design/the-cut-2026-09/README.md's own "5-6 guesses"). */
 export const CUT_MAX_ATTEMPTS = 6;
 
@@ -158,6 +160,84 @@ export function n500CurvePoint(
   universeSize: number,
 ): Sp500PrefixCurvePoint | null {
   return curve.find((point) => point.n === universeSize) ?? curve.at(-1) ?? null;
+}
+
+/**
+ * The Cut's own reveal-burst gate + magnitude scale (issue #239).
+ *
+ * **The gate: `meetsCutCelebrationGate`, not `won`/`state.won` alone.**
+ * HeroStat's own celebration burst gates on a strict dollar gain
+ * (`isGain`, shouldCelebrate.ts) -- this game's closest analog is an
+ * exact N=bestN win, but limiting the burst to *only* an exact match
+ * would ignore a real, near-perfect guess that captured almost the whole
+ * available edge without landing on bestN exactly (a guess one rank off
+ * in a flat stretch of the curve, say). Both cases are genuinely "a good
+ * result" worth celebrating, just at different intensities -- the "both,
+ * at different intensities" option issue #239 itself named as a real
+ * design choice, not a literal copy of HeroStat's dollar-gain gate. So
+ * the gate is expressed directly against `edgeCapturedPct` (this
+ * module's own scoring output, already the % of the real available edge
+ * a guess captured) rather than against `correct`/`won` -- a guess that
+ * happens to be exact always scores `edgeCapturedPct === 100` (see
+ * `scoreCutGuess`), so an exact win still always clears this gate; it's
+ * just not the *only* thing that can.
+ *
+ * **The magnitude scale is linear over 0-100, deliberately NOT a reuse
+ * of celebration-magnitude.ts's own `celebrationIntensityFor`.** That
+ * function's decade-spanning tiers exist specifically for HeroStat's
+ * dollar-multiplier scale, which can span from 1x to tens of millions of
+ * x (see that module's own header comment) -- a genuinely different
+ * shape of number than `edgeCapturedPct`, which is already a bounded,
+ * clamped 0-100 percentage. A plain linear ladder over that same 0-100
+ * range is the natural scale here, not an order-of-magnitude one.
+ *
+ * Below 60%: no confetti at all -- capturing well under two-thirds of
+ * the real available edge isn't a "throw confetti" result, even when the
+ * direction/closeness bands shown alongside it read encouragingly.
+ * 60-84%: modest. 85-99%: strong. 100% (an exact win, or a non-exact
+ * guess that still reached the curve's own max attainable value -- see
+ * `edgeCapturedPct`'s own doc comment for how that can happen without an
+ * exact match): full, the same 24-piece/100%-spread burst HeroStat's own
+ * top tier uses.
+ *
+ * The gate and the ladder's own suppressed tier deliberately share one
+ * threshold (`SUPPRESS_BELOW_EDGE_PCT`), not two independently-tuned
+ * numbers, so the two can never disagree about what counts as "worth
+ * celebrating at all" -- `TheCut.tsx`'s own `CutReveal` component calls
+ * both, passing `meetsCutCelebrationGate`'s result as `shouldCelebrate.ts`'s
+ * `isGain` parameter (renamed `celebrationGateMet` there, since there's
+ * no dollar gain/loss concept in this game to call it "a gain").
+ */
+const SUPPRESS_BELOW_EDGE_PCT = 60;
+const MODEST_BELOW_EDGE_PCT = 85;
+const STRONG_BELOW_EDGE_PCT = 100;
+
+const MODEST_CUT_CELEBRATION_INTENSITY: CelebrationIntensity = {
+  pieceCount: 8,
+  spreadPercent: 45,
+};
+const STRONG_CUT_CELEBRATION_INTENSITY: CelebrationIntensity = {
+  pieceCount: 16,
+  spreadPercent: 72,
+};
+
+/** Whether a completed game's final guess is worth celebrating at all -- see this section's own header comment above. */
+export function meetsCutCelebrationGate(edgeCapturedPctValue: number): boolean {
+  return edgeCapturedPctValue >= SUPPRESS_BELOW_EDGE_PCT;
+}
+
+/** How much confetti a completed game's reveal throws, scaled to `edgeCapturedPct` -- see this section's own header comment above. */
+export function cutCelebrationIntensity(edgeCapturedPctValue: number): CelebrationIntensity {
+  if (!meetsCutCelebrationGate(edgeCapturedPctValue)) {
+    return { pieceCount: 0, spreadPercent: 0 };
+  }
+  if (edgeCapturedPctValue < MODEST_BELOW_EDGE_PCT) {
+    return MODEST_CUT_CELEBRATION_INTENSITY;
+  }
+  if (edgeCapturedPctValue < STRONG_BELOW_EDGE_PCT) {
+    return STRONG_CUT_CELEBRATION_INTENSITY;
+  }
+  return FULL_CELEBRATION_INTENSITY;
 }
 
 /**

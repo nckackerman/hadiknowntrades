@@ -20,7 +20,7 @@
 // two are wired together for React in use-cut-game.ts -- this file is
 // the one place either gets called from a component.
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import {
   SP500_CONSTITUENTS,
@@ -30,18 +30,27 @@ import {
 
 import { formatHeroCurrency, formatMultiplier } from "@/lib/format-currency";
 import { prefersReducedMotion } from "@/lib/prefers-reduced-motion";
+import { shouldCelebrate } from "@/lib/should-celebrate";
 import {
   CUT_MAX_ATTEMPTS,
+  cutCelebrationIntensity,
   isValidSp500PrefixResult,
+  meetsCutCelebrationGate,
   n500CurvePoint,
   type CutCloseness,
   type CutDirection,
+  type CutGuessFeedback,
 } from "@/lib/the-cut-scoring";
+import type { CutStreakStats } from "@/lib/the-cut-storage";
+import { useCountUp } from "@/lib/use-count-up";
 import { useCutGame, type CutView } from "@/lib/use-cut-game";
 import { useResetWhenChanged } from "@/lib/use-reset-when-changed";
 import { useSp500Prefix } from "@/lib/use-sp500-prefix";
+import { AnimatedFigure } from "@/components/AnimatedFigure";
+import { CelebrationBurst } from "@/components/CelebrationBurst";
 import { CutRangeSelector } from "@/components/CutRangeSelector";
 import { GamePanelHeader } from "@/components/GamePanelHeader";
+import { heroMultiplierColor } from "@/components/HeroStat";
 import { TheCutChart } from "@/components/TheCutChart";
 
 const ICON = "✂️";
@@ -265,6 +274,242 @@ interface CutBoardProps {
   onPlayAgain: () => void;
 }
 
+interface CutRevealProps {
+  bestN: number;
+  bestEndingBalance: number;
+  n500EndingBalance: number;
+  startingCapital: number;
+  universeSize: number;
+  curve: Sp500PrefixCurvePoint[];
+  won: boolean;
+  /** Computed once by CutBoard (which also feeds it to its own always-rendered sr-only status region) and passed down rather than re-derived here -- see this component's own "Deliberately NOT a second role=status region" comment below for why. */
+  resultSentence: string;
+  lastFeedback: CutGuessFeedback;
+  streak: CutStreakStats;
+  onPlayAgain: () => void;
+}
+
+// Long enough to read as a deliberate count rather than a flicker, short
+// enough not to make people wait for the numbers they came for -- the
+// same duration HeroStat.tsx's own count-up reveal uses (issue #35).
+const COUNT_UP_DURATION_MS = 1200;
+
+/**
+ * The Cut's reveal panel (issue #239) -- wires HeroStat.tsx's own
+ * count-up/celebration-burst toolkit into this game's own reveal moment,
+ * rather than reinventing it: the score, the streak figures, and the
+ * best-possible-result figures all count up via `use-count-up.ts`, and a
+ * celebration burst fires (`CelebrationBurst`/`shouldCelebrate.ts`) when
+ * the result is genuinely good, scaled to how good it was
+ * (`the-cut-scoring.ts`'s own `cutCelebrationIntensity`/
+ * `meetsCutCelebrationGate` -- see that module's own doc comment for the
+ * full gating decision and why it isn't a literal copy of HeroStat's own
+ * dollar-gain-based gate).
+ *
+ * **A dedicated component, not inline JSX inside CutBoard's own
+ * conditional render** -- the same reason HeroStat is its own component:
+ * `useCountUp`/`shouldCelebrate` are hooks, so they can only be called
+ * from a component that's unconditionally mounted, not from inside an
+ * `if`/`&&` branch of an already-mounted one. This also happens to be
+ * exactly what makes the reveal replay correctly on its own, with no
+ * explicit `key` needed: `state.done` can only ever transition
+ * `false -> true` (a fresh completion) or `true -> false` (Play again,
+ * via `the-cut-storage.ts`'s `clearCutGameState`) -- never stay `true`
+ * with different feedback underneath it -- so `CutBoard`'s own
+ * `{done && lastFeedback && <CutReveal ... />}` conditional already mounts
+ * a genuinely new `CutReveal` instance exactly once per completed game,
+ * the identical "mount lines up with reveal" property HeroStat.tsx's own
+ * doc comment relies on `ResultsPanel` remounting it fresh per result.
+ *
+ * Reuses `AnimatedFigure` (issue #147) for the best-possible dollar
+ * figure specifically -- unlike the score/streak figures (plain integers
+ * with no compact-unit ladder to cross), a dollar amount can jump from
+ * e.g. "$994.72" to "$1K" mid-tween, which would otherwise re-wrap this
+ * prose sentence's own width mid-count the same way issue #147 found and
+ * fixed for HeroStat's row.
+ */
+function CutReveal({
+  bestN,
+  bestEndingBalance,
+  n500EndingBalance,
+  startingCapital,
+  universeSize,
+  curve,
+  won,
+  resultSentence,
+  lastFeedback,
+  streak,
+  onPlayAgain,
+}: CutRevealProps) {
+  const animatedScorePct = useCountUp(0, lastFeedback.edgeCapturedPct, COUNT_UP_DURATION_MS);
+  const animatedBestEndingBalance = useCountUp(
+    startingCapital,
+    bestEndingBalance,
+    COUNT_UP_DURATION_MS,
+  );
+  const animatedCurrentStreak = useCountUp(0, streak.currentStreak, COUNT_UP_DURATION_MS);
+  const animatedBestStreak = useCountUp(0, streak.bestStreak, COUNT_UP_DURATION_MS);
+
+  // `settled` compares the score tween against its own exact final
+  // value -- safe because useCountUp always snaps to the exact `to` once
+  // its tween lands (see that hook's own doc comment), the identical
+  // property HeroStat.tsx's own `settled` relies on. The *score* (not
+  // the dollar figure) is what gates the celebration burst, since
+  // `edgeCapturedPct` is the one signal driving both the gate and the
+  // intensity ladder -- see the-cut-scoring.ts's own doc comment.
+  const settled = animatedScorePct === lastFeedback.edgeCapturedPct;
+  // The gate/tier decision is made against the *rounded* score -- the
+  // same integer the player actually sees (both the landed visible
+  // figure, `Math.round(animatedScorePct)`, and the sr-only twin,
+  // `.toFixed(0)`, round identically for a non-negative value). Gating
+  // against the raw, unrounded `edgeCapturedPct` instead would let a
+  // value just under a tier boundary (e.g. 59.6%) visibly read as
+  // "60%" while `meetsCutCelebrationGate` still said no (59.6 < 60) --
+  // a real, found-in-review mismatch between what's on screen and what
+  // the celebration actually keys off. Rounding once, here, and reusing
+  // that same integer for both the gate and the intensity ladder is
+  // what keeps the two from ever disagreeing with the display again.
+  // `celebrationGateMet`/`celebrationIntensity` are both derived purely
+  // from `lastFeedback.edgeCapturedPct`, a prop that never changes after
+  // mount -- but `CutReveal` re-renders on every one of the dozens of
+  // RAF ticks the four `useCountUp` calls above drive over the ~1.2s
+  // reveal. Memoized so that per-run-constant work isn't redone on every
+  // tick, the same pattern this app's own `TradeReplay.tsx`/
+  // `HeroStat.tsx` already establish for the identical class of value
+  // (see e.g. TradeReplay.tsx's own `endingBalanceDisplayValue`/
+  // `multiplier` memoization).
+  const { celebrationGateMet, celebrationIntensity } = useMemo(() => {
+    const roundedEdgeCapturedPct = Math.round(lastFeedback.edgeCapturedPct);
+    return {
+      celebrationGateMet: meetsCutCelebrationGate(roundedEdgeCapturedPct),
+      celebrationIntensity: cutCelebrationIntensity(roundedEdgeCapturedPct),
+    };
+  }, [lastFeedback.edgeCapturedPct]);
+  const celebrate = shouldCelebrate(celebrationGateMet, settled);
+
+  const multiplier = useMemo(
+    () => bestEndingBalance / startingCapital,
+    [bestEndingBalance, startingCapital],
+  );
+
+  return (
+    <div className="flex flex-col gap-4 rounded-lg border border-[var(--gridline)] bg-[var(--surface-2)] p-4">
+      {/* No `role="status"` region here -- CutBoard's own top-level one
+          (always rendered, even before `done`, so the mutation it
+          announces has an existing region to mutate into rather than a
+          freshly-mounted one) already announces `resultSentence`. This
+          `<p>` is the sighted, visible copy, matching TheOrder.tsx's own
+          identical two-copy (sr-only status + visible banner) shape. */}
+      <p className="text-sm font-semibold text-[var(--text-primary)]">
+        <span aria-hidden="true">{won ? "★ " : ""}</span>
+        {resultSentence}
+      </p>
+
+      {/* relative + the burst overlay are scoped to just this stat row
+          (not the sentence above or the prose below), the same scoping
+          HeroStat.tsx's own doc comment establishes for the identical
+          reason -- so the confetti bursts from around the figures
+          themselves, not an unrelated caption. */}
+      <div className="relative flex flex-wrap gap-6">
+        <span className="flex flex-col gap-1">
+          {/* Animated (aria-hidden) + a static sr-only twin holding the
+              final value -- the same accessibility pairing HeroStat.tsx's
+              own doc comment establishes: an aria-live region wired to a
+              per-frame value would spam assistive tech with every
+              intermediate number, so the sr-only twin is what assistive
+              tech actually reads instead. */}
+          <span
+            aria-hidden="true"
+            className={`font-numeric text-3xl font-bold tabular-nums ${
+              won ? "text-[var(--accent-reward)]" : "text-[var(--text-primary)]"
+            }`}
+          >
+            {Math.round(animatedScorePct)}%
+          </span>
+          <span className="sr-only">{lastFeedback.edgeCapturedPct.toFixed(0)}%</span>
+          <span className="text-xs text-[var(--text-muted)]">Edge captured</span>
+        </span>
+        <span className="flex flex-col gap-1">
+          <span className="font-numeric text-2xl font-semibold text-[var(--text-primary)]">
+            {lastFeedback.rankDistance}
+          </span>
+          <span className="text-xs text-[var(--text-muted)]">Ranks off</span>
+        </span>
+        <span className="flex flex-col gap-1">
+          <span
+            aria-hidden="true"
+            className="font-numeric text-2xl font-semibold tabular-nums text-[var(--accent-reward)]"
+          >
+            {Math.round(animatedCurrentStreak)}
+          </span>
+          <span className="sr-only">{streak.currentStreak}</span>
+          <span className="text-xs text-[var(--text-muted)]">Current streak</span>
+        </span>
+        <span className="flex flex-col gap-1">
+          <span
+            aria-hidden="true"
+            className="font-numeric text-2xl font-semibold tabular-nums text-[var(--accent-reward)]"
+          >
+            {Math.round(animatedBestStreak)}
+          </span>
+          <span className="sr-only">{streak.bestStreak}</span>
+          <span className="text-xs text-[var(--text-muted)]">Best streak</span>
+        </span>
+
+        <CelebrationBurst active={celebrate} intensity={celebrationIntensity} />
+      </div>
+
+      <p className="flex flex-wrap items-baseline gap-1 text-xs text-[var(--text-muted)]">
+        <span>
+          Best possible: N={bestN}, {formatHeroCurrency(startingCapital)} became
+        </span>
+        <AnimatedFigure
+          aria-hidden="true"
+          from={startingCapital}
+          to={bestEndingBalance}
+          value={formatHeroCurrency(animatedBestEndingBalance)}
+          className="font-numeric text-sm font-semibold tabular-nums text-[var(--text-primary)]"
+        />
+        <span className="sr-only">{formatHeroCurrency(bestEndingBalance)}</span>
+        {/* The multiplier badge and the rest of the sentence share one
+            flex item (rather than being two separate ones) specifically
+            so the parent row's own `gap-1` doesn't insert a visible gap
+            between the badge's closing ")" and the sentence's trailing
+            "." right after it -- found by screenshot, not by reading the
+            JSX (`gap` applies between every flex item regardless of
+            what text they hold, so two adjacent items reading "(1x)"
+            and ". The whole-index..." rendered as "(1x) . The
+            whole-index...", an awkward space before the period). */}
+        <span>
+          <span className="font-semibold" style={{ color: heroMultiplierColor(multiplier) }}>
+            ({formatMultiplier(multiplier)})
+          </span>
+          . The whole-index (N={universeSize}) baseline made {formatHeroCurrency(n500EndingBalance)}
+          .
+        </span>
+      </p>
+
+      <TheCutChart
+        curve={curve}
+        universeSize={universeSize}
+        bestN={bestN}
+        n500EndingBalance={n500EndingBalance}
+        guessedN={lastFeedback.guess}
+      />
+
+      <div>
+        <button
+          type="button"
+          onClick={onPlayAgain}
+          className="min-h-11 rounded-md border border-[var(--gridline)] bg-[var(--surface-1)] px-4 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+        >
+          Play again
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function CutBoard({
   range,
   view,
@@ -411,65 +656,19 @@ function CutBoard({
       )}
 
       {done && lastFeedback && (
-        <div className="flex flex-col gap-4 rounded-lg border border-[var(--gridline)] bg-[var(--surface-2)] p-4">
-          <p className="text-sm font-semibold text-[var(--text-primary)]">
-            <span aria-hidden="true">{state.won ? "★ " : ""}</span>
-            {resultSentence}
-          </p>
-
-          <div className="flex flex-wrap gap-6">
-            <span className="flex flex-col gap-1">
-              <span className="font-display text-2xl font-semibold text-[var(--text-primary)]">
-                {lastFeedback.edgeCapturedPct.toFixed(0)}%
-              </span>
-              <span className="text-xs text-[var(--text-muted)]">Edge captured</span>
-            </span>
-            <span className="flex flex-col gap-1">
-              <span className="font-numeric text-2xl font-semibold text-[var(--text-primary)]">
-                {lastFeedback.rankDistance}
-              </span>
-              <span className="text-xs text-[var(--text-muted)]">Ranks off</span>
-            </span>
-            <span className="flex flex-col gap-1">
-              <span className="font-display text-2xl font-semibold tabular-nums text-[var(--accent-reward)]">
-                {view.streak.currentStreak}
-              </span>
-              <span className="text-xs text-[var(--text-muted)]">Current streak</span>
-            </span>
-            <span className="flex flex-col gap-1">
-              <span className="font-display text-2xl font-semibold tabular-nums text-[var(--accent-reward)]">
-                {view.streak.bestStreak}
-              </span>
-              <span className="text-xs text-[var(--text-muted)]">Best streak</span>
-            </span>
-          </div>
-
-          <p className="text-xs text-[var(--text-muted)]">
-            Best possible: N={bestN}, {formatHeroCurrency(startingCapital)} became{" "}
-            {formatHeroCurrency(bestEndingBalance)} (
-            {formatMultiplier(bestEndingBalance / startingCapital)}
-            ). The whole-index (N={universeSize}) baseline made{" "}
-            {formatHeroCurrency(n500EndingBalance)}.
-          </p>
-
-          <TheCutChart
-            curve={curve}
-            universeSize={universeSize}
-            bestN={bestN}
-            n500EndingBalance={n500EndingBalance}
-            guessedN={lastFeedback.guess}
-          />
-
-          <div>
-            <button
-              type="button"
-              onClick={onPlayAgain}
-              className="min-h-11 rounded-md border border-[var(--gridline)] bg-[var(--surface-1)] px-4 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-            >
-              Play again
-            </button>
-          </div>
-        </div>
+        <CutReveal
+          bestN={bestN}
+          bestEndingBalance={bestEndingBalance}
+          n500EndingBalance={n500EndingBalance}
+          startingCapital={startingCapital}
+          universeSize={universeSize}
+          curve={curve}
+          won={state.won}
+          resultSentence={resultSentence}
+          lastFeedback={lastFeedback}
+          streak={view.streak}
+          onPlayAgain={onPlayAgain}
+        />
       )}
     </div>
   );

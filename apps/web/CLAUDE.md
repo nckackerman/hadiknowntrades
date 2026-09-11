@@ -10811,3 +10811,137 @@ their range parameter as `CutRange`, not `PresetRange`.
   to fetching/storing under `"1D"`, not `"1Y"`, on first mount. No other
   behavioral change to that suite was needed; the game logic itself
   (grading, streaks, persistence) is entirely range-agnostic.
+
+### The Cut: gamify the reveal numbers -- count-up + celebration, mirroring HeroStat (issue #239)
+
+The Cut's own reveal panel (`CutBoard`'s `done && lastFeedback` branch,
+post-#238) used to render its numbers as plain static text, unlike the
+main results page's `HeroStat`, which has had a full count-up +
+magnitude-scaled celebration-burst toolkit since issues #35/#36/#125.
+This issue wires that same toolkit (`lib/use-count-up.ts`,
+`components/CelebrationBurst.tsx`, `lib/should-celebrate.ts`) into The
+Cut's reveal instead of inventing a second one -- see `TheCut.tsx`'s new
+`CutReveal` component (extracted out of `CutBoard`'s own conditional
+render specifically so `useCountUp`/`shouldCelebrate` can be called
+unconditionally, the same reason `HeroStat` is its own component) and
+`the-cut-scoring.ts`'s new `cutCelebrationIntensity`/
+`meetsCutCelebrationGate`.
+
+- **What counts up**: the score (`edgeCapturedPct`, the panel's own
+  biggest/"hero" figure now -- bumped to `text-3xl font-bold`, gold when
+  `won`), the best-possible dollar figure (`bestEndingBalance`, via
+  `AnimatedFigure`, issue #147 -- see below), and both streak figures
+  (`currentStreak`/`bestStreak`, already gold `--accent-reward` from the
+  original build, now animated too). `rankDistance` stays static/
+  unanimated -- it's a plain integer with no "reveal" moment of its own,
+  just a secondary stat alongside the score.
+- **The celebration-gating decision** (the issue's own explicit ask,
+  since this game has no dollar gain/loss the way `HeroStat` does):
+  gates on `meetsCutCelebrationGate(edgeCapturedPct)` --
+  `edgeCapturedPct >= 60` -- not on `state.won`/an exact match alone.
+  This is deliberately the "both, at different intensities" option the
+  issue itself named as a real choice: an exact N=bestN win always
+  scores `edgeCapturedPct === 100` (so it always clears the gate and
+  always lands the full tier), but a **non-exact** guess that still
+  captured most of the real available edge (a guess one rank off in a
+  flat stretch of the curve, say) is a real, worth-celebrating result
+  too, just at a smaller intensity -- ignoring that case and gating on
+  `won` alone would treat every near-miss identically to a guess that
+  captured nothing. `cutCelebrationIntensity`'s own tiers are a plain
+  **linear** 0-100% ladder (suppressed <60%, modest 60-84%, strong
+  85-99%, full at 100%), deliberately **not** a reuse of
+  `celebration-magnitude.ts`'s own `celebrationIntensityFor` -- that
+  function's decade-spanning tiers exist specifically for `HeroStat`'s
+  dollar-multiplier scale (1x to tens of millions of x); `edgeCapturedPct`
+  is already a bounded, clamped percentage, a genuinely different shape
+  of number that calls for a linear ladder, not an order-of-magnitude
+  one. The gate and the ladder's own suppressed tier deliberately share
+  one threshold constant (not two independently-tuned numbers), so they
+  can never disagree about what counts as "worth celebrating at all" --
+  see `the-cut-scoring.ts`'s own doc comment above these two functions
+  for the full writeup, including why `SUPPRESS_BELOW_EDGE_PCT = 60`
+  specifically.
+- **`AnimatedFigure` (issue #147), reused as-is, for the best-possible
+  dollar figure only** -- the score/streak figures are plain integers
+  with no compact-unit ladder to cross, so `font-numeric tabular-nums`
+  alone (per issue #121's own type-role convention) is enough to keep
+  them from jittering mid-count; the dollar figure can jump from e.g.
+  "$994.72" to "$1K" mid-tween, exactly the re-wrap risk issue #147
+  fixed for `HeroStat`'s own row, so it gets the same width-reservation
+  treatment. Both figures follow `HeroStat`'s established accessibility
+  pairing: the animated value is `aria-hidden`, with a static `sr-only`
+  twin holding the real final value throughout -- which turned out to
+  keep almost every pre-#239 `TheCut.test.tsx` assertion passing
+  **unmodified**, since a `getByText` for a final value still resolves
+  uniquely to the sr-only span whether or not the tween has landed (the
+  visible figure is showing something else -- its own starting value --
+  the whole time it's un-landed). Only one pre-existing assertion needed
+  a fix: `panel.getByText("0")` for "ranks off" became ambiguous once
+  the two (also-`aria-hidden`, also-stuck-at-`0`) streak figures joined
+  it, so that query is now scoped to `"span:not([aria-hidden])"`.
+- **One sr-only `role="status"` region, not two** -- `CutReveal`'s
+  visible result sentence (`<p>...resultSentence</p>`) does **not** also
+  carry its own `role="status"` copy; `CutBoard`'s own top-level one
+  (always rendered, even before `done`, matching this app's own
+  "Reveal announcement for screen readers" convention of an
+  already-existing region rather than a freshly-mounted one) still owns
+  the single announcement, and `resultSentence` is computed once in
+  `CutBoard` and passed down as a prop rather than re-derived in
+  `CutReveal` -- avoiding both a doubled announcement and a duplicated
+  string-building computation.
+- **No explicit remount `key` needed for the reveal to replay
+  correctly** -- `state.done` can only ever transition `false -> true`
+  (a fresh completion) or `true -> false` (Play again, via
+  `clearCutGameState`), never stay `true` with different feedback
+  underneath it, so `CutBoard`'s own `{done && lastFeedback && <CutReveal
+.../>}` conditional already mounts a genuinely new `CutReveal` instance
+  exactly once per completed game -- the same "mount lines up with
+  reveal" property `HeroStat.tsx`'s own doc comment relies on
+  `ResultsPanel` remounting it fresh per result.
+- **A real visual bug found only by screenshot, not by reading the
+  JSX**: the "Best possible" sentence's `<p>` is a `flex flex-wrap
+gap-1` row (needed for `AnimatedFigure`'s internal `display: grid`,
+  which can't flow inline with surrounding text the way a plain `<span>`
+  can) -- and `gap-1` inserts a gap between _every_ flex item regardless
+  of what text it holds, so the multiplier badge (`"(1x)"`) and the
+  trailing sentence (`". The whole-index..."`) as two separate flex
+  items rendered as `"(1x) . The whole-index..."`, an awkward space
+  before the period. Fixed by nesting the colored multiplier span and
+  the rest of the sentence inside one shared flex item, so the gap no
+  longer applies between them.
+- **Live-verified against real local pipeline data**
+  (`LOCAL_TICKER_COUNT=25 LOCAL_RESULTS_DIR=... pnpm --filter
+@hadiknowntrades/pipeline run local-run`, real Yahoo network calls, no
+  S3 write) plus `next build`/`next start` (not `next dev` -- see issue
+  #123's own repeatedly-documented note on why headless Chromium can't
+  hydrate a dev-mode page in this sandbox) and a headless-Chromium
+  Playwright pass (`pnpm add -D -w playwright` for the session, reverted
+  afterward). The real 1D result (`bestN=7`, a modest ~1.02x day) drove
+  all three required states: **win** (two wasted guesses first, then the
+  exact N=7 -- 100% edge captured in gold, a real 24-piece full-tier
+  confetti burst scoped and counted directly inside The Cut's own panel,
+  not the page at large), **lose** (six guesses of N=500, all "Too high
+  -- Ice cold" -- 0% edge captured in plain white, zero
+  `celebration-burst` elements anywhere in the panel), and **reduced
+  motion** (`reducedMotion: "reduce"` context emulation, an exact win --
+  every figure shows its final value on the very next paint with no
+  visible count-up, and zero confetti). **Confirmed zero console errors
+  and zero `pageerror` events across all three runs.** The temporary
+  `playwright` devDependency and the verification script were both
+  reverted/deleted before committing, per this file's own established
+  convention; confirmed via `git status`/`git diff --stat` on
+  `package.json`/`pnpm-lock.yaml` showing no trace afterward.
+- **A real cross-page-scope gotcha worth remembering for the next
+  `celebration-burst` verification in this app**: a Playwright query for
+  `[data-testid="celebration-burst"]` run against the _whole page_
+  (rather than scoped to `the-cut-panel`) picked up confetti from an
+  entirely unrelated `HeroStat` elsewhere on the same page (the daily
+  hero, or the demoted "Explore other windows" window-model reveal --
+  see this file's own "The daily hero"/"Demoting the range explorer"
+  sections), inflating the win count to 48 (24 + 24) and falsely
+  suggesting a burst fired on the loss pass too. Scoping every locator
+  to `page.getByTestId("the-cut-panel")` fixed it -- this app's pages
+  now host several independent `HeroStat`/`CelebrationBurst` instances
+  at once (Beat the Bench, The Call Board's own gold moments, the window
+  model, The Cut), so a page-wide `celebration-burst` query is no longer
+  a reliable proxy for "did _this_ mechanic's burst fire."

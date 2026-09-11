@@ -8,6 +8,7 @@ import {
   saveCutGameState,
   type CutGameState,
 } from "@/lib/the-cut-storage";
+import { stubPrefersReducedMotion } from "@/lib/stub-prefers-reduced-motion.test-util";
 import { TheCut } from "./TheCut";
 
 // The Cut's own default range as of issue #238 -- see THE_CUT_DEFAULT_RANGE.
@@ -71,8 +72,32 @@ function submit(panel: ReturnType<typeof within>, value: number) {
   fireEvent.click(panel.getByRole("button", { name: "Submit guess" }));
 }
 
+/**
+ * Never invoke the requestAnimationFrame callback -- the reveal panel's
+ * count-up figures stay stuck at their starting values (issue #239). The
+ * sr-only twin spans (CutReveal.tsx's own doc comment) already hold each
+ * figure's real final value regardless of animation state, which is what
+ * keeps every pre-#239 assertion in this file passing unmodified: a
+ * `getByText` for a final value still resolves uniquely to the sr-only
+ * span, since the visible (aria-hidden) figure is showing something else
+ * (its own starting value) the whole time. Mirrors
+ * HeroStat.test.tsx's own identical-purpose stub.
+ */
+function neverLandTheReveal() {
+  vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+}
+
+/** Lands the count-up in a single frame -- mirrors HeroStat.test.tsx's own `landTheReveal` helper. */
+function landTheReveal() {
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+    cb(performance.now() + 100_000);
+    return 1;
+  });
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   window.localStorage.clear();
 });
 
@@ -139,6 +164,7 @@ describe("TheCut", () => {
 
   it("win: an exact guess ends the game immediately, shows 100% edge captured, and records a streak of 1", async () => {
     saveCutGameState(RANGE, freshState());
+    neverLandTheReveal();
     const panel = await expandBoard();
 
     submit(panel, 3); // bestN
@@ -147,7 +173,12 @@ describe("TheCut", () => {
     // No more guess controls once done.
     expect(panel.queryByRole("button", { name: "Submit guess" })).not.toBeInTheDocument();
     expect(panel.getByText("100%")).toBeInTheDocument(); // edge captured
-    expect(panel.getByText("0")).toBeInTheDocument(); // ranks off
+    // Ranks off isn't animated, unlike the two streak figures right next
+    // to it (issue #239) -- both of which also read "0" here, stuck at
+    // their own starting value since the tween never lands in this test
+    // (neverLandTheReveal). Scoped to the one span with no aria-hidden
+    // (the animated ones both carry it) to disambiguate.
+    expect(panel.getByText("0", { selector: "span:not([aria-hidden])" })).toBeInTheDocument();
     const currentStreakLabel = panel.getByText("Current streak");
     expect(currentStreakLabel.previousElementSibling).toHaveTextContent("1");
     expect(getCutGameHistory()).toEqual([{ range: RANGE, won: true, edgeCapturedPct: 100 }]);
@@ -160,6 +191,7 @@ describe("TheCut", () => {
 
   it("lose: running out of attempts without an exact guess ends the game as a loss", async () => {
     saveCutGameState(RANGE, freshState());
+    neverLandTheReveal();
     const panel = await expandBoard();
 
     // Six guesses of "5", never the real bestN (3).
@@ -177,6 +209,7 @@ describe("TheCut", () => {
 
   it("play again resets the range's own game state", async () => {
     saveCutGameState(RANGE, freshState({ guesses: [3], done: true, won: true }));
+    neverLandTheReveal();
     const panel = await expandBoard();
 
     fireEvent.click(panel.getByRole("button", { name: "Play again" }));
@@ -201,6 +234,11 @@ describe("TheCut", () => {
 
   it("the collapsed tile's own status line reflects the stored state without expanding", async () => {
     saveCutGameState(RANGE, freshState({ guesses: [3], done: true, won: true }));
+    // CutBoard/CutReveal render regardless of whether the <details> is
+    // open (see TheCut.tsx's own "hasOpenedPanel" doc comment) -- the
+    // reveal's count-up figures mount here too, even though this test
+    // never clicks the summary.
+    neverLandTheReveal();
     render(<TheCut />);
     await waitFor(() => {
       expect(screen.getByTestId("the-cut-summary")).toHaveTextContent(/solved/i);
@@ -222,6 +260,7 @@ describe("TheCut", () => {
     recordCutCompletion("5Y", true, 100);
     recordCutCompletion("5Y", true, 100);
     saveCutGameState(RANGE, freshState());
+    neverLandTheReveal();
     const panel = await expandBoard();
 
     submit(panel, 3); // wins the 1Y game -- a real, first streak entry for 1Y
@@ -270,5 +309,107 @@ describe("TheCut", () => {
     });
     // Still the same open panel afterward -- no collapse-then-reopen-closed cycle.
     expect(screen.getByTestId("the-cut-summary")).toBeInTheDocument();
+  });
+
+  // Issue #239: the reveal panel's count-up + celebration burst, mirroring
+  // HeroStat.test.tsx's own equivalent describe blocks ("burst magnitude
+  // scaling", "reveal accent") as closely as this game's own shape allows.
+  describe("count-up + celebration (issue #239)", () => {
+    it("starts the visible score at 0%, not the final value, before the tween lands", async () => {
+      saveCutGameState(RANGE, freshState());
+      neverLandTheReveal();
+      const panel = await expandBoard();
+
+      submit(panel, 3); // exact win -> 100% edge captured
+
+      // The sr-only twin already reads the real final value; the visible
+      // (aria-hidden) figure is still stuck at its starting value (0%) --
+      // mirrors HeroStat.test.tsx's own "starts the visible... figure at
+      // the starting capital, not the final value" test.
+      expect(panel.getByText("0%")).toBeInTheDocument();
+      expect(panel.getByText("100%", { selector: ".sr-only" })).toBeInTheDocument();
+    });
+
+    it("shows the final score and streak figures, doubled up (visible + sr-only), once the tween lands", async () => {
+      saveCutGameState(RANGE, freshState());
+      landTheReveal();
+      const panel = await expandBoard();
+
+      submit(panel, 3);
+
+      // Visible + sr-only both now read the same landed value.
+      expect(panel.getAllByText("100%")).toHaveLength(2);
+      const currentStreakLabel = panel.getByText("Current streak");
+      expect(currentStreakLabel.previousElementSibling).toHaveTextContent("1");
+      expect(currentStreakLabel.previousElementSibling?.previousElementSibling).toHaveTextContent(
+        "1",
+      );
+    });
+
+    it("fires the full-tier celebration burst on an exact win (100% edge captured)", async () => {
+      saveCutGameState(RANGE, freshState());
+      landTheReveal();
+      const panel = await expandBoard();
+
+      submit(panel, 3);
+
+      expect(panel.getByTestId("celebration-burst").children.length).toBe(24);
+    });
+
+    it("does not fire the celebration burst under reduced motion, even on an exact win", async () => {
+      saveCutGameState(RANGE, freshState());
+      stubPrefersReducedMotion(true);
+      landTheReveal();
+      const panel = await expandBoard();
+
+      submit(panel, 3);
+
+      expect(panel.queryByTestId("celebration-burst")).not.toBeInTheDocument();
+    });
+
+    it("has not fired yet mid-count, before the reveal lands, even on an exact win", async () => {
+      saveCutGameState(RANGE, freshState());
+      neverLandTheReveal();
+      const panel = await expandBoard();
+
+      submit(panel, 3);
+
+      expect(panel.queryByTestId("celebration-burst")).not.toBeInTheDocument();
+    });
+
+    it("does not fire the celebration burst when the final guess captured none of the available edge", async () => {
+      saveCutGameState(RANGE, freshState());
+      landTheReveal();
+      const panel = await expandBoard();
+
+      // Six guesses of "5" (bestN=3) -- never exact, and n5's own ending
+      // balance equals the n500 baseline, so the final guess captures 0%
+      // of the available edge (see the-cut-scoring.test.ts's own
+      // identical fixture-based assertion).
+      for (let i = 0; i < 6; i++) {
+        submit(panel, 5);
+      }
+
+      expect(panel.queryByTestId("celebration-burst")).not.toBeInTheDocument();
+    });
+
+    it("fires a smaller-than-full burst for a non-exact result that still captured most of the available edge (modest tier)", async () => {
+      saveCutGameState(RANGE, freshState());
+      landTheReveal();
+      const panel = await expandBoard();
+
+      // Five wasted guesses, then a final (6th) guess of 4 -- not exact,
+      // but (28-22)/(30-22) = 75% of the available edge: inside the
+      // modest tier (60-84%, the-cut-scoring.ts's own
+      // cutCelebrationIntensity), not suppressed and not the full tier.
+      for (let i = 0; i < 5; i++) {
+        submit(panel, 1);
+      }
+      submit(panel, 4);
+
+      const burst = panel.getByTestId("celebration-burst");
+      expect(burst.children.length).toBeGreaterThan(0);
+      expect(burst.children.length).toBeLessThan(24);
+    });
   });
 });
