@@ -5,8 +5,10 @@ import type { Sp500PrefixCurvePoint } from "@hadiknowntrades/core";
 import {
   closenessBand,
   curvePointAtOrBelow,
+  cutCelebrationIntensity,
   edgeCapturedPct,
   isValidSp500PrefixResult,
+  meetsCutCelebrationGate,
   n500CurvePoint,
   scoreCutGuess,
 } from "./the-cut-scoring";
@@ -157,6 +159,45 @@ describe("scoreCutGuess", () => {
       guess: 1,
     });
     expect(feedback.guessEndingBalance).toBe(20); // startingCapital fallback
+  });
+});
+
+describe("meetsCutCelebrationGate", () => {
+  it("is false below the 60% suppress threshold", () => {
+    expect(meetsCutCelebrationGate(0)).toBe(false);
+    expect(meetsCutCelebrationGate(59.9)).toBe(false);
+  });
+
+  it("is true at and above the 60% suppress threshold", () => {
+    expect(meetsCutCelebrationGate(60)).toBe(true);
+    expect(meetsCutCelebrationGate(100)).toBe(true);
+  });
+});
+
+describe("cutCelebrationIntensity", () => {
+  it("suppresses entirely below 60% edge captured", () => {
+    expect(cutCelebrationIntensity(0)).toEqual({ pieceCount: 0, spreadPercent: 0 });
+    expect(cutCelebrationIntensity(59.9)).toEqual({ pieceCount: 0, spreadPercent: 0 });
+  });
+
+  it("is the modest tier from 60% up to (not including) 85%", () => {
+    expect(cutCelebrationIntensity(60)).toEqual({ pieceCount: 8, spreadPercent: 45 });
+    expect(cutCelebrationIntensity(84.9)).toEqual({ pieceCount: 8, spreadPercent: 45 });
+  });
+
+  it("is the strong tier from 85% up to (not including) 100%", () => {
+    expect(cutCelebrationIntensity(85)).toEqual({ pieceCount: 16, spreadPercent: 72 });
+    expect(cutCelebrationIntensity(99.9)).toEqual({ pieceCount: 16, spreadPercent: 72 });
+  });
+
+  it("is the full tier at exactly 100% (an exact win, or a non-exact guess that still reached the curve's own max)", () => {
+    expect(cutCelebrationIntensity(100)).toEqual({ pieceCount: 24, spreadPercent: 100 });
+  });
+
+  it("never suppresses anything meetsCutCelebrationGate approved -- the two share one threshold by construction", () => {
+    for (const pct of [0, 30, 59, 60, 61, 84, 85, 99, 100]) {
+      expect(cutCelebrationIntensity(pct).pieceCount > 0).toBe(meetsCutCelebrationGate(pct));
+    }
   });
 });
 
