@@ -49,6 +49,31 @@ describe("CutRangeSelector (issue #238)", () => {
     expect(renderedOrder[0]).toBe("1D");
   });
 
+  // The Cut's own "Explore other windows" disclosure passes a restricted
+  // `ranges` list (every CUT_RANGES entry except "1D") -- a direct user
+  // request, not a filed issue.
+  describe("restricted `ranges` prop", () => {
+    it("renders only the given subset when `ranges` is passed", () => {
+      render(
+        <CutRangeSelector
+          selected="1W"
+          onSelect={() => {}}
+          ranges={CUT_RANGES.filter((range) => range !== "1D")}
+        />,
+      );
+
+      expect(screen.queryByRole("button", { name: "1D" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "1W" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Max" })).toBeInTheDocument();
+    });
+
+    it("still defaults to every CUT_RANGES entry when `ranges` is omitted", () => {
+      render(<CutRangeSelector selected="1D" onSelect={() => {}} />);
+
+      expect(screen.getByRole("button", { name: "1D" })).toBeInTheDocument();
+    });
+  });
+
   describe("duration-coded indicator", () => {
     it("renders one bar per pill whose width strictly increases in CUT_RANGES order", () => {
       render(<CutRangeSelector selected="1D" onSelect={() => {}} />);

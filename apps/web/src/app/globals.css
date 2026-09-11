@@ -934,3 +934,93 @@ body {
     width: 0%;
   }
 }
+
+/*
+ * The Cut's default reveal (TheCut.tsx's own CutRevealStrip -- a direct
+ * user request, not a filed issue): the divider chip inserted right at
+ * the real cut line (the last held company, #bestN) bounces in and
+ * settles into a soft, sustained gold pulse once the strip's own
+ * scrollIntoView-driven "slide" lands on it. Two separate classes,
+ * always applied together by CutRevealStrip once `settled`:
+ *
+ * `.cut-line-settle` is a one-shot overshoot-scale "it just landed here"
+ * cue -- `animation-fill-mode: both` (inline in the `animation`
+ * shorthand below), the same reasoning DailyHero's own `daily-hero-*`
+ * classes above already establish: the media query below can strip the
+ * `animation` property entirely under reduced motion, and `both` is
+ * what keeps this class safe to leave in the className string
+ * regardless (there's no separate "-animate" suffix to conditionally
+ * omit here the way DailyHero's own classes do, since CutRevealStrip
+ * already decides *when* to add this class at all via its own JS-level
+ * `settled` check).
+ *
+ * `.cut-line-glow` is deliberately NOT a one-shot animation like every
+ * other reveal in this file (`.hero-figure-accent-animate`,
+ * `.portfolio-chart-reveal`) -- it loops for as long as the reveal panel
+ * stays mounted, continuing to draw the eye to the real answer this
+ * whole slide exists to point at, rather than settling into a static
+ * resting frame the way a one-time "just arrived" cue would. Reusing
+ * `--accent-reward` (the same "earned state" token CelebrationBurst's
+ * own confetti/CallBoard's exact-match cells already use) rather than a
+ * new color, since landing exactly on the real cut line -- the thing
+ * this whole game is about -- is exactly the kind of earned moment that
+ * token exists for.
+ *
+ * Two-layer reduced-motion guard, the same shape every other animation
+ * in this file already uses: CutRevealStrip's own `settled` (gated by
+ * `useReducedMotionAtMount`) is the primary check deciding when these
+ * classes get added at all -- under reduced motion `settled` is `true`
+ * from the very first render, so both classes are present immediately,
+ * with no scroll and no delay. The media query below is defense-in-depth
+ * for a future caller that skips that check: it strips the `animation`
+ * property from both classes entirely, leaving `.cut-line-glow`'s own
+ * resting `box-shadow` (a static glow, not a pulse) as the only visible
+ * effect -- matching this file's established "skipped/instant, not
+ * skipped entirely" posture (see `.hero-figure-accent`/
+ * `.hero-figure-accent-animate`'s own doc comment for the precedent).
+ */
+@keyframes cut-line-settle {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.15);
+    opacity: 1;
+  }
+  80% {
+    transform: scale(0.95);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.cut-line-settle {
+  animation: cut-line-settle 450ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes cut-line-glow-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 4px 0px var(--accent-reward);
+  }
+  50% {
+    box-shadow: 0 0 14px 4px var(--accent-reward);
+  }
+}
+
+.cut-line-glow {
+  box-shadow: 0 0 6px 1px var(--accent-reward);
+  animation: cut-line-glow-pulse 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cut-line-settle {
+    animation: none;
+  }
+
+  .cut-line-glow {
+    animation: none;
+  }
+}
