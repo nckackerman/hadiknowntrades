@@ -431,6 +431,10 @@ describe("BeatTheBench", () => {
   it("advances exactly one bar per 1x tick interval", async () => {
     await renderChooser();
     click(/play today's close/i);
+    // The default speed is 0.25x as of a later change, not 1x -- select
+    // 1x explicitly rather than relying on the default, since that's
+    // exactly what this test's own name claims to measure.
+    click(/^1x$/);
 
     expect(barReadout()).toMatch(/bar 1 of 79/);
 
@@ -445,10 +449,13 @@ describe("BeatTheBench", () => {
   });
 
   // Issue #131's acceptance criterion asks for the real timings, not
-  // merely that the five multipliers differ -- so each speed is measured
+  // merely that the six multipliers differ -- so each speed is measured
   // by holding the clock one millisecond short of its own interval.
+  // 0.25x (the default as of a later change) is included alongside the
+  // original five.
   it.each([
     [/^0\.1x$/, 3000],
+    [/^0\.25x$/, 1200],
     [/^0\.5x$/, 600],
     [/^1x$/, 300],
     [/^2x$/, 150],
@@ -526,6 +533,9 @@ describe("BeatTheBench", () => {
   it("pauses and resumes without losing the player's place", async () => {
     await renderChooser();
     click(/play today's close/i);
+    // The default speed is 0.25x as of a later change, not 1x -- select
+    // 1x explicitly so this test's own 300ms-tick math still holds.
+    click(/^1x$/);
     advance(300 * 4);
     expect(barReadout()).toMatch(/bar 5 of 79/);
 
@@ -621,6 +631,9 @@ describe("BeatTheBench", () => {
     it("still lets a reduced-motion player press play if they want to", async () => {
       await renderReducedMotionChooser();
       click(/play today's close/i);
+      // The default speed is 0.25x as of a later change, not 1x -- select
+      // 1x explicitly so this test's own 300ms-tick math still holds.
+      click(/^1x$/);
       click("Play");
 
       advance(300);
@@ -875,7 +888,7 @@ describe("BeatTheBench", () => {
       const controls = [
         screen.getByRole("button", { name: "Pause" }),
         screen.getByRole("button", { name: "Step forward one bar" }),
-        ...["0.1x", "0.5x", "1x", "2x", "4x"].map((label) =>
+        ...["0.1x", "0.25x", "0.5x", "1x", "2x", "4x"].map((label) =>
           screen.getByRole("button", { name: label }),
         ),
       ];
