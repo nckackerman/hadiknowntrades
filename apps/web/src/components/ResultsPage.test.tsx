@@ -249,9 +249,15 @@ describe("ResultsPage", () => {
     const user = userEvent.setup();
     render(<ResultsPage />);
 
-    await user.click(screen.getByRole("button", { name: "5Y" }));
+    await user.click(screen.getByRole("button", { name: "Max" }));
 
-    expect(replace).toHaveBeenCalledWith("/?range=5Y", { scroll: false });
+    expect(replace).toHaveBeenCalledWith("/?range=MAX", { scroll: false });
+  });
+
+  it("does not render a 5Y range button (removed from the picker -- 5Y still works via a direct ?range=5Y URL, see the tests above/below)", () => {
+    render(<ResultsPage />);
+
+    expect(screen.queryByRole("button", { name: "5Y" })).not.toBeInTheDocument();
   });
 
   describe("mode (issue #13)", () => {
@@ -311,7 +317,7 @@ describe("ResultsPage", () => {
       render(<ResultsPage />);
 
       expect(fetch).toHaveBeenCalledWith(`/api/results?anchor=${anchor}`);
-      for (const name of ["1W", "1M", "3M", "1Y", "5Y", "Max"]) {
+      for (const name of ["1W", "1M", "3M", "1Y", "Max"]) {
         expect(screen.getByRole("button", { name })).toHaveAttribute("aria-pressed", "false");
       }
     });
@@ -375,9 +381,9 @@ describe("ResultsPage", () => {
       search = `anchor=${anchor}`;
       render(<ResultsPage />);
 
-      await user.click(screen.getByRole("button", { name: "5Y" }));
+      await user.click(screen.getByRole("button", { name: "Max" }));
 
-      expect(replace).toHaveBeenCalledWith("/?range=5Y", { scroll: false });
+      expect(replace).toHaveBeenCalledWith("/?range=MAX", { scroll: false });
     });
   });
 
@@ -746,10 +752,19 @@ describe("ResultsPage", () => {
       // is a real, directly-assertable DOM property.
       expect(explorer).toHaveProperty("open", false);
       // The mockup's own "1W · 1M · 3M · 1Y · 5Y · Max" summary copy,
-      // derived from PRESET_RANGES rather than asserted against a
-      // hardcoded string here too.
+      // minus 5Y (removed from the picker, see RangeSelector.tsx's own
+      // VISIBLE_RANGES doc comment) -- derived from VISIBLE_RANGES rather
+      // than asserted against a hardcoded string here too.
       expect(explorer).toHaveTextContent("1W");
       expect(explorer).toHaveTextContent("Max");
+      // The summary's own "1W · 1M · 3M · 1Y · Max" text (checked via the
+      // <summary> specifically, not the whole disclosure -- the results
+      // panel inside it renders unrelated content once loaded and
+      // shouldn't need to stay free of the substring "5Y" too) no longer
+      // names 5Y at all -- the actual point of this whole change.
+      const summaryElement = summary.closest("summary");
+      expect(summaryElement).not.toBeNull();
+      expect(summaryElement).not.toHaveTextContent("5Y");
 
       // Everything the pre-#165 header/ResultsPanel used to render
       // top-level now lives inside this one disclosure, unchanged.

@@ -1,26 +1,42 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { PRESET_RANGES } from "@hadiknowntrades/core";
 import { describe, expect, it, vi } from "vitest";
 
-import { RangeSelector } from "./RangeSelector";
+import { RangeSelector, VISIBLE_RANGES } from "./RangeSelector";
 
 describe("RangeSelector", () => {
-  it("renders a button for every preset range", () => {
+  it("renders a button for every visible range (5Y removed -- see VISIBLE_RANGES)", () => {
     render(<RangeSelector selected="1Y" onSelect={() => {}} />);
 
-    for (const range of PRESET_RANGES) {
+    for (const range of VISIBLE_RANGES) {
       expect(
         screen.getByRole("button", { name: range === "MAX" ? "Max" : range }),
       ).toBeInTheDocument();
     }
   });
 
+  it("does not render a 5Y pill", () => {
+    render(<RangeSelector selected="1Y" onSelect={() => {}} />);
+
+    expect(screen.queryByRole("button", { name: "5Y" })).not.toBeInTheDocument();
+  });
+
   it("marks only the selected range as pressed", () => {
+    render(<RangeSelector selected="MAX" onSelect={() => {}} />);
+
+    expect(screen.getByRole("button", { name: "Max" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "1Y" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("marks every pill unpressed when selected is 5Y (e.g. from a direct ?range=5Y URL -- 5Y no longer has a pill of its own here)", () => {
     render(<RangeSelector selected="5Y" onSelect={() => {}} />);
 
-    expect(screen.getByRole("button", { name: "5Y" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "1Y" })).toHaveAttribute("aria-pressed", "false");
+    for (const range of VISIBLE_RANGES) {
+      expect(screen.getByRole("button", { name: range === "MAX" ? "Max" : range })).toHaveAttribute(
+        "aria-pressed",
+        "false",
+      );
+    }
   });
 
   it("calls onSelect with the clicked range", async () => {
@@ -33,20 +49,20 @@ describe("RangeSelector", () => {
     expect(onSelect).toHaveBeenCalledWith("MAX");
   });
 
-  it("renders pills in PRESET_RANGES order, with 1W positioned before 1M (issue #60)", () => {
+  it("renders pills in VISIBLE_RANGES order, with 1W positioned before 1M (issue #60)", () => {
     render(<RangeSelector selected="1Y" onSelect={() => {}} />);
 
     const renderedOrder = screen.getAllByRole("button").map((button) => button.textContent);
-    const expectedOrder = PRESET_RANGES.map((range) => (range === "MAX" ? "Max" : range));
+    const expectedOrder = VISIBLE_RANGES.map((range) => (range === "MAX" ? "Max" : range));
     expect(renderedOrder).toEqual(expectedOrder);
   });
 
   describe("duration-coded indicator (issue #123)", () => {
-    it("renders one bar per pill whose width strictly increases in PRESET_RANGES order", () => {
+    it("renders one bar per pill whose width strictly increases in VISIBLE_RANGES order", () => {
       render(<RangeSelector selected="1Y" onSelect={() => {}} />);
 
       const bars = screen.getAllByTestId("range-duration-bar");
-      expect(bars.map((bar) => bar.dataset.range)).toEqual([...PRESET_RANGES]);
+      expect(bars.map((bar) => bar.dataset.range)).toEqual([...VISIBLE_RANGES]);
 
       // Widths come from an inline style, not a Tailwind class, precisely
       // so they're readable here -- this repo's jsdom setup loads no
@@ -71,7 +87,7 @@ describe("RangeSelector", () => {
   it("marks every pill unpressed when selected is null (a custom start-date anchor is active instead, issue #11)", () => {
     render(<RangeSelector selected={null} onSelect={() => {}} />);
 
-    for (const range of PRESET_RANGES) {
+    for (const range of VISIBLE_RANGES) {
       expect(screen.getByRole("button", { name: range === "MAX" ? "Max" : range })).toHaveAttribute(
         "aria-pressed",
         "false",

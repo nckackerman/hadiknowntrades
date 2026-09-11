@@ -2,7 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 
-import { PRESET_RANGES, type AnchorDate, type PresetRange } from "@hadiknowntrades/core";
+import { type AnchorDate, type PresetRange } from "@hadiknowntrades/core";
 
 import { useResults } from "@/lib/use-results";
 import { useCustomResults } from "@/lib/use-custom-results";
@@ -21,20 +21,22 @@ import { TheLineup } from "@/components/TheLineup";
 import { TheCut } from "@/components/TheCut";
 import { CustomRangeSelector } from "@/components/CustomRangeSelector";
 import { ModeToggle } from "@/components/ModeToggle";
-import { RangeSelector } from "@/components/RangeSelector";
+import { RangeSelector, VISIBLE_RANGES } from "@/components/RangeSelector";
 import { ResultsPanel } from "@/components/ResultsPanel";
 
 const DEFAULT_RANGE: PresetRange = "1W";
 
 /**
- * "1W · 1M · 3M · 1Y · 5Y · Max" -- the demoted "Explore other windows"
+ * "1W · 1M · 3M · 1Y · Max" -- the demoted "Explore other windows"
  * section's own closed-summary subtitle (issue #165, matching the
- * mockup's `<span class="explorer-sub">` copy). Derived from
- * PRESET_RANGES rather than a second hardcoded list of range labels, so
- * this can't silently drift from the pills RangeSelector itself renders
- * inside that same section.
+ * mockup's `<span class="explorer-sub">` copy, minus 5Y -- removed from
+ * the picker per direct user request; see RangeSelector.tsx's own
+ * VISIBLE_RANGES doc comment). Derived from that same VISIBLE_RANGES
+ * list rather than PRESET_RANGES directly (or a second hardcoded list of
+ * range labels), so this can't silently drift from the pills
+ * RangeSelector itself renders inside that same section.
  */
-const EXPLORER_RANGE_SUMMARY = PRESET_RANGES.map((preset) =>
+const EXPLORER_RANGE_SUMMARY = VISIBLE_RANGES.map((preset) =>
   preset === "MAX" ? "Max" : preset,
 ).join(" · ");
 
@@ -304,6 +306,10 @@ export function ResultsPage() {
       {/* "Explore other windows" (issue #165): the entire pre-existing
           1W/1M/3M/1Y/5Y/Max range-explorer experience -- RangeSelector,
           the "More options" disclosure (CustomRangeSelector/ModeToggle),
+          (RangeSelector itself no longer offers a 5Y pill here as of a
+          later direct user request -- see its own VISIBLE_RANGES doc
+          comment; 5Y is still fully computed/served/renderable via a
+          direct ?range=5Y URL, this section's own scope is unchanged.)
           and ResultsPanel itself (including its own nested AboutSection
           disclaimer/methodology disclosure, per result view) -- demoted
           into one collapsed <details> at the bottom of the page, below
