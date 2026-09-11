@@ -16,7 +16,7 @@
 // docs/plans/issue-28-plan.md's addendum for why). A reader switches on
 // `model` to know which shape it got.
 
-import { PRESET_RANGES, type PresetRange } from "./preset-ranges";
+import { CUT_RANGES, PRESET_RANGES, type CutRange, type PresetRange } from "./preset-ranges";
 import type { Trade } from "./optimizer";
 import type { IntradayDayResult, IntradayLongShortResult } from "./intraday-optimizer";
 import type { DailyClose } from "./yahoo-client";
@@ -212,8 +212,16 @@ export const THE_ORDER_TICKER_COUNT = ORDER_POOL_SIZE;
  * alongside the 6 preset `results/{RANGE}.json` keys) since this is a
  * genuinely separate object family, not another `PrecomputedResult`
  * union member -- see Sp500PrefixResult's own doc comment for why.
+ *
+ * **Takes a `CutRange`, not a `PresetRange` (issue #238)** -- widened
+ * here, not on the shared `PresetRange` itself, the moment The Cut grew
+ * its own real 1-day window (`results/sp500-prefix/1D.json`); see
+ * `CutRange`'s own doc comment (preset-ranges.ts) for why this is safe
+ * to widen (Sp500PrefixResult was already its own sibling object family
+ * before this, never a `PrecomputedResult` union member) while
+ * `PRESET_RANGES`/`resultKey` above stay untouched.
  */
-export function sp500PrefixResultKey(range: PresetRange): string {
+export function sp500PrefixResultKey(range: CutRange): string {
   return `results/sp500-prefix/${range}.json`;
 }
 
@@ -552,7 +560,18 @@ export interface CustomAnchorsManifest {
  */
 export interface Sp500PrefixResult {
   schemaVersion: number;
-  range: PresetRange;
+  /**
+   * **`CutRange`, not `PresetRange` (issue #238)** -- The Cut's own range
+   * set, `PresetRange` plus a real 1-day window ("1D"). This widens
+   * *this* field only, not the shared `PresetRange` union itself (see
+   * `CutRange`'s own doc comment, preset-ranges.ts, and
+   * `sp500PrefixResultKey`'s above) -- safe here specifically because
+   * `Sp500PrefixResult` was already its own sibling object family (never
+   * a `PrecomputedResult` union member), the same reasoning
+   * `CustomWindowResult.anchorDate` below already established for "a
+   * feature needs PresetRange plus one more identifying value."
+   */
+  range: CutRange;
   generatedAt: string;
   /**
    * The real trading date fed to computeSp500PrefixSelection's own
@@ -2234,8 +2253,10 @@ export function validateSp500PrefixResult(result: Sp500PrefixResult): void {
       `schemaVersion must be exactly ${RESULTS_SCHEMA_VERSION}, got ${describe(r.schemaVersion)}`,
     );
   }
-  if (!(PRESET_RANGES as readonly string[]).includes(r.range as string)) {
-    problems.push(`range must be one of ${PRESET_RANGES.join(", ")}, got ${describe(r.range)}`);
+  // CUT_RANGES (PresetRange plus "1D"), not PRESET_RANGES -- see
+  // Sp500PrefixResult.range's own doc comment (issue #238).
+  if (!(CUT_RANGES as readonly string[]).includes(r.range as string)) {
+    problems.push(`range must be one of ${CUT_RANGES.join(", ")}, got ${describe(r.range)}`);
   }
   if (!isNonEmptyString(r.generatedAt))
     problems.push(`generatedAt must be a non-empty string, got ${describe(r.generatedAt)}`);

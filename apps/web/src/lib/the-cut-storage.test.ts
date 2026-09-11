@@ -44,6 +44,13 @@ describe("getCutGameState / saveCutGameState", () => {
     expect(getCutGameState("5Y")?.guesses).toEqual([2, 3]);
   });
 
+  it("supports the 1D range (CutRange, issue #238), keyed distinctly from every PresetRange", () => {
+    saveCutGameState("1D", freshState({ guesses: [7] }));
+    saveCutGameState("1Y", freshState({ guesses: [9] }));
+    expect(getCutGameState("1D")?.guesses).toEqual([7]);
+    expect(getCutGameState("1Y")?.guesses).toEqual([9]);
+  });
+
   it("treats a malformed stored value as nothing stored", () => {
     window.localStorage.setItem("hikt:the-cut:game:1Y", JSON.stringify({ nonsense: true }));
     expect(getCutGameState("1Y")).toBeNull();

@@ -12,8 +12,10 @@
 //
 // **Not a daily-rotating puzzle** (docs/design/the-cut-2026-09/README.md's
 // own "Naming and scope" section rules that out for v1) -- a player can
-// pick any of the 6 preset ranges and play (or replay) it at any time.
-// The pure grading logic lives in the-cut-scoring.ts, the persisted
+// pick any of the 7 CUT_RANGES entries (the 6 shared PresetRange windows
+// plus The Cut's own real 1-day window, "1D" -- issue #238, and the
+// default range on load since that issue) and play (or replay) it at any
+// time. The pure grading logic lives in the-cut-scoring.ts, the persisted
 // per-range game state + streak history in the-cut-storage.ts, and the
 // two are wired together for React in use-cut-game.ts -- this file is
 // the one place either gets called from a component.
@@ -22,7 +24,7 @@ import { useEffect, useId, useRef, useState } from "react";
 
 import {
   SP500_CONSTITUENTS,
-  type PresetRange,
+  type CutRange,
   type Sp500PrefixCurvePoint,
 } from "@hadiknowntrades/core";
 
@@ -38,8 +40,8 @@ import {
 import { useCutGame, type CutView } from "@/lib/use-cut-game";
 import { useResetWhenChanged } from "@/lib/use-reset-when-changed";
 import { useSp500Prefix } from "@/lib/use-sp500-prefix";
+import { CutRangeSelector } from "@/components/CutRangeSelector";
 import { GamePanelHeader } from "@/components/GamePanelHeader";
-import { RangeSelector } from "@/components/RangeSelector";
 import { TheCutChart } from "@/components/TheCutChart";
 
 const ICON = "✂️";
@@ -66,8 +68,18 @@ const CONNECTOR_ACCENT = "#19573a";
 
 const CARD_BASE_CLASSNAME = "min-h-28 rounded-2xl text-white";
 
-/** Exported so ResultsPage.test.tsx (which asserts on the exact set of `range=` fetches the whole page issues) can name this fetch without hardcoding "1Y" a second time. */
-export const THE_CUT_DEFAULT_RANGE: PresetRange = "1Y";
+/**
+ * Exported so ResultsPage.test.tsx (which asserts on the exact set of
+ * `range=` fetches the whole page issues) can name this fetch without
+ * hardcoding "1D" a second time.
+ *
+ * **"1D" (issue #238), not "1Y"** -- The Cut now defaults to a real
+ * 1-day window on load, computed from real EOD data (the nightly
+ * pipeline's own backward-resolved previous-trading-day boundary, see
+ * apps/pipeline/src/pipeline.ts's buildSp500PrefixResults), rather than
+ * requiring a player to pick it manually every time.
+ */
+export const THE_CUT_DEFAULT_RANGE: CutRange = "1D";
 
 /** Ranked #1..#universeSize by real S&P weight, descending -- the exact ordering apps/pipeline's own buildSp500PrefixResults ranks against (packages/core/CLAUDE.md's "The Cut" section), computed once at module scope since SP500_CONSTITUENTS is a static, versioned snapshot (see that file's own header comment). */
 const RANKED_TICKERS = [...SP500_CONSTITUENTS].sort((a, b) => b.weight - a.weight);
@@ -241,7 +253,7 @@ function TickerStrip({ universeSize, activeRank }: TickerStripProps) {
 }
 
 interface CutBoardProps {
-  range: PresetRange;
+  range: CutRange;
   view: CutView;
   universeSize: number;
   startingCapital: number;
@@ -493,7 +505,7 @@ function CutBoard({
  */
 export function TheCut() {
   const headingId = useId();
-  const [range, setRange] = useState<PresetRange>(THE_CUT_DEFAULT_RANGE);
+  const [range, setRange] = useState<CutRange>(THE_CUT_DEFAULT_RANGE);
   const resultState = useSp500Prefix(range);
   const result =
     resultState?.status === "success" && isValidSp500PrefixResult(resultState.data)
@@ -548,7 +560,7 @@ export function TheCut() {
 
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs font-medium text-[var(--text-muted)]">Window:</span>
-              <RangeSelector selected={range} onSelect={setRange} />
+              <CutRangeSelector selected={range} onSelect={setRange} />
             </div>
 
             <p className="text-xs text-[var(--text-muted)]">

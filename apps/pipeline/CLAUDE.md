@@ -1761,3 +1761,101 @@ CLAUDE.md` documents for the full constituent list summed -- the
   formula, computed independently in the test, not by re-running
   `computeSp500PrefixSelection` under test), plus a dedicated regression
   test reproducing the `HUBB`-shaped outlier-ticker bug at fixture scale.
+
+### The Cut: 1-day range (issue #238)
+
+Extended `buildSp500PrefixResults` from 6 ranges (`PRESET_RANGES`) to 7
+(`CUT_RANGES` -- `packages/core`'s `["1D", ...PRESET_RANGES]`), and
+`THE_CUT_DEFAULT_RANGE` (`apps/web`'s `TheCut.tsx`) from `"1Y"` to
+`"1D"`. See `packages/core/CLAUDE.md`'s own `CutRange`/`CUT_RANGES`
+writeup for the type-level side of this (why it's a sibling type on
+`Sp500PrefixResult`, not a widened `PresetRange`).
+
+- **"1D" cannot reuse every other range's own forward-snap boundary
+  resolution -- this is the one genuinely new piece of logic this issue
+  needed, and it's load-bearing, not cosmetic.** Every `PresetRange`
+  resolves its own real `startDate` by taking its _nominal_ start
+  (`presetRangeStartDate`, e.g. "7 calendar days before `asOf`" for 1W)
+  and snapping _forward_ to the nearest common date `resolveCommonDates`
+  actually has. That's safe for a multi-day window because the nominal
+  start sits comfortably earlier than the window's own end -- forward-
+  snapping a few days here and there never risks reaching the end date
+  itself. A 1-day nominal window has no such margin: "1 calendar day
+  before `asOf`" lands on a weekend/holiday roughly 2 days out of 7, and
+  forward-snapping _that_ nominal start walks forward past the gap and
+  lands on `commonEndDate` itself -- a **zero-width window**
+  (`startDate === endDate`, every `portfolioReturn` a meaningless 1.0)
+  silently reported as a real 1-day comparison, with no `truncated: true`
+  flag to catch it (the existing truncation check only fires when the
+  resolved start is _earlier_ than intended, not later).
+- **Fix: "1D" resolves its own `startDate` _backward_ from
+  `commonDates`' own last entry, not forward from a nominal calendar
+  date** -- literally `commonDates[commonDates.length - 2]`, the real
+  trading day immediately preceding the resolved end date, whatever the
+  actual calendar gap to it turns out to be (1 day on an ordinary
+  weekday-to-weekday pair, 3 across a normal weekend, more across a
+  multi-day holiday). This is what "yesterday's close vs. today's close"
+  actually means in a market that doesn't trade every day, and it's
+  the correct fix precisely because it never consults the nominal
+  calendar date at all -- there's no forward-snap step left to
+  accidentally overshoot.
+- **The exact same zero-width collapse independently threatens "1D"'s
+  own SPY benchmark, not just the S&P prefix curve** -- the pre-existing
+  `benchmarksByRange` map (built once per run, keyed by the 6
+  `PresetRange` entries) computes each range's benchmark from its
+  _nominal_ start via `computeBenchmark`'s own "nearest point in
+  `[nominalStart, end]`" window filter, which has the identical failure
+  mode for a 1-day nominal window. `buildSp500PrefixResults` doesn't
+  reuse that map for "1D" at all -- it takes a new `benchmarkCloses`
+  param (SPY's raw fetched closes, the same "pass the raw series, not a
+  pre-built per-range map" shape `buildCustomWindowResults`' own
+  `benchmarkCloses` already established for the identical "this range
+  isn't one of the 6 `PresetRange` entries a pre-built map is keyed by"
+  reason) and calls `computeBenchmark` directly against "1D"'s own
+  resolved (backward-looked-up) `startDate`/`commonEndDate` pair.
+- **`computeSp500PrefixSelection`/`tickerWindowRatio` themselves needed
+  zero changes** -- confirmed, not assumed; see
+  `packages/core/CLAUDE.md`'s own note on this. They're pure exact-date
+  lookups with no notion of "how many days apart" the two boundary dates
+  are.
+- **Live-verified (real Yahoo + real S&P 500 weight data, full
+  503-ticker universe, no S3 write -- `LocalFileResultStore` to a temp
+  dir via a throwaway script mirroring `local-run.ts`, deleted before
+  commit; run completed in 17.2s, 0 of 503 tickers skipped)**, as of
+  2026-09-11:
+
+  | Range | startDate  | endDate    | bestN | best return | curve spread (max-min portfolioReturn) | n500 vs. SPY |
+  | ----- | ---------- | ---------- | ----- | ----------- | -------------------------------------- | ------------ |
+  | 1D    | 2026-09-10 | 2026-09-11 | 7     | +1.49%      | 0.86 percentage points                 | +0.0013%     |
+  | 1W    | 2026-09-04 | 2026-09-11 | 18    | +0.44%      | 4.95 percentage points                 | +0.0662%     |
+
+  The resolved 1D boundary was an ordinary weekday-to-weekday pair this
+  particular day (no weekend/holiday gap to exercise live) -- **the
+  weekend/holiday backward-resolution path itself is verified
+  deterministically instead, via a dedicated fixture in
+  `pipeline.sp500-prefix.test.ts`** (a Friday/Monday fixture with no data
+  on the intervening weekend), since a live run can't be made to land on
+  that calendar condition on demand. **`bestN=7` is a real, non-degenerate
+  answer** -- not N=1 (a single stock), not N=universeSize (the whole
+  index) -- confirming the backward-lookup resolved a genuine two-point
+  comparison, not a collapsed one (which would have produced
+  `portfolioReturn` frozen at exactly 1.0 for every N, and a spread of
+  0). The curve spread (min=1.00630, max=1.01495 -- 0.86 points) is
+  visibly _tighter_ than 1W's own 4.95-point spread, and `n500VsSpyPctDiff`
+  is smaller too (0.0013% vs. 1W's 0.0662%) -- both the expected shape
+  the issue's own acceptance criteria anticipated ("most prefixes will
+  likely tie or nearly tie" over a single day), now a real measured
+  number rather than a guess, and consistent with the existing "tolerance
+  grows with window length" pattern this file's own HUBB-fix writeup
+  already documented for the other 6 ranges.
+
+- Pipeline integration test: `pipeline.sp500-prefix.test.ts` gained a
+  dedicated `describe("The Cut: 1D range (issue #238)")` block (plus
+  "1D" added to every existing range-iterating assertion in that file) --
+  one test confirming the backward-lookup lands on the expected common
+  date in the file's own existing sparse 7-date fixture, and one
+  dedicated regression test (a fresh Friday/Monday-only fixture) proving
+  the weekend-collapse fix directly: asserts `startDate !== dataAsOf`
+  (not zero-width), a real hand-computed +10% N=1 return, and the SPY
+  benchmark resolving the identical real Friday->Monday window rather
+  than collapsing to Monday-vs-Monday.

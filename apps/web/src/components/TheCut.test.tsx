@@ -10,7 +10,8 @@ import {
 } from "@/lib/the-cut-storage";
 import { TheCut } from "./TheCut";
 
-const RANGE = "1Y";
+// The Cut's own default range as of issue #238 -- see THE_CUT_DEFAULT_RANGE.
+const RANGE = "1D";
 
 // A small, hand-computed fixture: universeSize=5, bestN=3 ($30 from $20),
 // the N=5 (whole-index) baseline at $22 -- matching the-cut-scoring.test.ts's

@@ -91,9 +91,10 @@ describe("runPipeline", () => {
       asOf,
     });
 
-    // 6 preset ranges + The Cut's own 6 per-range results (issue #232,
-    // reusing this same fixture's real AAPL data).
-    expect(store.objects.size).toBe(6 + 6);
+    // 6 preset ranges + The Cut's own 7 per-range results (issue #232,
+    // extended to CUT_RANGES' 7th "1D" entry by issue #238, reusing this
+    // same fixture's real AAPL data).
+    expect(store.objects.size).toBe(6 + 7);
     expect(summary.results).toHaveLength(6);
 
     const generatedAts = new Set<string>();
@@ -444,17 +445,18 @@ describe("runPipeline", () => {
           store,
           asOf,
         }),
-        // 8 of 12: 5Y/MAX (2) + The Cut's own 6 per-range results (issue
-        // #232, unaffected by the intraday path's own failure -- it only
-        // depends on the window path); 12 = 6 preset ranges (ideal) + 6
+        // 9 of 13: 5Y/MAX (2) + The Cut's own 7 per-range results (issue
+        // #232, extended to CUT_RANGES' 7th "1D" entry by issue #238,
+        // unaffected by the intraday path's own failure -- it only
+        // depends on the window path); 13 = 6 preset ranges (ideal) + 7
         // sp500-prefix results (actually built).
-      ).rejects.toThrow(/wrote 8 of 12 expected result/);
+      ).rejects.toThrow(/wrote 9 of 13 expected result/);
 
       expect(store.objects.has("results/1W.json")).toBe(false);
       expect(store.objects.has("results/1M.json")).toBe(false);
       expect(store.objects.has("results/3M.json")).toBe(false);
       expect(store.objects.has("results/1Y.json")).toBe(false);
-      expect(store.objects.size).toBe(2 + 6); // 5Y/MAX + The Cut's 6 results
+      expect(store.objects.size).toBe(2 + 7); // 5Y/MAX + The Cut's 7 results
     });
 
     it("computes a per-day worst-case counterpart, never better than that day's optimal endingBalance (issue #31)", async () => {
@@ -1561,17 +1563,18 @@ describe("runPipeline", () => {
         store,
         asOf,
       }),
-      // 8 of 12: 5Y/MAX (2) + The Cut's own 6 per-range results (issue
-      // #232, unaffected by the intraday path's own failure -- it only
-      // depends on the window path); 12 = 6 preset ranges (ideal) + 6
-      // sp500-prefix results (actually built).
-    ).rejects.toThrow(/wrote 8 of 12 expected result/);
+      // 9 of 13: 5Y/MAX (2) + The Cut's own 7 per-range results (issue
+      // #232, extended to CUT_RANGES' 7th "1D" entry by issue #238,
+      // unaffected by the intraday path's own failure -- it only depends
+      // on the window path); 13 = 6 preset ranges (ideal) + 7 sp500-prefix
+      // results (actually built).
+    ).rejects.toThrow(/wrote 9 of 13 expected result/);
 
     expect(store.objects.has("results/1W.json")).toBe(false);
     expect(store.objects.has("results/1M.json")).toBe(false);
     expect(store.objects.has("results/3M.json")).toBe(false);
     expect(store.objects.has("results/1Y.json")).toBe(false);
-    expect(store.objects.size).toBe(2 + 6); // 5Y/MAX + The Cut's 6 results
+    expect(store.objects.size).toBe(2 + 7); // 5Y/MAX + The Cut's 7 results
   });
 
   it("aborts the entire run and writes nothing when BOTH paths fail", async () => {

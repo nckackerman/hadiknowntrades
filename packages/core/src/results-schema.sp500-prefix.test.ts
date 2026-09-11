@@ -56,6 +56,10 @@ describe("sp500PrefixResultKey", () => {
     expect(sp500PrefixResultKey("1Y")).toBe("results/sp500-prefix/1Y.json");
     expect(sp500PrefixResultKey("MAX")).toBe("results/sp500-prefix/MAX.json");
   });
+
+  it("accepts the 1D CutRange (issue #238)", () => {
+    expect(sp500PrefixResultKey("1D")).toBe("results/sp500-prefix/1D.json");
+  });
 });
 
 describe("validateSp500PrefixResult", () => {
@@ -87,9 +91,13 @@ describe("validateSp500PrefixResult", () => {
     ).toThrow(/schemaVersion must be exactly/);
   });
 
-  it("rejects a range outside PRESET_RANGES", () => {
+  it("accepts the 1D range (issue #238 -- CutRange, not PRESET_RANGES)", () => {
+    expect(() => validateSp500PrefixResult(result({ range: "1D" }))).not.toThrow();
+  });
+
+  it("rejects a range outside CUT_RANGES", () => {
     expect(() =>
-      validateSp500PrefixResult(result({ range: "1D" as Sp500PrefixResult["range"] })),
+      validateSp500PrefixResult(result({ range: "2D" as Sp500PrefixResult["range"] })),
     ).toThrow(/range must be one of/);
   });
 

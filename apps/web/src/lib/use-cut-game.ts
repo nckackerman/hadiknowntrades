@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import type { PresetRange, Sp500PrefixResult } from "@hadiknowntrades/core";
+import type { CutRange, Sp500PrefixResult } from "@hadiknowntrades/core";
 
 import {
   CUT_MAX_ATTEMPTS,
@@ -88,7 +88,7 @@ function gradeGuesses(guesses: readonly number[], result: Sp500PrefixResult): Cu
  */
 function viewFor(
   state: CutGameState,
-  range: PresetRange,
+  range: CutRange,
   result: Sp500PrefixResult,
   history: readonly CutCompletedGame[],
 ): CutView {
@@ -124,7 +124,7 @@ export interface UseCutGameResult {
  * those two) there's a real async read (localStorage) to do, not just a
  * value to compare.
  */
-export function useCutGame(range: PresetRange, result: Sp500PrefixResult | null): UseCutGameResult {
+export function useCutGame(range: CutRange, result: Sp500PrefixResult | null): UseCutGameResult {
   const [view, setView] = useState<CutView>(UNHYDRATED_VIEW);
 
   useEffect(() => {

@@ -764,6 +764,17 @@ describe("getSp500PrefixResponse", () => {
     expect(response.status).toBe(200);
   });
 
+  it("accepts the 1D range (issue #238 -- CutRange, not PresetRange)", async () => {
+    const objects = new Map([
+      [sp500PrefixResultKey("1D"), JSON.stringify({ ...result, range: "1D" })],
+    ]);
+
+    const response = await getSp500PrefixResponse("1D", memoryReader(objects));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ...result, range: "1D" });
+  });
+
   it("returns a 500 when no reader is configured (RESULTS_BUCKET unset)", async () => {
     const response = await getSp500PrefixResponse(range, null);
 

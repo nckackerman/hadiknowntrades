@@ -6,12 +6,13 @@
 // doesn't parse as well-formed reads as "nothing stored" rather than
 // throwing.
 //
-// **Keyed by PresetRange, not by any date** -- The Cut is explicitly not
-// a daily-rotating puzzle (docs/design/the-cut-2026-09/README.md's own
-// "Naming and scope" section: "daily rotation/streak-reset mechanics tied
-// to a calendar day" is out of scope for v1). A player can replay any
-// range at any time; the in-progress/finished state for each of the 6
-// PRESET_RANGES is simply whatever that range's own key currently holds.
+// **Keyed by CutRange (PresetRange plus The Cut's own "1D", issue #238),
+// not by any date** -- The Cut is explicitly not a daily-rotating puzzle
+// (docs/design/the-cut-2026-09/README.md's own "Naming and scope"
+// section: "daily rotation/streak-reset mechanics tied to a calendar
+// day" is out of scope for v1). A player can replay any range at any
+// time; the in-progress/finished state for each of the 7 CUT_RANGES
+// entries is simply whatever that range's own key currently holds.
 //
 // **Streak/history follows order-storage.ts's own precedent exactly**:
 // currentStreak/bestStreak are *derived* from a persisted, bounded
@@ -24,7 +25,7 @@
 // history is just a plain ascending list, one entry per completed game,
 // with no de-dup key at all.
 
-import type { PresetRange } from "@hadiknowntrades/core";
+import type { CutRange } from "@hadiknowntrades/core";
 
 import { readLocalStorage, writeLocalStorage } from "./local-storage";
 import { parseJson } from "./parse-json";
@@ -34,7 +35,7 @@ const KEY_PREFIX = "hikt:the-cut:";
 const GAME_KEY_PREFIX = `${KEY_PREFIX}game:`;
 const HISTORY_KEY = `${KEY_PREFIX}history`;
 
-function gameKeyFor(range: PresetRange): string {
+function gameKeyFor(range: CutRange): string {
   return `${GAME_KEY_PREFIX}${range}`;
 }
 
@@ -59,24 +60,24 @@ function isCutGameState(value: unknown): value is CutGameState {
 }
 
 /** The stored state for `range`, or `null` if there's nothing stored yet (or storage is unavailable, or holds something malformed). */
-export function getCutGameState(range: PresetRange): CutGameState | null {
+export function getCutGameState(range: CutRange): CutGameState | null {
   const parsed = parseJson(readLocalStorage(gameKeyFor(range)));
   return isCutGameState(parsed) ? parsed : null;
 }
 
 /** Persists `state` for `range`, write-through -- overwrites whatever was there before, including a finished game (see clearCutGameState for starting a fresh one deliberately). */
-export function saveCutGameState(range: PresetRange, state: CutGameState): boolean {
+export function saveCutGameState(range: CutRange, state: CutGameState): boolean {
   return writeLocalStorage(gameKeyFor(range), JSON.stringify(state));
 }
 
 /** Resets `range` back to a fresh, unplayed game -- how "play again" is implemented (there's no daily lock to respect, so replaying is always allowed). */
-export function clearCutGameState(range: PresetRange): boolean {
+export function clearCutGameState(range: CutRange): boolean {
   return saveCutGameState(range, { guesses: [], done: false, won: false });
 }
 
 /** One completed game's outcome, kept in the persisted streak history. */
 export interface CutCompletedGame {
-  range: PresetRange;
+  range: CutRange;
   won: boolean;
   /** The final guess's own % of the available edge captured -- kept alongside `won` so a future UI could show more than a win/loss streak without a storage-format change. */
   edgeCapturedPct: number;
@@ -115,7 +116,7 @@ function saveCutGameHistory(games: readonly CutCompletedGame[]): boolean {
  * completed game -- the moment `done` first goes true.
  */
 export function recordCutCompletion(
-  range: PresetRange,
+  range: CutRange,
   won: boolean,
   edgeCapturedPctValue: number,
 ): boolean {

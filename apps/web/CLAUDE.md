@@ -10760,3 +10760,54 @@ a.weight)`, computed once at module scope, the exact ordering
   same range in one sitting, each one a genuinely new streak-eligible
   entry. This is a deliberate, considered consequence of the design
   doc's own "not a daily puzzle" framing, not an oversight.
+
+### The Cut: 1-day range and new default (issue #238)
+
+Widened The Cut's own range type end-to-end to `CutRange`
+(`PresetRange` plus `"1D"`, `packages/core`'s `preset-ranges.ts` --
+see that package's own `CLAUDE.md` for the full type-level writeup) and
+changed `THE_CUT_DEFAULT_RANGE` (`TheCut.tsx`) from `"1Y"` to `"1D"` --
+so the game now opens on a real, computed 1-day window by default
+instead of requiring a manual range pick. `use-sp500-prefix.ts`,
+`use-cut-game.ts`, `the-cut-storage.ts`, and
+`getSp500PrefixResponse`/`route.ts` (`/api/sp500-prefix`) all now type
+their range parameter as `CutRange`, not `PresetRange`.
+
+- **`getSp500PrefixResponse` parses via a new `parseCutRange`
+  (`results-api.ts`), not the existing `parseRange`** -- a dedicated
+  sibling function (case-insensitive match against `CUT_RANGES`),
+  mirroring `parseRange`'s own shape exactly rather than widening it.
+  `parseRange`/`isCanonicalRange`/`PRESET_RANGES` themselves are
+  completely untouched: both are still relied on by every non-Cut route
+  in `results-api.ts` (`/api/results`, `/api/og/[range]`), neither of
+  which has any notion of a 1-day window.
+- **RangeSelector-generalize-vs-new-component decision (the issue's own
+  open question): went with a new, small, Cut-specific component
+  (`CutRangeSelector.tsx`), not a generalized `RangeSelector`.**
+  `RangeSelector.tsx` is also used as-is by the main results page
+  (`ResultsPage.tsx`), which has no relationship to The Cut and no
+  reason to import `CutRange`. Generalizing it (an arbitrary ordered
+  range list + label map via props) would have grown that shared,
+  already-tested component's own API for the sake of one new caller,
+  and put a Cut-specific type into a component an unrelated page
+  depends on -- the same "a change scoped to one feature shouldn't
+  touch a shared, unrelated, already-tested call site" reasoning this
+  repo already applies to _types_ via `CustomWindowResult`'s own sibling-
+  type precedent, applied here to a _component_ instead. `RangeSelector`
+  itself is genuinely small (~30 lines of actual render logic), so
+  duplicating its conventions (`durationBarWidthPx`'s ordinal-by-position
+  bar, `--accent-selection` fill, `aria-pressed` pills, the identical
+  "Preset date range" `aria-label` for continuity) into `CutRangeSelector`
+  cost far less than growing every existing `RangeSelector` call site's
+  own contract would have. `RangeSelector.tsx` and its own test file are
+  untouched by this change -- `CutRangeSelector.tsx` is a genuinely new,
+  parallel file (own `CutRangeSelector.test.tsx`, mirroring
+  `RangeSelector.test.tsx`'s own test shape over `CUT_RANGES` instead of
+  `PRESET_RANGES`).
+- **`TheCut.test.tsx`'s own `RANGE` constant changed from `"1Y"` to
+  `"1D"`** (matching the new default) -- every test in that file that
+  calls `saveCutGameState(RANGE, ...)` or asserts on `getCutGameHistory()`
+  entries keyed by `RANGE` needed this, since the component now defaults
+  to fetching/storing under `"1D"`, not `"1Y"`, on first mount. No other
+  behavioral change to that suite was needed; the game logic itself
+  (grading, streaks, persistence) is entirely range-agnostic.

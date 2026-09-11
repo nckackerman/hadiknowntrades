@@ -6,6 +6,7 @@
 import {
   anchorDateToDate,
   CUSTOM_ANCHORS_MANIFEST_KEY,
+  CUT_RANGES,
   LINEUP_LATEST_KEY,
   LINEUP_SIZE,
   MYSTERY_INDEX_KEY,
@@ -23,6 +24,7 @@ import {
   type AnchorDate,
   type CustomAnchorsManifest,
   type CustomWindowResult,
+  type CutRange,
   type LineupResult,
   type MysteryIndexEntry,
   type MysterySession,
@@ -101,6 +103,24 @@ export function parseRange(raw: string | null): PresetRange | null {
  */
 export function isCanonicalRange(raw: string): raw is PresetRange {
   return (PRESET_RANGES as readonly string[]).includes(raw);
+}
+
+/**
+ * Case-insensitively matches a raw query-string value against CUT_RANGES
+ * (PresetRange plus "1D") -- The Cut's own `getSp500PrefixResponse` uses
+ * this instead of `parseRange` above (issue #238). A dedicated sibling,
+ * not a widening of `parseRange`/`isCanonicalRange` themselves: both of
+ * those are also relied on by every non-Cut route in this file (the main
+ * results page's `/api/results`, `/api/og/[range]`), and none of them
+ * has any meaning for a 1-day window -- see `CutRange`'s own doc comment
+ * (packages/core's preset-ranges.ts) for why widening the shared
+ * `PresetRange` union itself is exactly what this issue's own scope
+ * rules out.
+ */
+export function parseCutRange(raw: string | null): CutRange | null {
+  if (!raw) return null;
+  const upper = raw.toUpperCase();
+  return (CUT_RANGES as readonly string[]).includes(upper) ? (upper as CutRange) : null;
 }
 
 /**
@@ -604,17 +624,22 @@ export async function getTheOrderResponse(reader: ResultReader | null): Promise<
  * "already passed the pipeline's own write-time validator, this is just a
  * defensive floor against a partially-written S3 object" posture every
  * other fixed-shape route in this file already applies.
+ *
+ * **Parses via `parseCutRange`, not `parseRange` (issue #238)** -- The
+ * Cut accepts its own 7th range, "1D", which `parseRange`/`PRESET_RANGES`
+ * deliberately don't (see `parseCutRange`'s own doc comment for why that
+ * split, not a widened `parseRange`, is the right shape here).
  */
 export async function getSp500PrefixResponse(
   rawRange: string | null,
   reader: ResultReader | null,
 ): Promise<Response> {
-  const range = parseRange(rawRange);
+  const range = parseCutRange(rawRange);
   if (range === null) {
     return errorResponse(
       400,
       "invalid_range",
-      `Unsupported or missing "range" query parameter. Expected one of: ${PRESET_RANGES.join(", ")} (case-insensitive). Received: ${rawRange ?? "(none)"}.`,
+      `Unsupported or missing "range" query parameter. Expected one of: ${CUT_RANGES.join(", ")} (case-insensitive). Received: ${rawRange ?? "(none)"}.`,
     );
   }
 
