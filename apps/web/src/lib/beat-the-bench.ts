@@ -32,49 +32,50 @@ import { isValidPrice, type SessionBar } from "@hadiknowntrades/core";
 export const STARTING_CAPITAL = 20;
 
 /**
- * Playback speeds, as multipliers of the 1x baseline below. Six fixed
+ * Playback speeds, as multipliers of the 1x baseline below. Three fixed
  * settings rather than a slider: each one has to be a >=44px touch
  * target at 375px (issue #131's own acceptance criteria), and a
  * continuous control would make "what speed am I at" unreadable at a
  * glance mid-session.
  *
- * `0.25` was added (direct user request, not a filed issue) specifically
- * to become the new `DEFAULT_SPEED` below -- see that constant's own doc
- * comment for why this was added as a sixth option rather than replacing
- * the existing `0.1`. The speed picker's own container
+ * **Reduced from six (`0.1, 0.25, 0.5, 1, 2, 4`) to exactly these three
+ * (direct user request, not a filed issue).** `0.1x` (~3.9 minutes a
+ * session) and `4x` (~5.9 seconds) are gone outright, not merely
+ * deprioritized -- with `DEFAULT_SPEED` now `0.5` (see that constant's
+ * own doc comment), the three paces a player actually reaches for are
+ * slow/normal/fast, and the two most extreme settings were the ones
+ * furthest from that default in either direction. `0.25` is gone too --
+ * it was only ever added to become `DEFAULT_SPEED` (see that constant's
+ * own now-superseded doc history), and `0.5` takes over that job
+ * directly rather than sitting alongside it as a fourth, redundant
+ * "patient" option. The speed picker's own container
  * (`BeatTheBench.tsx`'s `role="group"` row) is a plain `flex flex-wrap`,
- * not a fixed grid, so a sixth button is absorbed by wrapping onto a
- * second line at narrow widths rather than shrinking anything -- verified
- * live, not just assumed (see this file's own PR description).
+ * so it absorbs a shorter row just as readily as it absorbed a sixth
+ * button before this change.
  */
-export const PLAYBACK_SPEEDS = [0.1, 0.25, 0.5, 1, 2, 4] as const;
+export const PLAYBACK_SPEEDS = [0.5, 1, 2] as const;
 export type PlaybackSpeed = (typeof PLAYBACK_SPEEDS)[number];
 
 /**
  * The default playback speed a fresh session starts at.
  *
- * Changed from `1` to `0.25` (direct user request, not a filed issue) to
- * make the game's first-touch experience more patient: at `0.25x` a full
- * 79-bar session runs 93.6s (78 ticks x 1200ms, see `tickIntervalMs`/
- * `sessionDurationMs`) -- deliberately slower than the 1x target's own
- * "under 30 seconds" pace, so a first-time player has real time to read
- * each bar and decide before the session moves on, with Step and Pause
- * (both completely untouched by this change) always available as an
- * even slower/fully manual fallback.
- *
- * `0.25` was added as a **new, sixth** speed (`0.1, 0.25, 0.5, 1, 2, 4`)
- * rather than replacing the existing `0.1` -- the lower-risk choice: it
- * gives the game a slower default with no existing option removed out
- * from under anyone who already relies on `0.1`'s own ~3.9-minute pace
- * (the single slowest, most-patient setting, e.g. for reading every bar
- * closely). Replacing `0.1` with `0.25` would have kept the speed count
- * at five (matching this module's own "five fixed settings" framing as
- * it read before this change) but would have removed real, existing
- * functionality for a change that was only ever asked to touch the
- * *default* -- see `PLAYBACK_SPEEDS`'s own doc comment for the resulting
- * speed set and how the picker's layout absorbs the extra button.
+ * Changed from `0.25` to `0.5` (direct user request, not a filed
+ * issue) -- `0.25` no longer exists as a speed option at all (see
+ * `PLAYBACK_SPEEDS`'s own doc comment for why the speed set itself
+ * shrank to three), so `0.5`, the slowest of the three surviving
+ * settings, takes over as the default directly. At `0.5x` a full
+ * 79-bar session runs 46.8s (78 ticks x 600ms, see `tickIntervalMs`/
+ * `sessionDurationMs`) -- still slower than the 1x target's own "under
+ * 30 seconds" pace, so a first-time player still has real time to read
+ * each bar and decide before the session moves on. Pause remains
+ * available to everyone as a fully manual fallback; "Step forward one
+ * bar" is no longer a generally-available control (see
+ * `BeatTheBench.tsx`'s own top-of-file note and `PlaybackControls`'
+ * doc comment) -- it now renders only for a reduced-motion viewer,
+ * whose session starts paused and needs it as the one way to advance a
+ * bar at a time.
  */
-export const DEFAULT_SPEED: PlaybackSpeed = 0.25;
+export const DEFAULT_SPEED: PlaybackSpeed = 0.5;
 
 /**
  * Milliseconds per bar at 1x -- **the single most experience-defining
@@ -90,12 +91,12 @@ export const DEFAULT_SPEED: PlaybackSpeed = 0.25;
  * can produce, while staying slow enough that a human can actually
  * decide to sell.
  *
- * The other five speeds fall out of this: 0.1x is a deliberately
- * patient 3.9 minutes (for someone reading every bar), 0.25x (the
- * default as of a later change -- see `DEFAULT_SPEED`'s own doc comment)
- * is 93.6 seconds, 0.5x is 46.8 seconds, 2x is 11.7 seconds, and 4x is
- * 5.9 seconds (for a replay, or for a reduced-motion viewer who would
- * rather not step 78 times).
+ * The other two surviving speeds fall out of this: 0.5x (the default as
+ * of a later change -- see `DEFAULT_SPEED`'s own doc comment) is 46.8
+ * seconds, and 2x is 11.7 seconds (for a replay). `0.1x` (3.9 minutes)
+ * and `4x` (5.9 seconds) were removed from `PLAYBACK_SPEEDS` in the same
+ * change that moved the default to 0.5x -- see that constant's own doc
+ * comment for why.
  */
 export const BASE_TICK_MS = 300;
 

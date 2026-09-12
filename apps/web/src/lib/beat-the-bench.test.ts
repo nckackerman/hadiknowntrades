@@ -142,10 +142,10 @@ describe("position tracking", () => {
 });
 
 describe("playback speeds", () => {
-  it("offers six genuinely different intervals, at real millisecond values", () => {
+  it("offers three genuinely different intervals, at real millisecond values", () => {
     const intervals = PLAYBACK_SPEEDS.map(tickIntervalMs);
 
-    expect(intervals).toEqual([3000, 1200, 600, 300, 150, 75]);
+    expect(intervals).toEqual([600, 300, 150]);
     expect(new Set(intervals).size).toBe(PLAYBACK_SPEEDS.length);
     // Strictly decreasing: a "faster" setting must never hold a bar on
     // screen longer than a slower one.
@@ -165,12 +165,10 @@ describe("playback speeds", () => {
     expect(atOneX).toBeLessThan(TARGET_SESSION_MS_AT_1X);
   });
 
-  it("scales the whole session's length by exactly the speed multiplier", () => {
-    expect(sessionDurationMs(BARS.length, 0.1)).toBe(234_000);
-    expect(sessionDurationMs(BARS.length, 0.25)).toBe(93_600);
+  it("scales the whole session's length by exactly the speed multiplier, for each of the three surviving speeds", () => {
     expect(sessionDurationMs(BARS.length, 0.5)).toBe(46_800);
+    expect(sessionDurationMs(BARS.length, 1)).toBe(23_400);
     expect(sessionDurationMs(BARS.length, 2)).toBe(11_700);
-    expect(sessionDurationMs(BARS.length, 4)).toBe(5_850);
   });
 
   it("has no ticks to run for a session of one bar", () => {
@@ -178,13 +176,13 @@ describe("playback speeds", () => {
     expect(sessionDurationMs(0, 1)).toBe(0);
   });
 
-  it("defaults to 0.25x -- a deliberately patient first-touch pace, not the 1x baseline", () => {
-    expect(DEFAULT_SPEED).toBe(0.25);
+  it("defaults to 0.5x -- a deliberately patient first-touch pace, not the 1x baseline", () => {
+    expect(DEFAULT_SPEED).toBe(0.5);
     expect(PLAYBACK_SPEEDS).toContain(DEFAULT_SPEED);
-    // 78 ticks at 1200ms each -- slower than the 1x target's own
+    // 78 ticks at 600ms each -- slower than the 1x target's own
     // "under 30 seconds" pace, on purpose (see DEFAULT_SPEED's own doc
     // comment in beat-the-bench.ts).
-    expect(sessionDurationMs(BARS.length, DEFAULT_SPEED)).toBe(93_600);
+    expect(sessionDurationMs(BARS.length, DEFAULT_SPEED)).toBe(46_800);
   });
 });
 

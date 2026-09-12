@@ -1,9 +1,15 @@
-import { RESULTS_SCHEMA_VERSION } from "@hadiknowntrades/core";
+import { RESULTS_SCHEMA_VERSION, type SessionBar } from "@hadiknowntrades/core";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { PlaybackSpeed } from "@/lib/beat-the-bench";
 import { beatTheBenchKey } from "@/lib/beat-the-bench-storage";
-import { BULLET_TIME_DECISION_WINDOW_MS } from "@/lib/bullet-time";
+import {
+  BULLET_TIME_DECISION_WINDOW_MS,
+  bulletTimeStatusAt,
+  bulletTimeTickIntervalMs,
+  scheduleBulletTimeEvents,
+} from "@/lib/bullet-time";
 import { stubPrefersReducedMotion } from "@/lib/stub-prefers-reduced-motion.test-util";
 import { SPY_SESSION_BARS } from "@/test-fixtures/spy-session-bars";
 import { SPY_DOWN_SESSION_BARS } from "@/test-fixtures/spy-trending-session-bars";
@@ -94,6 +100,48 @@ function advance(ms: number): void {
   act(() => {
     vi.advanceTimersByTime(ms);
   });
+}
+
+/**
+ * Advances a **normal-motion** session `steps` real bars forward from
+ * `fromBarIndex`, using the identical phase-aware interval `SessionGame`
+ * itself paces its own tick on -- the deterministic replacement for
+ * repeatedly clicking the now reduced-motion-only "Step forward one bar"
+ * button (see `PlaybackControls`' own doc comment in `BeatTheBench.tsx`).
+ * A bar whose own phase is `"deciding"` auto-locks after the real
+ * `BULLET_TIME_DECISION_WINDOW_MS` elapses -- the same honest no-op a
+ * real player who takes no action gets -- so a caller that wants to make
+ * an *explicit* choice at a particular decision has to stop just short
+ * of it (`steps` landing exactly on that bar), assert/click there, and
+ * resume calling this for whatever comes after.
+ *
+ * **Must be called as a sequence of small, separate `advance()` calls,
+ * never as one big summed one** -- confirmed by direct measurement, not
+ * assumed: a single huge `vi.advanceTimersByTime` call drains every
+ * pending timer before React ever gets a chance to react to the tick
+ * interval's own dependency-driven restart, so the interval silently
+ * keeps ticking at whatever rate was active when the call began,
+ * regardless of any Bullet Time phase change along the way. This
+ * function's own per-bar loop (one `advance()` per transition) is what
+ * gives each phase change a chance to actually take effect, matching
+ * how a real player -- or this file's own explicit-speed tests -- would
+ * actually experience it.
+ */
+function advanceNormalMotionBars(
+  bars: readonly SessionBar[],
+  fromBarIndex: number,
+  steps: number,
+  speed: PlaybackSpeed = 1,
+): void {
+  const events = scheduleBulletTimeEvents(bars);
+  for (let i = 0; i < steps; i += 1) {
+    const status = bulletTimeStatusAt(events, fromBarIndex + i);
+    const ms =
+      status.phase === "deciding"
+        ? BULLET_TIME_DECISION_WINDOW_MS
+        : bulletTimeTickIntervalMs(status.phase, speed, false);
+    advance(ms);
+  }
 }
 
 function barReadout(): string {
@@ -285,8 +333,8 @@ describe("BeatTheBench", () => {
     it("shows a real, gold done badge once today's session has actually been played", async () => {
       await renderChooser();
       click(/play today's close/i);
-      click(/^4x$/);
-      advance(TICKS_TO_CLOSE * 75);
+      click(/^2x$/);
+      advance(TICKS_TO_CLOSE * 150);
       expect(screen.getByText("Along for the ride")).toBeInTheDocument();
 
       // A fresh mount reads the real stored record back -- the same
@@ -443,17 +491,15 @@ describe("BeatTheBench", () => {
   });
 
   // Issue #131's acceptance criterion asks for the real timings, not
-  // merely that the six multipliers differ -- so each speed is measured
-  // by holding the clock one millisecond short of its own interval.
-  // 0.25x (the default as of a later change) is included alongside the
-  // original five.
+  // merely that the three multipliers differ -- so each speed is
+  // measured by holding the clock one millisecond short of its own
+  // interval. Only the three surviving speeds (`0.1x`/`0.25x`/`4x` were
+  // removed, direct user request, see `PLAYBACK_SPEEDS`'s own doc
+  // comment in beat-the-bench.ts).
   it.each([
-    [/^0\.1x$/, 3000],
-    [/^0\.25x$/, 1200],
     [/^0\.5x$/, 600],
     [/^1x$/, 300],
     [/^2x$/, 150],
-    [/^4x$/, 75],
   ])("holds a bar on screen for its own interval at %s", async (label, intervalMs) => {
     await renderChooser();
     click(/play today's close/i);
@@ -467,12 +513,12 @@ describe("BeatTheBench", () => {
     expect(barReadout()).not.toBe(before);
   });
 
-  it("plays a whole session at 4x in the time the engine says it should", async () => {
+  it("plays a whole session at 2x in the time the engine says it should", async () => {
     await renderChooser();
     click(/play today's close/i);
-    click(/^4x$/);
+    click(/^2x$/);
 
-    advance(TICKS_TO_CLOSE * 75 - 1);
+    advance(TICKS_TO_CLOSE * 150 - 1);
     expect(barReadout()).toMatch(/bar 78 of 79/);
 
     advance(1);
@@ -482,8 +528,8 @@ describe("BeatTheBench", () => {
   it("settles a zero-move session dead level with the bench, and says why", async () => {
     await renderChooser();
     click(/play today's close/i);
-    click(/^4x$/);
-    advance(TICKS_TO_CLOSE * 75);
+    click(/^2x$/);
+    advance(TICKS_TO_CLOSE * 150);
 
     expect(screen.getByText("Along for the ride")).toBeInTheDocument();
     expect(screen.getByText("Level with the bench, exactly.")).toBeInTheDocument();
@@ -515,6 +561,9 @@ describe("BeatTheBench", () => {
   it("never renders a free-form toggle -- a position change is only possible during a Bullet Time decision", async () => {
     await renderChooser();
     click(/play today's close/i);
+    // The default speed is 0.5x as of a later change, not 1x -- select
+    // 1x explicitly so the bar-by-bar advancing below uses round numbers.
+    click(/^1x$/);
 
     // Right at the opening bar, well before the real fixture's own
     // first scheduled event (triggerIndex 4): the ordinary readouts
@@ -523,11 +572,13 @@ describe("BeatTheBench", () => {
     expect(screen.queryByRole("button", { name: "Sell, go to cash" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Buy back in" })).not.toBeInTheDocument();
 
-    // Step to the first scheduled event's own deciding bar (fromIndex 5)
-    // -- the only place a position change is possible at all now. The
+    // Advance to the first scheduled event's own deciding bar (fromIndex
+    // 5) -- the only place a position change is possible at all now. The
     // decision panel's own absolute buttons are on screen; the ordinary
-    // toggle still is not.
-    for (let i = 0; i < 5; i += 1) click("Step forward one bar");
+    // toggle still is not. "Step forward one bar" no longer renders
+    // outside reduced motion (see `PlaybackControls`' own doc comment),
+    // so this ticks the real clock bar by bar instead of clicking it.
+    advanceNormalMotionBars(SPY_SESSION_BARS, 0, 5);
     expect(screen.getByRole("button", { name: "Ride it out" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Step aside" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sell, go to cash" })).not.toBeInTheDocument();
@@ -541,11 +592,11 @@ describe("BeatTheBench", () => {
     expect(screen.queryByRole("button", { name: "Sell, go to cash" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Buy back in" })).not.toBeInTheDocument();
 
-    // Stepped, not timer-advanced, the rest of the way: catchup's own
-    // fixed 150ms/bar pace (unaffected by the speed picker under normal
-    // motion, see `bulletTimeTickIntervalMs`) would otherwise outlive a
-    // single bulk `advance()` call's own budget from mid-catchup.
-    for (let i = 0; i < TICKS_TO_CLOSE - 6; i += 1) click("Step forward one bar");
+    // The rest of the way: any further scheduled events auto-lock (the
+    // honest no-op) rather than being explicitly decided, exactly like a
+    // real player who takes no action -- see `advanceNormalMotionBars`'
+    // own doc comment.
+    advanceNormalMotionBars(SPY_SESSION_BARS, 6, TICKS_TO_CLOSE - 6);
     expect(screen.getByText(/You moved once/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sell, go to cash" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Buy back in" })).not.toBeInTheDocument();
@@ -580,8 +631,8 @@ describe("BeatTheBench", () => {
   it("remembers a played session and offers it again", async () => {
     await renderChooser();
     click(/play today's close/i);
-    click(/^4x$/);
-    advance(TICKS_TO_CLOSE * 75);
+    click(/^2x$/);
+    advance(TICKS_TO_CLOSE * 150);
     click("Play it again");
 
     expect(barReadout()).toMatch(/bar 1 of 79/);
@@ -609,8 +660,8 @@ describe("BeatTheBench", () => {
 
     await renderChooser();
     click(/play today's close/i);
-    click(/^4x$/);
-    advance(TICKS_TO_CLOSE * 75);
+    click(/^2x$/);
+    advance(TICKS_TO_CLOSE * 150);
 
     // The game finishes and settles; only the remembering is lost.
     expect(screen.getByText("Along for the ride")).toBeInTheDocument();
@@ -816,15 +867,16 @@ describe("BeatTheBench", () => {
   // issue #224's code review flagged (a code-review finding, fixed --
   // see `SessionGame`'s own `recentlyResolvedEvent` doc comment).
   describe("Bullet Time (issue #224)", () => {
+    const DOWN_TICKS_TO_CLOSE = SPY_DOWN_SESSION_BARS.length - 1; // 77
+
     /**
      * Renders, picks Mystery Day (which serves `SPY_DOWN_SESSION_BARS`),
-     * pauses immediately, and switches to fake timers -- a local sibling
-     * of `enterMysterySession` rather than that same helper, since this
+     * selects 1x, and switches to fake timers -- a local sibling of
+     * `enterMysterySession` rather than that same helper, since this
      * describe block deliberately runs under normal (not reduced)
-     * motion: only `Step forward one bar` is clicked below, never
-     * `advance()`, so the real tick interval is irrelevant either way,
-     * but pausing first keeps a stray real `setInterval` callback from
-     * firing between clicks.
+     * motion, navigating via `advanceNormalMotionBars` (the real,
+     * phase-aware clock) rather than the now reduced-motion-only "Step
+     * forward one bar".
      */
     async function enterMysteryUnderNormalMotion(): Promise<void> {
       stubRoutedFetch();
@@ -832,21 +884,30 @@ describe("BeatTheBench", () => {
       clickCompactCard();
       click(/play a mystery day/i);
       await screen.findByText(/bar 1 of 78/);
-      click("Pause");
+      // Fake timers *before* selecting 1x, not after: selecting a speed
+      // tears down and recreates the tick interval, and only an
+      // interval created after `vi.useFakeTimers()` is actually
+      // controlled by this file's own `advance()` -- one created under
+      // real timers keeps ticking on the real wall clock regardless of
+      // how much fake time is later advanced. This bit a real, silent
+      // hang here once already (fixed): reordering these two lines is
+      // what actually gets `advanceNormalMotionBars` to move the clock.
       vi.useFakeTimers();
+      click(/^1x$/);
     }
 
     it("never shows the live 'Called it'/'Not this time' badge once the session has settled, even when the last event resolves on the session's own final bar", async () => {
       await enterMysteryUnderNormalMotion();
       // Never clicks Ride it out/Step aside for any of the three events
       // -- all three resolve via the honest "no decision locks to
-      // whatever you're already holding" no-op (Step, clicked here,
-      // behaves identically to letting the countdown run out). The
-      // player starts holding and never moves: the first (down) and
-      // third (down) calls resolve "incorrect" (holding through a
-      // decline), the middle (up) call resolves "correct" (holding
-      // through a rally) -- 1 of 3 correct.
-      await stepToClose();
+      // whatever you're already holding" no-op (each deciding bar's own
+      // real decision window elapsing, exactly like a real player who
+      // takes no action -- see `advanceNormalMotionBars`' own doc
+      // comment). The player starts holding and never moves: the first
+      // (down) and third (down) calls resolve "incorrect" (holding
+      // through a decline), the middle (up) call resolves "correct"
+      // (holding through a rally) -- 1 of 3 correct.
+      advanceNormalMotionBars(SPY_DOWN_SESSION_BARS, 0, DOWN_TICKS_TO_CLOSE);
 
       expect(screen.queryByText(/Not this time/)).not.toBeInTheDocument();
       expect(screen.queryByText(/Called it/)).not.toBeInTheDocument();
@@ -859,21 +920,23 @@ describe("BeatTheBench", () => {
     it("shows the decision panel and a live resolution badge mid-session, then the settlement's own tally line once settled", async () => {
       await enterMysteryUnderNormalMotion();
 
-      // Step to the first event's own deciding bar (fromIndex 27).
-      for (let i = 0; i < 27; i += 1) click("Step forward one bar");
+      // Advance to the first event's own deciding bar (fromIndex 27).
+      advanceNormalMotionBars(SPY_DOWN_SESSION_BARS, 0, 27);
       expect(screen.getByText("Big swing incoming")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Ride it out" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Step aside" })).toBeInTheDocument();
 
-      // A down-swing: "Step aside" (ending up in cash) is the correct call.
+      // A down-swing: "Step aside" (ending up in cash) is the correct
+      // call. barIndex becomes 28.
       click("Step aside");
-      // Step through the rest of the swing to its own resolution bar (32).
-      for (let i = 0; i < 5; i += 1) click("Step forward one bar");
 
       // Two matches, deliberately: the visible badge and the sr-only
       // aria-live announcement share the identical sentence (computed
       // once, per this issue's own code-review fix -- see
-      // `recentlyResolvedSentence`'s own doc comment).
+      // `recentlyResolvedSentence`'s own doc comment). The rest of the
+      // swing's own catchup phase ticks past this automatically once
+      // enough real time elapses.
+      advanceNormalMotionBars(SPY_DOWN_SESSION_BARS, 28, 4);
       expect(screen.getAllByText(/Called it/).length).toBeGreaterThan(0);
 
       // Never explicitly chosen again for the second or third events --
@@ -883,28 +946,30 @@ describe("BeatTheBench", () => {
       // *correct* again for the third (a down-swing, bars 64-77) -- 2 of
       // 3 correct overall, the same real tally the live implementation
       // produces for this exact fixture.
-      await stepToClose();
+      advanceNormalMotionBars(SPY_DOWN_SESSION_BARS, 32, DOWN_TICKS_TO_CLOSE - 32);
       expect(screen.getByText("Bullet Time calls: 2 of 3 correct.")).toBeInTheDocument();
     });
 
     // A real bug, found by an independent code review: the decision
     // auto-lock timer's own guard used to check only `deciding`/
     // `reducedMotion`, not the player's own `paused` state -- a player
-    // who paused, then used "Step forward one bar" (always available) to
-    // step into a trigger bar, would have a real wall-clock timer
-    // silently counting down while the game visibly looked paused to
-    // them. `enterMysteryUnderNormalMotion` already leaves the session
-    // paused (it clicks "Pause" once, up front), so stepping straight
-    // into the deciding bar reproduces the exact scenario -- no extra
-    // pause click needed here.
+    // who paused a normal-motion session, then unpaused, would have a
+    // real wall-clock timer silently counting down while the game
+    // visibly looked paused to them in between. Pausing right after
+    // arriving at the deciding bar (rather than before navigating to
+    // it, which would leave nothing advancing the clock at all) is what
+    // reproduces this exact scenario.
     it("does not auto-lock the decision window while the player is paused, and resumes counting down once they unpause", async () => {
       await enterMysteryUnderNormalMotion();
 
-      // 27 steps from the opening bar (barIndex 0) lands on barIndex 27
-      // -- the first event's own fromIndex, displayed as "bar 28".
-      for (let i = 0; i < 27; i += 1) click("Step forward one bar");
+      // 27 real transitions from the opening bar (barIndex 0) lands on
+      // barIndex 27 -- the first event's own fromIndex, displayed as
+      // "bar 28".
+      advanceNormalMotionBars(SPY_DOWN_SESSION_BARS, 0, 27);
       expect(screen.getByText("Big swing incoming")).toBeInTheDocument();
       expect(screen.getByText(/bar 28 of 78/)).toBeInTheDocument();
+
+      click("Pause");
 
       // Well past the real decision window -- if the timer were still
       // running despite `paused`, it would have fired by now.
@@ -956,19 +1021,30 @@ describe("BeatTheBench", () => {
       render(<BeatTheBench />);
       clickCompactCard();
       await screen.findByText(/20 bars/);
-      click(/play today's close/i);
-      await screen.findByText(/bar 1 of 20/);
-      click("Pause");
+      // Fake timers *before* the mode is chosen, not after -- this
+      // fixture's own first event starts at barIndex 0 (triggerIndex 0),
+      // so the tick interval is already in the fixed "approaching" pace
+      // (`BULLET_TIME_APPROACH_TICK_MS`) from the very first tick,
+      // regardless of which speed is selected. That means selecting 1x
+      // *doesn't* change `effectiveTickMs` at all here (it's already
+      // 4500ms either way), so it wouldn't force the tick effect to tear
+      // down and recreate under fake timers the way it does in the other
+      // tests in this describe block (see `enterMysteryUnderNormalMotion`'s
+      // own doc comment) -- the *first* interval has to be created under
+      // fake timers instead, by switching before the game starts ticking
+      // at all.
       vi.useFakeTimers();
+      click(/play today's close/i);
+      click(/^1x$/);
 
-      // Step to the first event's own deciding bar (fromIndex 1, "bar 2").
-      click("Step forward one bar");
+      // Advance to the first event's own deciding bar (fromIndex 1, "bar 2").
+      advanceNormalMotionBars(bars, 0, 1);
       expect(screen.getByText("Big swing incoming")).toBeInTheDocument();
       // An up-swing: staying holding (the honest default) is correct.
       click("Ride it out");
-      // Step through the rest of the swing to its own resolution bar (5),
-      // then on to the second event's own deciding bar (fromIndex 6).
-      for (let i = 0; i < 4; i += 1) click("Step forward one bar");
+      // Advance through the rest of the swing to its own resolution bar
+      // (5), then on to the second event's own deciding bar (fromIndex 6).
+      advanceNormalMotionBars(bars, 2, 4);
       expect(screen.getByText("Big swing incoming")).toBeInTheDocument();
       // Also an up-swing, but this time step aside -- going to cash
       // through an up-swing is the incorrect call.
@@ -989,16 +1065,18 @@ describe("BeatTheBench", () => {
     // Measured for real at 375px in a browser during live verification;
     // asserted here as the class contract that produces it, since jsdom
     // loads no stylesheet and reports every box as 0x0.
+    //
+    // "Step forward one bar" isn't in this list -- it doesn't render for
+    // this (normal-motion) player at all any more (see PlaybackControls'
+    // own doc comment); its own touch-target size is covered separately,
+    // below, under reduced motion.
     it("gives every playback control a >= 44px target", async () => {
       await renderChooser();
       click(/play today's close/i);
 
       const controls = [
         screen.getByRole("button", { name: "Pause" }),
-        screen.getByRole("button", { name: "Step forward one bar" }),
-        ...["0.1x", "0.25x", "0.5x", "1x", "2x", "4x"].map((label) =>
-          screen.getByRole("button", { name: label }),
-        ),
+        ...["0.5x", "1x", "2x"].map((label) => screen.getByRole("button", { name: label })),
       ];
 
       for (const control of controls) {
@@ -1007,6 +1085,20 @@ describe("BeatTheBench", () => {
       }
       // The row wraps rather than shrinking anything below that.
       expect(screen.getByRole("group", { name: "Speed" }).className).toContain("flex-wrap");
+    });
+
+    // "Step forward one bar" only renders for a reduced-motion viewer
+    // (see PlaybackControls' own doc comment) -- its own >= 44px target
+    // needs its own reduced-motion test, since the test right above this
+    // one no longer has this button to assert on at all.
+    it("gives the reduced-motion-only Step button a >= 44px target too", async () => {
+      stubPrefersReducedMotion(true);
+      await renderReducedMotionChooser();
+      click(/play today's close/i);
+
+      const step = screen.getByRole("button", { name: "Step forward one bar" });
+      expect(step.className).toContain("min-h-11");
+      expect(step.className).toContain("min-w-11");
     });
   });
 });

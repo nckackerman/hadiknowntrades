@@ -106,7 +106,7 @@ const WINDOW_RESULT: WindowResult = {
 /**
  * A two-bar Today's Close session -- the shortest thing `isPlayableSession`
  * accepts, so the ritual integration test below can play a *real* session
- * to a *real* settlement in one "Step" instead of 78. The zero-move
+ * to a *real* settlement in one real tick instead of 78. The zero-move
  * settlement it produces ("Along for the ride") is the mechanic's own exact
  * tie, not a rounding coincidence -- see lib/beat-the-bench.ts.
  */
@@ -675,7 +675,13 @@ describe("ResultsPage", () => {
       // already covers for the mode-chooser's own recap paragraph.
       fireEvent.click(screen.getByRole("button", { name: /can you do better\?/i }));
       fireEvent.click(await screen.findByRole("button", { name: /Play today's close/ }));
-      fireEvent.click(screen.getByRole("button", { name: "Step forward one bar" }));
+      // "Step forward one bar" no longer renders outside reduced motion
+      // (see PlaybackControls' own doc comment in BeatTheBench.tsx) --
+      // 2x is the fastest of the three surviving speeds, so this waits
+      // out one real (if short, 150ms) tick instead of clicking it. The
+      // `SESSION` fixture above is deliberately only 2 bars long
+      // specifically so this settles in a single tick either way.
+      fireEvent.click(screen.getByRole("button", { name: "2x" }));
       await screen.findByRole("button", { name: "Play it again" });
       first.unmount();
 

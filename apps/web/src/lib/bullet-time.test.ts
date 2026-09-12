@@ -287,9 +287,9 @@ describe("bulletTimeStatusAt", () => {
 });
 
 describe("bulletTimeTickIntervalMs", () => {
-  it("uses the dedicated slow approach pace, distinctly slower than even the slowest existing speed (0.1x)", () => {
+  it("uses the dedicated slow approach pace, distinctly slower than even the slowest existing speed (0.5x)", () => {
     const approachMs = bulletTimeTickIntervalMs("approaching", 1, false);
-    expect(approachMs).toBeGreaterThan(tickIntervalMs(0.1));
+    expect(approachMs).toBeGreaterThan(tickIntervalMs(0.5));
   });
 
   it("uses the dedicated brisk catch-up pace, faster than the player's own chosen 1x speed", () => {
@@ -304,7 +304,7 @@ describe("bulletTimeTickIntervalMs", () => {
   it("never slows or speeds up under reduced motion, for every phase -- no slow-motion animation", () => {
     expect(bulletTimeTickIntervalMs("approaching", 1, true)).toBe(tickIntervalMs(1));
     expect(bulletTimeTickIntervalMs("catchup", 1, true)).toBe(tickIntervalMs(1));
-    expect(bulletTimeTickIntervalMs("deciding", 4, true)).toBe(tickIntervalMs(4));
+    expect(bulletTimeTickIntervalMs("deciding", 2, true)).toBe(tickIntervalMs(2));
   });
 });
 
