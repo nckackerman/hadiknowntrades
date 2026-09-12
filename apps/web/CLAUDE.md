@@ -11450,3 +11450,257 @@ windows" further down the page. This is the direct, intended effect of
 work around -- the same category of honest, disclosed trade-off this
 file's own issue #165/#135 sections already accept for similar
 below-the-fold measurements elsewhere on this page.
+
+## Beat the Bench: approach-phase juice, a shortened settlement, and a real celebration burst (direct user request, not a filed issue -- 2026-09-12)
+
+Three related, independently-scoped changes to `BeatTheBench.tsx`/
+`beat-the-bench.ts`/`bullet-time.ts`, all about this game's own feel,
+shipped together on one branch/PR since none of them touch settlement
+math or the Bullet Time scheduling engine.
+
+### 1. Juice during Bullet Time's approach phase
+
+Before this, `biStatus.phase === "approaching"` rendered nothing but a
+plain `<p>Big swing incoming…</p>` line above the chart -- that text is
+completely unchanged by this change and still renders identically under
+reduced motion; only the two new decorative animations below are gated.
+
+- **A pulsing glow around the chart** (`.bullet-time-approach-glow`,
+  `globals.css`) for the whole approach phase -- a wrapper `<div>` around
+  `<BeatTheBenchChart>` (that component returns a bare `<svg>` with no
+  border/background of its own, so nothing conflicts with the glow's
+  `box-shadow`) gets the class exactly while `biStatus.phase ===
+"approaching" && !reducedMotion`. Colored with `--accent-selection` (the
+  same blue the countdown bar and "Ride it out" button already use for
+  every other piece of Bullet Time's own UI, issue #224), deliberately
+  **not** `--accent-reward`'s gold (`.cut-line-glow`'s own color) -- gold
+  means "you earned this" throughout this app (see `FinalSettlement`'s
+  own doc comment), and nothing has been earned yet during an approach;
+  this is anticipation, not a reward. A constant-intensity 1.2s
+  `ease-in-out infinite` loop, not a literal per-bar ramp tied to exactly
+  how close the swing is -- the rhythmic pulse itself is what reads as
+  "something is about to happen," and a dynamic `animation-duration`
+  recomputed every tick would be real complexity for a difference a human
+  eye is unlikely to perceive cycle-to-cycle, the same "purely decorative,
+  no bearing on anything real" call this file's own
+  `.bullet-time-countdown-bar` comment already makes for a related
+  affordance.
+- **A brief shake exactly when `BulletTimeDecisionPanel` mounts**
+  (`.bullet-time-decision-shake`) -- applied directly to the panel's own
+  root `<div>`, gated on `!reducedMotion`. Safe to apply directly (unlike
+  the glow, which needs no such care since it's a box-shadow, not a
+  transform) because the keyframe starts and ends at `translateX(0)`, so
+  the panel's permanent position is untouched once it finishes -- the
+  same reasoning `.marker-landing-shake`/`.lineup-inputs-shake` already
+  establish. A **new** keyframe rather than reusing either of those: one
+  is SVG-scoped (`transform-box: fill-box`, meaningless outside SVG), and
+  `.lineup-inputs-shake`'s own doc comment already declines to be reused
+  across unrelated features for the identical reason -- matching this
+  file's established one-keyframe-per-feature convention. No explicit
+  `key` needed to make it re-fire per event: `{!settled && deciding &&
+(<BulletTimeDecisionPanel .../>)}` genuinely mounts a fresh DOM node
+  each time a decision window opens (the element is absent from the tree
+  the rest of the time), so the CSS animation naturally restarts on
+  insertion for every one of a session's 2-4 scheduled events, with no
+  re-fire on the panel's own re-renders while still deciding.
+- **Reduced motion**: both classes are gated in JS on the same
+  `reducedMotion` prop `SessionGame` already reads once, at
+  `BeatTheBench`'s own top level, via `useReducedMotionAfterMount` --
+  reused as-is, not re-read a second way. `globals.css` also carries a
+  `prefers-reduced-motion: reduce` media-query override for both classes
+  as defense-in-depth, matching every other animation in this file's own
+  established two-layer posture.
+- **Tested in jsdom**: `BeatTheBench.test.tsx` steps the real
+  `SPY_SESSION_BARS` fixture (whose first real event triggers at bar 4,
+  decides at bar 5) to bar 4 and asserts
+  `document.querySelector(".bullet-time-approach-glow")` is present and
+  `.bullet-time-decision-shake` is not, then steps once more into
+  `deciding` and asserts the reverse -- jsdom can prove the class-toggling
+  code path was taken; it proves nothing about what actually animates on
+  screen. A parallel reduced-motion test asserts neither class ever
+  appears, while the "Big swing incoming…" text and the decision panel
+  itself render identically either way.
+- **Live-verified**: real `local-run.ts` output (`LOCAL_RESULTS_DIR`,
+  default 20-ticker sample) into `next build`/`next start` (not `next
+dev`, per this file's own repeated note) plus the documented no-root
+  headless-Chromium workaround. Stepped a real session to its own
+  approach bar: `getComputedStyle` on the glowing wrapper read
+  `animationName: "bullet-time-approach-glow-pulse"`,
+  `animationIterationCount: "infinite"`; stepping once more into
+  `deciding` showed `animationName: "bullet-time-decision-shake"` on the
+  panel with `animationDuration: "0.35s"`, and the glow was gone. Under
+  `reducedMotion: "reduce"` emulation, both counts were zero at the
+  identical bars while the text cue and both buttons still rendered.
+  Screenshots confirm the glow reads as a soft blue outline around the
+  chart. Zero console/page errors across every pass.
+
+### 2. Settlement text, shortened -- hedging/disclaimer asides cut
+
+**Direct user instruction**: "it's obvious this is a toy," so the
+post-game card doesn't need to keep re-justifying its own numbers. Three
+paragraphs of meta-commentary were cut outright, all from
+`FinalSettlement`/`BestMovesPanel` in `BeatTheBench.tsx` (no change to
+`beat-the-bench.ts`'s scoring/copy functions themselves -- `outcomeHeadline`/
+`outcomeDetail`/`gapPhrase`/`percentilePhrase` are all untouched, since
+none of those are hedging, they're the actual result):
+
+- The biggest-moves panel's own closing caveat ("Those dollar figures are
+  an approximation: each is roughly what that run would have added to a
+  buy-and-hold position of this size... They don't add up into a single
+  total...") -- gone. The methodology itself didn't change (see
+  `benchmarkDollarsFor`'s own doc comment, `beat-the-bench-moves.ts`,
+  still exactly accurate) -- only the paragraph restating it on screen.
+- The percentile's own explanatory paragraph ("That field is 500
+  simulated traders who flipped in and out of this exact session at
+  random moments -- a control group for timing, not a model of how anyone
+  really trades. Their middling result was $X.") -- gone entirely,
+  leaving just `percentilePhrase`'s own one-line fact ("You finished
+  ahead of 31% of 500 traders who moved at random through the same
+  session.").
+- The closing "No fees, no slippage -- every move settles at the price on
+  screen." sentence -- gone. `SessionProvenance` (which real session this
+  was) now stands alone as its own `<p>`, unchanged in wording.
+
+**What stayed, deliberately**: the headline, the gap sentence, both
+balances, `outcomeDetail`'s explanation of the outcome, the Bullet Time
+tally line, the biggest-runs list itself and whether the player was on
+them, and the percentile fact. The instruction was to cut the meta-
+commentary that _justifies_ the numbers, not the numbers or the plain-
+English explanation of what happened -- a player who beat the bench by
+0.39% across 3 moves still gets told exactly that, just not a paragraph
+first explaining why the comparison field isn't a trading model.
+
+- **Tested**: `BeatTheBench.test.tsx`'s two tests that used to assert the
+  cut paragraphs' own text now assert their _absence_
+  (`queryByText(...).not.toBeInTheDocument()`) alongside the real facts
+  they sit next to, which are unaffected.
+- **Live-verified**: the same real local-pipeline session, played to
+  settlement at 4x speed in a real browser. The rendered card carries the
+  headline, gap, both balances, biggest-runs list, Bullet Time tally, and
+  percentile line -- and a full-page-text scan confirmed zero occurrences
+  of "approximation", "control group for timing", or "No fees, no
+  slippage" anywhere on the settled card. Screenshot attached to the PR
+  description.
+
+### 3. A real celebration burst on a clear win
+
+The user asked for "reusable confetti/gamification elements that can
+apply here and everywhere when a game completes well," not a fourth
+bespoke copy -- so before writing anything, this consolidated/reused
+what already exists: `components/CelebrationBurst.tsx` (the generic
+render layer, already taking `active`/`intensity`), `lib/should-
+celebrate.ts` (`HeroStat`'s original gate), `lib/celebration-magnitude.ts`
+(`HeroStat`'s decade-based dollar-multiplier tiers), and `the-cut-
+scoring.ts`'s `cutCelebrationIntensity`/`meetsCutCelebrationGate` (The
+Cut's own linear 0-100 tiers, the most recent precedent for a game with
+no dollar-gain concept at all).
+
+**The reuse/consolidation call, made explicitly**: with this change there
+are now three games wiring up celebration, and two independent tiering
+shapes already existed (HeroStat's order-of-magnitude ladder over an
+unbounded multiplier, The Cut's linear ladder over a bounded 0-100
+score). **Decided: Beat the Bench does not add a third tiering scheme,
+and the three games' gate/intensity logic stays separate rather than
+being consolidated into one shared generic primitive.** Reasoning:
+
+- The actual reusable primitive -- `CelebrationBurst`, `CelebrationIntensity`,
+  `FULL_CELEBRATION_INTENSITY` -- is _already_ shared, and Beat the Bench
+  reuses it directly (`<CelebrationBurst active={celebrate} />`, no new
+  render component). That's the real, load-bearing reuse the user asked
+  for; it's already achieved and needed no further work.
+- The _tiering_ math genuinely differs in shape across all three domains:
+  HeroStat's dollar multiplier spans orders of magnitude (1x to tens of
+  millions of x, hence a log-decade ladder); The Cut's edge-captured score
+  is a deliberately bounded, clamped 0-100 percentage (hence a linear
+  ladder); Beat the Bench's own closest analog -- `gapPhrase`'s own `gap`
+  -- is neither: it's almost always a small fraction of a percent (that
+  function's own doc comment already states both balances routinely round
+  to the same dollars-and-cents figure even on a genuine win, and its
+  "less than 0.01%" branch exists because that's the _common_ case, not
+  an edge one). There is also no real, validated distribution to set tier
+  boundaries against the way Bullet Time's own thresholds are validated
+  against a real 41-session pool (see this file's own "Bullet Time"
+  section) -- inventing a third ladder here would mean asserting
+  undramatized boundaries over a range too thin to meaningfully divide,
+  for a toy game whose whole point is a fun, quick result.
+- Forcing one shared "score -> tier" function to cover a log ladder, a
+  linear ladder, and (per the point above) a domain with no real ladder
+  to speak of at all would need enough parameterization -- a mode flag, a
+  custom compare/threshold function per caller -- that the "shared"
+  function would just be a dispatch wrapper with extra indirection, not
+  real reuse. This is the same kind of "would this genuinely help, or
+  just force false equivalence" judgment `the-cut-scoring.ts`'s own doc
+  comment already made once (declining to reuse `celebration-magnitude.ts`
+  for The Cut) -- this decision extends that same reasoning one domain
+  further rather than re-litigating it from scratch.
+- **Beat the Bench's own gate is therefore deliberately unscaled**:
+  `meetsBeatTheBenchCelebrationGate(settlement)` (`beat-the-bench.ts`) is
+  just `settlement.outcome === "win"` -- any win, full stop, using
+  `CelebrationBurst`'s own default `FULL_CELEBRATION_INTENSITY` rather
+  than a magnitude dial. The task's own instructions explicitly allowed
+  this simpler option when a magnitude dial doesn't map cleanly onto a
+  game's own numbers, and it doesn't here.
+
+**The gate, wired without a second reduced-motion read**: `FinalSettlement`
+now takes a `reducedMotion` prop (threaded from `SessionGame`, which
+already receives it from `BeatTheBench`'s own single
+`useReducedMotionAfterMount()` call) and computes `celebrate =
+meetsBeatTheBenchCelebrationGate(settlement) && !reducedMotion` --
+deliberately **not** a call to `should-celebrate.ts`'s own
+`shouldCelebrate` helper, even though that's what HeroStat and The Cut
+both call. `shouldCelebrate` bakes in its own live `prefersReducedMotion()`
+read, which here would be a second, independent reduced-motion check
+completely disconnected from the `useReducedMotionAfterMount`-sourced
+value this whole component tree already threads everywhere else
+(including this same PR's own approach-phase glow/shake, above) --
+reusing the one already in scope, per this task's own explicit
+instruction, avoids two mechanisms that could theoretically disagree.
+Matches `should-celebrate.ts`'s own "active can only ever suppress, never
+invent, a real win" framing regardless: a loss or a tie is `false` here
+no matter what `reducedMotion` is.
+
+`<CelebrationBurst active={celebrate} />` renders inside a `relative`
+wrapper scoped to just the headline `<p>` (`outcomeHeadline`), mirroring
+`HeroStat.tsx`'s own identical "burst overlay scoped to just this row"
+pattern -- confetti falls from around the win stamp, not the whole
+settlement card.
+
+- **Tested**: `beat-the-bench.test.ts` unit-tests the gate directly
+  (a win passes, a tie/traded-tie/hairline loss all fail).
+  `BeatTheBench.test.tsx` adds a `describe` block with real UI-driven
+  scenarios against the `SPY_SESSION_BARS` fixture, each move sequence
+  confirmed against a direct `settleSession` call first rather than
+  assumed from the UI: a real win (`document.querySelector('[data-testid="celebration-burst"]')`
+  present), a real tie (absent), a real loss (absent), and the identical
+  win sequence under reduced motion (absent, while the win headline still
+  renders identically).
+- **Live-verified against real pipeline data, not just the synthetic
+  fixture** -- the real 2026-09-11 SPY session scheduled three real
+  Bullet Time events (down-swing at bar 5, up-swing at bar 35, down-swing
+  at bar 51). Stepping aside at both down-swings settled a genuine win
+  (+0.20% vs. the bench's -0.19%) with a visible confetti burst over the
+  gold "You beat the bench" headline; "Ride it out"/"Step aside"/"Ride it
+  out" at the same three bars settled a genuine loss with zero confetti
+  anywhere in the panel. Zero console/page errors on both passes.
+- **A real cross-page-scope gotcha, already documented once in this file
+  for The Cut, and re-confirmed here rather than re-discovered from
+  scratch**: this app's real page hosts several independent `HeroStat`/
+  `CelebrationBurst` instances at once (the daily hero above Beat the
+  Bench's own tile, in this case). An unscoped
+  `document.querySelector('[data-testid="celebration-burst"]')` against
+  the whole page picked up the daily hero's own burst too (2 elements on
+  a real win, 1 -- the daily hero's alone -- on a real loss, not 0),
+  which would have read as a false positive on the loss case if not
+  caught. Scoping every locator to
+  `[data-testid="beat-the-bench-panel"] [data-testid="celebration-burst"]`
+  fixed it -- see "The Cut: gamify the reveal numbers" section above for
+  the first time this exact gotcha was hit and documented; this is the
+  second confirmation that a page-wide `celebration-burst` query is not a
+  reliable proxy for "did _this_ mechanic's burst fire" in this app.
+
+All five routine checks (lint, typecheck, `pnpm build`, `pnpm test`,
+`pnpm format:check`) green throughout. The temporary `playwright`
+devDependency and every verification script were reverted/deleted before
+committing, per this file's own established convention; confirmed via
+`git status`/`git diff --stat` on `package.json`/`pnpm-lock.yaml` showing
+no trace afterward.

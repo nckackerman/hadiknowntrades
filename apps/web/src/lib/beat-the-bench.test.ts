@@ -8,6 +8,7 @@ import {
   DEFAULT_SPEED,
   gapPhrase,
   isPlayableSession,
+  meetsBeatTheBenchCelebrationGate,
   outcomeDetail,
   outcomeHeadline,
   PLAYBACK_SPEEDS,
@@ -226,6 +227,37 @@ describe("settlement copy", () => {
       outcome: "win" as const,
     };
     expect(gapPhrase(hairline)).toBe("Less than 0.01% ahead of the bench.");
+  });
+});
+
+describe("meetsBeatTheBenchCelebrationGate", () => {
+  // A plain, unscaled gate -- any win, full stop. No magnitude tier: see
+  // this function's own doc comment for why one was considered and
+  // declined for this game specifically.
+  it("only ever passes a genuine win, never a loss or a tie -- including a hairline one", () => {
+    const win = settleSession(BARS, [5, 38], STARTING_CAPITAL);
+    expect(win.outcome).toBe("win");
+    expect(meetsBeatTheBenchCelebrationGate(win)).toBe(true);
+
+    const tie = settleSession(BARS, [], STARTING_CAPITAL);
+    expect(tie.outcome).toBe("tie");
+    expect(meetsBeatTheBenchCelebrationGate(tie)).toBe(false);
+
+    const tradedTie = settleSession(BARS, [30, 30], STARTING_CAPITAL);
+    expect(tradedTie.outcome).toBe("tie");
+    expect(meetsBeatTheBenchCelebrationGate(tradedTie)).toBe(false);
+
+    // A loss by the smallest possible margin still never celebrates.
+    const hairlineLoss = {
+      startingCapital: 20,
+      playerBalance: 19.999999,
+      benchmarkBalance: 20,
+      playerReturnFraction: 0,
+      benchmarkReturnFraction: 0,
+      moves: 1,
+      outcome: "loss" as const,
+    };
+    expect(meetsBeatTheBenchCelebrationGate(hairlineLoss)).toBe(false);
   });
 });
 

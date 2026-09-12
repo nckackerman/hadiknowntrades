@@ -923,6 +923,103 @@ body {
 }
 
 /*
+ * Bullet Time's approach glow + decision-open shake (direct user request,
+ * not a filed issue -- "juice during Bullet Time's approach phase"): sells
+ * the tension of a scheduled swing being close, layered on top of the
+ * existing plain "Big swing incoming…" text cue (`BeatTheBench.tsx`),
+ * which is completely unchanged and still renders identically under
+ * reduced motion -- only these two purely decorative classes are gated.
+ *
+ * `.bullet-time-approach-glow` is a looping pulsing box-shadow around the
+ * chart, applied only while `biStatus.phase === "approaching"`. Uses
+ * `--accent-selection` -- the same blue the countdown bar and "Ride it
+ * out" button already use for every other piece of Bullet Time's own UI
+ * (issue #224) -- rather than `--accent-reward`'s gold (`.cut-line-glow`
+ * above): gold means "you earned this" throughout this app (see
+ * FinalSettlement's own doc comment in BeatTheBench.tsx), and nothing has
+ * been earned yet here -- this is anticipation, not a reward. A constant-
+ * intensity loop, not a literal per-bar ramp tied to exactly how close the
+ * swing is: the rhythmic pulse itself is what reads as "something is
+ * about to happen," and tying the animation's own pace to bar-distance
+ * would mean a dynamic `animation-duration` recomputed every tick for a
+ * difference a human eye is unlikely to actually perceive cycle-to-cycle
+ * -- the same "purely decorative, no bearing on anything real" call this
+ * file's own `.bullet-time-countdown-bar` comment above already makes for
+ * a related affordance.
+ *
+ * `.bullet-time-decision-shake` fires once, exactly when
+ * `BulletTimeDecisionPanel` mounts (`BeatTheBench.tsx`'s own `{!settled &&
+ * deciding && (<BulletTimeDecisionPanel .../>)}` -- a real DOM node being
+ * inserted, not a class toggled on an already-mounted one, so the
+ * animation runs on insertion and does not re-fire on every render while
+ * still deciding, and fires again on genuine re-mount for a session's next
+ * scheduled event). A new keyframe rather than reusing
+ * `.marker-landing-shake` (SVG-scoped -- `transform-box: fill-box` is
+ * meaningless outside SVG) or `.lineup-inputs-shake` (that class's own
+ * comment above already declines to be reused across unrelated features,
+ * for the identical reason) -- matching this file's own established
+ * one-keyframe-per-feature convention. Symmetric translateX, starting and
+ * ending at 0, so it is safe to apply directly to the real decision panel
+ * rather than needing a decorative sibling the way `.marker-landing-pulse`
+ * does.
+ *
+ * Both are two-layer reduced-motion, the same shape as every other
+ * animation in this file: `BeatTheBench.tsx`'s own `reducedMotion` prop
+ * (read via `useReducedMotionAfterMount`, already gating every other
+ * Bullet Time animation in that file) is the primary gate deciding
+ * whether either class is ever added at all; the media queries below are
+ * defense-in-depth for a future caller that skips that check.
+ */
+@keyframes bullet-time-approach-glow-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 4px 0px var(--accent-selection);
+  }
+  50% {
+    box-shadow: 0 0 16px 5px var(--accent-selection);
+  }
+}
+
+.bullet-time-approach-glow {
+  box-shadow: 0 0 4px 0px var(--accent-selection);
+  animation: bullet-time-approach-glow-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes bullet-time-decision-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-4px);
+  }
+  40% {
+    transform: translateX(4px);
+  }
+  60% {
+    transform: translateX(-3px);
+  }
+  80% {
+    transform: translateX(3px);
+  }
+}
+
+.bullet-time-decision-shake {
+  animation: bullet-time-decision-shake 350ms ease-in-out 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bullet-time-approach-glow {
+    animation: none;
+    box-shadow: none;
+  }
+
+  .bullet-time-decision-shake {
+    animation: none;
+  }
+}
+
+/*
  * The Cut's default reveal (TheCut.tsx's own CutRevealStrip -- a direct
  * user request, not a filed issue): the divider chip inserted right at
  * the real cut line (the last held company, #bestN) bounces in and
