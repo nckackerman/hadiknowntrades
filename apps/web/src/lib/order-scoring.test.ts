@@ -7,14 +7,17 @@ import {
   initialOrderGuess,
   isValidOrderPuzzle,
   isWinningFeedback,
+  lockedSlots,
   moveOrderGuess,
+  nextOpenSlot,
   ORDER_SLOT_COUNT,
   scoreOrderMatch,
-  shuffleGuess,
+  shuffleUnlockedGuess,
   type OrderFeedback,
 } from "./order-scoring";
 
 const ANSWER = ["TSLA", "AAPL", "MSFT", "META", "NVDA"];
+const ALL_OPEN = [false, false, false, false, false];
 
 function validPuzzlePayload(): unknown {
   return {
@@ -91,32 +94,119 @@ describe("scoreOrderMatch", () => {
   });
 });
 
+describe("lockedSlots", () => {
+  it("is all-false when feedback is null (never submitted, or a bail-out reveal)", () => {
+    expect(lockedSlots(null, 5)).toEqual([false, false, false, false, false]);
+  });
+
+  it("locks exactly the slots graded correct", () => {
+    const feedback: OrderFeedback[] = ["correct", "incorrect", "correct", "incorrect", "correct"];
+    expect(lockedSlots(feedback, 5)).toEqual([true, false, true, false, true]);
+  });
+
+  it("is all-true once every slot scores correct (a full win)", () => {
+    const feedback: OrderFeedback[] = ["correct", "correct", "correct", "correct", "correct"];
+    expect(lockedSlots(feedback, 5)).toEqual([true, true, true, true, true]);
+  });
+});
+
+describe("nextOpenSlot", () => {
+  it("returns the adjacent slot when nothing is locked", () => {
+    expect(nextOpenSlot(ALL_OPEN, 1, 1)).toBe(2);
+    expect(nextOpenSlot(ALL_OPEN, 1, -1)).toBe(0);
+  });
+
+  it("hops over one locked slot", () => {
+    const locked = [false, true, false, false, false];
+    expect(nextOpenSlot(locked, 0, 1)).toBe(2);
+  });
+
+  it("hops over multiple consecutive locked slots", () => {
+    const locked = [false, true, true, true, false];
+    expect(nextOpenSlot(locked, 0, 1)).toBe(4);
+  });
+
+  it("returns -1 at the edge", () => {
+    expect(nextOpenSlot(ALL_OPEN, 0, -1)).toBe(-1);
+    expect(nextOpenSlot(ALL_OPEN, 4, 1)).toBe(-1);
+  });
+
+  it("returns -1 when every remaining slot in that direction is locked", () => {
+    const locked = [false, false, true, true, true];
+    expect(nextOpenSlot(locked, 1, 1)).toBe(-1);
+  });
+});
+
 describe("moveOrderGuess", () => {
-  it("swaps with the adjacent slot in the given direction", () => {
+  it("swaps with the adjacent open slot in the given direction", () => {
     const guess = ["A", "B", "C", "D", "E"];
-    expect(moveOrderGuess(guess, 1, 1)).toEqual(["A", "C", "B", "D", "E"]);
-    expect(moveOrderGuess(guess, 1, -1)).toEqual(["B", "A", "C", "D", "E"]);
+    expect(moveOrderGuess(guess, ALL_OPEN, 1, 1)).toEqual(["A", "C", "B", "D", "E"]);
+    expect(moveOrderGuess(guess, ALL_OPEN, 1, -1)).toEqual(["B", "A", "C", "D", "E"]);
   });
 
   it("is a no-op (same reference) at either edge", () => {
     const guess = ["A", "B", "C", "D", "E"];
-    expect(moveOrderGuess(guess, 0, -1)).toBe(guess);
-    expect(moveOrderGuess(guess, 4, 1)).toBe(guess);
+    expect(moveOrderGuess(guess, ALL_OPEN, 0, -1)).toBe(guess);
+    expect(moveOrderGuess(guess, ALL_OPEN, 4, 1)).toBe(guess);
+  });
+
+  it("a locked slot never moves, even when asked to", () => {
+    const guess = ["A", "B", "C", "D", "E"];
+    const locked = [false, true, false, false, false];
+    expect(moveOrderGuess(guess, locked, 1, 1)).toBe(guess);
+    expect(moveOrderGuess(guess, locked, 1, -1)).toBe(guess);
+  });
+
+  it("hops the moved ticker over one locked slot in its path", () => {
+    const guess = ["A", "B", "C", "D", "E"];
+    const locked = [false, true, false, false, false];
+    // Moving slot 0 downward must land past the locked slot 1, at slot 2.
+    expect(moveOrderGuess(guess, locked, 0, 1)).toEqual(["C", "B", "A", "D", "E"]);
+  });
+
+  it("hops over multiple consecutive locked slots", () => {
+    const guess = ["A", "B", "C", "D", "E"];
+    const locked = [false, true, true, true, false];
+    expect(moveOrderGuess(guess, locked, 0, 1)).toEqual(["E", "B", "C", "D", "A"]);
+  });
+
+  it("is a no-op when there is no open slot left in that direction", () => {
+    const guess = ["A", "B", "C", "D", "E"];
+    const locked = [false, false, true, true, true];
+    expect(moveOrderGuess(guess, locked, 1, 1)).toBe(guess);
   });
 });
 
-describe("shuffleGuess", () => {
+describe("shuffleUnlockedGuess", () => {
   it("returns a permutation of the same tickers", () => {
     const guess = ["A", "B", "C", "D", "E"];
-    const result = shuffleGuess(guess, () => 0.5);
+    const result = shuffleUnlockedGuess(guess, ALL_OPEN, () => 0.5);
     expect([...result].sort()).toEqual([...guess].sort());
   });
 
   it("doesn't mutate its input", () => {
     const guess = ["A", "B", "C", "D", "E"];
     const copy = [...guess];
-    shuffleGuess(guess, () => 0.5);
+    shuffleUnlockedGuess(guess, ALL_OPEN, () => 0.5);
     expect(guess).toEqual(copy);
+  });
+
+  it("leaves every locked slot's ticker and position untouched", () => {
+    const guess = ["A", "B", "C", "D", "E"];
+    const locked = [true, false, true, false, false];
+    const result = shuffleUnlockedGuess(guess, locked, () => 0.99);
+    expect(result[0]).toBe("A");
+    expect(result[2]).toBe("C");
+    // The unlocked slots (1, 3, 4) still hold exactly {B, D, E}, just
+    // possibly reordered among themselves.
+    expect([result[1], result[3], result[4]].sort()).toEqual(["B", "D", "E"]);
+  });
+
+  it("is a no-op when every slot is locked", () => {
+    const guess = ["A", "B", "C", "D", "E"];
+    const locked = [true, true, true, true, true];
+    const result = shuffleUnlockedGuess(guess, locked, () => 0.5);
+    expect(result).toEqual(guess);
   });
 });
 

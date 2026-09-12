@@ -5,7 +5,7 @@ import { RESULTS_SCHEMA_VERSION, type TheOrderPuzzle } from "@hadiknowntrades/co
 
 import { bestToWorstTickers } from "./order-scoring";
 import * as orderStorage from "./order-storage";
-import { saveOrderDayState, type OrderDayState } from "./order-storage";
+import { getOrderDayState, saveOrderDayState, type OrderDayState } from "./order-storage";
 import { useOrderGame } from "./use-order-game";
 
 const DATE = "2026-08-26";
@@ -24,15 +24,16 @@ const PUZZLE: TheOrderPuzzle = {
   ],
 };
 
-// Best-to-worst -- what the redesigned game actually shows/grades against.
+// Best-to-worst -- what the game actually shows/grades against.
 const ANSWER = bestToWorstTickers(PUZZLE.tickers).map((t) => t.ticker);
 
 function stateWith(overrides: Partial<OrderDayState> = {}): OrderDayState {
   return {
     guess: [...ANSWER],
+    feedback: null,
+    attempts: 0,
     done: false,
     won: false,
-    feedback: null,
     ...overrides,
   };
 }
@@ -66,6 +67,7 @@ describe("useOrderGame -- stored-state verification against the current puzzle",
     // trusting the stale, mismatched stored guess.
     expect(result.current.view.state!.done).toBe(false);
     expect(result.current.view.state!.feedback).toBeNull();
+    expect(result.current.view.state!.attempts).toBe(0);
     expect([...result.current.view.state!.guess].sort()).toEqual([...ANSWER].sort());
   });
 
@@ -77,6 +79,29 @@ describe("useOrderGame -- stored-state verification against the current puzzle",
     await waitFor(() => expect(result.current.view.hydrated).toBe(true));
 
     expect(result.current.view.state!.guess).toEqual(reordered);
+  });
+
+  it("treats a pre-this-redesign stored value (missing `attempts`) as nothing stored, and starts fresh", async () => {
+    // The one-shot mechanic's own shape, written before this redesign --
+    // a real, well-formed OrderDayState under the old contract, just
+    // missing the `attempts` field this redesign requires. Matches
+    // order-storage.ts's own documented safe-fallback migration choice.
+    window.localStorage.setItem(
+      `hikt:the-order:day:${DATE}`,
+      JSON.stringify({
+        guess: [...ANSWER],
+        done: true,
+        won: true,
+        feedback: ["correct", "correct", "correct", "correct", "correct"],
+      }),
+    );
+
+    const { result } = renderHook(() => useOrderGame(PUZZLE));
+    await waitFor(() => expect(result.current.view.hydrated).toBe(true));
+
+    expect(result.current.view.state!.done).toBe(false);
+    expect(result.current.view.state!.attempts).toBe(0);
+    expect(result.current.view.state!.feedback).toBeNull();
   });
 });
 
@@ -93,7 +118,7 @@ describe("useOrderGame -- persist() only re-reads streak history on the done tra
   // such a spy records zero calls). Spying on the module's own exported
   // function is both more reliable and a more precise assertion of the
   // actual claim being tested anyway.
-  it("does not read the streak history on an intermediate move or shuffle", async () => {
+  it("does not read the streak history on an intermediate move, shuffle, or a still-incorrect submit", async () => {
     const { result } = renderHook(() => useOrderGame(PUZZLE));
     await waitFor(() => expect(result.current.view.hydrated).toBe(true));
 
@@ -105,15 +130,20 @@ describe("useOrderGame -- persist() only re-reads streak history on the done tra
     act(() => {
       result.current.shuffle();
     });
+    // The hook's own fresh state is a shuffled guess `initialOrderGuess`
+    // guarantees is never exactly the real answer, so this submit is
+    // guaranteed not to win outright -- confirming a still-incorrect
+    // submit (not just move/shuffle) also never reads the streak
+    // history, since `done` never goes true here.
+    act(() => {
+      result.current.submit();
+    });
 
-    // Neither move() nor shuffle() ever changes `done` (they only ever
-    // rearrange an in-progress guess), so this is deterministic -- no
-    // reliance on a shuffled guess happening not to match the real answer.
     expect(result.current.view.state!.done).toBe(false);
     expect(streakSpy).not.toHaveBeenCalled();
   });
 
-  it("does read the streak history the instant `done` first goes true, on submit", async () => {
+  it("does read the streak history the instant `done` first goes true, on a winning submit", async () => {
     saveOrderDayState(DATE, stateWith({ guess: [...ANSWER] }));
     const { result } = renderHook(() => useOrderGame(PUZZLE));
     await waitFor(() => expect(result.current.view.hydrated).toBe(true));
@@ -130,7 +160,7 @@ describe("useOrderGame -- persist() only re-reads streak history on the done tra
   });
 });
 
-describe("useOrderGame -- submit()", () => {
+describe("useOrderGame -- submit(): partial-correct locking and resubmission", () => {
   it("wins outright when the guess exactly matches the real (best-to-worst) answer", async () => {
     saveOrderDayState(DATE, stateWith({ guess: [...ANSWER] }));
     const { result } = renderHook(() => useOrderGame(PUZZLE));
@@ -142,6 +172,7 @@ describe("useOrderGame -- submit()", () => {
 
     expect(result.current.view.state!.done).toBe(true);
     expect(result.current.view.state!.won).toBe(true);
+    expect(result.current.view.state!.attempts).toBe(1);
     expect(result.current.view.state!.feedback).toEqual([
       "correct",
       "correct",
@@ -151,7 +182,7 @@ describe("useOrderGame -- submit()", () => {
     ]);
   });
 
-  it("grades a mixed guess per slot and does not win", async () => {
+  it("grades a mixed guess per slot, locks the correct ones, and does NOT end the day", async () => {
     // Swap the two end slots -- both wrong, the three middle slots correct.
     const guess = [...ANSWER];
     [guess[0], guess[4]] = [guess[4]!, guess[0]!];
@@ -163,8 +194,11 @@ describe("useOrderGame -- submit()", () => {
       result.current.submit();
     });
 
-    expect(result.current.view.state!.done).toBe(true);
+    // A partial-correct submit no longer ends the day (the core
+    // behavior change of this redesign).
+    expect(result.current.view.state!.done).toBe(false);
     expect(result.current.view.state!.won).toBe(false);
+    expect(result.current.view.state!.attempts).toBe(1);
     expect(result.current.view.state!.feedback).toEqual([
       "incorrect",
       "correct",
@@ -174,8 +208,9 @@ describe("useOrderGame -- submit()", () => {
     ]);
   });
 
-  it("always ends the day -- there is no second attempt", async () => {
-    const guess = [...ANSWER].reverse();
+  it("a locked (correct) slot cannot be moved, and cannot be targeted by another slot's move", async () => {
+    const guess = [...ANSWER];
+    [guess[0], guess[4]] = [guess[4]!, guess[0]!]; // slots 1-3 (0-indexed) are correct
     saveOrderDayState(DATE, stateWith({ guess }));
     const { result } = renderHook(() => useOrderGame(PUZZLE));
     await waitFor(() => expect(result.current.view.hydrated).toBe(true));
@@ -183,8 +218,116 @@ describe("useOrderGame -- submit()", () => {
     act(() => {
       result.current.submit();
     });
+    expect(result.current.view.state!.feedback![1]).toBe("correct");
+
+    // Trying to move the locked slot at index 1 must be a no-op.
+    const beforeGuess = result.current.view.state!.guess;
+    act(() => {
+      result.current.move(1, 1);
+    });
+    expect(result.current.view.state!.guess).toEqual(beforeGuess);
+
+    // Moving the open slot at index 0 must hop over the locked slot at
+    // index 1 (and 2, 3), landing on the other open slot at index 4 --
+    // never swapping into a locked slot.
+    act(() => {
+      result.current.move(0, 1);
+    });
+    expect(result.current.view.state!.guess[1]).toBe(beforeGuess[1]); // locked slot untouched
+    expect(result.current.view.state!.guess[4]).toBe(beforeGuess[0]); // hopped all the way to slot 4
+  });
+
+  it("shuffle only rearranges the still-open slots, leaving locked slots exactly in place", async () => {
+    const guess = [...ANSWER];
+    [guess[0], guess[4]] = [guess[4]!, guess[0]!]; // slots 1-3 correct once submitted
+    saveOrderDayState(DATE, stateWith({ guess }));
+    const { result } = renderHook(() => useOrderGame(PUZZLE));
+    await waitFor(() => expect(result.current.view.hydrated).toBe(true));
+
+    act(() => {
+      result.current.submit();
+    });
+    const lockedTickers = [
+      result.current.view.state!.guess[1],
+      result.current.view.state!.guess[2],
+      result.current.view.state!.guess[3],
+    ];
+
+    act(() => {
+      result.current.shuffle();
+    });
+
+    expect([
+      result.current.view.state!.guess[1],
+      result.current.view.state!.guess[2],
+      result.current.view.state!.guess[3],
+    ]).toEqual(lockedTickers);
+    // The two open slots still hold exactly the same two tickers, just
+    // possibly reordered.
+    expect(
+      [result.current.view.state!.guess[0], result.current.view.state!.guess[4]].sort(),
+    ).toEqual([guess[0], guess[4]].sort());
+  });
+
+  it("a second, fully-correct resubmission of the still-open slots wins the day -- eventual full solve, no attempt cap", async () => {
+    const guess = [...ANSWER];
+    [guess[0], guess[4]] = [guess[4]!, guess[0]!]; // one wrong swap, rest correct
+    saveOrderDayState(DATE, stateWith({ guess }));
+    const { result } = renderHook(() => useOrderGame(PUZZLE));
+    await waitFor(() => expect(result.current.view.hydrated).toBe(true));
+
+    act(() => {
+      result.current.submit();
+    });
+    expect(result.current.view.state!.done).toBe(false);
+    expect(result.current.view.state!.attempts).toBe(1);
+
+    // Fix the one wrong swap by moving slot 0 over to slot 4 (hopping the
+    // three locked slots in between), then resubmit.
+    act(() => {
+      result.current.move(0, 1);
+    });
+    act(() => {
+      result.current.submit();
+    });
 
     expect(result.current.view.state!.done).toBe(true);
+    expect(result.current.view.state!.won).toBe(true);
+    expect(result.current.view.state!.attempts).toBe(2);
+    expect(result.current.view.state!.feedback).toEqual([
+      "correct",
+      "correct",
+      "correct",
+      "correct",
+      "correct",
+    ]);
+  });
+
+  it("records exactly one streak entry for an eventual win that took several attempts", async () => {
+    const guess = [...ANSWER];
+    [guess[0], guess[4]] = [guess[4]!, guess[0]!];
+    saveOrderDayState(DATE, stateWith({ guess }));
+    const { result } = renderHook(() => useOrderGame(PUZZLE));
+    await waitFor(() => expect(result.current.view.hydrated).toBe(true));
+
+    act(() => {
+      result.current.submit(); // attempt 1: still incorrect on 2 slots
+    });
+    act(() => {
+      result.current.submit(); // attempt 2: a no-op re-submit changes nothing
+    });
+    act(() => {
+      result.current.move(0, 1);
+    });
+    act(() => {
+      result.current.submit(); // attempt 3: the winning one
+    });
+
+    expect(result.current.view.state!.done).toBe(true);
+    expect(result.current.view.state!.won).toBe(true);
+    expect(result.current.view.state!.attempts).toBe(3);
+    expect(result.current.view.streak.currentStreak).toBe(1);
+    expect(getOrderDayState(DATE, 5)!.attempts).toBe(3);
   });
 });
 
@@ -196,6 +339,7 @@ describe("useOrderGame -- move/shuffle/submit/reveal are no-ops once the day is 
   // re-open, re-attempt, or re-record a finished puzzle.
   it("move() does not change a finished day's stored guess", async () => {
     const finished = stateWith({
+      attempts: 1,
       done: true,
       won: true,
       feedback: ["correct", "correct", "correct", "correct", "correct"],
@@ -213,6 +357,7 @@ describe("useOrderGame -- move/shuffle/submit/reveal are no-ops once the day is 
 
   it("shuffle() does not change a finished day's stored guess", async () => {
     const finished = stateWith({
+      attempts: 4,
       done: true,
       won: false,
       feedback: ["incorrect", "incorrect", "incorrect", "incorrect", "incorrect"],
@@ -230,6 +375,7 @@ describe("useOrderGame -- move/shuffle/submit/reveal are no-ops once the day is 
 
   it("submit() does not re-grade an already-finished day", async () => {
     const finished = stateWith({
+      attempts: 2,
       done: true,
       won: true,
       feedback: ["correct", "correct", "correct", "correct", "correct"],
@@ -249,6 +395,7 @@ describe("useOrderGame -- move/shuffle/submit/reveal are no-ops once the day is 
 
   it("reveal() does not overwrite an already-finished day's real won/feedback", async () => {
     const finished = stateWith({
+      attempts: 1,
       done: true,
       won: true,
       feedback: ["correct", "correct", "correct", "correct", "correct"],
@@ -295,5 +442,23 @@ describe("useOrderGame -- move/shuffle/submit/reveal are no-ops once the day is 
     });
 
     expect(result.current.view.state!.guess).toEqual(ANSWER);
+  });
+
+  it("reveal() preserves the attempts count made so far -- a give-up isn't itself an attempt", async () => {
+    const guess = [...ANSWER];
+    [guess[0], guess[4]] = [guess[4]!, guess[0]!];
+    saveOrderDayState(DATE, stateWith({ guess }));
+    const { result } = renderHook(() => useOrderGame(PUZZLE));
+    await waitFor(() => expect(result.current.view.hydrated).toBe(true));
+
+    act(() => {
+      result.current.submit();
+    });
+    expect(result.current.view.state!.attempts).toBe(1);
+
+    act(() => {
+      result.current.reveal();
+    });
+    expect(result.current.view.state!.attempts).toBe(1);
   });
 });

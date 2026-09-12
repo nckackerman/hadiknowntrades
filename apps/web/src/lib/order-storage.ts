@@ -12,29 +12,64 @@
 // beat-the-bench-storage.ts's own TodaysCloseSession.date keys against),
 // not the viewer's local calendar day.
 //
-// **`OrderDayState`'s own shape changed with the mechanic redesign** (see
-// order-scoring.ts's own top-of-file note) -- it used to track an
-// `attempt` counter, a full `history` of past submissions, and a
-// per-slot `locked` array (a multi-attempt Mastermind loop). The new
-// one-shot mechanic needs none of that: `guess` is still the current
-// arrangement, but there's only ever one real submission, so `feedback`
-// (this attempt's own per-slot grading, or `null` if the day ended via
-// a bail-out reveal instead) replaces the whole `history`/`locked` pair.
-// A pre-redesign stored value simply fails `isOrderDayState`'s shape
-// check below and reads as "nothing stored," the same graceful
-// degradation this app's storage convention already gives a puzzle
-// rewritten with a different ticker set (see `isPermutationOf`'s own
-// doc comment in order-scoring.ts) -- no migration needed, and no
-// storage-format version bump either, since a malformed/differently-
-// shaped stored value has always meant "start fresh" here.
+// **`OrderDayState`'s own shape has changed twice now, once per
+// mechanic redesign (see order-scoring.ts's own top-of-file note for
+// the full "why" of both):**
+//
+// 1. The original issue #207 Mastermind mechanic tracked an `attempt`
+//    counter, a full `history` of past submissions, and a per-slot
+//    `locked` array.
+// 2. The first redesign (one free rearrange-then-submit round, no
+//    second chance) dropped all of that down to just `guess`/`done`/
+//    `won`/`feedback` -- a single real submission per day.
+// 3. **This shape, the second redesign (direct user request -- multi-
+//    guess with per-slot locking, no attempt cap)**: `guess` is still
+//    the current arrangement, `feedback` is still this puzzle's most
+//    recent per-slot grading (`null` until the first submission, or if
+//    the day ended via a bail-out reveal instead) -- but `done` no
+//    longer becomes `true` on every submit. It's now `true` only once
+//    every slot is locked correct (a real win) or the player bails out
+//    with a reveal, and a new `attempts` field counts how many real
+//    submissions have been made so far (no cap enforced anywhere --
+//    see order-scoring.ts's own top-of-file note for why). A slot's own
+//    "locked" status is deliberately **not** persisted as its own field
+//    -- see order-scoring.ts's exported `lockedSlots`, which derives it
+//    fresh from `feedback` every time it's needed (a locked slot's own
+//    guess never moves again, so it can only ever keep re-grading
+//    "correct").
+//
+// **Migration/fallback choice for a stored blob written before this
+// change: safe fallback, not a migration.** A pre-this-redesign stored
+// value (shape 1 or shape 2 above) simply fails `isOrderDayState`'s
+// shape check below -- shape 2's own `{guess, done, won, feedback}`
+// object has no `attempts` field at all, and `attempts` is required
+// here -- so it reads as "nothing stored" and the player gets a fresh
+// day, exactly the same graceful degradation this file's own prior
+// redesign already established for this exact class of change (see
+// this repo's own git history for that version of this comment) and
+// the same shape-check-or-fallback pattern call-board-storage.ts uses
+// (no schema-version field there either -- confirmed by reading that
+// file before making this call, per this change's own instructions).
+// No migration was written for the same reason it wasn't needed last
+// time: any player who already finished today's puzzle under the old
+// mechanic already has their real win/loss recorded in the streak
+// history below (a separate key, untouched by this shape change), so
+// `recordOrderCompletion`'s own per-date idempotency means a fresh
+// replay after this deploy can't double-count a streak entry even if
+// it happens to occur -- see that function's own doc comment.
 //
 // **Streak tracking follows CallBoard.tsx's own shape exactly**, and is
-// completely unaffected by the mechanic redesign above: `currentStreak`/
+// completely unaffected by either mechanic redesign above: `currentStreak`/
 // `bestStreak` are *derived* from a persisted, bounded history on every
 // read, never stored as their own numbers -- the same "a stale or
 // hand-edited stored streak could disagree with the very days it claims
 // to summarise" reasoning call-board-storage.ts's own `syncCallBoard`
-// doc comment already gives for computing stats fresh every time.
+// doc comment already gives for computing stats fresh every time. A win
+// counts once the day is eventually fully solved, regardless of how many
+// submissions it took to get there (this game is not scored on attempt
+// efficiency -- see order-scoring.ts's own top-of-file note) -- the
+// reasonable default this change's own instructions confirmed rather
+// than asked to re-derive.
 
 import { readLocalStorage, writeLocalStorage } from "./local-storage";
 import { parseJson } from "./parse-json";
@@ -66,28 +101,33 @@ function isOrderFeedbackArray(value: unknown, length: number): value is OrderFee
 
 /** Today's in-progress or finished game state for one puzzle. */
 export interface OrderDayState {
-  /** The current editable arrangement -- ticker codes, one per slot, best mover (slot 0) to worst (last slot). */
+  /** The current editable arrangement -- ticker codes, one per slot, best mover (slot 0) to worst (last slot). A locked slot's own entry (see order-scoring.ts's exported `lockedSlots`) never changes again. */
   guess: string[];
-  /** True once the player has submitted their one guess, or bailed out with a reveal. */
-  done: boolean;
-  /** Only meaningful once `done` -- true if every slot's guess matched the real ticker. */
-  won: boolean;
-  /** This puzzle's one real grading, from the actual submitted guess -- `null` if the day ended via a bail-out reveal instead of a real submission (there's nothing to grade in that case). */
+  /** This puzzle's most recent per-slot grading, from the last real submission -- `null` before the first submission, or if the day ended via a bail-out reveal instead of a real submission (there's nothing to grade in that case). A locked slot's own entry here is always "correct" and stays that way forever, since its guess never moves again. */
   feedback: OrderFeedback[] | null;
+  /** How many real submissions have been made so far -- 0 before the first one. No cap is enforced anywhere; this is purely informational (shown in the tile/panel status line), not a limit. */
+  attempts: number;
+  /** True once every slot is locked correct (a full win) or the player bailed out with a reveal. */
+  done: boolean;
+  /** Only meaningful once `done` -- true iff the day ended via a full solve rather than a reveal. */
+  won: boolean;
 }
 
 function isOrderDayState(value: unknown, slotCount: number): value is OrderDayState {
   if (typeof value !== "object" || value === null) return false;
-  const { guess, done, won, feedback } = value as Record<string, unknown>;
+  const { guess, feedback, attempts, done, won } = value as Record<string, unknown>;
   return (
     isStringArray(guess, slotCount) &&
+    (feedback === null || isOrderFeedbackArray(feedback, slotCount)) &&
+    typeof attempts === "number" &&
+    Number.isInteger(attempts) &&
+    attempts >= 0 &&
     typeof done === "boolean" &&
-    typeof won === "boolean" &&
-    (feedback === null || isOrderFeedbackArray(feedback, slotCount))
+    typeof won === "boolean"
   );
 }
 
-/** Today's stored game state for `date`, or `null` if there's nothing stored yet (or storage is unavailable, or holds something malformed -- including a pre-redesign, differently-shaped value). */
+/** Today's stored game state for `date`, or `null` if there's nothing stored yet (or storage is unavailable, or holds something malformed -- including a pre-redesign, differently-shaped value from either mechanic before this one). */
 export function getOrderDayState(date: string, slotCount: number): OrderDayState | null {
   const parsed = parseJson(readLocalStorage(dayKeyFor(date)));
   return isOrderDayState(parsed, slotCount) ? parsed : null;

@@ -5,11 +5,13 @@
 // in order-scoring.ts, the storage layer in order-storage.ts; this file
 // is the only place either gets called from React.
 //
-// Rewritten for the one-shot matching mechanic (see order-scoring.ts's
-// own top-of-file note): `submit()` now always ends the day (there's
-// only one guess to grade, not up to ORDER_MAX_ATTEMPTS of them), and
-// `move`/`shuffle` no longer thread a `locked` array through, since
-// nothing locks mid-game any more.
+// Rewritten for the multi-guess-with-locking mechanic (see
+// order-scoring.ts's own top-of-file note): `submit()` grades the
+// current arrangement and only ends the day once every slot is locked
+// correct -- an incorrect submission stays in progress, with `move`/
+// `shuffle` now locked-aware (they only ever touch the still-open
+// slots, via order-scoring.ts's own `lockedSlots`/`nextOpenSlot`/
+// `shuffleUnlockedGuess`).
 
 import { useCallback, useEffect, useState } from "react";
 
@@ -20,9 +22,10 @@ import {
   initialOrderGuess,
   isPermutationOf,
   isWinningFeedback,
+  lockedSlots,
   moveOrderGuess,
   scoreOrderMatch,
-  shuffleGuess,
+  shuffleUnlockedGuess,
   ORDER_SLOT_COUNT,
 } from "./order-scoring";
 import {
@@ -39,9 +42,10 @@ import {
 function freshDayState(answer: readonly string[], random: () => number): OrderDayState {
   return {
     guess: [...initialOrderGuess(answer, random)],
+    feedback: null,
+    attempts: 0,
     done: false,
     won: false,
-    feedback: null,
   };
 }
 
@@ -147,7 +151,8 @@ export function useOrderGame(puzzle: TheOrderPuzzle | null): UseOrderGameResult 
   const move = useCallback(
     (index: number, dir: 1 | -1) => {
       if (puzzle === null || view.state === null || view.state.done) return;
-      const nextGuess = moveOrderGuess(view.state.guess, index, dir);
+      const locked = lockedSlots(view.state.feedback, ORDER_SLOT_COUNT);
+      const nextGuess = moveOrderGuess(view.state.guess, locked, index, dir);
       if (nextGuess === view.state.guess) return; // no legal move -- no-op
       persist({ ...view.state, guess: [...nextGuess] });
     },
@@ -156,18 +161,29 @@ export function useOrderGame(puzzle: TheOrderPuzzle | null): UseOrderGameResult 
 
   const shuffle = useCallback(() => {
     if (puzzle === null || view.state === null || view.state.done) return;
-    const nextGuess = shuffleGuess(view.state.guess, Math.random);
+    const locked = lockedSlots(view.state.feedback, ORDER_SLOT_COUNT);
+    const nextGuess = shuffleUnlockedGuess(view.state.guess, locked, Math.random);
     persist({ ...view.state, guess: [...nextGuess] });
   }, [puzzle, view.state, persist]);
 
-  // The one and only submission -- always ends the day, whether it wins
-  // or not (no more "attempts remaining" to carry forward).
+  // Grades the current arrangement per slot -- any slot graded "correct"
+  // locks in place (order-scoring.ts's own lockedSlots derives this from
+  // the returned `feedback` on every subsequent render/action, so
+  // there's no separate locked array to persist). The day only ends
+  // (`done: true`) once every slot is locked correct; otherwise this
+  // stays in progress and can be submitted again, with no attempt cap.
   const submit = useCallback(() => {
     if (puzzle === null || view.state === null || view.state.done) return;
     const answer = bestToWorstTickers(puzzle.tickers).map((t) => t.ticker);
     const feedback = scoreOrderMatch(view.state.guess, answer);
     const won = isWinningFeedback(feedback);
-    persist({ guess: [...view.state.guess], done: true, won, feedback });
+    persist({
+      guess: [...view.state.guess],
+      feedback,
+      attempts: view.state.attempts + 1,
+      done: won,
+      won,
+    });
   }, [puzzle, view.state, persist]);
 
   // A bail-out: replaces the guess with the real answer (rather than
@@ -178,11 +194,19 @@ export function useOrderGame(puzzle: TheOrderPuzzle | null): UseOrderGameResult 
   // player's own last arrangement with no per-slot correctness shown at
   // all (feedback === null renders no badge), which left a "Reveal
   // answer" click ending the day without ever actually revealing which
-  // ticker belongs at which %.
+  // ticker belongs at which %. `attempts` is preserved (not reset), a
+  // reveal isn't itself an attempt but it doesn't erase how many real
+  // ones already happened.
   const reveal = useCallback(() => {
     if (puzzle === null || view.state === null || view.state.done) return;
     const answer = bestToWorstTickers(puzzle.tickers).map((t) => t.ticker);
-    persist({ guess: [...answer], done: true, won: false, feedback: null });
+    persist({
+      guess: [...answer],
+      feedback: null,
+      attempts: view.state.attempts,
+      done: true,
+      won: false,
+    });
   }, [puzzle, view.state, persist]);
 
   return { view, move, shuffle, submit, reveal };

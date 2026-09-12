@@ -18,9 +18,10 @@ const SLOT_COUNT = 5;
 function freshState(overrides: Partial<OrderDayState> = {}): OrderDayState {
   return {
     guess: ["A", "B", "C", "D", "E"],
+    feedback: null,
+    attempts: 0,
     done: false,
     won: false,
-    feedback: null,
     ...overrides,
   };
 }
@@ -36,11 +37,21 @@ describe("getOrderDayState / saveOrderDayState", () => {
     expect(getOrderDayState("2026-08-26", SLOT_COUNT)).toEqual(state);
   });
 
-  it("round-trips a real finished state, with its own feedback", () => {
+  it("round-trips a real partially-locked, still-in-progress state (a resubmission mid-game)", () => {
     const state = freshState({
+      attempts: 2,
+      feedback: ["correct", "incorrect", "correct", "incorrect", "incorrect"],
+    });
+    expect(saveOrderDayState("2026-08-26", state)).toBe(true);
+    expect(getOrderDayState("2026-08-26", SLOT_COUNT)).toEqual(state);
+  });
+
+  it("round-trips a real finished (won) state, with its own feedback", () => {
+    const state = freshState({
+      attempts: 3,
       done: true,
-      won: false,
-      feedback: ["correct", "incorrect", "correct", "incorrect", "correct"],
+      won: true,
+      feedback: ["correct", "correct", "correct", "correct", "correct"],
     });
     expect(saveOrderDayState("2026-08-26", state)).toBe(true);
     expect(getOrderDayState("2026-08-26", SLOT_COUNT)).toEqual(state);
@@ -67,10 +78,10 @@ describe("getOrderDayState / saveOrderDayState", () => {
     expect(getOrderDayState("2026-08-26", SLOT_COUNT)).toBeNull();
   });
 
-  it("treats a pre-redesign stored value (attempt/history/locked shape) as nothing stored", () => {
-    // The original multi-attempt Mastermind shape -- a stale value from
-    // before the one-shot matching redesign. It must not be trusted just
-    // because it happens to have a well-formed `guess` array.
+  it("treats a pre-first-redesign stored value (attempt/history/locked Mastermind shape) as nothing stored", () => {
+    // The original issue #207 multi-attempt Mastermind shape -- a stale
+    // value from before either mechanic redesign. It must not be trusted
+    // just because it happens to have a well-formed `guess` array.
     window.localStorage.setItem(
       "hikt:the-order:day:2026-08-26",
       JSON.stringify({
@@ -81,6 +92,40 @@ describe("getOrderDayState / saveOrderDayState", () => {
         done: false,
         won: false,
       }),
+    );
+    expect(getOrderDayState("2026-08-26", SLOT_COUNT)).toBeNull();
+  });
+
+  it("treats a pre-this-redesign stored value (the one-shot guess/done/won/feedback shape, no `attempts`) as nothing stored", () => {
+    // The first redesign's shape -- real, well-formed, but missing the
+    // `attempts` field this redesign requires. Confirms the safe-fallback
+    // migration choice documented in this module's own top-of-file
+    // comment: an old-shape blob reads as "nothing stored," not a crash
+    // and not a silent misinterpretation as the new shape.
+    window.localStorage.setItem(
+      "hikt:the-order:day:2026-08-26",
+      JSON.stringify({
+        guess: ["A", "B", "C", "D", "E"],
+        done: true,
+        won: false,
+        feedback: ["correct", "incorrect", "correct", "incorrect", "correct"],
+      }),
+    );
+    expect(getOrderDayState("2026-08-26", SLOT_COUNT)).toBeNull();
+  });
+
+  it("rejects a stored value whose attempts field is missing or the wrong type", () => {
+    window.localStorage.setItem(
+      "hikt:the-order:day:2026-08-26",
+      JSON.stringify({ ...freshState(), attempts: "2" }),
+    );
+    expect(getOrderDayState("2026-08-26", SLOT_COUNT)).toBeNull();
+  });
+
+  it("rejects a stored value with a negative attempts count", () => {
+    window.localStorage.setItem(
+      "hikt:the-order:day:2026-08-26",
+      JSON.stringify({ ...freshState(), attempts: -1 }),
     );
     expect(getOrderDayState("2026-08-26", SLOT_COUNT)).toBeNull();
   });
@@ -136,5 +181,18 @@ describe("computeOrderStreak", () => {
       { date: "2026-08-23", won: true },
     ];
     expect(computeOrderStreak(history)).toEqual({ currentStreak: 1, bestStreak: 4 });
+  });
+
+  // The confirmed spec's own streak-counting call: a win counts on
+  // eventual full solve regardless of how many submissions it took --
+  // this is deliberately a property of `recordOrderCompletion`'s own
+  // caller (use-order-game.ts only ever calls it with `won: true` once
+  // `done` first goes true via a full solve, no matter the attempt
+  // count), not something `computeOrderStreak` itself needs to know
+  // about at all -- it only ever sees the final win/loss per day.
+  it("counts a win the same way regardless of how many attempts a day took to solve", () => {
+    const wonInOneAttempt = [{ date: "2026-08-20", won: true }];
+    const wonInManyAttempts = [{ date: "2026-08-20", won: true }];
+    expect(computeOrderStreak(wonInOneAttempt)).toEqual(computeOrderStreak(wonInManyAttempts));
   });
 });
