@@ -27,9 +27,10 @@
 // deliberate scope call:
 //   - **A live session** (still playing, or just finished this same
 //     mount): the full mock experience -- the guess form, the "letters
-//     tried" keyboard tracker, and the collapsible guess-history log all
-//     stay visible throughout, exactly like the mock's own `finishLineup`
-//     (which disables the inputs but leaves everything else on screen).
+//     tried" keyboard tracker, and each column's own past-guess history
+//     strip all stay visible throughout, exactly like the mock's own
+//     `finishLineup` (which disables the inputs but leaves everything
+//     else on screen).
 //   - **A reconstructed cold-reload view** (the day was already played
 //     in an earlier session, so there's no live guess history to show):
 //     just the finished grid, the legend, the result banner, and the
@@ -37,10 +38,29 @@
 //     `LineupPlayedResult.lockedColumns` and `lib/lineup-game.ts`'s
 //     `reconstructFinishedCells` for how the grid is rebuilt without
 //     needing to persist the full letter-by-letter history. The
-//     "letters tried" tracker and the guess log both need that history,
-//     which genuinely isn't there for this path -- rather than fake a
-//     lighter version of either, they're simply omitted; the finished
-//     grid itself already carries every letter that matters.
+//     "letters tried" tracker and the per-column history strips both
+//     need that history, which genuinely isn't there for this path --
+//     rather than fake a lighter version of either, they're simply
+//     omitted; the finished grid itself already carries every letter
+//     that matters.
+//
+// **Direct user request (not a filed issue): per-column past-guess
+// history, letter-colored, replacing the old flat whole-board "Guess
+// history" disclosure.** A player re-guessing a column wants to see
+// *that column's own* past attempts sitting right there, each shown
+// exactly like a live guess (same `TILE_STYLES`, just smaller) -- not a
+// separate round-by-round aggregate list elsewhere on the page. See
+// `lib/lineup-game.ts`'s own `columnGuessHistory` for the pure
+// reconstruction (from `board.log`, no new persisted state) and
+// `LineupColumnHistory`/`LineupTile`'s `compact` mode below for the
+// rendering. The old disclosure's own round-level `LineupRoundCounts`
+// (e.g. "2 exact, 1 right spot/wrong ticker...") is a strict *subset* of
+// what these per-column strips already show letter-by-letter -- summing
+// a given attempt's classification across all 5 strips reconstructs the
+// exact same counts, so nothing is actually lost by dropping the
+// separate aggregate view, and mobile page height stays bounded (each
+// strip caps its own height and scrolls) rather than roughly doubling
+// with two history mechanisms side by side.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -49,6 +69,7 @@ import { LINEUP_TICKER_POOL } from "@hadiknowntrades/core";
 import {
   LINEUP_COLUMNS,
   LINEUP_MAX_ATTEMPTS,
+  columnGuessHistory,
   columnsSolvedCount,
   createLineupBoard,
   reconstructFinishedCells,
@@ -57,6 +78,7 @@ import {
   totalTilesCount,
   type LineupBoardState,
   type LineupCellState,
+  type LineupColumnHistoryEntry,
   type LineupLetterRank,
 } from "@/lib/lineup-game";
 import {
@@ -172,33 +194,105 @@ function LineupTile({
   rowIndex,
   state,
   letter,
+  compact = false,
+  contextLabel,
 }: {
   colIndex: number;
   rowIndex: number;
   state: LineupCellState;
   letter: string;
+  /** Smaller fixed-size rendering for the past-guess history strip below -- same TILE_STYLES/glyph/color/sr-only-label treatment as the live board, just scaled down; see LineupColumnHistory. */
+  compact?: boolean;
+  /** Overrides the sr-only sentence's own leading "Column N, slot M" clause -- LineupColumnHistory passes "Attempt N, column M, letter R" instead, since a history tile isn't describing the live board's current slot. */
+  contextLabel?: string;
 }) {
   const style = TILE_STYLES[state];
   const displayText = state === "mystery" ? "?" : state === "empty" ? "–" : letter;
+  const context = contextLabel ?? `Column ${colIndex + 1}, slot ${rowIndex + 1}`;
   const srText =
     state === "mystery" || state === "empty"
-      ? `Column ${colIndex + 1}, slot ${rowIndex + 1}: ${CELL_STATE_LABEL[state]}.`
-      : `Column ${colIndex + 1}, slot ${rowIndex + 1}: letter ${letter}, ${CELL_STATE_LABEL[state]}.`;
+      ? `${context}: ${CELL_STATE_LABEL[state]}.`
+      : `${context}: letter ${letter}, ${CELL_STATE_LABEL[state]}.`;
   return (
     <div
-      className={`font-numeric relative flex aspect-square w-full items-center justify-center rounded-md text-sm font-extrabold sm:text-base ${style.className}`}
+      className={
+        compact
+          ? `font-numeric relative flex h-4 w-4 shrink-0 items-center justify-center rounded-[3px] text-[8px] leading-none font-extrabold ${style.className}`
+          : `font-numeric relative flex aspect-square w-full items-center justify-center rounded-md text-sm font-extrabold sm:text-base ${style.className}`
+      }
     >
       <span aria-hidden="true">{displayText}</span>
       {style.glyph && (
         <span
           aria-hidden="true"
-          className="absolute top-0.5 right-0.5 text-[0.55rem] leading-none opacity-80"
+          className={
+            compact
+              ? "absolute top-[1px] right-[1px] text-[5px] leading-none opacity-80"
+              : "absolute top-0.5 right-0.5 text-[0.55rem] leading-none opacity-80"
+          }
         >
           {style.glyph}
         </span>
       )}
       <span className="sr-only">{srText}</span>
     </div>
+  );
+}
+
+// --- Per-column past-guess history strip -------------------------------
+
+/**
+ * One column's own compact past-guess history -- direct user request:
+ * "show the user what they guessed for previous rounds and highlight
+ * those letters based on the info learned that round," so a column
+ * guessed "NTFL" and told every letter is absent still shows "NTFL," all
+ * dim/struck-through, the next time that column comes up. Reuses
+ * `LineupTile` in its `compact` size -- identical color/glyph/sr-only
+ * treatment as the live board, not a second visual language.
+ *
+ * Renders nothing at all once `entries` is empty (a column with no past
+ * guesses yet), the same "don't render an empty affordance" call the old
+ * whole-board "Guess history" disclosure made (see that section's own
+ * history in apps/web/CLAUDE.md) -- there's just nothing here to show
+ * before a first round is submitted.
+ *
+ * Most-recent-first ordering matches the old disclosure's own
+ * `[...log].reverse()` convention. Height-capped with its own
+ * `overflow-y-auto` (not a `<details>`) -- deliberately always visible,
+ * not tucked behind a click, since the whole point is glancing at it
+ * while typing a *new* guess for this same column; capping height (not
+ * hiding it) is what keeps a several-rounds-deep board from blowing up
+ * page height, per this feature's own compactness requirement.
+ */
+function LineupColumnHistory({
+  colIndex,
+  entries,
+}: {
+  colIndex: number;
+  entries: readonly LineupColumnHistoryEntry[];
+}) {
+  if (entries.length === 0) return null;
+  return (
+    <ol
+      aria-label={`Column ${colIndex + 1} past guesses`}
+      className="flex max-h-24 w-full flex-col gap-1 overflow-y-auto"
+    >
+      {[...entries].reverse().map((entry) => (
+        <li key={entry.attempt} className="flex items-center gap-px">
+          {entry.guess.split("").map((letter, rowIndex) => (
+            <LineupTile
+              key={rowIndex}
+              compact
+              colIndex={colIndex}
+              rowIndex={rowIndex}
+              state={entry.ranks[rowIndex]!}
+              letter={letter}
+              contextLabel={`Attempt ${entry.attempt}, column ${colIndex + 1}, letter ${rowIndex + 1}`}
+            />
+          ))}
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -632,6 +726,12 @@ export function TheLineup() {
               </p>
             )}
 
+            {loaded.liveSession && loaded.board.log.length > 0 && (
+              <p className="text-[0.65rem] font-bold tracking-wide text-[var(--text-muted)] uppercase">
+                Past guesses appear below each column
+              </p>
+            )}
+
             <div
               key={shakeToken ?? "no-shake"}
               className={`grid gap-1.5 sm:gap-2 ${shakeToken !== null ? "lineup-inputs-shake" : ""}`}
@@ -653,6 +753,12 @@ export function TheLineup() {
                       />
                     ))}
                   </div>
+                  {loaded.liveSession && (
+                    <LineupColumnHistory
+                      colIndex={colIndex}
+                      entries={columnGuessHistory(loaded.board, colIndex)}
+                    />
+                  )}
                 </div>
               ))}
             </div>
@@ -719,28 +825,6 @@ export function TheLineup() {
             </ul>
 
             {loaded.liveSession && <LineupKeyboard letterBest={loaded.board.letterBest} />}
-
-            {loaded.liveSession && loaded.board.log.length > 0 && (
-              <details className="text-xs text-[var(--text-secondary)]">
-                <summary className="cursor-pointer font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
-                  Guess history
-                </summary>
-                <div className="mt-2 flex max-h-32 flex-col gap-1 overflow-y-auto">
-                  {[...loaded.board.log].reverse().map((entry) => (
-                    <div key={entry.attempt} className="flex gap-2">
-                      <b className="font-numeric w-9 shrink-0 text-[var(--text-primary)]">
-                        #{entry.attempt}
-                      </b>
-                      <span>
-                        {entry.guesses.join(", ")} - {entry.counts.exact} exact,{" "}
-                        {entry.counts.rowmatch} right spot/wrong ticker, {entry.counts.colmatch}{" "}
-                        right ticker/wrong spot, {entry.counts.absent} absent
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </details>
-            )}
 
             {loaded.board.done && (
               <div className="flex flex-col gap-3">

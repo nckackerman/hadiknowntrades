@@ -408,3 +408,46 @@ export function totalTilesCount(answers: readonly string[]): number {
 export function columnsSolvedCount(state: LineupBoardState): number {
   return state.locked.filter(Boolean).length;
 }
+
+/** One column's own past guess, reconstructed from the shared whole-board log -- see `columnGuessHistory`. */
+export interface LineupColumnHistoryEntry {
+  attempt: number;
+  guess: string;
+  /** `classifyColumnGuess(guess, col, answers)`'s own output for this entry -- the real per-letter classification, recomputed fresh rather than persisted a second time anywhere. */
+  ranks: LineupLetterRank[];
+}
+
+/**
+ * Reconstructs one column's own past guesses from the shared whole-board
+ * `state.log` -- no new persisted state, purely a replay of data
+ * `submitLineupRound` already stored. Re-runs `classifyColumnGuess`
+ * against `state.answers` for each entry rather than trusting `state.cells`
+ * (which only ever holds the *current* round's classification for an
+ * unlocked column, or the frozen final classification for a locked one --
+ * neither carries the full round-by-round history this needs).
+ *
+ * Stops right after the entry that first solves this column: every log
+ * entry after that point is `submitLineupRound`'s own locked-column echo
+ * of the real answer (see that function's own doc comment on
+ * `state.locked[i] ? state.answers[i] : ...`), not a guess the player
+ * actually typed that round -- including it would just repeat the same
+ * all-`exact` row over and over for every later round, with no new
+ * information, defeating this feature's own "keep it compact" goal.
+ */
+export function columnGuessHistory(
+  state: LineupBoardState,
+  col: number,
+): LineupColumnHistoryEntry[] {
+  const answer = state.answers[col]!;
+  const entries: LineupColumnHistoryEntry[] = [];
+  for (const logEntry of state.log) {
+    const guess = logEntry.guesses[col]!;
+    entries.push({
+      attempt: logEntry.attempt,
+      guess,
+      ranks: classifyColumnGuess(guess, col, state.answers),
+    });
+    if (guess === answer) break;
+  }
+  return entries;
+}
