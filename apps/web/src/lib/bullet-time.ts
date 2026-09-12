@@ -266,56 +266,56 @@ const CANDIDATE_COUNT = 10;
 /**
  * Milliseconds per bar during the approach -- its own constant, not
  * derived from `PLAYBACK_SPEEDS` (per issue #224's own scope), and
- * deliberately slower than even the slowest existing speed option (0.1x
- * = `tickIntervalMs(0.1)` = 3000ms/bar): 4500ms is 50% slower again, a
- * real, noticeable step down from the app's own most patient existing
- * pace, not just a marginal one.
+ * deliberately slower than even the slowest surviving speed option
+ * (0.5x = `tickIntervalMs(0.5)` = 600ms/bar, since a later direct user
+ * request dropped 0.1x/0.25x/4x from `PLAYBACK_SPEEDS` entirely -- see
+ * that constant's own doc comment): 4500ms is 7.5x that pace, a real,
+ * noticeable step down from the app's own most patient existing speed,
+ * not just a marginal one.
  *
- * **Re-validated twice against a real 41-session pool for its actual
- * time cost, not just chosen in isolation** -- once at the first revamp
- * round's spacing (`BULLET_TIME_LEAD_BARS = 2`,
+ * **Re-validated three times against a real 41-session pool for its
+ * actual time cost, not just chosen in isolation** -- once at the first
+ * revamp round's spacing (`BULLET_TIME_LEAD_BARS = 2`,
  * `BULLET_TIME_MIN_TRIGGER_GAP_BARS = 6`), once more at the second
  * round's tighter spacing (1/0, see both constants' own doc comments
- * for why), each time against the real `scheduleBulletTimeEvents`
- * (its own two-pass floor-backfill and whole-window anti-crowding check
- * included), summing each bar's own real tick interval (approach/
- * catchup/decision-window-worst-case) against a plain (event-free)
- * baseline session. **Numbers below are the current, shipped
- * (`BULLET_TIME_LEAD_BARS = 1`, `BULLET_TIME_MIN_TRIGGER_GAP_BARS = 0`)
- * measurement** -- the first round's own numbers (+43.0s/+21.8s worst-
- * case/median at 1x; +2.0s/-11.7s at 0.25x) are superseded, not still
- * true, since fewer approach bars per event (2 -> 1) and denser event
- * scheduling both shift the real totals:
+ * for why), and a third time after `BULLET_TIME_DECISION_WINDOW_MS`
+ * doubled from 4000 to 8000ms and `DEFAULT_SPEED` changed from 0.25x to
+ * 0.5x (both direct user requests, not filed issues) -- each time
+ * against the real `scheduleBulletTimeEvents` (its own two-pass
+ * floor-backfill and whole-window anti-crowding check included),
+ * summing each bar's own real tick interval (approach/catchup/
+ * decision-window-worst-case) against a plain (event-free) baseline
+ * session, over a fresh real 41-session pool re-generated for this
+ * third round rather than reusing an earlier round's own pool. **Numbers
+ * below are the current, shipped measurement** -- every earlier round's
+ * own numbers are superseded, not still true, both because the doubled
+ * decision window changes every scenario's total on its own and because
+ * `0.25x` no longer exists as a playable speed at all (see
+ * `PLAYBACK_SPEEDS`'s own doc comment, `beat-the-bench.ts`):
  *
  * - **At 1x speed**: the worst real case (a real 4-event session) adds
- *   **+27.0s** on top of that session's own ~23.1s base length --
- *   pushing a full playthrough to **~50.0s** (down from ~66.1s at the
- *   first round's own spacing -- fewer approach bars per event more
- *   than offsets there being more events overall). The median real
+ *   **+43.0s** on top of that session's own ~23.1s base length --
+ *   pushing a full playthrough to **~66.0s**. The median real
  *   *triggering* session (every one of the 41 real sessions in the pool
- *   triggers at least one event) adds **+17.7s**.
- * - **At the new 0.25x default speed** (`DEFAULT_SPEED`,
- *   `beat-the-bench.ts`): the fixed-pace catchup phase
- *   (`BULLET_TIME_CATCHUP_TICK_MS` = 150ms/bar) is *faster* than the
- *   player's own chosen 1200ms/bar pace at 0.25x, so a long swing's
- *   catchup stretch claws back more time than the approach/decision
- *   phases add -- net overhead is *negative for every single session in
- *   the pool at this spacing*, not just usually negative the way the
- *   first revamp round measured: median **-23.9s** (a 0.25x session
- *   with Bullet Time typically finishes almost 24s *faster* than a
- *   plain playthrough would), and even the real worst case (the session
- *   with the *least* negative overhead, i.e. the one closest to adding
- *   real time) still nets **-8.2s** -- a ~92.4s base session never
- *   exceeds **~84.3s** with Bullet Time active, at any real session in
- *   this pool.
+ *   triggers at least one event) adds **+29.7s**.
+ * - **At the new 0.5x default speed** (`DEFAULT_SPEED`,
+ *   `beat-the-bench.ts`): unlike the old 0.25x default, this is *not* a
+ *   case where the catchup phase's fixed pace (`BULLET_TIME_CATCHUP_TICK_MS`
+ *   = 150ms/bar) reliably outruns the player's own chosen speed by
+ *   enough to net negative overhead -- 0.5x's own 600ms/bar base tick is
+ *   close enough to catchup's 150ms, and the doubled 8000ms decision
+ *   window big enough on its own, that every real session in the pool
+ *   now adds real time rather than clawing any back. Worst real case
+ *   adds **+31.3s** on top of a ~46.2s base (**~77.5s** total); median
+ *   real triggering session adds **+15.9s**.
  *
- * This is a real, measured, non-obvious asymmetry between the two
- * speeds, not a hand-wave: at 1x, every phase of Bullet Time reliably
- * adds overhead; at 0.25x, the catchup phase's fixed pace outpaces the
- * player's own chosen speed for long swings often enough, and by enough
- * margin, that the net effect flips for every real session measured.
- * See `BULLET_TIME_CATCHUP_TICK_MS`'s own doc comment for why the
- * catch-up pace exists at all.
+ * **The asymmetry an earlier round of this doc comment described --
+ * Bullet Time reliably *saving* time at the game's own default speed --
+ * no longer holds now that the default is 0.5x, not 0.25x.** Both
+ * speeds this comment measures now reliably add overhead in every real
+ * session in the pool; they differ only in how much, not in sign. See
+ * `BULLET_TIME_CATCHUP_TICK_MS`'s own doc comment for why the catch-up
+ * pace exists at all.
  */
 export const BULLET_TIME_APPROACH_TICK_MS = 4500;
 
@@ -323,12 +323,20 @@ export const BULLET_TIME_APPROACH_TICK_MS = 4500;
  * Milliseconds the decision window stays open before locking to
  * whatever position the player is already holding -- a real, honest
  * no-op (matches this app's own "no fees, no slippage" copy), never a
- * penalty. Long enough to read a two-choice prompt and act (four
- * seconds, comfortably inside typical human reaction-plus-decision time
- * for a binary choice), short enough that the mechanic doesn't stall the
- * session -- factored into the worst-case timing measurement above.
+ * penalty.
+ *
+ * **Doubled from 4000 to 8000ms (direct user request, not a filed
+ * issue).** Four seconds read as rushed for a prompt that asks a player
+ * to notice "Big swing incoming," read which two absolute choices are on
+ * offer, and commit -- eight seconds is still short enough that the
+ * mechanic doesn't stall the session (see `BULLET_TIME_APPROACH_TICK_MS`'s
+ * own doc comment for the re-measured worst-case/median session overhead
+ * this produces, at both 1x and the current `DEFAULT_SPEED`), while
+ * giving a genuinely comfortable margin over typical human
+ * reaction-plus-decision time for a binary choice, not just "comfortable"
+ * for the fastest readers.
  */
-export const BULLET_TIME_DECISION_WINDOW_MS = 4000;
+export const BULLET_TIME_DECISION_WINDOW_MS = 8000;
 
 /**
  * Milliseconds per bar while catching the flagged swing's own bars up

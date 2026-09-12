@@ -11450,3 +11450,259 @@ windows" further down the page. This is the direct, intended effect of
 work around -- the same category of honest, disclosed trade-off this
 file's own issue #165/#135 sections already accept for similar
 below-the-fold measurements elsewhere on this page.
+
+## Beat the Bench: doubled decision window, slower default speed, three-speed picker, Step reduced-motion-only (2026-09-11, direct user request, not a filed issue)
+
+Four small, independent tuning changes to `lib/bullet-time.ts`,
+`lib/beat-the-bench.ts`, and `BeatTheBench.tsx`'s `PlaybackControls`,
+all requested directly rather than filed as an issue -- the same
+"direct user request" documentation precedent this file already
+establishes elsewhere (see e.g. the "Bullet Time revamp" sections
+above, or "'Today's recap' removed outright" further up).
+
+### 1. `BULLET_TIME_DECISION_WINDOW_MS`: 4000 -> 8000
+
+Doubled outright. Four seconds read as rushed for a prompt that asks a
+player to notice "Big swing incoming," read the two absolute choices,
+and commit -- eight seconds is a genuinely comfortable margin instead
+of one that only works for the fastest readers. See that constant's
+own doc comment in `bullet-time.ts` for the restated reasoning.
+
+**Every other doc comment in `bullet-time.ts`/`beat-the-bench.ts` whose
+own numbers depended on the old 4000ms figure was searched for and
+corrected, not left stale** -- per this file's own established
+standard that these two files take real measured timing seriously.
+That meant re-measuring, not just editing prose: `BULLET_TIME_APPROACH_TICK_MS`'s
+own doc comment states the real worst-case/median session overhead
+Bullet Time adds, and that overhead is a direct function of the
+decision window's own value. Re-ran the exact same methodology the
+file's own "Bullet Time revamp" sections already established (a real,
+freshly-generated 41-session mystery pool -- `local-run.ts`,
+`LOCAL_TICKER_COUNT=20`, real Yahoo network calls, no S3 write --
+summing each bar's own real tick interval, phase by phase, against a
+plain baseline session) via a throwaway Node/Vitest script (deleted
+before committing, per this file's own established convention):
+
+| speed                        | worst-case overhead (session)  | median triggering overhead |
+| ---------------------------- | ------------------------------ | -------------------------- |
+| 1x, old (4000ms decision)    | +27.0s on ~23.1s base (~50.0s) | +17.7s                     |
+| 1x, new (8000ms decision)    | +43.0s on ~23.1s base (~66.0s) | +29.7s                     |
+| 0.25x, old (4000ms decision) | -8.2s (net _savings_)          | -23.9s (net _savings_)     |
+| 0.5x, new (8000ms decision)  | +31.3s on ~46.2s base (~77.5s) | +15.9s                     |
+
+The 0.25x row is included only to show the delta -- `0.25x` no longer
+exists as a speed at all (see change 3 below), so `BULLET_TIME_APPROACH_TICK_MS`'s
+own doc comment now measures 1x and the current `DEFAULT_SPEED` (0.5x)
+instead. **A real, non-obvious consequence worth stating plainly**: the
+old default speed's own catchup phase (150ms/bar, fixed) reliably
+outran the old 0.25x tick (1200ms/bar) by enough margin to make Bullet
+Time a net time-_saver_ at the game's own default pace. At the new
+default (0.5x, 600ms/bar), catchup's 150ms/bar is close enough to the
+base tick, and the doubled 8000ms decision window big enough on its
+own, that this reverses completely -- Bullet Time now reliably _adds_
+time at both speeds this comment measures, just by different amounts.
+This is a genuine behavior change from doubling the window plus
+changing the default speed together, not a documentation-only update.
+
+### 2 & 3. `DEFAULT_SPEED`: 0.25 -> 0.5, and `PLAYBACK_SPEEDS`: `[0.1, 0.25, 0.5, 1, 2, 4]` -> `[0.5, 1, 2]`
+
+Done together because they're the same request: a slower, more patient
+default, but this time by shrinking the speed set down to exactly the
+three speeds a player actually reaches for (slow/normal/fast) rather
+than adding a fourth "patient" option alongside five others the way the
+original 0.25x change did. `0.1x` (~3.9 minutes a session) and `4x`
+(~5.9 seconds) are gone outright -- the two extremes furthest from the
+new default in either direction -- and `0.25x` is gone too, since it
+was only ever added to become `DEFAULT_SPEED` in the first place and
+`0.5` now does that job directly.
+
+Real session durations for the three surviving speeds, recomputed from
+`BASE_TICK_MS` (unchanged at 300ms) against a real 79-bar regular SPY
+session (78 ticks, the opening bar already on screen):
+
+| speed              | ms/bar | full-session duration |
+| ------------------ | ------ | --------------------- |
+| 0.5x (new default) | 600ms  | 46.8s                 |
+| 1x                 | 300ms  | 23.4s                 |
+| 2x                 | 150ms  | 11.7s                 |
+
+### 4. "Step forward one bar": removed from `PlaybackControls` for everyone -- except reduced motion
+
+Before touching anything, read the reduced-motion code path in full
+(`SessionGame`'s own `useState(reducedMotion)` initializer for
+`paused`, `PlaybackControls`' own `reducedMotion && paused` copy, and
+this file's own "Beat the Bench: the core session player" section
+above) -- confirmed the concern was real, not hypothetical: a
+reduced-motion session starts paused specifically so nothing moves
+until the viewer asks it to, and that section's own established
+"Reduced motion gets a real alternative, not a removal" framing already
+calls Step "a complete way to play a session start to finish." A
+reduced-motion viewer's only other control is Play, which starts real
+(if not slow-motion-animated) timed ticking -- not the fully manual,
+one-bar-at-a-time pace the mechanic actually promises that viewer.
+
+**Decision: keep Step, scoped specifically to `reducedMotion`, rather
+than removing it outright or inventing a new affordance.** Both other
+options were considered and rejected:
+
+- **Removing it outright** would have left a reduced-motion viewer with
+  no way to progress a paused session one bar at a time at all -- a
+  real, silent accessibility regression, exactly the kind of thing this
+  repo's own global instructions (and this task's own explicit
+  instruction) call out as unacceptable to ship without a fix.
+- **A new affordance** (e.g. a slower, explicit "advance" control
+  distinct from Step) would have meant designing and verifying a second
+  mechanism for a need Step already meets perfectly for the one
+  audience that still needs it. No reason to invent one.
+
+Keeping Step, gated on `reducedMotion`, is the smaller, lower-risk
+change: no new UI to design, no change to reduced motion's own
+established contract (still literally the same button, same label,
+same behavior it always had), and one less always-on control cluttering
+every other player's row. `PlaybackControls`' own doc comment states
+this reasoning in place, and the auto-lock decision-window effect
+(gated `!reducedMotion`) already meant a reduced-motion viewer never
+had that timer as a fallback either way -- Step was already their _only_
+way to resolve an unanswered Bullet Time decision, not merely their
+only way to advance a plain bar. Every other viewer keeps Pause/Play
+plus the (now three-button) speed picker as their own full set of pace
+controls, unaffected.
+
+### Test suite: a new `advanceNormalMotionBars` helper, and a real fake-timer ordering gotcha found while writing it
+
+`BeatTheBench.test.tsx` had a large number of tests (the "never renders
+a free-form toggle" test, and all four tests in the "Bullet Time"
+describe block) that used to reach a precise bar -- often a Bullet Time
+decision bar -- by clicking "Step forward one bar" some known number of
+times under _normal_ motion, purely as a deterministic testing
+convenience, not because the test was about reduced motion at all. With
+Step gone for that viewer, these needed a real replacement, not a
+motion-preference switch (some of them, like "does not auto-lock the
+decision window while the player is paused," specifically test
+normal-motion-only behavior -- the auto-lock timer itself is gated
+`!reducedMotion`).
+
+The fix: `advanceNormalMotionBars(bars, fromBarIndex, steps, speed)`, a
+new test helper that advances the real fake-timer clock one bar at a
+time, computing each transition's own real tick interval from the
+actual Bullet Time schedule (`scheduleBulletTimeEvents`/
+`bulletTimeStatusAt`/`bulletTimeTickIntervalMs`) -- the identical
+phase-aware pacing `SessionGame` itself ticks on. A bar whose own phase
+is `"deciding"` auto-locks after the real `BULLET_TIME_DECISION_WINDOW_MS`
+elapses (the same honest no-op a passive real player gets), so a test
+that wants to make an _explicit_ choice at a particular decision simply
+requests exactly enough steps to land on it, asserts/clicks there, and
+resumes calling the helper for whatever comes after.
+
+**A real, non-obvious fake-timer/React-effect-interaction bug was found
+and fixed while building this, not assumed correct on the first try**:
+a single giant `vi.advanceTimersByTime(...)` call (the shape several
+pre-existing full-session tests already used -- one big `advance()` call
+covering a whole playthrough) drains every pending timer before React
+ever gets a chance to react to the tick interval's own dependency-driven
+restart, so across one such call the interval silently keeps ticking at
+whatever rate was active when the call began, completely ignoring any
+Bullet Time phase change along the way. This was confirmed directly
+(not assumed) by instrumenting a debug render and sampling
+`barReadout()` every real second of fake time: a full 4x (now 2x)
+playthrough of a fixture with three real scheduled Bullet Time events
+settled in about 18s of fake time when the phase-aware theoretical
+total was about 34.5s, because the interval never actually re-paced
+itself mid-call. `advanceNormalMotionBars`'s own doc comment states this
+explicitly: it must be called as a sequence of small, separate
+`advance()` calls (one per real transition), never as one big summed
+one -- which is also, incidentally, exactly why the pre-existing
+full-session tests ("plays a whole session at 2x...", "settles a
+zero-move session..." and similar) were safe to leave as single big
+`advance()` calls unchanged: they only assert the final settled state,
+which this same jsdom quirk reaches regardless, just not by the "real"
+phase-aware path a live browser actually takes.
+
+A second, related ordering bug surfaced while getting the "Bullet Time"
+describe block's own tests to pass with the new helper: **an interval
+created under real timers is not retroactively controlled by
+`vi.useFakeTimers()` called afterward.** Selecting a speed (or starting
+a session) creates the tick interval at that exact moment -- if that
+happens before `vi.useFakeTimers()` is called, the interval keeps
+ticking on the real wall clock forever after, immune to any later
+`advance()` call. The fix in every affected test helper: call
+`vi.useFakeTimers()` _before_ the action that first creates (or
+recreates) the interval, not after -- matching the order the
+pre-existing, always-passing `renderChooser()` helper already used,
+which is exactly why this bug never showed up there. One of the four
+Bullet Time tests needed an extra wrinkle: its own synthetic fixture
+schedules a swing starting at barIndex 0, so the tick interval is
+_already_ in the fixed "approaching" pace regardless of which speed is
+selected -- meaning selecting a different speed doesn't change
+`effectiveTickMs`'s own value at all in that specific case, so it can't
+be relied on to force the effect to tear down and recreate under fake
+timers the way it does for every other fixture. Fixed by switching to
+fake timers before the _session itself_ starts, not just before
+selecting a speed.
+
+`ResultsPage.test.tsx`'s own single `"Step forward one bar"` reference
+(a 2-bar `SESSION` fixture built specifically so the ritual-integration
+test could settle a real game in "one Step instead of 78") was swapped
+for clicking the now-fastest 2x speed and waiting out one real (if
+short, ~150ms) tick via `findByRole`'s own default polling, rather than
+adding fake-timer machinery to a file that has none today.
+
+### Live verification
+
+Real local pipeline run (`local-run.ts`, `LOCAL_TICKER_COUNT=20`, real
+Yahoo network calls, no S3 write -- a real Today's Close session plus a
+41-session mystery pool) plus `next build`/`next start` (not `next dev`
+-- see this file's own repeatedly-documented note on why headless
+Chromium can't hydrate a dev-mode page in this sandbox) and a headless-
+Chromium Playwright pass (`pnpm add -D -w playwright` for the session,
+reverted afterward). Confirmed, against the real running app:
+
+- A fresh Today's Close session opens with **0.5x already selected**
+  (`aria-pressed="true"`), and the speed row renders exactly
+  `["0.5x", "1x", "2x"]` -- no `0.1x`/`0.25x`/`4x` anywhere.
+- **Zero** `"Step forward one bar"` buttons render for this (normal-
+  motion) player, at any point in the session.
+- Playing the real session at 1x reached a real scheduled Bullet Time
+  event (the approach cue, then the decision panel) organically. The
+  countdown bar's own computed `animation-duration` read **`8s`**, and
+  -- without ever clicking "Ride it out"/"Step aside" -- the decision
+  panel genuinely stayed open and auto-locked after **~8.4s of real
+  wall-clock time** (matching the doubled window, not the old ~4s), the
+  approach/decision/resolution sequence reading sensibly throughout
+  (a real "Big swing incoming…" cue, a real absolute two-button choice,
+  a real resolution once the swing's own end bar was reached). Zero
+  console or page errors.
+- A separate reduced-motion pass (`reducedMotion: "reduce"` context
+  emulation) confirmed the accessibility fix directly: exactly **one**
+  `"Step forward one bar"` button renders, the session genuinely does
+  not advance on its own for 2 real seconds while paused, and clicking
+  Step exactly once advances exactly one bar (`"bar 1 of 79"` ->
+  `"bar 2 of 79"`). Zero console or page errors.
+
+The temporary `playwright` devDependency and every scratch verification
+script were reverted/deleted before committing, per this file's own
+established convention; confirmed via `git status`/`git diff --stat`
+on `package.json`/`pnpm-lock.yaml` showing no trace afterward.
+
+### Routine checks
+
+Lint, typecheck (`next typegen && tsc --noEmit`), `pnpm build`, `pnpm
+test` (apps/web: 85 files / 1280 tests; packages/core: 1312 tests;
+apps/pipeline: 105 tests, all unaffected by this change and unmodified),
+and `pnpm format:check` all green. **`infra/cdk`'s own `pnpm test` fails
+locally on a completely clean checkout of `main` too** -- a real,
+pre-existing, already-documented gap (see `infra/CLAUDE.md`'s own "The
+web Lambda is a real OpenNext build" note): the local `pnpm build` never
+produces `apps/web/.open-next/server-functions/default.zip`, only a
+dedicated CI step (`pnpm --filter web build:lambda`) does, so
+`infra/cdk`'s stack test throws `CannotFindAsset` on any fresh local
+checkout regardless of what changed. Unrelated to this PR -- this
+branch touches no `infra/cdk` files and no build output structure, and
+the linked section's own history already documents this exact
+`CannotFindAsset` failure as inherent to _any_ fresh local checkout
+lacking a manually-built `.open-next/` directory, not something a
+particular diff can cause or fix. Left alone rather than worked around,
+per that section's own existing guidance that a live CI run, not a
+clean local checkout, is the trustworthy signal here -- CI's own
+dedicated `build:lambda` step (see `.github/workflows/CLAUDE.md`) is
+what actually covers this.

@@ -767,8 +767,9 @@ function SessionGame({
   const [speed, setSpeed] = useState<PlaybackSpeed>(DEFAULT_SPEED);
   // Reduced motion doesn't remove the mechanic here -- it changes how it
   // starts. Playback begins paused so nothing moves until the viewer asks
-  // it to, and "Step forward one bar" (always present, for everyone) is a
-  // complete way to play the session start to finish. Safe to read from
+  // it to, and "Step forward one bar" (rendered only for a reduced-motion
+  // viewer -- see PlaybackControls' own doc comment) is a complete way to
+  // play the session start to finish. Safe to read from
   // the prop in a `useState` initializer, unlike issue #131's version:
   // this component now mounts in response to the viewer picking a mode,
   // long after the parent's own post-mount preference read has landed.
@@ -931,25 +932,28 @@ function SessionGame({
   // (real bug, found in independent code review, fixed).** `deciding`
   // force-pauses normal playback regardless of the player's own
   // `paused` state, but `paused` itself doesn't reset just because
-  // `deciding` became true -- a player who paused, then used "Step
-  // forward one bar" (always available, see below) to step into a
-  // trigger bar, would have this real-time timer silently counting down
-  // while the game visibly looked paused to them. Restarting the effect
-  // once `paused` later goes false (a fresh `BULLET_TIME_DECISION_WINDOW_MS`
-  // window, not a resumed partial one) is the deliberate, simplest fix --
-  // there's no partial-elapsed state worth tracking for a decision window
-  // this short.
+  // `deciding` became true -- a player who paused this timer's own
+  // (normal-motion) session, then unpaused, would have this real-time
+  // timer silently counting down while the game visibly looked paused to
+  // them in between. Restarting the effect once `paused` later goes
+  // false (a fresh `BULLET_TIME_DECISION_WINDOW_MS` window, not a
+  // resumed partial one) is the deliberate, simplest fix -- there's no
+  // partial-elapsed state worth tracking for a decision window this
+  // short.
   //
-  // **`PlaybackControls`' own "Step forward one bar" is a second,
-  // equally valid way to reach this same no-op, deliberately, for every
-  // player regardless of motion preference** -- it already just
-  // advances `barIndex` unconditionally with no move recorded, so
-  // clicking it during `deciding` behaves identically to the timer
-  // running out. Not a bypass of the mechanic: "no decision" is a real,
-  // honest, always-available outcome per this app's own established
-  // "Step is a complete way to play" guarantee (see `beat-the-bench.ts`'s
-  // own header comment) -- it was never meant to be reachable only via
-  // waiting out a timer.
+  // **This effect is gated on `!reducedMotion`, so a reduced-motion
+  // player never has this timer running at all -- `PlaybackControls`'
+  // own "Step forward one bar" (rendered only for that viewer, see that
+  // component's own doc comment) is their equally valid way to reach
+  // this same no-op instead.** It already just advances `barIndex`
+  // unconditionally with no move recorded, so clicking it during
+  // `deciding` behaves identically to this timer running out for a
+  // normal-motion player. Not a bypass of the mechanic either way: "no
+  // decision" is a real, honest, always-available outcome per this
+  // app's own established "Step is a complete way to play" guarantee
+  // (see `beat-the-bench.ts`'s own header comment) -- it was never meant
+  // to be reachable only via waiting out a timer, just reachable by
+  // different means for the two motion preferences.
   useEffect(() => {
     if (!deciding || reducedMotion || paused) return;
     const id = window.setTimeout(() => {
@@ -1264,11 +1268,36 @@ function BulletTimeDecisionPanel({
 /**
  * The playback row -- and the way back out of a session in progress.
  *
- * That last part is not decoration: before it existed, "Pick a different
- * mode" only appeared once a session had settled, so a player who started
- * a 78-bar session by mistake had no way out short of reloading the page.
- * Found by a real browser walking the UI, not by reading it (Playwright
- * sat waiting 23 seconds for a control that simply wasn't rendered yet).
+ * The "back out" part is not decoration: before it existed, "Pick a
+ * different mode" only appeared once a session had settled, so a player
+ * who started a 78-bar session by mistake had no way out short of
+ * reloading the page. Found by a real browser walking the UI, not by
+ * reading it (Playwright sat waiting 23 seconds for a control that
+ * simply wasn't rendered yet).
+ *
+ * **"Step forward one bar" is gone as a generally-available control
+ * (direct user request, not a filed issue) -- it now renders only under
+ * reduced motion.** Before this change it sat here unconditionally,
+ * doing double duty as a manual-pace affordance for everyone and as
+ * reduced motion's only way to progress a session at all. Removing it
+ * outright for a player who *isn't* reduced-motion is safe: Pause/Play
+ * plus the speed picker below already give that player every other way
+ * to control pace, none of which reduced motion's own paused-start
+ * design can rely on. **A reduced-motion viewer is different, and this
+ * was checked, not assumed, before removing anything**: a session under
+ * `prefersReducedMotion()` starts with `paused` already `true` (see
+ * `SessionGame`'s own `useState(reducedMotion)` initializer) specifically
+ * so nothing moves until the viewer asks it to, and the paragraph just
+ * below this component's own render (`reducedMotion && paused`) already
+ * called Step "a complete way to play... one bar per press, all the way
+ * to the close" -- removing it for that viewer with no substitute would
+ * have left them with Play (which starts real, if reduced-motion-exempt,
+ * timed ticking -- not the fully manual pace the mechanic promises them)
+ * as the only way to move at all. Keeping Step specifically for
+ * `reducedMotion` -- see the `reducedMotion &&` guard around the button
+ * below -- is the smaller, lower-risk fix: no new affordance to design
+ * and verify, no change to reduced motion's own established contract,
+ * and one less always-on control for every other player's row.
  */
 function PlaybackControls({
   paused,
@@ -1298,18 +1327,25 @@ function PlaybackControls({
         >
           {paused ? "Play" : "Pause"}
         </button>
-        <button
-          type="button"
-          onClick={onStep}
-          aria-label="Step forward one bar"
-          className={`${CONTROL_CLASS} bg-[var(--surface-2)] text-[var(--text-primary)]`}
-        >
-          Step
-        </button>
+        {/* Reduced-motion-only (see this component's own doc comment
+            above) -- a reduced-motion session starts paused specifically
+            so nothing moves on its own, and this is that viewer's one way
+            to advance a bar at a time. Every other viewer has Pause/Play
+            plus the speed picker below and never sees this button. */}
+        {reducedMotion && (
+          <button
+            type="button"
+            onClick={onStep}
+            aria-label="Step forward one bar"
+            className={`${CONTROL_CLASS} bg-[var(--surface-2)] text-[var(--text-primary)]`}
+          >
+            Step
+          </button>
+        )}
         <span id={speedGroupId} className="text-sm text-[var(--text-muted)]">
           Speed
         </span>
-        {/* A wrapping row of six fixed settings, each its own >=44px
+        {/* A wrapping row of three fixed settings, each its own >=44px
             target -- the row breaks onto a second line at narrow widths
             rather than shrinking any of them. */}
         <div role="group" aria-labelledby={speedGroupId} className="flex flex-wrap gap-2">
