@@ -1,4 +1,4 @@
-import { RESULTS_SCHEMA_VERSION } from "@hadiknowntrades/core";
+import { LINEUP_TICKER_POOL, RESULTS_SCHEMA_VERSION } from "@hadiknowntrades/core";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -263,6 +263,65 @@ describe("TheLineup: playing a fresh board", () => {
     await renderAndExpand();
     const grid = screen.getAllByText("?")[0]!.closest("div")!.parentElement!;
     expect(within(grid).getByText(/Column 1, slot 1: not yet guessed\./)).toBeInTheDocument();
+  });
+});
+
+describe("TheLineup: 'Fill for me' (direct user request, not a filed issue)", () => {
+  it("is visible before the first round is ever submitted", async () => {
+    await renderAndExpand();
+    expect(screen.getByRole("button", { name: "Fill for me" })).toBeInTheDocument();
+  });
+
+  it("is gone once the game is won on the very first round", async () => {
+    await renderAndExpand();
+    await typeGuesses(ANSWERS);
+    submit();
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/Solved all 5 in 1 of 7 rounds\./).length).toBeGreaterThan(0);
+    });
+    expect(screen.queryByRole("button", { name: "Fill for me" })).not.toBeInTheDocument();
+  });
+
+  it("stays gone for every subsequent round once the game continues past the first", async () => {
+    await renderAndExpand();
+    // A wrong-but-legal guess -- the game continues into round 2 rather
+    // than ending immediately.
+    await typeGuesses(["AMZN", "AAPL", "AAPL", "AAPL", "AAPL"]);
+    submit();
+
+    // The round didn't win, so the game continues into round 2 -- the
+    // form itself (and "Submit guess") is still very much present, but
+    // "Fill for me" is gone now that this round's guess carries real
+    // information from round 1's classifications.
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Submit guess" })).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Solved all 5/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Out of guesses/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Fill for me" })).not.toBeInTheDocument();
+  });
+
+  it("fills all 5 drafts with real, non-empty tickers drawn from the real pool", async () => {
+    await renderAndExpand();
+    fireEvent.click(screen.getByRole("button", { name: "Fill for me" }));
+
+    for (let i = 0; i < 5; i++) {
+      const value = columnInput(i).value;
+      expect(value.length).toBeGreaterThan(0);
+      expect(LINEUP_TICKER_POOL).toContain(value);
+    }
+  });
+
+  it("does not itself submit a round or otherwise mutate board/log", async () => {
+    await renderAndExpand();
+    fireEvent.click(screen.getByRole("button", { name: "Fill for me" }));
+
+    expect(screen.getByText(/Attempt/).textContent).toContain("1");
+    expect(screen.queryByText(/Past guesses appear below each column/)).not.toBeInTheDocument();
+    for (let i = 0; i < 5; i++) {
+      expect(columnInput(i)).not.toBeDisabled();
+    }
   });
 });
 

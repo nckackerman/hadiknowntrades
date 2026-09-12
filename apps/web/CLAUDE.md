@@ -11450,3 +11450,94 @@ windows" further down the page. This is the direct, intended effect of
 work around -- the same category of honest, disclosed trade-off this
 file's own issue #165/#135 sections already accept for similar
 below-the-fold measurements elsewhere on this page.
+
+## The Lineup: "Fill for me" for the first, information-free guess only (direct user request, not a filed issue)
+
+A "Fill for me" button in `TheLineup.tsx`, next to "Submit guess," gated
+strictly on `loaded.board.log.length === 0` -- the same expression this
+file already uses elsewhere for "has at least one round been submitted."
+The reasoning behind the gate: the very first guess of the day carries no
+real information yet (nothing has been classified against the real
+answers), so it's a fine round to auto-fill with a plausible-but-random
+guess for a player who just wants to get past it; every subsequent
+round's guess is built on real classifications from prior rounds (the
+per-column history strips, the letters-tried tracker) and is deliberately
+never auto-fillable.
+
+- **Draws independently per column from `LINEUP_TICKER_POOL`** (already
+  imported in this file for `isLegalGuess`), one
+  `Math.random()`-indexed pick per column -- repeats across columns are
+  allowed and untouched by design: confirmed by reading
+  `classifyColumnGuess`/`submitLineupRound` first (`lib/lineup-game.ts`)
+  before assuming otherwise -- each column is classified independently
+  against its own real answer, with no whole-board uniqueness constraint
+  anywhere in that logic.
+- **Writes through the exact same `setDrafts` state a real keystroke
+  already updates via `ColumnInput`'s own `onChange`**, not by reaching
+  around the existing data flow -- `handleFillForMe` is a plain
+  `setDrafts(...)` call with 5 freshly-picked tickers, nothing more.
+- **Deliberately does not auto-submit.** The player still sees the 5
+  filled tickers sitting in the real, editable inputs and has to click
+  "Submit guess" themselves -- a "quick way to fill those in," not "play
+  the first round for me automatically." This was the safer default per
+  the request's own framing, and nothing during implementation or live
+  verification suggested otherwise: `next start` shows a real, visible
+  change (5 real tickers appear) with an obvious "you're about to submit
+  this" read step, rather than instantly resolving round 1 with no
+  chance to notice.
+- **Placement/styling**: a plain `<button type="button">` (a clear
+  label, not a bare icon), sized `min-h-11 min-w-11` and styled as a
+  secondary control -- `rounded-md border border-[var(--gridline)]
+bg-[var(--surface-1)] px-3 text-sm font-medium
+text-[var(--text-secondary)] hover:text-[var(--text-primary)]` --
+  matching `TheOrder.tsx`'s own "Shuffle" button byte-for-byte (the
+  closest thing to a Shuffle-equivalent secondary control in this app's
+  daily-hub games), sitting directly beside "Submit guess" in the same
+  `flex items-center gap-2` row. The Lineup has no Shuffle button of its
+  own to sit next to; this button doesn't crowd or overflow that row at
+  either width (confirmed live, below).
+- **Tests** (`TheLineup.test.tsx`): the button's presence before any
+  round is ever submitted; its absence once the game is won on round 1
+  and, separately, its continued absence on round 2+ once the game
+  merely continues (a real regression risk the "gone once won" case
+  alone wouldn't catch, since the whole form disappears on a win
+  regardless of this feature); a click fills all 5 drafts with real,
+  non-empty strings that are genuine `LINEUP_TICKER_POOL` members
+  (membership asserted directly, not just non-empty); and a click
+  neither submits a round (attempt count unchanged, no inputs disabled)
+  nor renders the per-column history strip that only appears once
+  `board.log` is non-empty.
+- **Live-verified against a real local pipeline run**
+  (`LOCAL_TICKER_COUNT=30 LOCAL_RESULTS_DIR=... pnpm --filter
+@hadiknowntrades/pipeline run local-run`, real Yahoo network calls, no
+  S3 write -- a real `results/lineup/latest.json` for 2026-09-11:
+  ALB/ACN/ARE/AMT/AMD) plus `next build`/`next start` (not `next dev` --
+  this file's own repeatedly-documented note on why headless Chromium
+  can't hydrate a dev-mode page in this sandbox) and a headless-Chromium
+  Playwright pass (Chromium launched directly this session, with no
+  `apt-get download`/`dpkg-deb -x` shared-library extraction needed).
+  Confirmed: the button shows before any guess; clicking it fills all 5
+  real column inputs with real tickers (e.g. TSLA/SYK/HSY/PAYX/ROST);
+  clicking it does not submit (attempt stayed "1 of 7", no inputs
+  disabled); clicking "Submit guess" afterward genuinely submits that
+  round, and the button disappears from that point on -- confirmed gone
+  through every later round of the same day, and confirmed still gone
+  after playing the day to a real, complete loss and reloading the page
+  cold (the reconstructed finished-day view, which has no form at all).
+  Screenshotted at 1280px desktop and 375px mobile: at both widths the
+  button sits cleanly beside "Submit guess" with no overflow or
+  crowding (`document.documentElement.scrollWidth === clientWidth`
+  exactly at 375px). Zero console errors or `pageerror` events across
+  the whole run. The temporary `playwright` devDependency and the
+  verification script were both reverted/deleted before committing, per
+  this file's own established convention; confirmed via `git
+status`/`git diff --stat` on `package.json`/`pnpm-lock.yaml` showing no
+  trace afterward.
+- All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
+  1287 passing in `apps/web` alone, `pnpm format:check`) green on the
+  resulting clean tree (`infra/cdk`'s own test suite separately fails in
+  this sandbox for an unrelated, pre-existing reason -- it needs a real
+  OpenNext build artifact at `apps/web/.open-next/server-functions/
+default.zip` that no build step in this workflow produces; confirmed
+  via `git stash` that this same failure exists on a clean checkout of
+  this branch's own base with none of this issue's changes applied).

@@ -656,6 +656,35 @@ export function TheLineup() {
     }
   }
 
+  /**
+   * Direct user request (not a filed issue): a quick way to fill in the
+   * *very first* guess of the day, since that round carries no real
+   * information yet -- nothing has been classified against the real
+   * answers, so there's nothing a hand-typed first guess teaches a
+   * player over a random one. Only ever rendered while
+   * `loaded.board.log.length === 0` (see the button below); every
+   * subsequent round's guess does carry real information (the letters-
+   * tried tracker, prior classifications) and is never auto-fillable.
+   *
+   * Picks one real ticker per column, independently, straight from
+   * `LINEUP_TICKER_POOL` -- repeats across columns are fine (nothing in
+   * `classifyColumnGuess`/`submitLineupRound` requires the 5 columns'
+   * guesses to be distinct from each other). Writes through the exact
+   * same `setDrafts` state a real keystroke already updates via
+   * `ColumnInput`'s own `onChange`, not by reaching around it -- so the
+   * 5 filled tickers are genuinely just sitting in the controlled
+   * inputs, unsubmitted, until the player clicks "Submit guess"
+   * themselves.
+   */
+  function handleFillForMe() {
+    setDrafts(
+      Array.from(
+        { length: LINEUP_COLUMNS },
+        () => LINEUP_TICKER_POOL[Math.floor(Math.random() * LINEUP_TICKER_POOL.length)]!,
+      ),
+    );
+  }
+
   // Derived straight from the board itself, live or reconstructed alike
   // -- both shapes already carry everything the pill needs
   // (won/attempt/locked), so there's no reason to re-read storage here.
@@ -797,12 +826,23 @@ export function TheLineup() {
                     Attempt <b className="text-[var(--text-primary)]">{loaded.board.attempt}</b> of{" "}
                     {LINEUP_MAX_ATTEMPTS}
                   </span>
-                  <button
-                    type="submit"
-                    className="min-h-11 rounded-full bg-[var(--series-1)] px-5 py-2 text-sm font-bold text-white hover:bg-[#2f78d1]"
-                  >
-                    Submit guess
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {loaded.board.log.length === 0 && (
+                      <button
+                        type="button"
+                        onClick={handleFillForMe}
+                        className="min-h-11 min-w-11 rounded-md border border-[var(--gridline)] bg-[var(--surface-1)] px-3 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                      >
+                        Fill for me
+                      </button>
+                    )}
+                    <button
+                      type="submit"
+                      className="min-h-11 rounded-full bg-[var(--series-1)] px-5 py-2 text-sm font-bold text-white hover:bg-[#2f78d1]"
+                    >
+                      Submit guess
+                    </button>
+                  </div>
                 </div>
               </form>
             )}
