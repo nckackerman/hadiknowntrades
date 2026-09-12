@@ -355,11 +355,18 @@ function LineupColumnHistory({
         aria-label={`Column ${colIndex + 1} past guesses`}
         className="flex max-h-28 w-full min-w-0 flex-col gap-1 overflow-y-auto sm:max-h-40 sm:gap-1.5"
       >
-        {[...entries].reverse().map((entry, i) => (
+        {[...entries].reverse().map((entry) => (
           <li
             key={entry.attempt}
+            // Banded by the round's own attempt number, not by position
+            // in this (reversed, newest-first) list -- a positional
+            // index would flip every earlier round's own banding the
+            // instant a new round is appended (found in code review),
+            // undermining the point of "each round reads as one
+            // discrete band." attempt is 1-based, so this still
+            // alternates starting from the first real round.
             className={`flex min-w-0 flex-col gap-0.5 rounded-[3px] px-0.5 py-0.5 sm:rounded-md ${
-              i % 2 === 0 ? "bg-white/[0.04]" : ""
+              entry.attempt % 2 === 1 ? "bg-white/[0.04]" : ""
             }`}
           >
             <span
