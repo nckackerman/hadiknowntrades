@@ -84,6 +84,17 @@
 // it -- settlement math is completely untouched) and apps/web/CLAUDE.md's
 // own "Beat the Bench: Bullet Time" section for the design decisions and
 // the real thresholds they're validated against.
+//
+// **Bullet Time is now the only way to move at all (direct user
+// request, not a filed issue).** The always-available "Sell, go to
+// cash"/"Buy back in" toggle that used to sit beside the ordinary
+// readouts on every bar is gone outright -- `commitBulletTimeChoice`
+// (`SessionGame`, below) is the sole place `moves` ever grows. Outside a
+// Bullet Time decision, the only controls on screen are Play/Step/Pause
+// (`PlaybackControls`) and the plain readouts. See `commitBulletTimeChoice`'s
+// own doc comment for why this stayed scoped to exactly the single
+// `deciding` bar rather than widened into a "change your mind through
+// the whole swing" mechanic.
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 
@@ -958,6 +969,21 @@ function SessionGame({
   // making a choice is what advances past the deciding bar; the
   // resulting position -- explicit or auto-locked -- is all
   // evaluateBulletTimeCall ever looks at.
+  //
+  // **This is now the *only* place `moves` ever grows (direct user
+  // request, not a filed issue): the always-available free-form toggle
+  // that used to sit beside the ordinary readouts is gone outright.**
+  // Restricted deliberately to exactly this one bar per scheduled event
+  // -- not widened into a "change your mind anywhere through the
+  // approach/catchup window" mechanic, a wider version that was
+  // considered and explicitly rejected in favor of this smaller, lower-
+  // risk change. `settleSession`/`topUpMoves`/`outcomeHeadline` etc. all
+  // still operate generically over `moveBarIndexes`/`position` and
+  // needed no changes: they never assumed *how* a move came to exist,
+  // only that `moves` is an ascending list of bar indexes, and that
+  // invariant is untouched -- there just can't be more of them than
+  // there are scheduled Bullet Time events now (2-4, per this file's own
+  // revamp history above), where before there was no such ceiling.
   function commitBulletTimeChoice(target: Position) {
     if (position !== target) setMoves((current) => [...current, barIndex]);
     setBarIndex((current) => Math.min(current + 1, lastIndex));
@@ -1037,11 +1063,24 @@ function SessionGame({
         </p>
       )}
 
-      {/* The live readouts and the trade control belong to a session in
-          progress. Once it settles they're replaced by the settlement
-          card below rather than left on screen greyed out: they'd
-          otherwise restate the same two balances a second time, one
-          rounded pair of figures directly above another. */}
+      {/* The live readouts belong to a session in progress. Once it
+          settles they're replaced by the settlement card below rather
+          than left on screen greyed out: they'd otherwise restate the
+          same two balances a second time, one rounded pair of figures
+          directly above another.
+
+          **No free-form trade control here (direct user request, not a
+          filed issue): the always-available "Sell, go to cash"/"Buy
+          back in" toggle this used to sit beside is gone outright.** A
+          position change is only ever possible during Bullet Time's own
+          `deciding` bar, immediately below -- see `commitBulletTimeChoice`'s
+          own doc comment. Outside of that one bar, this readout grid is
+          purely informational: no wording change was needed for that
+          demotion ("You (in the market)"/"You (in cash)" already reads
+          as a status, not an instruction, with nothing about its phrasing
+          implying an adjacent button), and the 2-/3-column grid still
+          reads cleanly on its own with the same gap-4 spacing carrying it
+          straight into `PlaybackControls` below. */}
       {!settled && deciding && (
         <BulletTimeDecisionPanel
           eventIndex={biStatus.eventIndex}
@@ -1052,33 +1091,15 @@ function SessionGame({
         />
       )}
       {!settled && !deciding && (
-        <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <Readout label={`${session.ticker} price`} value={`$${currentBar.close.toFixed(2)}`} />
-            <Readout
-              label={position === "holding" ? "You (in the market)" : "You (in cash)"}
-              value={formatHeroCurrency(playerBalance)}
-              emphasis
-            />
-            <Readout label="The bench" value={formatHeroCurrency(benchBalance)} />
-          </div>
-
-          {/* One toggle, flipping label and color, rather than two
-              persistent buttons -- there is only ever one move
-              available, and a pair of buttons would leave one of them
-              permanently dead. */}
-          <button
-            type="button"
-            onClick={() => setMoves((current) => [...current, barIndex])}
-            className={`min-h-11 rounded-md px-4 text-base font-semibold ${
-              position === "holding"
-                ? "border border-[var(--gridline)] bg-[var(--surface-2)] text-[var(--text-primary)]"
-                : "bg-[var(--accent-selection)] text-white"
-            }`}
-          >
-            {position === "holding" ? "Sell, go to cash" : "Buy back in"}
-          </button>
-        </>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <Readout label={`${session.ticker} price`} value={`$${currentBar.close.toFixed(2)}`} />
+          <Readout
+            label={position === "holding" ? "You (in the market)" : "You (in cash)"}
+            value={formatHeroCurrency(playerBalance)}
+            emphasis
+          />
+          <Readout label="The bench" value={formatHeroCurrency(benchBalance)} />
+        </div>
       )}
 
       {settled ? (
@@ -1114,7 +1135,16 @@ function SessionGame({
           would make the page unusable with a screen reader. Bullet
           Time's own deciding prompt and live resolution are announced
           too, the same "a discrete moment, not a per-frame value" rule
-          the rest of this region already follows. */}
+          the rest of this region already follows.
+
+          **Confirmed still correct, not dead code, now that the
+          free-form toggle is gone**: the final `position === "holding"`
+          fallback below used to announce a toggle click's own position
+          change; it still does exactly that job today, just for the one
+          remaining source of a position change (a Bullet Time
+          commitment) instead of two -- there's no separate announcement
+          path that only the deleted toggle ever fed, so nothing here
+          needed removing. */}
       <p role="status" aria-live="polite" className="sr-only">
         {settled
           ? `Session over. ${outcomeHeadline(settlement)}. You finished at ${formatHeroCurrency(settlement.playerBalance)}, the bench at ${formatHeroCurrency(settlement.benchmarkBalance)}.`
