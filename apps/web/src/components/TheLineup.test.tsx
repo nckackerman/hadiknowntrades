@@ -332,6 +332,32 @@ describe("TheLineup: per-column past-guess history", () => {
     });
   });
 
+  it("labels each past round with its own always-visible attempt number, most-recent row first (readability redesign)", async () => {
+    await renderAndExpand();
+    // Two rounds, column 1 (IBM) left unsolved both times so its own
+    // history strip accumulates two rows to check ordering/labeling on.
+    await typeGuesses(["AMZN", "TSLA", "DIS", "MSFT", "CAT"]);
+    submit();
+    await waitFor(() => expect(columnInput(1)).toBeDisabled());
+    await typeGuesses(["DIS", "TSLA", "DIS", "MSFT", "CAT"]);
+    submit();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Column 1 past guesses")).toBeInTheDocument();
+    });
+    const history = screen.getByLabelText("Column 1 past guesses");
+    const rows = within(history).getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    // Most-recent-first: round 2's own row comes before round 1's.
+    expect(rows[0]!.textContent).toMatch(/^2/);
+    expect(rows[1]!.textContent).toMatch(/^1/);
+    // The visible label is a sighted-only convenience -- the sr-only
+    // per-tile text still carries the same attempt number for assistive
+    // tech, so this doesn't introduce a second, differently-worded
+    // announcement.
+    expect(within(rows[0]!).getByText(/Attempt 2, column 1, letter 1:/)).toBeInTheDocument();
+  });
+
   it("does not render any per-column history on the reconstructed cold-reload view (no persisted log to replay)", async () => {
     saveLineupPlayedResult({
       date: "2026-08-26",

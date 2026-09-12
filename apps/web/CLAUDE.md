@@ -11551,3 +11551,189 @@ per-letter verdicts.
   script were reverted/deleted before committing, per this file's own
   established convention; confirmed via `git status` showing a clean
   tree apart from the real source/test changes afterward.
+
+## 2026-09-11: The Lineup's per-column history redesigned for readability (direct user request, not a filed issue)
+
+Direct user feedback on the feature the section immediately above this
+one shipped: "hard to parse as shipped." Branched from PR #252
+(`lineup-desktop-tile-sizing`, an unrelated sm:+ desktop sizing fix for
+this same component, already open/CI-green) specifically so this
+redesign includes that fix instead of conflicting with it later.
+
+**Read the feature fully first, then looked at it live before deciding
+anything** -- per this file's own working agreement for any UI change,
+and doubly important here since the prior section's own "Mobile math
+actually worked out" claim turned out not to generalize (see the real,
+found-live overflow bug below). A real local pipeline run
+(`LOCAL_TICKER_COUNT=20 LOCAL_RESULTS_DIR=...`, real Yahoo network
+calls) published `ALB, ACN, ARE, AMD, ABNB` as the day's real answers;
+`next build`/`next start` (not `next dev`, per this file's own repeated
+note) plus the documented no-root headless-Chromium workaround drove a
+real 6-round game through the real autocomplete inputs (not injected
+state) engineered to leave one column at exactly 1 past guess and three
+columns at 6 -- the task's own explicit "1 entry" and "3-7 entries"
+targets -- at both 1280px desktop and a genuine 375px phone width.
+
+### What was actually wrong, confirmed by screenshot, not assumed
+
+The three problems the task suggested checking for were all real,
+confirmed by comparing a zoomed-in screenshot of a 6-round column
+against the unmodified shipped code, not inferred from reading the JSX:
+
+1. **No visual boundary between the live board and the history below
+   it.** Both used the identical `LineupTile` styling (`TILE_STYLES`,
+   the same borders/glyphs/colors), differing only in raw pixel size --
+   a several-round-deep column read as one undifferentiated block of
+   small squares, with the shared "Past guesses appear below each
+   column" caption above the whole 5-column grid the only cue that a
+   boundary existed at all.
+2. **No indication of which round a row came from.** Every past-guess
+   row was bare `gap-1` tiles with nothing distinguishing round 6's row
+   from round 1's except position and scroll-order -- a player had to
+   count rows to know which attempt they were looking at.
+3. **Information density**, specifically compounded by (1) and (2): a
+   column with several rounds of history rendered as a solid, uniform
+   grid of tiny squares with no internal structure to anchor a glance
+   on.
+
+**A fourth, real bug not on the task's own suggested list, found only by
+actually screenshotting a genuinely narrow phone width with several
+4-letter guesses in play**: at 375px, the shipped design already
+overflowed the page horizontally by a measured 8px
+(`document.documentElement.scrollWidth` 383 vs. `clientWidth` 375) --
+directly contradicting the prior section's own "confirmed live... at
+375px and 390px" claim. That claim wasn't fabricated, just narrower than
+it read: it was checked against that session's own specific fixture/
+guess sequence, which didn't happen to leave every column carrying a
+4-letter guess at the same time. Five fixed-`h-4`-width (16px) tiles per
+history row, in a CSS grid with five plain `1fr` columns, will not
+shrink a track below a child's own min-content size -- a real, narrow
+but genuine pre-existing bug, made worse (not caused) once this redesign
+initially tried enlarging the fixed tile size for legibility (see Option
+1 below) and pushed the very same overflow up to 66px.
+
+### Three options considered
+
+1. **Minimal: label + separate, same fixed tile size.** Add a small
+   always-visible round-number label above each row and a `border-t`
+   divider between the live grid and the history strip, leaving
+   `LineupTile`'s compact rendering at its shipped fixed pixel size.
+   Cheapest, lowest-risk, and it directly fixes problems 2 and 3 above
+   -- but it does nothing for the raw "tiles are too small to read"
+   complaint, and (confirmed by actually trying it and measuring) a
+   naive size bump for legibility reintroduces/worsens the pre-existing
+   375px overflow bug, since the fixed-pixel tiles still don't know how
+   wide their own column lane actually is.
+2. **Fluid, gap-free tiles that always exactly fill their own row's
+   available width (`flex-1 aspect-square`, no fixed pixel size),
+   combined with (1)'s round labels and row banding.** A tile is always
+   `(column lane width - gaps) / letterCount` wide, at any viewport --
+   provably safe against overflow (not just "looks fine in the two
+   sizes that happened to get screenshotted," the exact trap the prior
+   section's own claim fell into) and, for free, tiles get _bigger_ than
+   the old fixed 16px/24px wherever there's genuinely spare room (a
+   3-letter guess's own row, or a wide desktop column).
+3. **Restructure into per-column horizontally-scrollable cards on
+   narrow viewports** (each column becomes a wider, swipeable "card"
+   with room for full-size tiles, at the cost of not seeing all 5
+   columns at once while typing a new whole-board guess on mobile).
+   Rejected outright, not just deprioritized: this game's own guess
+   mechanic submits all 5 columns _together_ as one round (see
+   `lib/lineup-game.ts`'s own header comment on `submitLineupRound`), so
+   losing simultaneous visibility of all 5 columns while composing a
+   guess would be a real gameplay regression, not just a layout
+   tradeoff. It also conflicts with this task's own "must still fit
+   under each column" framing, which reads as "stay per-column,
+   side-by-side," not "redesign into a carousel."
+
+**Chose Option 2.** It's a strict superset of Option 1's labeling/
+banding fix, it's the only one of the three that actually _guarantees_
+no overflow at any viewport (rather than empirically not overflowing at
+whichever widths got tested) -- the property that matters most given
+the prior section's own claim didn't hold up under a slightly different
+real scenario -- and it improves legibility without touching the
+per-column, always-visible, side-by-side structure the constraints and
+Option 3's rejection both call for.
+
+### What shipped
+
+- **`LineupColumnHistory`** (`TheLineup.tsx`) wraps its `<ol>` in a
+  `border-t border-[var(--gridline)]` container with top padding --
+  giving the whole history block its own visually distinct "panel,"
+  separate from the live grid above, on top of the pre-existing shared
+  caption.
+- **Each `<li>` gained a small, always-visible, `aria-hidden="true"`
+  round-number label** (just the bare number, e.g. `3`) above its own
+  row of tiles, plus a subtle alternating background band
+  (`bg-white/[0.04]` on every other row) so a round reads as one
+  discrete unit rather than a continuous strip. `aria-hidden` because
+  the number is already spoken per-tile via the existing `contextLabel`
+  sr-only text (`"Attempt N, column M, letter R..."`) -- this is a
+  sighted-only convenience, not new information for a screen reader,
+  and doesn't create a second, differently-worded announcement.
+  Deliberately a label _above_ each row, not inline to its left: inline
+  would steal width from the tiles themselves in a lane as narrow as
+  ~54-70px on a real phone, working directly against the redesign's own
+  goal.
+- **`LineupTile`'s `compact` mode changed from a fixed pixel size
+  (`h-4 w-4` / `sm:h-6 sm:w-6`) to `flex-1 aspect-square`**, with
+  `min-w-0` threaded through every element in the flex chain up to (and
+  including) the per-column grid item in `TheLineup.tsx`'s own main
+  render -- the CSS grid's automatic minimum-size behavior otherwise
+  refuses to let a track shrink below a fixed-width child's own
+  min-content, which is the actual mechanism behind the 375px overflow
+  bug above. The live board's own tiles were untouched (`w-full
+aspect-square` already, no fixed size to begin with) -- both now scale
+  with their real column width, they just divide it differently (1 tile
+  vs. up to 4 sharing the same lane).
+- **No change to `lib/lineup-game.ts` at all** -- `columnGuessHistory`
+  already returned everything this redesign needed (`entry.attempt`),
+  confirmed by reading it before writing any component code.
+
+### Constraints checked against, live, not assumed
+
+- **WCAG 1.4.1 (glyph + color + sr-only, never color alone)**:
+  completely untouched -- `TILE_STYLES`' existing glyph/color/sr-only
+  triplet is reused byte-for-byte; the new round-number label is a
+  purely decorative addition on top; the WCAG-relevant classification
+  signal was never the thing that changed.
+- **Always visible, not tucked behind a click**: unchanged -- no
+  `<details>`, no expand/collapse, still the same `overflow-y-auto`
+  strip that was already there.
+- **Max-height-capped/scrolling behavior for a many-round game**: the
+  mechanism (`max-h-* overflow-y-auto`) is untouched; only the exact cap
+  values were retuned (`max-h-24`/`sm:max-h-32` -> `max-h-28`/`sm:max-h-40`)
+  to comfortably show a couple of the now-slightly-taller (label + tile
+  row) entries before scrolling, confirmed live at a genuine 6-round
+  depth at both widths.
+- **No dramatic height growth, mobile the binding case**: measured
+  directly, same 6-round fixture, same widths, before vs. after --
+  **375px: 1123.6px -> 1095.8px (actually smaller)**; **1280px:
+  1178.0px -> 1219.0px (+41px, a taller `sm:` scroll cap, not the
+  binding case per the task's own framing)**. Mobile getting smaller,
+  not bigger, was not the goal going in but is a fine outcome: it means
+  the redesign's real cost (a label line per round) is more than offset
+  by tighter overall spacing choices elsewhere in the same change.
+
+### Live re-verification after the fix
+
+Same real local pipeline data, same real 6-round played-through fixture,
+`next build`/`next start`, no-root headless Chromium, both widths:
+`document.documentElement.scrollWidth === clientWidth` exactly (1280 and 375) -- the overflow bug is gone, not just smaller. Screenshots at both
+widths show: column 1 (1 past guess) reading as one clearly labeled
+band; columns 3-5 (6 past guesses each) reading as a legible, labeled,
+scrollable stack with each round's own letters and glyphs distinguishable
+at a glance; the live board and the history strip visually separated by
+the new divider. A separate one-round-only pass (every column at exactly
+1 entry, all 4-letter guesses, the tightest real per-tile width case)
+confirmed the same at both widths. Zero console errors/warnings and zero
+`pageerror` events across every pass. `TheLineup.test.tsx` gained a
+regression test for the round-number labeling/ordering
+(`"labels each past round with its own always-visible attempt number,
+most-recent row first"`); every pre-existing test in that file's own
+"per-column past-guess history" describe block passed unmodified, since
+the `<ol>`/`<li aria-label>` structure and every sr-only string are
+untouched. The temporary `playwright` devDependency and every scratch
+verification script were reverted/deleted before committing, per this
+file's own established convention; confirmed via `git status`/`git diff
+--stat` on `package.json`/`pnpm-lock.yaml` showing no trace afterward.

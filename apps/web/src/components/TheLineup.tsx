@@ -201,7 +201,26 @@ function LineupTile({
   rowIndex: number;
   state: LineupCellState;
   letter: string;
-  /** Smaller fixed-size rendering for the past-guess history strip below -- same TILE_STYLES/glyph/color/sr-only-label treatment as the live board, just scaled down; see LineupColumnHistory. */
+  /**
+   * Fluid (not fixed-pixel) rendering for the past-guess history strip
+   * below -- same TILE_STYLES/glyph/color/sr-only-label treatment as the
+   * live board, just laid out to always exactly fill its own row's
+   * available width (`flex-1 aspect-square`) rather than a fixed size.
+   * This is a deliberate, screenshot-driven fix, not the original
+   * design: a fixed-pixel compact tile (this app's own first attempt at
+   * this redesign, and the version this file's own CLAUDE.md section
+   * documents trying and rejecting) can't adapt to a 3-letter vs
+   * 4-letter guess sharing the same ~1/5-of-panel-width column lane, so
+   * bumping it up for legibility caused a real, measured horizontal page
+   * overflow on a genuine 375px phone width once a column's history held
+   * a 4-letter guess -- confirmed live via
+   * `document.documentElement.scrollWidth`, not assumed. Fluid sizing
+   * guarantees this tile can never be wider than its own share of the
+   * row, at any viewport, while still growing to fill genuinely spare
+   * room (a wide desktop column, or a 3-letter guess) -- see
+   * `LineupColumnHistory`'s own doc comment for the full design-review
+   * writeup.
+   */
   compact?: boolean;
   /** Overrides the sr-only sentence's own leading "Column N, slot M" clause -- LineupColumnHistory passes "Attempt N, column M, letter R" instead, since a history tile isn't describing the live board's current slot. */
   contextLabel?: string;
@@ -217,7 +236,7 @@ function LineupTile({
     <div
       className={
         compact
-          ? `font-numeric relative flex h-4 w-4 shrink-0 items-center justify-center rounded-[3px] text-[8px] leading-none font-extrabold sm:h-6 sm:w-6 sm:rounded-md sm:text-xs ${style.className}`
+          ? `font-numeric relative flex aspect-square min-w-0 flex-1 items-center justify-center rounded-[3px] text-[9px] leading-none font-extrabold sm:rounded-md sm:text-sm ${style.className}`
           : `font-numeric relative flex aspect-square w-full items-center justify-center rounded-md text-sm font-extrabold sm:text-base ${style.className}`
       }
     >
@@ -227,7 +246,7 @@ function LineupTile({
           aria-hidden="true"
           className={
             compact
-              ? "absolute top-[1px] right-[1px] text-[5px] leading-none opacity-80 sm:top-0.5 sm:right-0.5 sm:text-[0.5rem]"
+              ? "absolute top-[1px] right-[1px] text-[6px] leading-none opacity-80 sm:top-0.5 sm:right-0.5 sm:text-[0.55rem]"
               : "absolute top-0.5 right-0.5 text-[0.55rem] leading-none opacity-80"
           }
         >
@@ -263,6 +282,64 @@ function LineupTile({
  * while typing a *new* guess for this same column; capping height (not
  * hiding it) is what keeps a several-rounds-deep board from blowing up
  * page height, per this feature's own compactness requirement.
+ *
+ * **Readability redesign (direct user request, not a filed issue): as
+ * shipped, this strip was hard to parse at a glance** -- confirmed by
+ * actually screenshotting a live column with 6 past rounds (see
+ * apps/web/CLAUDE.md's own dated section on this), not assumed from
+ * reading the code. Two real, screenshot-confirmed problems, both
+ * addressed here without touching `lineup-game.ts` at all (every field
+ * this needs -- `entry.attempt` -- already existed):
+ *   1. **No visual boundary between the live board above and this
+ *      history strip below** -- both used the exact same `LineupTile`
+ *      styling with only a size difference, so a several-round-deep
+ *      column read as one undifferentiated block of small squares. Fixed
+ *      with a `border-t` + top padding on this wrapper, giving the strip
+ *      its own visually distinct "panel," on top of the shared
+ *      "Past guesses appear below each column" caption already above the
+ *      whole grid.
+ *   2. **No indication of which round a row came from, and the rows
+ *      themselves had no separation from each other** -- every row was
+ *      just `gap-1` of bare tiles, indistinguishable from its neighbors
+ *      without counting. Fixed with a small, always-visible `aria-hidden`
+ *      round-number label above each row (the number is already spoken
+ *      per-tile via `contextLabel`'s "Attempt N..." sr-only text, so this
+ *      is a sighted-only convenience, not new information for a screen
+ *      reader) and a subtle alternating row background so each round
+ *      reads as one discrete band, not a continuous grid.
+ *
+ * The round label sits on its own line above each row rather than
+ * inline to its left -- inline would have to steal width from the tiles
+ * themselves in a lane this narrow (as little as ~64px on a real 375px
+ * phone, per the live measurement above), which would shrink them
+ * further, the opposite of the goal. A label line costs a little extra
+ * height per round instead, which is fine: this strip already scrolls
+ * within a fixed `max-h`, so a many-round column absorbs that into more
+ * scrolling, not a taller page -- the exact "still fine for a many-round
+ * game" property `apps/web/CLAUDE.md`'s own dated section confirms was
+ * re-checked live, not assumed, after this change.
+ *
+ * **Every element in this row's own flex chain (`<ol>`, `<li>`, and the
+ * tile row `<span>`) is explicitly `min-w-0`, and every `LineupTile` in
+ * `compact` mode is `flex-1` rather than a fixed pixel size -- this is
+ * load-bearing, not decorative.** A first version of this redesign kept
+ * `LineupTile`'s original fixed-pixel compact size (just a few px
+ * bigger, for legibility) -- and a real, live-measured horizontal page
+ * overflow followed the moment a column's history held a 4-letter guess
+ * at a genuine 375px phone width: 5 equal `1fr` grid columns leave each
+ * one only ~54-70px wide, and a CSS grid track will not shrink a child
+ * below that child's own min-content size unless the child itself opts
+ * out via `min-width: 0` -- four *fixed*-width tiles plus their borders
+ * simply don't have a smaller min-content to shrink to. `flex-1` (no
+ * fixed width) plus `min-w-0` up the whole chain removes that floor
+ * entirely: a tile is always exactly `(lane width - gaps) / letterCount`
+ * wide, at every viewport, for either a 3- or 4-letter guess -- provably
+ * safe against overflow rather than merely "looks fine in the two sizes
+ * that happened to get screenshotted." This also means these tiles are
+ * *not* a fixed size the way the live grid's own tiles above them
+ * aren't either (`w-full aspect-square`, unchanged) -- both scale with
+ * their own column's real width, they just divide it differently (1
+ * tile vs. up to 4 sharing the same lane).
  */
 function LineupColumnHistory({
   colIndex,
@@ -273,26 +350,41 @@ function LineupColumnHistory({
 }) {
   if (entries.length === 0) return null;
   return (
-    <ol
-      aria-label={`Column ${colIndex + 1} past guesses`}
-      className="flex max-h-24 w-full flex-col gap-1 overflow-y-auto sm:max-h-32 sm:gap-1.5"
-    >
-      {[...entries].reverse().map((entry) => (
-        <li key={entry.attempt} className="flex items-center gap-px sm:gap-1">
-          {entry.guess.split("").map((letter, rowIndex) => (
-            <LineupTile
-              key={rowIndex}
-              compact
-              colIndex={colIndex}
-              rowIndex={rowIndex}
-              state={entry.ranks[rowIndex]!}
-              letter={letter}
-              contextLabel={`Attempt ${entry.attempt}, column ${colIndex + 1}, letter ${rowIndex + 1}`}
-            />
-          ))}
-        </li>
-      ))}
-    </ol>
+    <div className="mt-0.5 w-full min-w-0 border-t border-[var(--gridline)] pt-1.5">
+      <ol
+        aria-label={`Column ${colIndex + 1} past guesses`}
+        className="flex max-h-28 w-full min-w-0 flex-col gap-1 overflow-y-auto sm:max-h-40 sm:gap-1.5"
+      >
+        {[...entries].reverse().map((entry, i) => (
+          <li
+            key={entry.attempt}
+            className={`flex min-w-0 flex-col gap-0.5 rounded-[3px] px-0.5 py-0.5 sm:rounded-md ${
+              i % 2 === 0 ? "bg-white/[0.04]" : ""
+            }`}
+          >
+            <span
+              aria-hidden="true"
+              className="font-numeric text-[7px] leading-none font-bold text-[var(--text-muted)] sm:text-[8px]"
+            >
+              {entry.attempt}
+            </span>
+            <span className="flex w-full min-w-0 items-center gap-px sm:gap-1">
+              {entry.guess.split("").map((letter, rowIndex) => (
+                <LineupTile
+                  key={rowIndex}
+                  compact
+                  colIndex={colIndex}
+                  rowIndex={rowIndex}
+                  state={entry.ranks[rowIndex]!}
+                  letter={letter}
+                  contextLabel={`Attempt ${entry.attempt}, column ${colIndex + 1}, letter ${rowIndex + 1}`}
+                />
+              ))}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
 
@@ -738,7 +830,7 @@ export function TheLineup() {
               style={{ gridTemplateColumns: `repeat(${LINEUP_COLUMNS}, 1fr)` }}
             >
               {loaded.board.cells.map((column, colIndex) => (
-                <div key={colIndex} className="flex flex-col items-center gap-1">
+                <div key={colIndex} className="flex min-w-0 flex-col items-center gap-1">
                   <span className="font-numeric text-xs font-bold text-[var(--text-muted)]">
                     Col {colIndex + 1}
                   </span>
