@@ -11377,8 +11377,8 @@ companies #1..N"):
 
 Option 1 won on all three of the stated criteria: clarity at a glance (no
 new vocabulary to learn -- "held"/"hold" already appear twice above it on
-the same screen), brevity (comparable length to the original: 28/26
-characters vs. the original 23/24), and consistency (reuses this
+the same screen), brevity (comparable length to the original: 27/25
+characters vs. the original 23/23), and consistency (reuses this
 component's own established verb instead of introducing a new metaphor).
 
 **`CutDirection` (`the-cut-scoring.ts`, `"too-high" | "too-low"`) was
