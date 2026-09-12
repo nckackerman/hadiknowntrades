@@ -159,17 +159,13 @@ describe("comparePercentile", () => {
 
 describe("percentilePhrase", () => {
   it("names the field for what it is, in this app's own register", () => {
-    expect(percentilePhrase({ trials: 500, percentile: 0.874, medianBalance: 20 })).toBe(
+    expect(percentilePhrase({ trials: 500, percentile: 0.874 })).toBe(
       "You finished ahead of 87% of 500 traders who moved at random through the same session.",
     );
   });
 
   it("doesn't claim a fraction of a trader at either extreme", () => {
-    expect(percentilePhrase({ trials: 500, percentile: 1, medianBalance: 20 })).toContain(
-      "ahead of all",
-    );
-    expect(percentilePhrase({ trials: 500, percentile: 0, medianBalance: 20 })).toContain(
-      "behind all",
-    );
+    expect(percentilePhrase({ trials: 500, percentile: 1 })).toContain("ahead of all");
+    expect(percentilePhrase({ trials: 500, percentile: 0 })).toContain("behind all");
   });
 });
