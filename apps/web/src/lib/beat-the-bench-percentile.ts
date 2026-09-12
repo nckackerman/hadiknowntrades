@@ -165,8 +165,6 @@ export interface PercentileComparison {
   trials: number;
   /** The player's own rank in `[0, 1]` -- 0.87 means they finished ahead of 87% of the field. */
   percentile: number;
-  /** The field's own median finishing balance, for the settlement copy to name a concrete "typical" outcome. */
-  medianBalance: number;
 }
 
 /**
@@ -189,7 +187,6 @@ export function comparePercentile(
   return {
     trials: balances.length,
     percentile: percentileRank(balances, playerBalance),
-    medianBalance: medianOf(balances),
   };
 }
 
@@ -209,10 +206,4 @@ export function percentilePhrase(comparison: PercentileComparison): string {
   if (percent >= 100) return `You finished ahead of all ${field}.`;
   if (percent <= 0) return `You finished behind all ${field}.`;
   return `You finished ahead of ${percent}% of ${field}.`;
-}
-
-function medianOf(sorted: readonly number[]): number {
-  if (sorted.length === 0) return 0;
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
 }

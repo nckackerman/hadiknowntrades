@@ -551,6 +551,109 @@ describe("BeatTheBench", () => {
     expect(screen.queryByRole("button", { name: "Buy back in" })).not.toBeInTheDocument();
   });
 
+  // Direct user request, not a filed issue: "juice" during Bullet Time's
+  // approach phase (a pulsing glow around the chart) and a brief shake the
+  // moment the decision panel actually opens. jsdom can't prove anything
+  // actually animates on screen -- it can only prove these two purely
+  // decorative classes are present exactly when the real mechanic (the
+  // "Big swing incoming…" text cue, unchanged by this) says they should
+  // be, which is what these two tests assert.
+  it("adds a pulsing glow around the chart during the approaching phase, and a shake when the decision panel opens", async () => {
+    await renderChooser();
+    click(/play today's close/i);
+
+    // Well before the real fixture's own first scheduled event
+    // (triggerIndex 4): neither decorative class is present.
+    expect(document.querySelector(".bullet-time-approach-glow")).toBeNull();
+    expect(document.querySelector(".bullet-time-decision-shake")).toBeNull();
+
+    // Bar 4 is the approaching phase's own single bar for this fixture
+    // (triggerIndex 4, fromIndex 5) -- the glow renders, the text cue
+    // renders, and the shake (deciding-only) does not yet.
+    for (let i = 0; i < 4; i += 1) click("Step forward one bar");
+    expect(screen.getByText("Big swing incoming…")).toBeInTheDocument();
+    expect(document.querySelector(".bullet-time-approach-glow")).not.toBeNull();
+    expect(document.querySelector(".bullet-time-decision-shake")).toBeNull();
+
+    // Bar 5 is fromIndex -- the decision panel mounts, the shake fires,
+    // and the glow (approaching-only) is gone.
+    click("Step forward one bar");
+    expect(screen.getByRole("button", { name: "Ride it out" })).toBeInTheDocument();
+    expect(document.querySelector(".bullet-time-decision-shake")).not.toBeNull();
+    expect(document.querySelector(".bullet-time-approach-glow")).toBeNull();
+  });
+
+  // Direct user request, not a filed issue: a real celebration burst on a
+  // clear win, gated the same "active can only ever suppress, never
+  // invent, a real win" way should-celebrate.ts's own doc comment
+  // describes -- a loss or a tie must never celebrate, regardless of
+  // motion preference.
+  describe("celebration burst on a clear win", () => {
+    function celebrationBurst(): Element | null {
+      return document.querySelector('[data-testid="celebration-burst"]');
+    }
+
+    it("fires on a clear win", async () => {
+      await renderChooser();
+      click(/play today's close/i);
+
+      // Stepping aside at the first event's own deciding bar (fromIndex
+      // 5, a down-swing) is the correct call for this real fixture, and
+      // settles as a genuine win -- confirmed directly against
+      // `settleSession`, not assumed from the UI alone.
+      for (let i = 0; i < 5; i += 1) click("Step forward one bar");
+      click("Step aside");
+      for (let i = 0; i < TICKS_TO_CLOSE - 6; i += 1) click("Step forward one bar");
+
+      expect(screen.getByText("You beat the bench")).toBeInTheDocument();
+      expect(celebrationBurst()).not.toBeNull();
+    });
+
+    it("never fires on a tie", async () => {
+      await renderChooser();
+      click(/play today's close/i);
+      click(/^4x$/);
+      advance(TICKS_TO_CLOSE * 75);
+
+      expect(screen.getByText("Along for the ride")).toBeInTheDocument();
+      expect(celebrationBurst()).toBeNull();
+    });
+
+    it("never fires on a loss", async () => {
+      await renderChooser();
+      click(/play today's close/i);
+
+      // "Ride it out" at the first two events is the honest no-op
+      // (already holding, matches the honest default), then "Step
+      // aside" at the third event (fromIndex 40, an up-swing) is the
+      // wrong call -- confirmed directly against `settleSession` to
+      // settle as a genuine loss.
+      for (let i = 0; i < 5; i += 1) click("Step forward one bar");
+      click("Ride it out");
+      for (let i = 0; i < 13; i += 1) click("Step forward one bar");
+      click("Ride it out");
+      for (let i = 0; i < 20; i += 1) click("Step forward one bar");
+      click("Step aside");
+      for (let i = 0; i < TICKS_TO_CLOSE - 41; i += 1) click("Step forward one bar");
+
+      expect(screen.getByText("The bench stayed ahead")).toBeInTheDocument();
+      expect(celebrationBurst()).toBeNull();
+    });
+
+    it("never fires on a win under reduced motion, even though the settlement itself is unaffected", async () => {
+      stubPrefersReducedMotion(true);
+      await renderReducedMotionChooser();
+      click(/play today's close/i);
+
+      for (let i = 0; i < 5; i += 1) click("Step forward one bar");
+      click("Step aside");
+      for (let i = 0; i < TICKS_TO_CLOSE - 6; i += 1) click("Step forward one bar");
+
+      expect(screen.getByText("You beat the bench")).toBeInTheDocument();
+      expect(celebrationBurst()).toBeNull();
+    });
+  });
+
   // Deliberately confined to bars 0-2 -- the real SPY_SESSION_BARS
   // fixture now schedules a real Bullet Time event with a trigger at
   // barIndex 3 (issue #225's lowered BULLET_TIME_MIN_SWING_MAGNITUDE
@@ -634,6 +737,22 @@ describe("BeatTheBench", () => {
 
       advance(60_000);
       expect(barReadout()).toMatch(/bar 1 of 79/);
+    });
+
+    // The text cue and the underlying mechanic keep working identically
+    // under reduced motion (per this task's own explicit requirement) --
+    // only the two new decorative animation classes are skipped.
+    it("never adds the approach glow or the decision shake, even though the text cue and mechanic are unaffected", async () => {
+      await renderReducedMotionChooser();
+      click(/play today's close/i);
+
+      for (let i = 0; i < 4; i += 1) click("Step forward one bar");
+      expect(screen.getByText("Big swing incoming…")).toBeInTheDocument();
+      expect(document.querySelector(".bullet-time-approach-glow")).toBeNull();
+
+      click("Step forward one bar");
+      expect(screen.getByRole("button", { name: "Ride it out" })).toBeInTheDocument();
+      expect(document.querySelector(".bullet-time-decision-shake")).toBeNull();
     });
 
     it("plays the whole session start to finish on the step button alone, trading through a real Bullet Time decision", async () => {
@@ -758,7 +877,12 @@ describe("BeatTheBench", () => {
       expectNoDateAnywhere();
     });
 
-    it("reports the session's biggest runs and where the player was standing, with the approximation stated", async () => {
+    // The methodology caveat this test used to also assert
+    // ("Those dollar figures are an approximation...") was cut outright
+    // (direct user request, not a filed issue -- "cut the hedging/
+    // disclaimer asides") -- the real facts (the runs themselves, and
+    // whether the player was on them) are unaffected and still render.
+    it("reports the session's biggest runs and where the player was standing, with no methodology caveat", async () => {
       stubRoutedFetch();
       await enterMysterySession();
       await stepToClose();
@@ -768,10 +892,9 @@ describe("BeatTheBench", () => {
       expect(
         screen.getByText(/in the market for every one of the session's biggest runs/),
       ).toBeInTheDocument();
-      expect(screen.getByText(/Those dollar figures are an approximation/)).toBeInTheDocument();
       expect(
-        screen.getByText(/not a replay of your own session with one decision changed/),
-      ).toBeInTheDocument();
+        screen.queryByText(/Those dollar figures are an approximation/),
+      ).not.toBeInTheDocument();
     });
 
     // Found live rather than by reading the code: before this, the only
@@ -790,7 +913,12 @@ describe("BeatTheBench", () => {
       expect(screen.queryByText(/bar \d+ of 78/)).not.toBeInTheDocument();
     });
 
-    it("ranks the player against a simulated field of random togglers", async () => {
+    // The explanatory paragraph this test used to also assert
+    // ("a control group for timing, not a model of how anyone really
+    // trades") was cut outright (direct user request, not a filed issue
+    // -- "cut the hedging/disclaimer asides") -- the percentile fact
+    // itself (`percentilePhrase`'s own sentence) is unaffected.
+    it("ranks the player against a simulated field of random togglers, with no methodology paragraph", async () => {
       stubRoutedFetch();
       await enterMysterySession();
       await stepToClose();
@@ -798,7 +926,7 @@ describe("BeatTheBench", () => {
       expect(
         screen.getByText(/traders who moved at random through the same session/),
       ).toBeVisible();
-      expect(screen.getByText(/a control group for timing, not a model/)).toBeInTheDocument();
+      expect(screen.queryByText(/a control group for timing, not a model/)).not.toBeInTheDocument();
     });
   });
 

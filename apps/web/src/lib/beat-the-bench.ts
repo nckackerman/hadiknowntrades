@@ -318,6 +318,49 @@ export function gapPhrase(settlement: Settlement): string {
 }
 
 /**
+ * Whether a completed session's result is worth a celebration burst
+ * (direct user request, not a filed issue -- "wire in a real celebration
+ * for a clear win"). A plain, deliberately **unscaled** gate: any win,
+ * full stop -- not a magnitude threshold the way `celebration-magnitude.ts`
+ * (HeroStat's decade-spanning dollar-multiplier tiers) and
+ * `the-cut-scoring.ts` (The Cut's own bounded, linear 0-100 tiers) both
+ * build for their own games.
+ *
+ * **Considered a third tiering scheme here, on top of those two, and
+ * declined.** This game's own closest analog to "how good was the win"
+ * is `gapPhrase`'s own `gap` -- but unlike a dollar multiplier (which
+ * genuinely spans from 1x to tens of millions of x) or an edge-captured
+ * score (a score deliberately bounded and clamped to 0-100), the gap this
+ * game actually produces is almost always a small fraction of a percent:
+ * `gapPhrase`'s own doc comment above already states this game's real
+ * range is thin enough that both balances routinely round to the same
+ * dollars-and-cents figure even on a genuine win, and its own "less than
+ * 0.01%" branch exists specifically because that's the common case, not
+ * an edge case. There is no real, validated distribution here the way
+ * Bullet Time's own thresholds are validated against a real 41-session
+ * pool (see apps/web/CLAUDE.md's "Beat the Bench: Bullet Time" section) --
+ * inventing tier boundaries over a range this thin and this unvalidated
+ * would be asserting a distinction most winning sessions won't even
+ * clear meaningfully, for a game whose whole selling point is a fun,
+ * quick result, not a third bespoke magnitude ladder to maintain. A fixed
+ * `FULL_CELEBRATION_INTENSITY` (via `CelebrationBurst`'s own default) on
+ * every real win is the simpler, equally valid option this task's own
+ * instructions explicitly allow, and is what's shipped -- see
+ * apps/web/CLAUDE.md's own dated section on this change for the full
+ * "consolidate or keep separate" reasoning across all three games.
+ *
+ * Reused exactly like `should-celebrate.ts`'s own `shouldCelebrate`: this
+ * only ever *suppresses* a burst (a loss or a tie never celebrates),
+ * never invents one. `FinalSettlement` (`BeatTheBench.tsx`) ANDs this
+ * against its own already-known `reducedMotion` prop directly, rather
+ * than calling `shouldCelebrate` itself -- see that component's own doc
+ * comment for why.
+ */
+export function meetsBeatTheBenchCelebrationGate(settlement: Settlement): boolean {
+  return settlement.outcome === "win";
+}
+
+/**
  * The part of a fetched session payload this check actually looks at.
  *
  * Structural rather than `TodaysCloseSession`, because issue #132 plays

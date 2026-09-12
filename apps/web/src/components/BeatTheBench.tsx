@@ -105,6 +105,7 @@ import {
   DEFAULT_SPEED,
   gapPhrase,
   isPlayableSession,
+  meetsBeatTheBenchCelebrationGate,
   outcomeDetail,
   outcomeHeadline,
   PLAYBACK_SPEEDS,
@@ -150,6 +151,7 @@ import { useReducedMotionAfterMount } from "@/lib/use-reduced-motion-after-mount
 import { useMysteryReveal, useMysterySession } from "@/lib/use-mystery-session";
 import { useTodaysCloseSession } from "@/lib/use-todays-close-session";
 import { BeatTheBenchChart } from "@/components/BeatTheBenchChart";
+import { CelebrationBurst } from "@/components/CelebrationBurst";
 import { GamePanelHeader } from "@/components/GamePanelHeader";
 
 /** Every control in the playback row shares this: >= 44px in both directions at any width (`min-h-11`/`min-w-11` are 44px), per issue #131's touch-target criterion. The row wraps rather than shrinking these. */
@@ -1028,11 +1030,26 @@ function SessionGame({
         </p>
       </div>
 
-      <BeatTheBenchChart
-        bars={bars}
-        revealedIndex={barIndex}
-        positions={positionsThroughBar(moves, barIndex)}
-      />
+      {/* The pulsing glow (direct user request, not a filed issue -- see
+          globals.css's own `.bullet-time-approach-glow` doc comment)
+          sells the tension of the approach phase on top of the plain text
+          cue below. A plain wrapper div, not a change to
+          BeatTheBenchChart itself: that component returns a bare `<svg>`
+          with no border/background of its own to conflict with the glow's
+          box-shadow. */}
+      <div
+        className={
+          biStatus.phase === "approaching" && !reducedMotion
+            ? "rounded-md bullet-time-approach-glow"
+            : "rounded-md"
+        }
+      >
+        <BeatTheBenchChart
+          bars={bars}
+          revealedIndex={barIndex}
+          positions={positionsThroughBar(moves, barIndex)}
+        />
+      </div>
 
       {/* Bullet Time's approach/catch-up cue -- a plain line of text
           above the readouts, not an on-chart element (see
@@ -1041,7 +1058,9 @@ function SessionGame({
           chart's own live dot" reasoning applies to any new on-chart
           element). The decision window itself replaces the readouts
           entirely, below -- there's no "Big swing incoming" banner text
-          duplicated in both places. */}
+          duplicated in both places. Unchanged by the glow above, and
+          renders identically under reduced motion -- only the glow itself
+          is gated. */}
       {biStatus.phase === "approaching" && (
         <p className="text-sm font-medium text-[var(--text-secondary)]">Big swing incoming…</p>
       )}
@@ -1106,6 +1125,7 @@ function SessionGame({
           settlement={settlement}
           moveBarIndexes={moves}
           bulletTimeEvents={bulletTimeEvents}
+          reducedMotion={reducedMotion}
           revealPending={revealState === null ? false : revealState.status === "loading"}
           revealedDate={revealedDate}
           poolRotated={poolRotated}
@@ -1214,7 +1234,11 @@ function BulletTimeDecisionPanel({
   onStepAside: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-3 rounded-md border border-[var(--gridline)] bg-[var(--surface-2)] px-4 py-4">
+    <div
+      className={`flex flex-col gap-3 rounded-md border border-[var(--gridline)] bg-[var(--surface-2)] px-4 py-4 ${
+        reducedMotion ? "" : "bullet-time-decision-shake"
+      }`}
+    >
       <p className="font-display text-base font-semibold text-[var(--text-primary)]">
         Big swing incoming
       </p>
@@ -1355,19 +1379,54 @@ function PlaybackControls({
  * identical-looking numbers under a "you beat the bench" stamp would
  * read as a bug (see `gapPhrase`).
  *
- * Gold (`--accent-reward`, issue #121) appears here and nowhere else in
- * this section, and only on a win -- it means "you earned this", so a
- * loss or a tie stamp stays in plain text. Bullet Time's own tally line
- * (issue #224) is a deliberate exception: it earns the same treatment
- * whenever every call landed correctly (see the tally paragraph below),
- * the identical "you earned this" reasoning applied to a different
- * figure.
+ * Gold (`--accent-reward`, issue #121) appears on the win headline and
+ * nowhere else in this section's own *text*, and only on a win -- it
+ * means "you earned this", so a loss or a tie stamp stays in plain text.
+ * Bullet Time's own tally line (issue #224) is a deliberate exception: it
+ * earns the same treatment whenever every call landed correctly (see the
+ * tally paragraph below), the identical "you earned this" reasoning
+ * applied to a different figure. The celebration burst below (direct user
+ * request, not a filed issue) is the same reasoning applied to motion
+ * rather than color -- it renders one of its own confetti colors as this
+ * same gold token, but the decorative burst itself is a distinct addition
+ * layered on top of the pre-existing gold text, not a restyle of it.
+ *
+ * **The settlement copy below was substantially shortened (direct user
+ * request, not a filed issue -- "shorten the after-game text, and cut the
+ * hedging/disclaimer asides").** The percentile's own explanatory
+ * paragraph ("a control group for timing, not a model of how anyone
+ * really trades"), the biggest-moves panel's "this is an approximation"
+ * caveat, and the closing "No fees, no slippage" line are all gone
+ * outright -- see apps/web/CLAUDE.md's own dated section on this change
+ * for the full before/after and reasoning. The real facts a player wants
+ * (the headline, the gap, both balances, the biggest moves, the
+ * percentile figure itself, which real session this was) are all still
+ * here, unshortened.
+ *
+ * **A real win now fires `CelebrationBurst` (direct user request, not a
+ * filed issue -- "wire in a real celebration for a clear win").**
+ * `meetsBeatTheBenchCelebrationGate` (`beat-the-bench.ts`) is a plain,
+ * unscaled gate -- **any** win, not a magnitude threshold -- see that
+ * function's own doc comment for why a magnitude ladder (the shape both
+ * `celebration-magnitude.ts` and `the-cut-scoring.ts` use for their own
+ * games) was considered and declined here. `celebrate` below ANDs that
+ * gate against this component's own `reducedMotion` prop directly,
+ * deliberately **not** calling `should-celebrate.ts`'s own
+ * `shouldCelebrate` helper: that function bakes in its own live
+ * `prefersReducedMotion()` read, which would be a second, independent
+ * reduced-motion check completely disconnected from the
+ * `useReducedMotionAfterMount`-sourced `reducedMotion` value this whole
+ * component tree already threads everywhere else (including this file's
+ * own new approach-phase glow/shake, above) -- reusing the one already in
+ * scope is what this task's own instructions call for, and avoids two
+ * mechanisms that could theoretically disagree.
  */
 function FinalSettlement({
   session,
   settlement,
   moveBarIndexes,
   bulletTimeEvents,
+  reducedMotion,
   revealPending,
   revealedDate,
   poolRotated,
@@ -1379,6 +1438,7 @@ function FinalSettlement({
   settlement: SessionSettlement;
   moveBarIndexes: readonly number[];
   bulletTimeEvents: readonly BulletTimeEvent[];
+  reducedMotion: boolean;
   revealPending: boolean;
   revealedDate: string | null;
   poolRotated: boolean;
@@ -1387,6 +1447,12 @@ function FinalSettlement({
   onBack: () => void;
 }) {
   const bars = session.bars;
+  // See this component's own doc comment above for why this ANDs the
+  // gate against `reducedMotion` directly rather than calling
+  // `shouldCelebrate` -- only ever suppresses a real win, never invents
+  // one: a loss or a tie is never `true` here regardless of motion
+  // preference.
+  const celebrate = meetsBeatTheBenchCelebrationGate(settlement) && !reducedMotion;
 
   const topMoves = useMemo(
     () => topUpMoves(bars, moveBarIndexes, STARTING_CAPITAL),
@@ -1421,15 +1487,22 @@ function FinalSettlement({
 
   return (
     <div className="flex flex-col gap-3 rounded-md border border-[var(--gridline)] bg-[var(--surface-2)] px-4 py-4">
-      <p
-        className={`font-display text-xl font-semibold ${
-          settlement.outcome === "win"
-            ? "text-[var(--accent-reward)]"
-            : "text-[var(--text-primary)]"
-        }`}
-      >
-        {outcomeHeadline(settlement)}
-      </p>
+      {/* relative + the burst overlay are scoped to just the headline row
+          (mirroring HeroStat.tsx's own identical "burst overlay scoped to
+          just this row" pattern) -- so the confetti falls from around the
+          win stamp itself, not the whole card. */}
+      <div className="relative">
+        <p
+          className={`font-display text-xl font-semibold ${
+            settlement.outcome === "win"
+              ? "text-[var(--accent-reward)]"
+              : "text-[var(--text-primary)]"
+          }`}
+        >
+          {outcomeHeadline(settlement)}
+        </p>
+        <CelebrationBurst active={celebrate} />
+      </div>
       <p className="font-numeric text-sm tabular-nums text-[var(--text-secondary)]">
         {gapPhrase(settlement)}
       </p>
@@ -1460,14 +1533,7 @@ function FinalSettlement({
 
       <BestMovesPanel topMoves={topMoves} missedSentence={missedMoveSentence(missed)} />
 
-      <div className="flex flex-col gap-1">
-        <p className="text-sm text-[var(--text-secondary)]">{percentilePhrase(percentile)}</p>
-        <p className="text-sm text-[var(--text-muted)]">
-          That field is {percentile.trials} simulated traders who flipped in and out of this exact
-          session at random moments -- a control group for timing, not a model of how anyone really
-          trades. Their middling result was {formatHeroCurrency(percentile.medianBalance)}.
-        </p>
-      </div>
+      <p className="text-sm text-[var(--text-secondary)]">{percentilePhrase(percentile)}</p>
 
       <p className="text-sm text-[var(--text-muted)]">
         <SessionProvenance
@@ -1475,8 +1541,7 @@ function FinalSettlement({
           revealPending={revealPending}
           revealedDate={revealedDate}
           poolRotated={poolRotated}
-        />{" "}
-        No fees, no slippage -- every move settles at the price on screen.
+        />
       </p>
 
       <div className="flex flex-wrap gap-2">
@@ -1538,14 +1603,19 @@ function SessionProvenance({
 /**
  * The session's biggest moves, and whether the player was on them.
  *
- * **The dollar figures are an approximation and the copy says so
- * outright.** Each one is what that move would have added to a
- * buy-and-hold position of this size -- see `benchmarkDollarsFor`'s own
- * methodology comment (`beat-the-bench-moves.ts`) for exactly what is
- * computed. It is deliberately *not* a re-simulation of this player's
- * own session with one decision changed, and the figures are deliberately
- * not summed into a single "what your mistakes cost you" total, because
- * they would each have compounded into each other.
+ * **The on-screen caveat explaining the dollar figures' own methodology
+ * was cut (direct user request, not a filed issue -- "shorten the
+ * after-game text, and cut the hedging/disclaimer asides").** The
+ * methodology itself is unchanged -- each figure is still what that move
+ * would have added to a buy-and-hold position of this size, not a
+ * re-simulation of the player's own session with one decision changed,
+ * and the figures still deliberately don't sum into a single total (they
+ * would have compounded into each other) -- see `benchmarkDollarsFor`'s
+ * own methodology comment (`beat-the-bench-moves.ts`) for exactly what is
+ * computed. Only the paragraph *restating* that methodology on screen is
+ * gone; this app's own root CLAUDE.md already frames the whole project as
+ * a toy, not a model to be defended in its own copy. See apps/web/
+ * CLAUDE.md's own dated section on this change for the full before/after.
  */
 function BestMovesPanel({
   topMoves,
@@ -1585,12 +1655,6 @@ function BestMovesPanel({
         ))}
       </ul>
       <p className="text-sm text-[var(--text-secondary)]">{missedSentence}</p>
-      <p className="text-sm text-[var(--text-muted)]">
-        Those dollar figures are an approximation: each is roughly what that run would have added to
-        a buy-and-hold position of this size, not a replay of your own session with one decision
-        changed. They don&apos;t add up into a single total, because each one would have compounded
-        into the next.
-      </p>
     </div>
   );
 }
