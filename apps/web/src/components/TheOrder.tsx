@@ -131,6 +131,22 @@ const OUTCOME_STYLES: Record<
     label: "Incorrect",
     badgeClassName: "border border-[var(--status-critical)] text-[var(--status-critical)]",
   },
+  /**
+   * Only ever reached via `reveal()` on a slot the player never locked
+   * -- a neutral "this is the answer, not something you earned" badge,
+   * deliberately distinct from both "Correct" (gold, earned) and
+   * "Incorrect" (a real wrong guess); see `OrderFeedback`'s own doc
+   * comment. `"incorrect"` is never actually reachable once a day is
+   * `done` (a win grades every slot "correct"; a reveal grades every
+   * still-open slot "revealed") -- its own entry above stays purely for
+   * type completeness (`Record<OrderFeedback, ...>`) and as a defensive
+   * fallback, not a state this component's `done` branch can render.
+   */
+  revealed: {
+    glyph: "–",
+    label: "Revealed",
+    badgeClassName: "border border-[var(--gridline)] text-[var(--text-muted)]",
+  },
 };
 
 /** The compact tile's own status line, mirroring compactStatusLine's (BeatTheBench.tsx) shape for the identical "collapsed card names the state in a few words" job. */
@@ -277,10 +293,8 @@ interface SlotRowProps {
   done: boolean;
   /** True once this slot has locked correct on some past submission -- its ticker is fixed, and it's never a move target for another slot either. */
   locked: boolean;
-  /** This slot's own grading from the most recent submission -- `null` while never yet submitted, or if the day ended via a bail-out reveal instead. */
+  /** This slot's own grading from the most recent submission -- `null` while never yet submitted, or `"revealed"` if the day ended via a bail-out reveal instead. */
   feedback: OrderFeedback | null;
-  /** The ticker that actually belongs in this slot -- shown only when `feedback === "incorrect"`, so a player learns what they missed. */
-  correctTicker: string;
   canMoveUp: boolean;
   canMoveDown: boolean;
   disabled: boolean;
@@ -297,7 +311,6 @@ function SlotRow({
   done,
   locked,
   feedback,
-  correctTicker,
   canMoveUp,
   canMoveDown,
   disabled,
@@ -361,6 +374,12 @@ function SlotRow({
           </span>
         </span>
       ) : done ? (
+        // A done, unlocked slot only ever grades "revealed" now (a win
+        // locks every slot "correct" instead) -- see OUTCOME_STYLES.incorrect's
+        // own doc comment for why "incorrect" can't reach here, and
+        // OrderFeedback's own doc comment for why a revealed slot needs
+        // no "Actually {ticker}" hint (its own ticker already *is* the
+        // correct one once revealed).
         outcome !== null && (
           <span className="flex shrink-0 flex-col items-end gap-0.5">
             <span
@@ -369,11 +388,6 @@ function SlotRow({
               <span aria-hidden="true">{outcome.glyph}</span>
               {outcome.label}
             </span>
-            {feedback === "incorrect" && (
-              <span className="text-[0.6875rem] text-[var(--text-muted)]">
-                Actually {correctTicker}
-              </span>
-            )}
           </span>
         )
       ) : (
@@ -468,7 +482,6 @@ function OrderBoard({ puzzle, view, move, shuffle, submit, reveal }: OrderBoardP
               done={done}
               locked={isLocked}
               feedback={state.feedback?.[index] ?? null}
-              correctTicker={target.ticker}
               canMoveUp={!isLocked && nextOpenSlot(locked, index, -1) !== -1}
               canMoveDown={!isLocked && nextOpenSlot(locked, index, 1) !== -1}
               disabled={done}
@@ -508,8 +521,8 @@ function OrderBoard({ puzzle, view, move, shuffle, submit, reveal }: OrderBoardP
       {done && (
         <div className="flex flex-col gap-4 rounded-lg border border-[var(--gridline)] bg-[var(--surface-2)] p-4">
           <p className="text-sm font-semibold text-[var(--text-primary)]">
-            <span aria-hidden="true">{state.won ? "★" : state.feedback === null ? "⏱" : ""}</span>{" "}
-            {resultSentence}
+            {/* done is guaranteed true here (the enclosing `done && (...)` block), and the only two ways to reach it are a win or a reveal -- so `!state.won` always means "gave up," not merely "feedback happens to be null." */}
+            <span aria-hidden="true">{state.won ? "★" : "⏱"}</span> {resultSentence}
           </p>
           <div className="flex gap-6">
             <span className="flex flex-col gap-1">

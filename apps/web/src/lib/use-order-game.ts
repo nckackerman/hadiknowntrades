@@ -27,6 +27,7 @@ import {
   scoreOrderMatch,
   shuffleUnlockedGuess,
   ORDER_SLOT_COUNT,
+  type OrderFeedback,
 } from "./order-scoring";
 import {
   computeOrderStreak,
@@ -162,6 +163,11 @@ export function useOrderGame(puzzle: TheOrderPuzzle | null): UseOrderGameResult 
   const shuffle = useCallback(() => {
     if (puzzle === null || view.state === null || view.state.done) return;
     const locked = lockedSlots(view.state.feedback, ORDER_SLOT_COUNT);
+    // shuffleUnlockedGuess always allocates a fresh array (unlike
+    // moveOrderGuess, which returns the *same* reference for a no-op),
+    // so a reference check can't detect "nothing to shuffle" here --
+    // fewer than 2 open slots means no reordering is possible at all.
+    if (locked.filter((isLocked) => !isLocked).length < 2) return;
     const nextGuess = shuffleUnlockedGuess(view.state.guess, locked, Math.random);
     persist({ ...view.state, guess: [...nextGuess] });
   }, [puzzle, view.state, persist]);
@@ -188,21 +194,30 @@ export function useOrderGame(puzzle: TheOrderPuzzle | null): UseOrderGameResult 
 
   // A bail-out: replaces the guess with the real answer (rather than
   // leaving whatever the player last arranged), so every slot shows the
-  // real ticker that belongs there -- feedback stays `null` since
-  // nothing was actually graded, this is a flat reveal, not a scored
-  // guess. Without this, `SlotRow` would just keep displaying the
-  // player's own last arrangement with no per-slot correctness shown at
-  // all (feedback === null renders no badge), which left a "Reveal
-  // answer" click ending the day without ever actually revealing which
-  // ticker belongs at which %. `attempts` is preserved (not reset), a
-  // reveal isn't itself an attempt but it doesn't erase how many real
-  // ones already happened.
+  // real ticker that belongs there. Without this, `SlotRow` would just
+  // keep displaying the player's own last arrangement with no per-slot
+  // correctness shown at all, which left a "Reveal answer" click ending
+  // the day without ever actually revealing which ticker belongs at
+  // which %. `attempts` is preserved (not reset), a reveal isn't itself
+  // an attempt but it doesn't erase how many real ones already happened.
+  //
+  // **A slot already locked correct before this reveal keeps its real
+  // "correct" grading** -- `lockedSlots` derives locked-ness purely from
+  // `feedback`, so wiping it to `null` here would have silently stripped
+  // the gold "Correct" badge off every slot the player had genuinely
+  // already earned, the instant they gave up on the rest (a real bug,
+  // caught in code review). Every other slot grades `"revealed"`, not
+  // `"incorrect"` -- see `OrderFeedback`'s own doc comment for why
+  // `"incorrect"` would be wrong here (the guess array now literally
+  // holds the correct answer at every index).
   const reveal = useCallback(() => {
     if (puzzle === null || view.state === null || view.state.done) return;
     const answer = bestToWorstTickers(puzzle.tickers).map((t) => t.ticker);
+    const wasLocked = lockedSlots(view.state.feedback, answer.length);
+    const feedback: OrderFeedback[] = wasLocked.map((locked) => (locked ? "correct" : "revealed"));
     persist({
       guess: [...answer],
-      feedback: null,
+      feedback,
       attempts: view.state.attempts,
       done: true,
       won: false,

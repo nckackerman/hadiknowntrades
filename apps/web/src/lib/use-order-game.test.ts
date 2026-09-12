@@ -269,6 +269,33 @@ describe("useOrderGame -- submit(): partial-correct locking and resubmission", (
     ).toEqual([guess[0], guess[4]].sort());
   });
 
+  it("shuffle() is a no-op (no persist, no re-render) with fewer than 2 open slots -- shuffleUnlockedGuess always allocates a fresh array, so a reference check can't catch this the way move()'s does", async () => {
+    // Exactly 1 open slot can't actually arise from a real submit() --
+    // scoreOrderMatch grades a whole permutation, and leaving precisely
+    // one slot wrong is a mathematical impossibility (if every other
+    // slot is already correct, the one remaining ticker has nowhere
+    // else to go). Seeded directly to exercise the guard itself,
+    // regardless of whether real play can reach this exact shape.
+    saveOrderDayState(
+      DATE,
+      stateWith({
+        attempts: 1,
+        feedback: ["correct", "correct", "correct", "correct", "incorrect"],
+      }),
+    );
+    const { result } = renderHook(() => useOrderGame(PUZZLE));
+    await waitFor(() => expect(result.current.view.hydrated).toBe(true));
+    const beforeState = result.current.view.state;
+    const persistSpy = vi.spyOn(orderStorage, "saveOrderDayState");
+
+    act(() => {
+      result.current.shuffle();
+    });
+
+    expect(result.current.view.state).toBe(beforeState); // same reference -- no new state object at all
+    expect(persistSpy).not.toHaveBeenCalled();
+  });
+
   it("a second, fully-correct resubmission of the still-open slots wins the day -- eventual full solve, no attempt cap", async () => {
     const guess = [...ANSWER];
     [guess[0], guess[4]] = [guess[4]!, guess[0]!]; // one wrong swap, rest correct
@@ -413,7 +440,7 @@ describe("useOrderGame -- move/shuffle/submit/reveal are no-ops once the day is 
     expect(result.current.view.state).toEqual(finished);
   });
 
-  it("reveal() on a genuinely in-progress day marks it done without a win or feedback, per its own contract", async () => {
+  it("reveal() on a genuinely in-progress day marks it done, not won, and grades every never-locked slot 'revealed' (not null, and not 'incorrect')", async () => {
     const { result } = renderHook(() => useOrderGame(PUZZLE));
     await waitFor(() => expect(result.current.view.hydrated).toBe(true));
     expect(result.current.view.state!.done).toBe(false);
@@ -424,7 +451,45 @@ describe("useOrderGame -- move/shuffle/submit/reveal are no-ops once the day is 
 
     expect(result.current.view.state!.done).toBe(true);
     expect(result.current.view.state!.won).toBe(false);
-    expect(result.current.view.state!.feedback).toBeNull();
+    // Nothing was ever locked on this day, so every slot grades
+    // "revealed" -- never "correct" (nothing was earned) and never
+    // "incorrect" (the guess array now holds the real answer at every
+    // index, so "incorrect" would be a flatly wrong label).
+    expect(result.current.view.state!.feedback).toEqual([
+      "revealed",
+      "revealed",
+      "revealed",
+      "revealed",
+      "revealed",
+    ]);
+  });
+
+  it("reveal() preserves a slot's real 'correct' grading if it was already locked before the reveal", async () => {
+    // Seed a prior submission that already locked slots 0 and 3 correct
+    // -- a real bug (found in code review) wiped every slot's badge back
+    // to nothing on reveal, including ones the player had genuinely
+    // already earned.
+    saveOrderDayState(
+      DATE,
+      stateWith({
+        attempts: 1,
+        feedback: ["correct", "incorrect", "incorrect", "correct", "incorrect"],
+      }),
+    );
+    const { result } = renderHook(() => useOrderGame(PUZZLE));
+    await waitFor(() => expect(result.current.view.hydrated).toBe(true));
+
+    act(() => {
+      result.current.reveal();
+    });
+
+    expect(result.current.view.state!.feedback).toEqual([
+      "correct",
+      "revealed",
+      "revealed",
+      "correct",
+      "revealed",
+    ]);
   });
 
   it("reveal() replaces the guess with the real answer, so every slot actually shows the ticker that belongs there", async () => {

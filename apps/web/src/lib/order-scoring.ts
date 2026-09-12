@@ -74,7 +74,19 @@ export const ORDER_SLOT_COUNT = ORDER_POOL_SIZE;
  * once a slot locks, its own guess never changes again, so it can only
  * ever keep re-grading "correct" on every later submission.
  */
-export type OrderFeedback = "correct" | "incorrect";
+/**
+ * `"revealed"` is never produced by `scoreOrderMatch` -- it exists only
+ * for a bail-out reveal (`useOrderGame`'s own `reveal()`), which fills
+ * every still-open slot with the real answer without the player having
+ * actually guessed it. Grading that as `"correct"` would misrepresent an
+ * unearned answer as a solved slot; grading it `"incorrect"` would be
+ * flatly wrong once `reveal()` sets `guess` to the real answer array
+ * (every slot's ticker literally matches the target at that point). A
+ * third, neutral state is what lets a revealed slot render honestly:
+ * distinct from both a real win and the "you swapped in the wrong
+ * ticker" case an in-progress incorrect grading means.
+ */
+export type OrderFeedback = "correct" | "incorrect" | "revealed";
 
 /**
  * Scores a submitted guess against the real answer, per slot:

@@ -114,6 +114,21 @@ describe("getOrderDayState / saveOrderDayState", () => {
     expect(getOrderDayState("2026-08-26", SLOT_COUNT)).toBeNull();
   });
 
+  it("accepts a stored feedback array containing 'revealed' entries -- a bail-out reveal's own grading, not just 'correct'/'incorrect'", () => {
+    // Real, code-review-caught gap: the runtime shape validator here
+    // still only allowed the two literals OrderFeedback originally had,
+    // so a reveal()-produced state (which grades every never-locked slot
+    // "revealed") was silently discarded as "nothing stored" the moment
+    // it round-tripped through JSON.
+    const state = freshState({
+      done: true,
+      won: false,
+      feedback: ["correct", "revealed", "revealed", "correct", "revealed"],
+    });
+    window.localStorage.setItem("hikt:the-order:day:2026-08-26", JSON.stringify(state));
+    expect(getOrderDayState("2026-08-26", SLOT_COUNT)).toEqual(state);
+  });
+
   it("rejects a stored value whose attempts field is missing or the wrong type", () => {
     window.localStorage.setItem(
       "hikt:the-order:day:2026-08-26",

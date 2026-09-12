@@ -25,9 +25,12 @@
 // 3. **This shape, the second redesign (direct user request -- multi-
 //    guess with per-slot locking, no attempt cap)**: `guess` is still
 //    the current arrangement, `feedback` is still this puzzle's most
-//    recent per-slot grading (`null` until the first submission, or if
-//    the day ended via a bail-out reveal instead) -- but `done` no
-//    longer becomes `true` on every submit. It's now `true` only once
+//    recent per-slot grading (`null` only until the first submission --
+//    a bail-out reveal always populates it too, per a code-review fix:
+//    every still-locked slot keeps its real "correct" grading, every
+//    other slot grades "revealed", never "incorrect", since the guess
+//    array now holds the real answer at every index once revealed) --
+//    but `done` no longer becomes `true` on every submit. It's now `true` only once
 //    every slot is locked correct (a real win) or the player bails out
 //    with a reveal, and a new `attempts` field counts how many real
 //    submissions have been made so far (no cap enforced anywhere --
@@ -95,7 +98,7 @@ function isOrderFeedbackArray(value: unknown, length: number): value is OrderFee
   return (
     Array.isArray(value) &&
     value.length === length &&
-    value.every((entry) => entry === "correct" || entry === "incorrect")
+    value.every((entry) => entry === "correct" || entry === "incorrect" || entry === "revealed")
   );
 }
 
@@ -103,7 +106,7 @@ function isOrderFeedbackArray(value: unknown, length: number): value is OrderFee
 export interface OrderDayState {
   /** The current editable arrangement -- ticker codes, one per slot, best mover (slot 0) to worst (last slot). A locked slot's own entry (see order-scoring.ts's exported `lockedSlots`) never changes again. */
   guess: string[];
-  /** This puzzle's most recent per-slot grading, from the last real submission -- `null` before the first submission, or if the day ended via a bail-out reveal instead of a real submission (there's nothing to grade in that case). A locked slot's own entry here is always "correct" and stays that way forever, since its guess never moves again. */
+  /** This puzzle's most recent per-slot grading -- `null` only before the first submission. A locked slot's own entry here is always "correct" and stays that way forever, since its guess never moves again; a still-open slot reads "incorrect" after a real submission, or "revealed" once the day ends via a bail-out reveal (see order-scoring.ts's `OrderFeedback` doc comment for why those two are kept distinct). */
   feedback: OrderFeedback[] | null;
   /** How many real submissions have been made so far -- 0 before the first one. No cap is enforced anywhere; this is purely informational (shown in the tile/panel status line), not a limit. */
   attempts: number;

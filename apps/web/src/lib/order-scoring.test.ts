@@ -95,13 +95,18 @@ describe("scoreOrderMatch", () => {
 });
 
 describe("lockedSlots", () => {
-  it("is all-false when feedback is null (never submitted, or a bail-out reveal)", () => {
+  it("is all-false when feedback is null (never yet submitted)", () => {
     expect(lockedSlots(null, 5)).toEqual([false, false, false, false, false]);
   });
 
   it("locks exactly the slots graded correct", () => {
     const feedback: OrderFeedback[] = ["correct", "incorrect", "correct", "incorrect", "correct"];
     expect(lockedSlots(feedback, 5)).toEqual([true, false, true, false, true]);
+  });
+
+  it("a bail-out reveal's 'revealed' grading never locks -- only a real 'correct' does", () => {
+    const feedback: OrderFeedback[] = ["correct", "revealed", "revealed", "correct", "revealed"];
+    expect(lockedSlots(feedback, 5)).toEqual([true, false, false, true, false]);
   });
 
   it("is all-true once every slot scores correct (a full win)", () => {

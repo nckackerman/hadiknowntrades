@@ -239,7 +239,7 @@ describe("TheOrder", () => {
     ).toBeDisabled();
   });
 
-  it("a bail-out reveal ends the day without grading any slot, and still counts as a loss for the streak", async () => {
+  it("a bail-out reveal grades every never-locked slot 'Revealed' (not 'Correct'/'Incorrect'), and still counts as a loss for the streak", async () => {
     window.localStorage.setItem(
       "hikt:the-order:streak-history",
       JSON.stringify({ days: [{ date: "2026-08-20", won: true }] }),
@@ -249,8 +249,10 @@ describe("TheOrder", () => {
 
     fireEvent.click(panel.getByRole("button", { name: "Reveal answer" }));
 
-    expect(await panel.findAllByText(/revealed/i)).toHaveLength(2);
-    // Revealing (not submitting) grades nothing -- no per-slot badges.
+    // Nothing was ever locked on this day, so all 5 slots grade
+    // "Revealed" -- never "Correct" (nothing was earned) or "Incorrect"
+    // (a bail-out isn't a scored guess).
+    expect(await panel.findAllByText("Revealed")).toHaveLength(5);
     expect(panel.queryByText("Correct")).not.toBeInTheDocument();
     expect(panel.queryByText("Incorrect")).not.toBeInTheDocument();
     expect(getOrderStreakHistory()).toEqual([
@@ -363,6 +365,25 @@ describe("TheOrder", () => {
   });
 
   it("the collapsed tile's status line shows a partial score for a finished-but-not-won (revealed) day", async () => {
+    saveOrderDayState(
+      DATE,
+      freshState({
+        attempts: 2,
+        done: true,
+        won: false,
+        // A real reveal() never leaves feedback null -- it grades every
+        // still-open slot "revealed" and preserves any real "correct"
+        // locks, per order-scoring.ts's own OrderFeedback doc comment.
+        feedback: ["correct", "revealed", "revealed", "correct", "revealed"],
+      }),
+    );
+    render(<TheOrder />);
+    await waitFor(() => {
+      expect(screen.getByTestId("the-order-summary")).toHaveTextContent(/2 of 5 correct/i);
+    });
+  });
+
+  it("the collapsed tile's status line falls back to a plain 'Revealed' for the type-level (never actually produced by reveal()) null-feedback case", async () => {
     saveOrderDayState(
       DATE,
       freshState({
