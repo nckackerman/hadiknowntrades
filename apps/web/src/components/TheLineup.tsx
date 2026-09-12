@@ -217,7 +217,7 @@ function LineupTile({
     <div
       className={
         compact
-          ? `font-numeric relative flex h-4 w-4 shrink-0 items-center justify-center rounded-[3px] text-[8px] leading-none font-extrabold ${style.className}`
+          ? `font-numeric relative flex h-4 w-4 shrink-0 items-center justify-center rounded-[3px] text-[8px] leading-none font-extrabold sm:h-6 sm:w-6 sm:rounded-md sm:text-xs ${style.className}`
           : `font-numeric relative flex aspect-square w-full items-center justify-center rounded-md text-sm font-extrabold sm:text-base ${style.className}`
       }
     >
@@ -227,7 +227,7 @@ function LineupTile({
           aria-hidden="true"
           className={
             compact
-              ? "absolute top-[1px] right-[1px] text-[5px] leading-none opacity-80"
+              ? "absolute top-[1px] right-[1px] text-[5px] leading-none opacity-80 sm:top-0.5 sm:right-0.5 sm:text-[0.5rem]"
               : "absolute top-0.5 right-0.5 text-[0.55rem] leading-none opacity-80"
           }
         >
@@ -275,10 +275,10 @@ function LineupColumnHistory({
   return (
     <ol
       aria-label={`Column ${colIndex + 1} past guesses`}
-      className="flex max-h-24 w-full flex-col gap-1 overflow-y-auto"
+      className="flex max-h-24 w-full flex-col gap-1 overflow-y-auto sm:max-h-32 sm:gap-1.5"
     >
       {[...entries].reverse().map((entry) => (
-        <li key={entry.attempt} className="flex items-center gap-px">
+        <li key={entry.attempt} className="flex items-center gap-px sm:gap-1">
           {entry.guess.split("").map((letter, rowIndex) => (
             <LineupTile
               key={rowIndex}
