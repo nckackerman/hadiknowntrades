@@ -266,10 +266,12 @@ const CANDIDATE_COUNT = 10;
 /**
  * Milliseconds per bar during the approach -- its own constant, not
  * derived from `PLAYBACK_SPEEDS` (per issue #224's own scope), and
- * deliberately slower than even the slowest existing speed option (0.1x
- * = `tickIntervalMs(0.1)` = 3000ms/bar): 4500ms is 50% slower again, a
- * real, noticeable step down from the app's own most patient existing
- * pace, not just a marginal one.
+ * deliberately slower than even the slowest surviving speed option
+ * (0.5x = `tickIntervalMs(0.5)` = 600ms/bar, since a later direct user
+ * request dropped 0.1x/0.25x/4x from `PLAYBACK_SPEEDS` entirely -- see
+ * that constant's own doc comment): 4500ms is 7.5x that pace, a real,
+ * noticeable step down from the app's own most patient existing speed,
+ * not just a marginal one.
  *
  * **Re-validated three times against a real 41-session pool for its
  * actual time cost, not just chosen in isolation** -- once at the first
