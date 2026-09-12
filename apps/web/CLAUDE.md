@@ -10965,6 +10965,166 @@ typegen` otherwise keeps a stale reference to the deleted debug route
 - All five routine checks (lint, typecheck, `pnpm build`, `pnpm test` --
   1096 passing, `pnpm format:check`) green on the resulting clean tree.
 
+## The Order: multi-guess with per-slot locking, no attempt cap (direct user request, not a filed issue)
+
+A third pass on this same mechanic (see the two sections above for the
+first two) -- direct user feedback again, not a filed issue, following
+this file's own established "'Today's recap' removed outright..."
+precedent for documenting a direct-request change this way. The
+previous redesign's own one-shot "rearrange then submit once, that's
+it" round was too punishing for a pure matching puzzle: a single wrong
+swap between two otherwise-correct slots lost the whole day, with no
+way back. This pass keeps everything about that redesign that already
+worked (all 5 real returns shown up front, free rearrange before
+submitting) and changes only what happens _at_ submit.
+
+### The mechanic
+
+Submitting still grades the current arrangement per slot, exactly as
+before -- but a slot graded "correct" now **locks in place** (its
+ticker can never move again, and no other ticker can be swapped into
+it), while every "incorrect" slot stays open for further rearranging
+among the other still-open slots, then another submission. The day is
+won once every slot is eventually locked correct. **No cap on attempt
+count** -- a deliberate product decision, confirmed directly rather than
+left to guesswork: this game isn't scored on attempt efficiency, only on
+eventually solving it, so there's no "out of guesses" loss state at all
+any more (the only ways a day ends are a full win or an explicit
+"Reveal answer" bail-out, unchanged from before this pass).
+
+`order-scoring.ts` restores (adapted for this redesign's own binary
+correct/incorrect grading, not the original issue #207 Mastermind
+mechanic's rank-distance exact/close/far) the exact hop-over-locked-
+slots move/shuffle algorithm the _previous_ redesign had removed as
+unnecessary for a one-shot puzzle -- `nextOpenSlot`/`moveOrderGuess`/
+`shuffleUnlockedGuess` are ported near-verbatim from this repo's own git
+history (the pre-first-redesign version of this file, commit
+`e4413c1`), not reinvented from scratch. A locked slot's own status is
+**derived, never stored as a separate field** -- `lockedSlots(feedback,
+slotCount)` reads it straight off the most recent submission's own
+per-slot grading (`feedback[i] === "correct"`), since a locked slot's
+guess never moves again and can therefore only ever keep re-grading
+"correct" on every later resubmission. This is the same "derive fresh,
+don't store a second redundant copy" discipline this app already
+applies to streak stats everywhere (CallBoard's, and this game's own,
+computed from a history rather than stored as their own numbers) --
+one less thing that could ever drift from what it's meant to describe.
+
+### The persisted shape, and the migration/fallback choice
+
+`OrderDayState` (`order-storage.ts`) changed from the previous
+redesign's `{guess, done, won, feedback}` to:
+
+```ts
+interface OrderDayState {
+  guess: string[]; // current arrangement, best (0) to worst (last)
+  feedback: OrderFeedback[] | null; // most recent submission's per-slot grading; null before the first submit, or after a bail-out reveal
+  attempts: number; // count of real submissions so far -- 0 before the first one, no cap enforced anywhere
+  done: boolean; // true once every slot is locked correct, or the player revealed
+  won: boolean; // meaningful only once done -- true iff done via a full solve, not a reveal
+}
+```
+
+The only new field is `attempts`; `guess`/`feedback` are unchanged in
+shape (still a `string[]`/`OrderFeedback[] | null`), and `done`/`won`
+are unchanged in type but changed in _meaning_ -- `done` no longer
+becomes `true` on every submit, only once the day is actually won or
+revealed. A slot's locked status is deliberately **not** a field here
+at all (see "The mechanic" above) -- it would be redundant with
+`feedback` and a second thing to keep in sync.
+
+**Migration/fallback choice: safe fallback, not a migration --
+following this exact same file's own established precedent for the
+identical class of change.** Checked how The Call Board handles this
+first, per this change's own instructions: `call-board-storage.ts` has
+no schema-version field at all, and relies purely on `isCallBoardPick`-
+style shape validation to decide "trust this" vs. "treat as nothing
+stored" -- the same pattern this file already used for the _previous_
+Order redesign (see that section's own now-superseded top-of-file
+comment, still visible in this repo's git history), which explicitly
+chose "a pre-redesign stored value simply fails the shape check and
+reads as nothing stored, no migration needed." This pass follows that
+same precedent again rather than inventing a schema-version bump: since
+`attempts` is a **required**, strictly-validated field
+(`isOrderDayState` checks `typeof attempts === "number" &&
+Number.isInteger(attempts) && attempts >= 0`), any stored blob from
+_either_ prior mechanic -- the original Mastermind
+`{guess, attempt, history, locked, done, won}` shape, or the immediately
+preceding one-shot `{guess, done, won, feedback}` shape (no `attempts`
+key at all) -- automatically fails validation and reads as "nothing
+stored," the same graceful degradation this module already gives a
+puzzle rewritten with a different ticker set (`isPermutationOf`'s own
+doc comment). A player who happens to load the app for the first time
+after this deploy, on a day they'd already finished under the old
+mechanic, simply starts that day fresh under the new one -- no crash,
+no silent misinterpretation of the old shape as the new one.
+
+**Why fresh-start rather than "treat as done/needs-reveal" (the other
+option this change's own instructions offered)**: the day's real
+win/loss outcome for that player is _already_ durably recorded in the
+separate, untouched streak-history key (`hikt:the-order:streak-history`)
+-- a different key, a different shape, not affected by this change at
+all. `recordOrderCompletion` is idempotent per date (a second call for
+an already-recorded date is a no-op), so even in the rare case a player
+replays and re-"finishes" a day whose old-shape result was discarded by
+this fallback, their streak can't be double-counted. Given that safety
+net, fresh-start is strictly simpler than reconstructing a "done" state
+from a shape that no longer has enough information to render correctly
+under the new per-slot-locking UI anyway (the old one-shot shape has no
+notion of "how many attempts," and forcing it into a fake "revealed"
+state would show a possibly-misleading badge for a day the player may
+have actually won).
+
+### The streak-counting call
+
+**A win counts on eventual full solve, regardless of how many
+submissions it took** -- confirmed directly as the reasonable default,
+not re-derived from scratch. `recordOrderCompletion(date, won)` is
+called exactly once per date, the instant `done` first goes `true`
+(unchanged from before this pass), with `won` reflecting only whether
+that `done` was a real full solve or a reveal -- `computeOrderStreak`
+itself needs zero changes, since it only ever sees the final win/loss
+per day, never the attempt count that produced it. This mirrors The
+Call Board's own model (a call is scored on its outcome, not on how
+long a player deliberated before locking it in), and keeps this game
+from silently becoming a speed/efficiency contest it was never designed
+to be.
+
+### Live verification
+
+A throwaway debug route (per this file's own "Screenshotting a
+component locally" convention) stubbing `window.fetch` for
+`/api/the-order` with a hardcoded puzzle -- no real pipeline run needed,
+since this is a pure frontend/mechanic change with zero server-side
+diff (confirmed via `git status` before opening the PR: only
+`apps/web/src/{components,lib}` files touched). Played a full real
+multi-attempt sequence through the actual rendered UI, not just the
+unit tests: submitted a guess with 3 of 5 slots correct (all three
+immediately locked gold with "★ Correct" badges and no move buttons,
+the two incorrect slots kept their move controls and showed "✕
+Incorrect"/"Actually {ticker}"), rearranged only the two still-open
+slots (confirmed the three locked tickers never moved), resubmitted and
+won outright, and confirmed the streak figure incremented to 1 despite
+having taken two real submissions to get there. Reloaded the page
+mid-sequence (after the first partial-correct submit, before the
+winning resubmit) and confirmed the locked slots, the open slots' own
+current arrangement, and the attempt count all survived the reload
+byte-for-byte. Simulated an old-shape stored blob (the previous
+redesign's own `{guess, done, won, feedback}` shape, no `attempts`
+field) directly in `localStorage` before mounting the component and
+confirmed it renders a fresh, unlocked day with zero console errors --
+no crash, no silent misread of the old shape as a false "done" or a
+bogus partial-lock state. Zero console/`pageerror` events across every
+scenario. The debug route and the temporary `playwright` devDependency
+were both reverted before committing, per this file's own established
+convention -- including clearing `.next` afterward (this file's own
+issue #96 follow-up round four already documents why: `next typegen`
+otherwise keeps a stale reference to the deleted debug route and fails
+typecheck for a reason unrelated to any real code change).
+
+All five routine checks (lint, typecheck, `pnpm build`, `pnpm test`,
+`pnpm format:check`) green on the resulting clean tree.
+
 ## The Cut: a real, playable %-edge-captured guessing game (issue #233)
 
 `components/TheCut.tsx` + `lib/the-cut-scoring.ts` (pure grading logic) +

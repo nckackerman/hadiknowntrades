@@ -4,22 +4,53 @@
 // involved at all (mirroring lib/call-board-scoring.ts's own split from
 // call-board-storage.ts).
 //
-// **Redesigned from the original issue #207 mechanic (direct user
+// **First redesigned from the original issue #207 mechanic (direct user
 // feedback, not a filed issue -- see TheOrder.tsx's own top-of-file note
 // for the full "why").** The original version hid every stock's real
 // percent move and only ever graded a submitted order via distance-based
 // Mastermind feedback (exact/close/far) across up to 4 attempts, worst
 // mover at the top (position 1) and best mover at the bottom (position
 // 5) -- which read as backwards ("the best mover is at the bottom?") and
-// hid the one number a player most wants while playing. This version
-// shows every slot's real percent move up front, ranked best (top,
+// hid the one number a player most wants while playing. That redesign
+// showed every slot's real percent move up front, ranked best (top,
 // position 1) to worst (bottom, position N) -- the *ordering* is no
-// longer something to guess, it's given. What's left to guess is a pure
-// matching puzzle: which ticker actually had which of the N
-// already-visible returns. There's no partial credit for "close" any
-// more (a slot's assignment is either the real ticker or it isn't), so
-// this is one free rearrange-then-submit round, not an attempt-limited
-// loop.
+// longer something to guess, it's given -- and reduced grading to a
+// binary correct/incorrect per slot (no partial credit for "close" any
+// more, since a slot's target ticker is a known, already-visible fact).
+//
+// **Second redesign, this one (direct user request, not a filed issue --
+// see TheOrder.tsx's own top-of-file note): submitting no longer ends
+// the day outright.** The first redesign turned this into one free
+// rearrange-then-submit round with no second chance -- quite punishing
+// for a pure matching puzzle, since a single wrong swap between two
+// otherwise-correct slots meant losing the whole day. Now a submission
+// grades the current arrangement per slot exactly as before, but any
+// slot graded "correct" **locks in place** (its ticker can never move
+// again, and can never be swapped into by another ticker either) while
+// every "incorrect" slot stays open for further rearranging among the
+// other still-open slots, then another submission. The day is won once
+// every slot is eventually locked correct -- with **no cap on how many
+// submissions that takes**, a deliberate product decision (this game
+// isn't scored on attempt efficiency, only on eventually solving it).
+//
+// `nextOpenSlot`/`moveOrderGuess`/`shuffleUnlockedGuess` below restore
+// (adapted for binary correct/incorrect rather than the original
+// Mastermind mechanic's rank-distance exact/close/far) the exact
+// hop-over-locked-slots move/shuffle algorithm the *first* redesign had
+// removed as unnecessary for a one-shot puzzle -- see this repo's own
+// git history (the pre-first-redesign version of this file, commit
+// e4413c1) for the original, from which this is ported near-verbatim.
+//
+// A slot's own "locked" status is never stored separately -- it's always
+// derived from the most recent submission's own per-slot grading
+// (`lockedSlots` below), since a locked slot's guess never moves again
+// and can therefore only ever keep scoring "correct" on every later
+// resubmission. This mirrors how this app already prefers deriving
+// state fresh over storing a second, redundant copy of it (e.g.
+// CallBoard's/The Order's own streak stats, computed from a history
+// rather than stored as their own numbers) -- one less thing to keep in
+// sync, and one less way for persisted state to drift from what it
+// actually describes.
 
 import { ORDER_POOL_SIZE } from "@hadiknowntrades/core";
 
@@ -34,14 +65,28 @@ import { isFiniteNumber } from "./is-finite-number";
 export const ORDER_SLOT_COUNT = ORDER_POOL_SIZE;
 
 /**
- * One slot's grading once the single guess is submitted -- binary, not
- * the original three-state exact/close/far. A slot's target ticker is a
+ * One slot's grading from its most recent submission -- binary, not the
+ * original three-state exact/close/far. A slot's target ticker is a
  * known, already-visible fact the moment its percent move is on screen
  * (this redesign's whole point), so there's no meaningful "close" any
  * more: an assignment is either the real ticker for that slot or it
- * isn't.
+ * isn't. A "correct" grading is permanent (see `lockedSlots` below) --
+ * once a slot locks, its own guess never changes again, so it can only
+ * ever keep re-grading "correct" on every later submission.
  */
-export type OrderFeedback = "correct" | "incorrect";
+/**
+ * `"revealed"` is never produced by `scoreOrderMatch` -- it exists only
+ * for a bail-out reveal (`useOrderGame`'s own `reveal()`), which fills
+ * every still-open slot with the real answer without the player having
+ * actually guessed it. Grading that as `"correct"` would misrepresent an
+ * unearned answer as a solved slot; grading it `"incorrect"` would be
+ * flatly wrong once `reveal()` sets `guess` to the real answer array
+ * (every slot's ticker literally matches the target at that point). A
+ * third, neutral state is what lets a revealed slot render honestly:
+ * distinct from both a real win and the "you swapped in the wrong
+ * ticker" case an in-progress incorrect grading means.
+ */
+export type OrderFeedback = "correct" | "incorrect" | "revealed";
 
 /**
  * Scores a submitted guess against the real answer, per slot:
@@ -49,7 +94,10 @@ export type OrderFeedback = "correct" | "incorrect";
  * in slot `i`. `answer` is expected in the same best-to-worst order the
  * slots are rendered in -- see `bestToWorstTickers` below, the one place
  * that ordering gets derived from the puzzle's own (server-side,
- * worst-to-best) `tickers` array.
+ * worst-to-best) `tickers` array. Safe to call over the *entire* current
+ * guess on every resubmission (not just the still-open slots) -- a
+ * locked slot's own guess never moves, so it always re-scores "correct"
+ * regardless of how many times this runs.
  */
 export function scoreOrderMatch(
   guess: readonly string[],
@@ -61,6 +109,21 @@ export function scoreOrderMatch(
 /** A win is exactly "every slot scored correct." */
 export function isWinningFeedback(feedback: readonly OrderFeedback[]): boolean {
   return feedback.every((entry) => entry === "correct");
+}
+
+/**
+ * Which slots are locked in place -- derived from the most recent
+ * submission's own per-slot grading, never stored as a separate array.
+ * `feedback === null` (never submitted yet, or the day ended via a
+ * bail-out reveal with nothing actually graded) means nothing is
+ * locked. Slot `i` is locked exactly when `feedback[i] === "correct"`.
+ */
+export function lockedSlots(
+  feedback: readonly OrderFeedback[] | null,
+  slotCount: number,
+): boolean[] {
+  if (feedback === null) return new Array<boolean>(slotCount).fill(false);
+  return feedback.map((entry) => entry === "correct");
 }
 
 /**
@@ -76,19 +139,36 @@ export function bestToWorstTickers<T>(tickers: readonly T[]): T[] {
 }
 
 /**
- * Swaps the tickers assigned to slots `index` and `index + dir` --
- * a no-op (same reference) at either edge. No slot is ever locked in
- * this one-shot mechanic (there's only ever one submission), so this is
- * a plain adjacent swap, not the original's hop-over-locked-slots
- * search.
+ * The next slot in direction `dir` that isn't locked, hopping *over* any
+ * locked slot in its path rather than stopping against it -- ported
+ * (adapted for this redesign's own binary locking, not the original
+ * Mastermind mechanic's rank-distance one) from the pre-first-redesign
+ * version of this file (see this repo's own git history, commit
+ * e4413c1). Returns -1 if there is no open slot in that direction (the
+ * edge, or every remaining slot in that direction is locked).
+ */
+export function nextOpenSlot(locked: readonly boolean[], index: number, dir: 1 | -1): number {
+  let target = index + dir;
+  while (target >= 0 && target < locked.length && locked[target]) target += dir;
+  return target >= 0 && target < locked.length ? target : -1;
+}
+
+/**
+ * Moves the slot at `index` one step in direction `dir`, swapping with
+ * whichever open slot `nextOpenSlot` finds -- a locked slot never moves
+ * (mirrors the pre-first-redesign version's own `if (locked[index])
+ * return`), and a move with no legal target is a no-op, both returning
+ * the same array reference unchanged so a caller can skip a re-render.
  */
 export function moveOrderGuess(
   guess: readonly string[],
+  locked: readonly boolean[],
   index: number,
   dir: 1 | -1,
 ): readonly string[] {
-  const target = index + dir;
-  if (target < 0 || target >= guess.length) return guess;
+  if (locked[index]) return guess;
+  const target = nextOpenSlot(locked, index, dir);
+  if (target === -1) return guess;
   const next = [...guess];
   [next[index], next[target]] = [next[target]!, next[index]!];
   return next;
@@ -103,9 +183,32 @@ function shuffleInPlace<T>(items: T[], random: () => number): T[] {
   return items;
 }
 
-/** A fresh full shuffle of every slot's current assignment -- no locked/unlocked distinction any more, since nothing locks in a one-shot puzzle. */
-export function shuffleGuess(guess: readonly string[], random: () => number): readonly string[] {
-  return shuffleInPlace([...guess], random);
+/**
+ * Shuffles only the unlocked slots among themselves, leaving every
+ * locked slot's ticker and position untouched -- ported (adapted for
+ * this redesign's own binary locking) from the pre-first-redesign
+ * version of this file's own "shuffle only the still-unresolved slots"
+ * click handler (commit e4413c1).
+ */
+export function shuffleUnlockedGuess(
+  guess: readonly string[],
+  locked: readonly boolean[],
+  random: () => number,
+): readonly string[] {
+  const openIndices: number[] = [];
+  const openValues: string[] = [];
+  guess.forEach((value, i) => {
+    if (!locked[i]) {
+      openIndices.push(i);
+      openValues.push(value);
+    }
+  });
+  const shuffled = shuffleInPlace([...openValues], random);
+  const next = [...guess];
+  openIndices.forEach((slotIndex, k) => {
+    next[slotIndex] = shuffled[k]!;
+  });
+  return next;
 }
 
 /**

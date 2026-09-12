@@ -2,10 +2,10 @@
 
 // The Order: match 5 real Magnificent Seven stocks to the % each one
 // actually moved yesterday, best mover on top. Same grid position, same
-// purple gradient/🏁 icon (issue #197's own choices, unchanged by this
+// purple gradient/🏁 icon (issue #197's own choices, unchanged by either
 // redesign).
 //
-// **Redesigned from the original issue #207 mechanic (direct user
+// **First redesigned from the original issue #207 mechanic (direct user
 // feedback, not a filed issue -- apps/web/CLAUDE.md's own "'Today's
 // recap' removed outright..." section is the precedent for documenting a
 // direct-request change this way).** Two problems with the original:
@@ -25,35 +25,49 @@
 //      every slot's real % move up front, always -- the ordering itself
 //      is no longer something to guess, it's given. What's left is a
 //      pure matching puzzle: which ticker actually had which of the 5
-//      already-visible returns. There's no partial credit for "close"
-//      any more (a slot's assignment is either the real ticker or it
-//      isn't), so this is a free rearrange-then-submit round -- no
-//      attempt limit, no locking, one real submission per day. See
-//      order-scoring.ts's own top-of-file note for the full mechanics
-//      rationale.
+//      already-visible returns.
+//
+// **Second redesign, this one (direct user request, not a filed issue):
+// submitting no longer ends the day outright.** The first redesign made
+// this a one-shot "rearrange then submit once" round -- no partial
+// credit for "close," but also no second chance: a single wrong swap
+// between two otherwise-correct slots lost the whole day. Now a
+// submission grades the current arrangement per slot exactly as before,
+// but a slot graded "correct" **locks in place** -- its ticker can never
+// move again, and no other ticker can be swapped into it -- while every
+// "incorrect" slot stays open for further rearranging among the other
+// still-open slots, then another submission. The day is won once every
+// slot is eventually locked correct. **There is no cap on how many
+// submissions that takes** -- a deliberate product decision (this game
+// isn't scored on attempt efficiency, only on eventually solving it),
+// and the streak below counts a win on eventual full solve regardless of
+// how many attempts it took. "Reveal answer" is unchanged: an explicit
+// give-up path that ends the day without a win, still available at any
+// point.
 //
 // **Read in this order before touching this file**: order-scoring.ts
-// (the pure match/move/shuffle functions this component calls, and the
-// redesign's own reasoning), order-storage.ts (the persisted
-// `OrderDayState` shape), and use-order-game.ts (the hook wiring the two
+// (the pure match/move/shuffle/lock functions this component calls, and
+// both redesigns' own reasoning), order-storage.ts (the persisted
+// `OrderDayState` shape, including this redesign's own migration/
+// fallback choice), and use-order-game.ts (the hook wiring the two
 // together). The original design references (issue #189's parked
 // design, issue #197's placeholder, docs/design/order-lineup-2026-08/)
-// describe the pre-redesign Mastermind mechanic and are historical only
-// -- don't treat their screenshots/scripts as the current spec.
+// describe the pre-first-redesign Mastermind mechanic and are historical
+// only -- don't treat their screenshots/scripts as the current spec.
 //
 // **Placement follows issue #122's standing decision** (see
-// apps/web/CLAUDE.md), unchanged by this redesign: a self-contained
+// apps/web/CLAUDE.md), unchanged by either redesign: a self-contained
 // section, taking no PrecomputedResult/range/mode/selectedDay props --
 // this game is not a function of the hindsight result. Mounted at the
 // same fixed grid position ResultsPage.tsx's own game-tile grid already
 // gives it.
 //
 // **The expand mechanism is a native `<details>`/`<summary>`**, matching
-// CallBoard.tsx's own pattern -- unchanged by this redesign.
+// CallBoard.tsx's own pattern -- unchanged by either redesign.
 //
-// **No replay/reset once a day is done** -- unchanged by this redesign:
-// a real daily puzzle with one true answer; once submitted or revealed,
-// that day's result stands.
+// **No replay/reset once a day is done** -- unchanged by either
+// redesign: a real daily puzzle with one true answer; once fully solved
+// or revealed, that day's result stands.
 
 import { useId } from "react";
 
@@ -63,6 +77,8 @@ import {
   bestToWorstTickers,
   formatOrderPctReturn,
   isValidOrderPuzzle,
+  lockedSlots,
+  nextOpenSlot,
   type OrderFeedback,
 } from "@/lib/order-scoring";
 import type { OrderDayState } from "@/lib/order-storage";
@@ -83,7 +99,7 @@ const SUBTITLE = "Match each stock to the % it moved yesterday -- best mover on 
  * there). Every stop's white-text contrast was already independently
  * verified >= 4.5:1 AA against white when this literal was first
  * introduced (7.06:1 / 8.37:1 / 10.68:1) -- unchanged here, since the
- * color values themselves are unchanged by this mechanic redesign.
+ * color values themselves are unchanged by either mechanic redesign.
  */
 const TILE_GRADIENT_STYLE = {
   backgroundImage: "linear-gradient(155deg, #6a3db8 0%, #5d36a1 55%, #4b2b82 100%)",
@@ -96,11 +112,10 @@ const CONNECTOR_ACCENT = "#4b2b82";
 const CARD_BASE_CLASSNAME = "min-h-28 rounded-2xl text-white";
 
 /**
- * WCAG-1.4.1-compliant glyph system for the one-shot grading: every slot
- * carries a real glyph *and* visible label text once done, never color
+ * WCAG-1.4.1-compliant glyph system for per-slot grading: every slot
+ * carries a real glyph *and* visible label text once graded, never color
  * alone. Gold ("correct") is --accent-reward's documented "earned state"
- * job (globals.css, issue #121); a correctly matched slot is exactly
- * that.
+ * job (globals.css, issue #121); a locked-correct slot is exactly that.
  */
 const OUTCOME_STYLES: Record<
   OrderFeedback,
@@ -116,12 +131,32 @@ const OUTCOME_STYLES: Record<
     label: "Incorrect",
     badgeClassName: "border border-[var(--status-critical)] text-[var(--status-critical)]",
   },
+  /**
+   * Only ever reached via `reveal()` on a slot the player never locked
+   * -- a neutral "this is the answer, not something you earned" badge,
+   * deliberately distinct from both "Correct" (gold, earned) and
+   * "Incorrect" (a real wrong guess); see `OrderFeedback`'s own doc
+   * comment. `"incorrect"` is never actually reachable once a day is
+   * `done` (a win grades every slot "correct"; a reveal grades every
+   * still-open slot "revealed") -- its own entry above stays purely for
+   * type completeness (`Record<OrderFeedback, ...>`) and as a defensive
+   * fallback, not a state this component's `done` branch can render.
+   */
+  revealed: {
+    glyph: "–",
+    label: "Revealed",
+    badgeClassName: "border border-[var(--gridline)] text-[var(--text-muted)]",
+  },
 };
 
 /** The compact tile's own status line, mirroring compactStatusLine's (BeatTheBench.tsx) shape for the identical "collapsed card names the state in a few words" job. */
 function tileStatusLine(state: OrderDayState | null): string {
   if (state === null) return "Not played yet";
-  if (!state.done) return "In progress";
+  if (!state.done) {
+    if (state.attempts === 0) return "In progress";
+    const lockedCount = lockedSlots(state.feedback, state.guess.length).filter(Boolean).length;
+    return `${lockedCount} of ${state.guess.length} locked -- attempt ${state.attempts}`;
+  }
   if (state.won) return "Solved -- every stock matched";
   if (state.feedback !== null) {
     const correct = state.feedback.filter((entry) => entry === "correct").length;
@@ -254,11 +289,12 @@ interface SlotRowProps {
   /** The ticker currently assigned to this slot by the player. */
   ticker: string;
   companyName: string;
+  /** True once the whole day is over (a full win, or a bail-out reveal). */
   done: boolean;
-  /** This slot's own grading, once `done` and a real guess was submitted -- `null` while still playing, or if the day ended via a bail-out reveal instead. */
+  /** True once this slot has locked correct on some past submission -- its ticker is fixed, and it's never a move target for another slot either. */
+  locked: boolean;
+  /** This slot's own grading from the most recent submission -- `null` while never yet submitted, or `"revealed"` if the day ended via a bail-out reveal instead. */
   feedback: OrderFeedback | null;
-  /** The ticker that actually belongs in this slot -- shown only when `feedback === "incorrect"`, so a player learns what they missed. */
-  correctTicker: string;
   canMoveUp: boolean;
   canMoveDown: boolean;
   disabled: boolean;
@@ -273,8 +309,8 @@ function SlotRow({
   ticker,
   companyName,
   done,
+  locked,
   feedback,
-  correctTicker,
   canMoveUp,
   canMoveDown,
   disabled,
@@ -328,7 +364,22 @@ function SlotRow({
         <span className="truncate text-xs text-[var(--text-muted)]">{companyName}</span>
       </span>
 
-      {done ? (
+      {locked ? (
+        <span className="flex shrink-0 flex-col items-end gap-0.5">
+          <span
+            className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold ${OUTCOME_STYLES.correct.badgeClassName}`}
+          >
+            <span aria-hidden="true">{OUTCOME_STYLES.correct.glyph}</span>
+            {OUTCOME_STYLES.correct.label}
+          </span>
+        </span>
+      ) : done ? (
+        // A done, unlocked slot only ever grades "revealed" now (a win
+        // locks every slot "correct" instead) -- see OUTCOME_STYLES.incorrect's
+        // own doc comment for why "incorrect" can't reach here, and
+        // OrderFeedback's own doc comment for why a revealed slot needs
+        // no "Actually {ticker}" hint (its own ticker already *is* the
+        // correct one once revealed).
         outcome !== null && (
           <span className="flex shrink-0 flex-col items-end gap-0.5">
             <span
@@ -337,11 +388,6 @@ function SlotRow({
               <span aria-hidden="true">{outcome.glyph}</span>
               {outcome.label}
             </span>
-            {feedback === "incorrect" && (
-              <span className="text-[0.6875rem] text-[var(--text-muted)]">
-                Actually {correctTicker}
-              </span>
-            )}
           </span>
         )
       ) : (
@@ -388,6 +434,8 @@ function OrderBoard({ puzzle, view, move, shuffle, submit, reveal }: OrderBoardP
   const targets = bestToWorstTickers(puzzle.tickers);
   const companyNameByTicker = new Map(puzzle.tickers.map((t) => [t.ticker, t.companyName]));
   const done = state.done;
+  const locked = lockedSlots(state.feedback, targets.length);
+  const lockedCount = locked.filter(Boolean).length;
   const correctCount = state.feedback?.filter((entry) => entry === "correct").length ?? null;
 
   const resultSentence = done
@@ -407,13 +455,22 @@ function OrderBoard({ puzzle, view, move, shuffle, submit, reveal }: OrderBoardP
       {!done && (
         <p className="text-sm text-[var(--text-secondary)]">
           Each row is real: yesterday&apos;s actual move, best to worst. Rearrange the five tickers
-          until each one sits on the % you think it moved, then submit -- one guess, that&apos;s it.
+          until each one sits on the % you think it moved, then submit -- correct slots lock in
+          place, and you can keep resubmitting the rest until every slot&apos;s right.
+        </p>
+      )}
+
+      {!done && state.attempts > 0 && (
+        <p className="text-sm font-medium text-[var(--text-primary)]">
+          {lockedCount} of {targets.length} locked -- attempt {state.attempts}. Keep adjusting the
+          rest and submit again.
         </p>
       )}
 
       <ol className="flex flex-col gap-2">
         {state.guess.map((ticker, index) => {
           const target = targets[index]!;
+          const isLocked = locked[index]!;
           return (
             <SlotRow
               key={ticker}
@@ -423,10 +480,10 @@ function OrderBoard({ puzzle, view, move, shuffle, submit, reveal }: OrderBoardP
               ticker={ticker}
               companyName={companyNameByTicker.get(ticker) ?? ticker}
               done={done}
+              locked={isLocked}
               feedback={state.feedback?.[index] ?? null}
-              correctTicker={target.ticker}
-              canMoveUp={index > 0}
-              canMoveDown={index < targets.length - 1}
+              canMoveUp={!isLocked && nextOpenSlot(locked, index, -1) !== -1}
+              canMoveDown={!isLocked && nextOpenSlot(locked, index, 1) !== -1}
               disabled={done}
               onMoveUp={() => move(index, -1)}
               onMoveDown={() => move(index, 1)}
@@ -464,8 +521,8 @@ function OrderBoard({ puzzle, view, move, shuffle, submit, reveal }: OrderBoardP
       {done && (
         <div className="flex flex-col gap-4 rounded-lg border border-[var(--gridline)] bg-[var(--surface-2)] p-4">
           <p className="text-sm font-semibold text-[var(--text-primary)]">
-            <span aria-hidden="true">{state.won ? "★" : state.feedback === null ? "⏱" : ""}</span>{" "}
-            {resultSentence}
+            {/* done is guaranteed true here (the enclosing `done && (...)` block), and the only two ways to reach it are a win or a reveal -- so `!state.won` always means "gave up," not merely "feedback happens to be null." */}
+            <span aria-hidden="true">{state.won ? "★" : "⏱"}</span> {resultSentence}
           </p>
           <div className="flex gap-6">
             <span className="flex flex-col gap-1">
