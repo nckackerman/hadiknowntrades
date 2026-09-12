@@ -724,6 +724,16 @@ export function CallBoard() {
               bucket and it saves straight away; you can change it right up until that session
               opens.
             </p>
+            {/* A direct user request removed the short "practice game...
+                not a prediction, and not advice" line that used to sit
+                here -- distracting copy, per the request, not a factual
+                correction. The full "not investment advice" framing this
+                app establishes elsewhere is untouched: AboutSection.tsx's
+                own always-reachable disclaimer already names this board
+                explicitly ("a separate practice game, not part of that
+                hindsight analysis"), so nothing here was left unsaid, just
+                relocated to where this app's other disclaimers already
+                live. */}
             {marketClosedToday ? (
               <p className="text-sm text-[var(--text-secondary)]">
                 Markets are closed today, so the board is already looking ahead: these are the next{" "}

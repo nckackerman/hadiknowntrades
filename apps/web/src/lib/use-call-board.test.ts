@@ -226,6 +226,64 @@ describe("useCallBoard", () => {
     });
     expect(result.current.view.board.stats).toMatchObject({ wins: 1, currentStreak: 1 });
   });
+
+  it("surfaces a real no-input entry once this browser's own lookahead actually showed the day open, but never for a day it never showed", async () => {
+    freezeClock(WEDNESDAY_BEFORE_OPEN);
+    // 2026-08-24 (a Monday) is "today," still before its own open, so the
+    // real lookahead here is 08-24/08-25/08-26 -- recorded as a side
+    // effect of this very render, before any close data exists at all.
+    vi.setSystemTime(new Date("2026-08-24T13:00:00Z"));
+    const { result, rerender } = renderHook(
+      ({ closes }: { closes: readonly DailyClose[] }) => useCallBoard(closes),
+      { initialProps: { closes: NO_CLOSES } },
+    );
+    await act(async () => {});
+    expect(result.current.view.board.openCalls.map((call) => call.date)).toEqual([
+      "2026-08-24",
+      "2026-08-25",
+      "2026-08-26",
+    ]);
+
+    // Nobody ever calls 2026-08-25. Later, the real close series arrives
+    // covering it, with its own real move (-1.0% -> down-strong).
+    vi.setSystemTime(WEDNESDAY_BEFORE_OPEN);
+    const closes: DailyClose[] = [
+      { date: "2026-08-24", close: 100 },
+      { date: "2026-08-25", close: 99 },
+    ];
+    rerender({ closes });
+
+    await waitFor(() => {
+      expect(result.current.view.board.resolved).toHaveLength(1);
+    });
+    expect(result.current.view.board.resolved[0]).toMatchObject({
+      date: "2026-08-25",
+      pick: null,
+      actual: "down-strong",
+      score: 0,
+    });
+    expect(result.current.view.board.stats).toMatchObject({
+      resolvedCalls: 1,
+      wins: 0,
+      currentStreak: 0,
+    });
+  });
+
+  it("never resolves a day this browser's own lookahead has never shown, even once the close series covers it (matches the 0/0%/0/0 first-visit spec)", async () => {
+    // A genuinely first-ever sync: no prior render, no offered-dates
+    // history, straight into a close series that already covers an
+    // uncalled day.
+    freezeClock(WEDNESDAY_BEFORE_OPEN);
+    const closes: DailyClose[] = [
+      { date: "2026-08-24", close: 100 },
+      { date: "2026-08-25", close: 99 },
+    ];
+    const { result } = renderHook(() => useCallBoard(closes));
+    await act(async () => {});
+
+    expect(result.current.view.board.resolved).toEqual([]);
+    expect(result.current.view.board.stats).toMatchObject({ resolvedCalls: 0, winRate: null });
+  });
 });
 
 describe("useCallBoardCloses", () => {

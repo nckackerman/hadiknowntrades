@@ -4,10 +4,13 @@ import type { DailyClose } from "@hadiknowntrades/core";
 
 import type { ResolvedCall } from "./call-board-scoring";
 import {
+  MAX_STORED_OFFERED_DATES,
   MAX_STORED_RESOLVED_CALLS,
   getCallBoardPick,
+  getOfferedDates,
   getResolvedCalls,
   readCallBoardPicks,
+  recordOfferedDates,
   saveCallBoardPick,
   saveResolvedCalls,
   syncCallBoard,
@@ -149,6 +152,45 @@ describe("getResolvedCalls / saveResolvedCalls", () => {
   });
 });
 
+describe("getOfferedDates / recordOfferedDates", () => {
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("returns an empty log when nothing has ever been offered", () => {
+    expect(getOfferedDates()).toEqual([]);
+  });
+
+  it("round-trips, deduplicated and sorted", () => {
+    recordOfferedDates(["2026-08-19", "2026-08-17"]);
+    recordOfferedDates(["2026-08-18", "2026-08-19"]); // 08-19 repeats
+    expect(getOfferedDates()).toEqual(["2026-08-17", "2026-08-18", "2026-08-19"]);
+  });
+
+  it("is a no-op write when every date is already recorded", () => {
+    recordOfferedDates(["2026-08-19"]);
+    expect(recordOfferedDates(["2026-08-19"])).toBe(true);
+    expect(getOfferedDates()).toEqual(["2026-08-19"]);
+  });
+
+  it("treats a corrupted stored value as an empty log rather than throwing", () => {
+    window.localStorage.setItem("hikt:call-board:offered-dates", "not json{{");
+    expect(() => getOfferedDates()).not.toThrow();
+    expect(getOfferedDates()).toEqual([]);
+  });
+
+  it("keeps only the most recent MAX_STORED_OFFERED_DATES entries", () => {
+    const many = Array.from(
+      { length: MAX_STORED_OFFERED_DATES + 5 },
+      (_, i) => `2020-01-${String(i).padStart(4, "0")}`,
+    );
+    recordOfferedDates(many);
+
+    const stored = getOfferedDates();
+    expect(stored).toHaveLength(MAX_STORED_OFFERED_DATES);
+  });
+});
+
 describe("syncCallBoard", () => {
   const closes: DailyClose[] = [
     { date: "2026-08-17", close: 100 },
@@ -161,22 +203,64 @@ describe("syncCallBoard", () => {
     window.localStorage.clear();
   });
 
-  it("settles every closed day as a no-input entry when nothing has been called at all", () => {
-    // No picks were ever stored for any of 08-18/19/20, so every one of
-    // them settles as a real, pick: null history entry (rather than being
-    // left out of `resolved` entirely) -- the lookahead's own open calls
-    // (08-21 onward) are a separate, still-unresolved thing.
+  it("does not retroactively resolve anything on a completely fresh sync (matches the 0/0%/0/0 first-visit spec)", () => {
+    // A day only ever settles as a no-input entry once this browser's own
+    // rolling lookahead has actually shown it as an open call at some
+    // point (see syncCallBoard's own doc comment) -- on a genuinely first
+    // sync, nothing has ever been offered yet, so none of 08-18/19/20
+    // resolve even though the close series covers all three. A fresh
+    // board must read exactly as empty as it did before this feature
+    // existed, not instantly acquire a backlog of retroactive losses.
     const state = syncCallBoard(closes, BEFORE_OPEN);
 
-    expect(state.resolved).toHaveLength(3);
-    expect(state.resolved.every((call) => call.pick === null && call.score === 0)).toBe(true);
-    expect(state.stats.resolvedCalls).toBe(3);
-    expect(state.stats.winRate).toBe(0);
+    expect(state.resolved).toEqual([]);
+    expect(state.stats.resolvedCalls).toBe(0);
+    expect(state.stats.winRate).toBeNull();
     expect(state.openCalls).toEqual([
       { date: "2026-08-21", pick: null },
       { date: "2026-08-24", pick: null },
       { date: "2026-08-25", pick: null },
     ]);
+  });
+
+  it("settles a day as no-input once this browser's own lookahead has actually shown it as open, but not a day it never showed", () => {
+    // First sync: 2026-08-17 is "today" (still before its own open), so the
+    // real lookahead is 08-17/08-18/08-19 -- recorded into the
+    // offered-dates log as a side effect of this very call. 08-20 is
+    // deliberately never part of any lookahead in this test.
+    syncCallBoard([], summerEt("2026-08-17", "09:00"));
+
+    // Second sync, later: the close series now covers all four days, and
+    // no pick was ever made for any of them.
+    const state = syncCallBoard(closes, BEFORE_OPEN);
+
+    // 08-17 never resolves regardless (no prior close in the window to
+    // measure it against). 08-18/08-19 were genuinely offered, so they
+    // settle as real no-input entries; 08-20 was never shown to this
+    // browser at all, so it's correctly left out, exactly as it would
+    // have been before this feature existed.
+    expect(state.resolved.map((call) => [call.date, call.pick, call.score])).toEqual([
+      ["2026-08-18", null, 0],
+      ["2026-08-19", null, 0],
+    ]);
+    expect(state.stats.resolvedCalls).toBe(2);
+  });
+
+  it("still resolves a real pick for a day the offered-dates log never happened to record", () => {
+    // A real pick can only ever exist because this board's own UI offered
+    // that date at some point -- but this exercises the filter's own
+    // `pick !== null` short-circuit directly, in case the offered-dates
+    // log and a stored pick ever disagreed for some other reason (a
+    // migration, a hand-edited value). A real call must never be silently
+    // dropped just because the log doesn't happen to know about it.
+    window.localStorage.setItem(
+      "hikt:call-board:pick:2026-08-19",
+      JSON.stringify({ bucket: "up" }),
+    );
+    const state = syncCallBoard(closes, BEFORE_OPEN);
+
+    expect(state.resolved).toHaveLength(1);
+    expect(state.resolved[0]).toMatchObject({ date: "2026-08-19", pick: "up", score: 2 });
   });
 
   it("settles picks the close series now covers, and persists them", () => {
@@ -212,7 +296,7 @@ describe("syncCallBoard", () => {
     ]);
   });
 
-  it("keeps history that has aged out of the close window, alongside newly-settled (no-input) days", () => {
+  it("keeps history that has aged out of the close window", () => {
     saveResolvedCalls([
       {
         date: "2026-01-05",
@@ -225,15 +309,11 @@ describe("syncCallBoard", () => {
 
     const state = syncCallBoard(closes, BEFORE_OPEN);
 
-    // The aged-out real call is still there, plus the three no-input
-    // entries this close window now resolves for the first time.
-    expect(state.resolved.map((call) => call.date)).toEqual([
-      "2026-01-05",
-      "2026-08-18",
-      "2026-08-19",
-      "2026-08-20",
-    ]);
-    expect(state.stats.resolvedCalls).toBe(4);
+    // Nothing in the current window was ever offered to this browser (a
+    // fresh sync, per the offered-dates gate above), so the aged-out real
+    // call is the only thing here.
+    expect(state.resolved.map((call) => call.date)).toEqual(["2026-01-05"]);
+    expect(state.stats.resolvedCalls).toBe(1);
   });
 
   it("never rescores or duplicates an already-settled day", () => {
@@ -245,9 +325,7 @@ describe("syncCallBoard", () => {
     const second = syncCallBoard(closes, BEFORE_OPEN);
 
     expect(second.resolved).toEqual(first.resolved);
-    // 08-18 and 08-20 also settle (as no-input entries), alongside the one
-    // real pick made for 08-19 -- three total, not just the one real call.
-    expect(second.resolved).toHaveLength(3);
+    expect(second.resolved).toHaveLength(1);
   });
 
   it("surfaces the picks already made for the open lookahead days", () => {
