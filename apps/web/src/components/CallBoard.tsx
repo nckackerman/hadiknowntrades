@@ -9,9 +9,25 @@
 // call-board-scoring.ts / call-board-storage.ts / market-calendar.ts,
 // reached through lib/use-call-board.ts. The only logic that is genuinely
 // this file's own is `callOutcomeFor` below: how a settled call's
-// (score, bucket distance) pair maps onto the four *display* states the
+// (score, bucket distance) pair maps onto the five *display* states the
 // history strip needs, which is a presentation question the engine has no
 // opinion about.
+//
+// **A direct user request (not a filed issue) added the fifth of those
+// states: a day that closed with no call ever made for it.** Before this,
+// `resolveCalls` (`call-board-scoring.ts`) silently skipped such a day --
+// it never appeared in `resolved` at all, and never broke a streak. It now
+// gets a real, `pick: null` entry (see that field's own doc comment) that
+// this file classifies as `"no-input"` (`callOutcomeFor`), styles
+// distinctly from the four scored outcomes (`OUTCOME_STYLES["no-input"]`
+// below), and -- per an explicit decision already made with the user,
+// not re-derived here -- breaks the current streak exactly the same way a
+// wrong call does, entirely through `computeCallBoardStats`' own existing
+// `score < WINNING_SCORE` check (a no-input day scores `0`, same as a
+// genuine miss; see `resolveCalls`' own doc comment for why no separate
+// branch was needed there). The same pass also removed a line of copy
+// (below) and added a native `title` hover affordance to each history
+// cell -- see each change's own inline comment for the reasoning.
 //
 // Placement follows issue #122's standing decision: this is a section
 // mounted by ResultsPage.tsx as a direct sibling of ResultsPanel, not
@@ -102,8 +118,7 @@ const BUCKET_GLYPHS: Record<CallBucket, string> = {
 };
 
 /**
- * The four outcomes the history strip distinguishes, exactly as issue
- * #129's scope names them.
+ * The five outcomes the history strip distinguishes.
  *
  * **Deliberately a display classification, not a second scoring model.**
  * `score` comes straight from the engine (`scoreCall`: 2 exact / 1 right
@@ -114,16 +129,28 @@ const BUCKET_GLYPHS: Record<CallBucket, string> = {
  * "Up" on a mild down day is a near miss, calling "Up big" on a hard down
  * day is not -- but it is worth no extra points, and nothing here feeds
  * back into `computeCallBoardStats`.
+ *
+ * **`"no-input"` is the fifth state, for a day that closed with no call
+ * ever made for it (`ResolvedCall.pick === null`, see that field's own doc
+ * comment in `call-board-scoring.ts`).** It also scores `0` in the engine
+ * (the same value a genuine wrong-direction call gets, so the streak logic
+ * needs no special case -- see `resolveCalls`' own reasoning), but it is
+ * deliberately never classified as `"near-miss"`/`"far-miss"`: this is
+ * "you didn't play," not "you played and lost," and collapsing the two
+ * would misrepresent a day the player never actually called against.
  */
-export type CallOutcome = "exact" | "right-direction" | "near-miss" | "far-miss";
+export type CallOutcome = "exact" | "right-direction" | "near-miss" | "far-miss" | "no-input";
 
 interface OutcomeStyle {
   /**
    * A real visible glyph, not a color-only cue. WCAG 1.4.1 requires the
-   * four states be distinguishable by something other than hue, and a
+   * five states be distinguishable by something other than hue, and a
    * `title` attribute does not count -- assistive tech doesn't reliably
    * announce it. Every cell therefore carries this glyph *and* an sr-only
-   * sentence, on top of the color.
+   * sentence, on top of the color (the same `title` string is also used as
+   * a *visible* hover affordance for a sighted mouse user -- see the
+   * "Recent calls" `<ol>`'s own comment below -- but that's an addition on
+   * top of this glyph+sr-only pairing, not a replacement for it).
    */
   glyph: string;
   /** Short label used in the cell's sr-only sentence and the strip's legend. */
@@ -162,29 +189,73 @@ const OUTCOME_STYLES: Record<CallOutcome, OutcomeStyle> = {
       "border-[var(--status-critical)] bg-[var(--surface-2)] text-[var(--status-critical)]",
     legendClassName: "text-[var(--status-critical)]",
   },
+  // Deliberately its own neutral/muted treatment, not a reuse of any of
+  // the four outcomes above -- each of those already means something
+  // specific (a real call the player made, right or wrong), and this is
+  // "you didn't play," not "you played and lost." "–" (an en dash, not a
+  // hyphen or tilde) reads as "nothing here" without echoing "~"'s
+  // near-miss shape or "✕"'s far-miss shape. Bordered with the same
+  // neutral --gridline every plain panel border already uses (not
+  // near-miss's --baseline), so it's visually distinguishable at a glance,
+  // not just by the glyph.
+  "no-input": {
+    glyph: "–",
+    label: "Skipped",
+    className: "border-[var(--gridline)] bg-[var(--surface-2)] text-[var(--text-muted)]",
+    legendClassName: "text-[var(--text-muted)]",
+  },
 };
 
-/** Every outcome, in the order the legend lists them (best first). */
-const OUTCOME_ORDER: readonly CallOutcome[] = ["exact", "right-direction", "near-miss", "far-miss"];
+/**
+ * Every outcome, in the order the legend lists them -- the four graded
+ * outcomes best first, then "no-input" last: it isn't part of that
+ * best-to-worst ladder at all (a skipped day was never scored against the
+ * other four), so it sits outside the ranking rather than being slotted
+ * into it.
+ */
+const OUTCOME_ORDER: readonly CallOutcome[] = [
+  "exact",
+  "right-direction",
+  "near-miss",
+  "far-miss",
+  "no-input",
+];
 
 /**
- * Which of the four display states a settled call lands in.
+ * Which of the five display states a settled call lands in.
  *
- * Score is checked first and distance only breaks the engine's `0` apart:
- * a distance of 1 can mean either a right-direction confidence miss
- * ("Up big" vs. "Up") or a wrong-direction near miss ("Up" vs. "Down"),
- * so distance alone would conflate two genuinely different results.
+ * `pick === null` (no call was ever made for this day, see
+ * `call-board-scoring.ts`'s `resolveCalls`) is checked first, ahead of
+ * score -- a no-input day also scores `0` in the engine, exactly like a
+ * genuine wrong-direction call, but it must never be classified as
+ * `"near-miss"`/`"far-miss"` alongside one.
+ *
+ * Otherwise, score is checked first and distance only breaks the engine's
+ * `0` apart: a distance of 1 can mean either a right-direction confidence
+ * miss ("Up big" vs. "Up") or a wrong-direction near miss ("Up" vs.
+ * "Down"), so distance alone would conflate two genuinely different
+ * results.
  */
 export function callOutcomeFor(call: ResolvedCall): CallOutcome {
+  if (call.pick === null) return "no-input";
   if (call.score === 2) return "exact";
   if (call.score === 1) return "right-direction";
   const distance = Math.abs(CALL_BUCKETS.indexOf(call.pick) - CALL_BUCKETS.indexOf(call.actual));
   return distance <= 1 ? "near-miss" : "far-miss";
 }
 
-/** The sr-only sentence behind one history cell -- the whole story, not just the glyph. */
+/**
+ * The sr-only sentence behind one history cell -- the whole story, not
+ * just the glyph. Also reused verbatim as a visible native `title` on the
+ * same cell (see the "Recent calls" `<ol>` below) -- a hover affordance for
+ * a sighted mouse user, conveying the identical information through a
+ * different channel, not a second, separately-worded description to keep
+ * in sync.
+ */
 function historyCellDescription(call: ResolvedCall, outcome: CallOutcome): string {
-  return `${formatDate(call.date)}: called ${BUCKET_LABELS[call.pick].toLowerCase()}, closed ${formatPercent(call.moveFraction)} (${BUCKET_LABELS[call.actual].toLowerCase()}). ${OUTCOME_STYLES[outcome].label}.`;
+  const calledPhrase =
+    call.pick === null ? "no call was made" : `called ${BUCKET_LABELS[call.pick].toLowerCase()}`;
+  return `${formatDate(call.date)}: ${calledPhrase}, closed ${formatPercent(call.moveFraction)} (${BUCKET_LABELS[call.actual].toLowerCase()}). ${OUTCOME_STYLES[outcome].label}.`;
 }
 
 // `font-display` per globals.css's type roles (issue #121): Geist Sans for
@@ -653,14 +724,16 @@ export function CallBoard() {
               bucket and it saves straight away; you can change it right up until that session
               opens.
             </p>
-            {/* The disclaimer/methodology footer (AboutSection) carries the
-                full version of this; the short form belongs here too, where
-                the prediction game actually is. */}
-            <p className="text-xs text-[var(--text-muted)]">
-              A practice game for seeing how hard short-term calls are -- not a prediction, and not
-              advice.
-            </p>
-
+            {/* A direct user request removed the short "practice game...
+                not a prediction, and not advice" line that used to sit
+                here -- distracting copy, per the request, not a factual
+                correction. The full "not investment advice" framing this
+                app establishes elsewhere is untouched: AboutSection.tsx's
+                own always-reachable disclaimer already names this board
+                explicitly ("a separate practice game, not part of that
+                hindsight analysis"), so nothing here was left unsaid, just
+                relocated to where this app's other disclaimers already
+                live. */}
             {marketClosedToday ? (
               <p className="text-sm text-[var(--text-secondary)]">
                 Markets are closed today, so the board is already looking ahead: these are the next{" "}
@@ -811,6 +884,24 @@ export function CallBoard() {
                         <li
                           key={call.date}
                           data-outcome={outcome}
+                          // A visible hover affordance for a sighted mouse
+                          // user, carrying the exact same information as
+                          // the sr-only span below rather than a second,
+                          // separately-worded copy -- see
+                          // historyCellDescription's own doc comment for
+                          // why a plain native `title` (not a hand-rolled
+                          // tooltip component) is the right tool here: this
+                          // app has no existing custom-tooltip pattern to
+                          // reuse (PortfolioChart's own "tooltip" is an
+                          // always-visible readout in normal flow below the
+                          // chart, not a hover popover), the content is a
+                          // plain, unstyled sentence with no need for rich
+                          // markup, and `title`'s well-known cross-browser
+                          // quirks (inconsistent delay, no styling, mobile
+                          // has no hover at all) are all fine trade-offs for
+                          // a low-stakes decorative affordance on a strip
+                          // that is already fully accessible without it.
+                          title={historyCellDescription(call, outcome)}
                           className={`flex min-h-11 min-w-11 flex-col items-center justify-center rounded-md border px-2 py-1 ${style.className}`}
                         >
                           <span aria-hidden="true" className="text-base leading-none">

@@ -40,6 +40,7 @@ import { parseJson } from "./parse-json";
 const KEY_PREFIX = "hikt:call-board:";
 const PICK_KEY_PREFIX = `${KEY_PREFIX}pick:`;
 const HISTORY_KEY = `${KEY_PREFIX}history`;
+const OFFERED_DATES_KEY = `${KEY_PREFIX}offered-dates`;
 
 /**
  * How many resolved calls are kept. Roughly 18 months of trading days --
@@ -49,6 +50,18 @@ const HISTORY_KEY = `${KEY_PREFIX}history`;
  * streak for no practical gain. Oldest entries are dropped first.
  */
 export const MAX_STORED_RESOLVED_CALLS = 400;
+
+/**
+ * How many of this viewer's own offered-open-call dates are kept (see
+ * `getOfferedDates`/`recordOfferedDates` below). `resolveCalls`' own real
+ * SPY close window never reaches back more than ~90 calendar days, so any
+ * offered date older than that can never actually be resolved against
+ * again regardless of how long it's kept -- 400 (matching
+ * `MAX_STORED_RESOLVED_CALLS`) is already comfortably more than a viewer
+ * could ever accumulate within that window (at most ~3 new dates a day),
+ * kept as the same round number for consistency rather than tuned tighter.
+ */
+export const MAX_STORED_OFFERED_DATES = 400;
 
 // Per-day pick entries are deliberately never pruned once their day has
 // resolved. They're tiny (~45 bytes each, ~250 a year of active play) against
@@ -122,7 +135,9 @@ function isResolvedCall(value: unknown): value is ResolvedCall {
   return (
     typeof date === "string" &&
     date.length > 0 &&
-    isCallBucket(pick) &&
+    // `pick` is nullable (a no-input day, see ResolvedCall's own doc
+    // comment) -- `null` is exactly as valid a stored shape as a real bucket.
+    (pick === null || isCallBucket(pick)) &&
     isCallBucket(actual) &&
     isFiniteNumber(moveFraction) &&
     isCallScore(score)
@@ -156,6 +171,49 @@ export function saveResolvedCalls(calls: readonly ResolvedCall[]): boolean {
   return writeLocalStorage(HISTORY_KEY, JSON.stringify({ resolved: trimmed }));
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+/**
+ * Every date this viewer's own browser has ever actually been shown as an
+ * open call (i.e. every date `upcomingCallDays` has ever returned to this
+ * browser, across every past sync), ascending. Not a settled outcome of any
+ * kind -- purely a log of "was this specific day ever genuinely offered,"
+ * kept so `syncCallBoard` can tell that apart from a day that closed before
+ * this browser ever opened the board at all. See that function's own doc
+ * comment for why this distinction is load-bearing.
+ */
+export function getOfferedDates(): string[] {
+  const parsed = parseJson(readLocalStorage(OFFERED_DATES_KEY));
+  if (typeof parsed !== "object" || parsed === null) return [];
+  const { dates } = parsed as Record<string, unknown>;
+  return isStringArray(dates) ? dates : [];
+}
+
+/**
+ * Merges `dates` into the persisted offered-dates log, deduplicated and
+ * trimmed to the most recent `MAX_STORED_OFFERED_DATES`. A no-op write
+ * (returns `true` without touching storage) when every date is already
+ * recorded -- `syncCallBoard` calls this on every board read, and the
+ * overwhelmingly common case is that the rolling lookahead hasn't actually
+ * changed since the last one.
+ */
+export function recordOfferedDates(dates: readonly string[]): boolean {
+  const existing = getOfferedDates();
+  const merged = new Set(existing);
+  let changed = false;
+  for (const date of dates) {
+    if (!merged.has(date)) {
+      merged.add(date);
+      changed = true;
+    }
+  }
+  if (!changed) return true;
+  const trimmed = [...merged].sort().slice(-MAX_STORED_OFFERED_DATES);
+  return writeLocalStorage(OFFERED_DATES_KEY, JSON.stringify({ dates: trimmed }));
+}
+
 /** One of the (at most `MAX_OPEN_CALLS`) not-yet-started trading days on the board, with whatever the viewer has called for it so far. */
 export interface OpenCall {
   date: string;
@@ -178,10 +236,35 @@ export interface CallBoardState {
  *
  * Given the real SPY daily closes a `PrecomputedResult` carries
  * (`benchmarkSeries.closes`, issue #126) and the client's own clock, this:
- * resolves every stored pick the series now covers, folds those into the
- * persisted history (an already-settled date keeps its original entry, see
- * `mergeResolvedCalls`), writes the history back, and returns the merged
- * history alongside the current lookahead.
+ * resolves every trading day the series now covers -- both a real pick and
+ * a day that passed with none (see `resolveCalls`' own doc comment) --
+ * folds those into the persisted history (an already-settled date keeps
+ * its original entry, see `mergeResolvedCalls`), writes the history back,
+ * and returns the merged history alongside the current lookahead.
+ *
+ * **A no-input entry only ever backfills for a date this browser's own
+ * rolling lookahead has actually shown as an open call at some point --
+ * never for a date this browser has never seen at all (found in `high`
+ * code review on this exact change, fixed).** `resolveCalls` itself is a
+ * general-purpose engine primitive: given `closes`/`picks`, it correctly
+ * settles *every* day either has, no-input days included, with no notion
+ * of "was this ever offered to anyone." Calling it directly against a real
+ * `benchmarkSeries` (a trailing ~90-*calendar*-day window, unrelated to
+ * when any particular viewer first opened the board) means the very first
+ * sync for a brand-new browser -- or any existing browser's first sync
+ * after this feature shipped -- would otherwise resolve dozens of real
+ * trading days as instant, retroactive losses for calls nobody was ever
+ * actually asked to make, directly contradicting this board's own
+ * documented first-visit contract (`CallBoard.tsx`: "0/0%/0/0"). Gated
+ * here, not in `resolveCalls` itself, so that engine function stays the
+ * general, storage-free primitive its own doc comment already describes --
+ * "was this specific date ever shown to this specific browser" is a real-
+ * world, viewer-local fact, not something a pure `(closes, picks) ->
+ * ResolvedCall[]` function has any business deciding on its own.
+ * `getOfferedDates`/`recordOfferedDates` are the small, dedicated log this
+ * needs; a real pick is never filtered by it (a pick can only ever exist
+ * for a date that was genuinely offered, since `saveCallBoardPick` is only
+ * reachable through this same board's own UI).
  *
  * **Stats are derived here, never persisted.** The issue's storage brief
  * lists them alongside picks and history, but computing them from the
@@ -197,7 +280,17 @@ export interface CallBoardState {
  */
 export function syncCallBoard(closes: readonly DailyClose[], now: Date): CallBoardState {
   const picks = readCallBoardPicks(closes.map((entry) => entry.date));
-  const newlyResolved = resolveCalls(closes, picks);
+  const resolvedByEngine = resolveCalls(closes, picks);
+  const offeredDates = new Set(getOfferedDates());
+  // A real pick (`pick !== null`) always resolves -- it could only exist
+  // because this browser's own UI genuinely offered that date at some
+  // point. A no-input entry (`pick === null`) only counts if this
+  // browser's own log says the date was actually shown as an open call;
+  // otherwise it's silently dropped, exactly as `resolveCalls` itself used
+  // to drop every unpicked day before this feature existed.
+  const newlyResolved = resolvedByEngine.filter(
+    (call) => call.pick !== null || offeredDates.has(call.date),
+  );
   const existing = getResolvedCalls();
   const merged = mergeResolvedCalls(existing, newlyResolved);
   // `mergeResolvedCalls` only ever adds dates (an already-settled one keeps
@@ -210,6 +303,12 @@ export function syncCallBoard(closes: readonly DailyClose[], now: Date): CallBoa
     date,
     pick: getCallBoardPick(date),
   }));
+  // Record *after* filtering above, using the log as it stood before this
+  // sync -- a date entering the lookahead for the first time this sync
+  // can't have closed yet anyway (resolveCalls needs its own close price
+  // present, which a still-open day never has), so ordering only matters
+  // for keeping this function easy to reason about, not for correctness.
+  recordOfferedDates(openCalls.map((call) => call.date));
 
   return { openCalls, resolved: merged, stats: computeCallBoardStats(merged) };
 }

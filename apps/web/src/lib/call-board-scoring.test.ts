@@ -96,17 +96,40 @@ describe("resolveCalls", () => {
     ]);
   });
 
-  it("leaves unpicked days out entirely", () => {
-    expect(resolveCalls(closes, { "2026-08-19": "up" })).toHaveLength(1);
-    expect(resolveCalls(closes, {})).toEqual([]);
+  it("settles an unpicked day too, as a distinct no-input entry rather than leaving it out", () => {
+    const resolved = resolveCalls(closes, { "2026-08-19": "up" });
+    // Every resolvable day still resolves -- only 08-19 was actually picked;
+    // 08-18 and 08-20 settle with no pick at all.
+    expect(resolved).toHaveLength(3);
+    expect(resolved.map((call) => [call.date, call.pick, call.score])).toEqual([
+      ["2026-08-18", null, 0],
+      ["2026-08-19", "up", 2],
+      ["2026-08-20", null, 0],
+    ]);
   });
 
-  it("cannot resolve the very first close in the window (no prior close to measure against)", () => {
-    expect(resolveCalls(closes, { "2026-08-17": "up" })).toEqual([]);
+  it("settles every day as a no-input entry when nothing was ever called", () => {
+    const resolved = resolveCalls(closes, {});
+    expect(resolved).toHaveLength(3);
+    expect(resolved.every((call) => call.pick === null && call.score === 0)).toBe(true);
   });
 
-  it("does not resolve a day the close series doesn't cover yet", () => {
-    expect(resolveCalls(closes, { "2026-08-21": "up" })).toEqual([]);
+  it("cannot resolve the very first close in the window (no prior close to measure against), even with a pick stored for it", () => {
+    const resolved = resolveCalls(closes, { "2026-08-17": "up" });
+    // 08-17 itself never appears -- there's no prior close to measure it
+    // against -- but the pick stored for it has no bearing on 08-18/19/20,
+    // which all still settle, each as a no-input entry.
+    expect(resolved.map((call) => call.date)).toEqual(["2026-08-18", "2026-08-19", "2026-08-20"]);
+    expect(resolved.every((call) => call.pick === null)).toBe(true);
+  });
+
+  it("a pick for a date the close series doesn't cover has no effect on the days it does cover", () => {
+    const resolved = resolveCalls(closes, { "2026-08-21": "up" });
+    // "2026-08-21" isn't in the window at all, so it never appears; every
+    // in-window day still settles, all as no-input since none of them were
+    // actually picked.
+    expect(resolved.map((call) => call.date)).toEqual(["2026-08-18", "2026-08-19", "2026-08-20"]);
+    expect(resolved.every((call) => call.pick === null && call.score === 0)).toBe(true);
   });
 
   it("sorts a mis-ordered series rather than trusting its caller", () => {
@@ -175,6 +198,45 @@ describe("computeCallBoardStats", () => {
     expect(computeCallBoardStats(history([0, 0, 0])).currentStreak).toBe(0);
     expect(computeCallBoardStats(history([1, 1])).currentStreak).toBe(2);
   });
+
+  // A no-input day (pick: null, score: 0) must break the current streak
+  // exactly the same way a genuine wrong-direction call does -- an explicit
+  // decision made with the user, not re-derived here. It falls out of the
+  // exact same `score < WINNING_SCORE` check every other loss already goes
+  // through, with no separate branch for "no input" anywhere in
+  // computeCallBoardStats itself.
+  it("breaks the current streak on a no-input day exactly like a loss", () => {
+    const noInput = (date: string): ResolvedCall => ({
+      date,
+      pick: null,
+      actual: "up",
+      moveFraction: 0.01,
+      score: 0,
+    });
+
+    const stats = computeCallBoardStats([
+      ...history([1, 1, 1]),
+      noInput("2026-08-10"),
+      ...history([1]).map((call) => ({ ...call, date: "2026-08-11" })),
+    ]);
+    expect(stats).toMatchObject({
+      resolvedCalls: 5,
+      wins: 4,
+      currentStreak: 1, // only the single win after the skipped day
+      bestStreak: 3, // the run before it
+    });
+  });
+
+  it("counts a no-input day toward resolvedCalls (and so dilutes winRate), same as any other settled day", () => {
+    const stats = computeCallBoardStats([
+      ...history([2]),
+      { date: "2026-08-02", pick: null, actual: "down", moveFraction: -0.01, score: 0 },
+    ]);
+    expect(stats.resolvedCalls).toBe(2);
+    expect(stats.wins).toBe(1);
+    expect(stats.winRate).toBe(0.5);
+    expect(stats.totalPoints).toBe(2); // the no-input day contributes 0 points
+  });
 });
 
 describe("mergeResolvedCalls", () => {
@@ -197,6 +259,33 @@ describe("mergeResolvedCalls", () => {
   it("never rewrites an already-settled date", () => {
     const merged = mergeResolvedCalls([call("2026-08-19", 2)], [call("2026-08-19", 0)]);
     expect(merged).toEqual([call("2026-08-19", 2)]);
+  });
+
+  // The "last-write-loses, a settled call never quietly changes" contract
+  // has to hold for a no-input entry exactly the same way it holds for a
+  // real one -- a day already recorded as "nothing was called" must never
+  // be silently overwritten by a later re-resolution, in either direction.
+  const noInput = (date: string): ResolvedCall => ({
+    date,
+    pick: null,
+    actual: "down",
+    moveFraction: -0.01,
+    score: 0,
+  });
+
+  it("keeps an existing no-input entry rather than replacing it with a newly-resolved real call", () => {
+    const merged = mergeResolvedCalls([noInput("2026-08-19")], [call("2026-08-19", 2)]);
+    expect(merged).toEqual([noInput("2026-08-19")]);
+  });
+
+  it("keeps an existing real call rather than replacing it with a newly-resolved no-input entry", () => {
+    const merged = mergeResolvedCalls([call("2026-08-19", 2)], [noInput("2026-08-19")]);
+    expect(merged).toEqual([call("2026-08-19", 2)]);
+  });
+
+  it("folds a genuinely new no-input entry in just like any other new date", () => {
+    const merged = mergeResolvedCalls([call("2026-08-19", 2)], [noInput("2026-08-20")]);
+    expect(merged).toEqual([call("2026-08-19", 2), noInput("2026-08-20")]);
   });
 });
 
