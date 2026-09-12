@@ -504,24 +504,51 @@ describe("BeatTheBench", () => {
     expect(stored.playerBalance).toBe(stored.benchmarkBalance);
   });
 
-  it("flips one toggle button between selling and buying back in", async () => {
+  // Direct user request, not a filed issue: the always-available
+  // free-form "Sell, go to cash"/"Buy back in" toggle this test used to
+  // exercise is gone outright -- a position change is now only possible
+  // during Bullet Time's own single `deciding` bar. This replaces the
+  // old "flips one toggle button" test with the genuine current
+  // behavior: no such button ever exists, anywhere outside a decision,
+  // and `commitBulletTimeChoice`'s own "Ride it out"/"Step aside"
+  // buttons are the only way to move at all.
+  it("never renders a free-form toggle -- a position change is only possible during a Bullet Time decision", async () => {
     await renderChooser();
     click(/play today's close/i);
 
-    // Exactly one trade control exists at a time -- not a pair with one
-    // of them permanently dead.
-    expect(screen.getByRole("button", { name: "Sell, go to cash" })).toBeInTheDocument();
+    // Right at the opening bar, well before the real fixture's own
+    // first scheduled event (triggerIndex 4): the ordinary readouts
+    // render, but no toggle of either label.
+    expect(screen.getByText("You (in the market)")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sell, go to cash" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Buy back in" })).not.toBeInTheDocument();
 
-    click("Sell, go to cash");
-
-    expect(screen.getByRole("button", { name: "Buy back in" })).toBeInTheDocument();
+    // Step to the first scheduled event's own deciding bar (fromIndex 5)
+    // -- the only place a position change is possible at all now. The
+    // decision panel's own absolute buttons are on screen; the ordinary
+    // toggle still is not.
+    for (let i = 0; i < 5; i += 1) click("Step forward one bar");
+    expect(screen.getByRole("button", { name: "Ride it out" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Step aside" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sell, go to cash" })).not.toBeInTheDocument();
-    expect(screen.getByText("You (in cash)")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Buy back in" })).not.toBeInTheDocument();
 
-    click(/^4x$/);
-    advance(TICKS_TO_CLOSE * 75);
+    // Making the one real move this session gets, via that decision --
+    // not a toggle -- updates the same status readout the toggle used
+    // to sit beside, and the toggle still never reappears afterward.
+    click("Step aside");
+    expect(screen.getByText("You (in cash)")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sell, go to cash" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Buy back in" })).not.toBeInTheDocument();
+
+    // Stepped, not timer-advanced, the rest of the way: catchup's own
+    // fixed 150ms/bar pace (unaffected by the speed picker under normal
+    // motion, see `bulletTimeTickIntervalMs`) would otherwise outlive a
+    // single bulk `advance()` call's own budget from mid-catchup.
+    for (let i = 0; i < TICKS_TO_CLOSE - 6; i += 1) click("Step forward one bar");
     expect(screen.getByText(/You moved once/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sell, go to cash" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Buy back in" })).not.toBeInTheDocument();
   });
 
   // Deliberately confined to bars 0-2 -- the real SPY_SESSION_BARS
@@ -609,19 +636,25 @@ describe("BeatTheBench", () => {
       expect(barReadout()).toMatch(/bar 1 of 79/);
     });
 
-    it("plays the whole session start to finish on the step button alone", async () => {
+    it("plays the whole session start to finish on the step button alone, trading through a real Bullet Time decision", async () => {
       await renderReducedMotionChooser();
       click(/play today's close/i);
 
-      for (let i = 0; i < TICKS_TO_CLOSE - 1; i += 1) {
-        click("Step forward one bar");
-      }
-      expect(barReadout()).toMatch(/bar 78 of 79/);
+      // Step to the first scheduled event's own deciding bar (fromIndex
+      // 5) -- the only place a move is possible now that the free-form
+      // toggle is gone.
+      for (let i = 0; i < 5; i += 1) click("Step forward one bar");
+      expect(screen.getByText("Big swing incoming")).toBeInTheDocument();
 
       // Trades work identically while stepping -- this isn't a
-      // read-only fallback view.
-      click("Sell, go to cash");
-      click("Step forward one bar");
+      // read-only fallback view. The player starts holding; stepping
+      // aside here records this session's one and only move.
+      click("Step aside");
+
+      for (let i = 0; i < TICKS_TO_CLOSE - 6; i += 1) {
+        click("Step forward one bar");
+      }
+      expect(barReadout()).toMatch(/bar 79 of 79/);
 
       expect(
         screen.getByText(/^(You beat the bench|The bench stayed ahead|Dead even with the bench)$/),
