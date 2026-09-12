@@ -11450,3 +11450,104 @@ windows" further down the page. This is the direct, intended effect of
 work around -- the same category of honest, disclosed trade-off this
 file's own issue #165/#135 sections already accept for similar
 below-the-fold measurements elsewhere on this page.
+
+## The Lineup: per-column past-guess history, letter-colored (direct user request, not a filed issue)
+
+Direct ask, not a GitHub issue -- small enough that this file's own
+"'Today's recap' removed outright..." section already establishes the
+precedent for skipping issue-filing ceremony: "show the user what they
+guessed for previous rounds and highlight those letters based on the
+info learned that round... if I guess ntfl for a column and it's all
+RED, when I guess a new ticker for that column, I should be able to see
+netflix was guessed before and every character was red." No new
+persisted state -- `board.log` (already stored per round) already
+carries every past guess word; the only gap was that nothing re-ran
+`classifyColumnGuess` against it to redisplay a past guess's own
+per-letter verdicts.
+
+- **`lib/lineup-game.ts`'s new `columnGuessHistory(state, col)`** is the
+  pure reconstruction: walks `state.log` in order, re-classifies each
+  round's own guess word for that column via the existing
+  `classifyColumnGuess`, and stops right after the entry that first
+  solves the column. That stop is load-bearing, not an arbitrary cutoff:
+  `submitLineupRound` re-submits a locked column's real answer as a
+  standing echo in every later round's own log entry (see that
+  function's own doc comment) -- without the cutoff, a column solved on
+  round 2 of a 7-round game would show five extra, identical all-`exact`
+  rows for rounds 3-7, none of them an actual guess the player typed.
+- **Design call: the old flat whole-board "Guess history" `<details>`
+  disclosure is removed outright, replaced by per-column strips, not
+  kept alongside them.** Read that disclosure's own doc comment first
+  (this file's own "Two render depths for a finished day" bullet, and
+  the "visual fidelity" bullet on why it only rendered once
+  `log.length > 0`) before assuming this was a casual deletion. The
+  reasoning: the old view's own `LineupRoundCounts` (e.g. "2 exact, 1
+  right spot/wrong ticker...") is a strict _subset_ of what the new
+  per-column strips already show letter-by-letter -- summing a given
+  attempt's classification across all 5 strips reconstructs the exact
+  same counts, so dropping the separate aggregate-only view loses
+  nothing real. Keeping both would have meant roughly doubling this
+  panel's own history-related vertical footprint on a several-rounds-deep
+  mobile board, directly working against this feature's own "keep it
+  compact" requirement. The empty-render rule the old disclosure
+  established (nothing shown before `log.length > 0`) carries over
+  per-column instead of per-board: `LineupColumnHistory` returns `null`
+  outright for a column with zero history entries.
+- **Always visible, not tucked behind a click.** The old flat log was a
+  collapsed `<details>`; the new per-column strips render inline,
+  height-capped with their own `overflow-y-auto` (`max-h-24`,
+  `sm:max-h-32`) rather than hidden by default. Deliberate: the point is
+  glancing at a column's own past misses _while typing a new guess for
+  that same column_, which a click-to-expand disclosure would work
+  against every single round.
+- **Placement: embedded directly beneath each column's own live tile
+  stack**, inside the same per-column `flex flex-col` div the grid
+  already uses -- not a second, separately-laid-out section. This is
+  what makes a solved column's history (all-exact, single row) and an
+  unsolved column's history (several rows, capped/scrolling) both align
+  to the same starting row across all 5 columns for free: every column
+  has the same 4 live tiles above it before its own history begins.
+- **Tile rendering reuses `LineupTile` itself via a new `compact` prop**,
+  not a second component with its own visual language -- same
+  `TILE_STYLES`/glyph/color/sr-only-label convention as the live board,
+  just smaller (`h-4 w-4` at mobile, `sm:h-6 sm:w-6` at `sm:`+ viewports,
+  each still carrying its own corner glyph so rowmatch/colmatch stay
+  visually distinguishable without color alone, per WCAG 1.4.1). A
+  `contextLabel` prop overrides the sr-only sentence's leading clause
+  (`"Attempt N, column M, letter R"` instead of the live grid's own
+  `"Column N, slot M"`), since a history tile isn't describing the
+  live board's current slot.
+- **Mobile math actually worked out**: at a ~375-390px viewport, each of
+  the 5 columns gets roughly 65-67px of width (page padding + 4 grid
+  gaps subtracted); 4 compact 16px tiles plus 3 hairline gaps land right
+  at that same width, confirmed live via
+  `document.documentElement.scrollWidth === clientWidth` staying `true`
+  through a full 7-round game at 375px and 390px, both with a single
+  column's history genuinely 3-7 rows deep. Desktop (`sm:`+) steps the
+  same tiles up to 24px, since compact-but-legible at mobile would just
+  look sparse and undersized on a wide desktop column with room to
+  spare -- caught by an actual screenshot comparison, not assumed.
+- **Live-verified end to end** against a real local pipeline run
+  (`LOCAL_TICKER_COUNT=50 LOCAL_RESULTS_DIR=...`, real Yahoo network
+  calls) plus `next build`/`next start` (not `next dev`, per this file's
+  own repeated note) and the documented no-root headless-Chromium
+  workaround, at 1180px desktop and 390px/375px mobile. Real published
+  answers for this run: `ANET, ADI, APH, ALB, ACN`. Recreated the user's
+  own worked example directly: guessing the real ticker `NFLX` against
+  column 1's real answer `ANET` classifies every letter absent-or-worse
+  (N colmatches since ANET's own row 1 is 'N', F/L/X all absent) --
+  confirmed that round's own colored `NFLX` row is still sitting there,
+  identically colored, after guessing a second and third wrong ticker
+  for that same column in later rounds. Also drove a full 7-round loss
+  (confirmed the history strip's `max-h-24` cap holds at exactly 96px of
+  rendered height regardless of round count, scrolling rather than
+  growing the page), a 2-round win (streak stats and the win banner
+  render correctly alongside a 2-row history strip), and the
+  reconstructed cold-reload path (a pre-seeded `hikt:the-lineup:{date}`
+  localStorage entry: confirmed live that no per-column history renders
+  at all, matching `board.log` staying empty for a reconstructed board).
+  Zero console/`pageerror` events across every one of these passes. The
+  temporary `playwright` devDependency and every scratch verification
+  script were reverted/deleted before committing, per this file's own
+  established convention; confirmed via `git status` showing a clean
+  tree apart from the real source/test changes afterward.
