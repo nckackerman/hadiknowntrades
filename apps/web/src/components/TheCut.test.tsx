@@ -180,7 +180,7 @@ describe("TheCut", () => {
     // default.
     expect(panel.queryByRole("group", { name: "The Cut date range" })).not.toBeInTheDocument();
     expect(panel.getByText("Explore other windows")).toBeInTheDocument();
-    expect(panel.queryByText(/too high|too low/i)).not.toBeInTheDocument();
+    expect(panel.queryByText(/too many held|too few held/i)).not.toBeInTheDocument();
     expect(panel.getByText(/6 guesses left/i)).toBeInTheDocument(); // CUT_MAX_ATTEMPTS, no guesses yet
   });
 
@@ -190,7 +190,7 @@ describe("TheCut", () => {
 
     submit(panel, 5); // bestN=3 -> too high, |5-3|=2, 2/5=0.4 -> ice-cold
 
-    expect(await panel.findByText(/too high/i)).toBeInTheDocument();
+    expect(await panel.findByText(/too many held/i)).toBeInTheDocument();
     expect(panel.getByText("Ice cold")).toBeInTheDocument();
     expect(panel.getByText(/5 guesses left/i)).toBeInTheDocument();
     // The game isn't over -- the guess controls are still there.
@@ -203,7 +203,7 @@ describe("TheCut", () => {
 
     submit(panel, 2); // bestN=3 -> too low, |2-3|=1, 1/5=0.2 -> cold
 
-    expect(await panel.findByText(/too low/i)).toBeInTheDocument();
+    expect(await panel.findByText(/too few held/i)).toBeInTheDocument();
     expect(panel.getByText("Cold")).toBeInTheDocument();
   });
 
@@ -272,13 +272,13 @@ describe("TheCut", () => {
     const { unmount } = render(<TheCut />);
     fireEvent.click(await screen.findByTestId("the-cut-summary"));
     let panel = within(await screen.findByTestId("the-cut-panel"));
-    expect(await panel.findByText(/too high/i)).toBeInTheDocument();
+    expect(await panel.findByText(/too many held/i)).toBeInTheDocument();
     unmount();
 
     render(<TheCut />);
     fireEvent.click(await screen.findByTestId("the-cut-summary"));
     panel = within(await screen.findByTestId("the-cut-panel"));
-    expect(await panel.findByText(/too high/i)).toBeInTheDocument();
+    expect(await panel.findByText(/too many held/i)).toBeInTheDocument();
   });
 
   it("the collapsed tile's own status line reflects the stored state without expanding", async () => {
@@ -632,13 +632,13 @@ describe("TheCut", () => {
     it("does not affect the main game's own state (independent per-range storage)", async () => {
       saveCutGameState(RANGE, freshState({ guesses: [5], done: false }));
       const panel = await expandBoard();
-      expect(await panel.findByText(/too high/i)).toBeInTheDocument();
+      expect(await panel.findByText(/too many held/i)).toBeInTheDocument();
 
       const explore = await openExplore(panel);
 
-      // The main game's own "too high" feedback is still there,
+      // The main game's own "too many held" feedback is still there,
       // unaffected by Explore having mounted alongside it.
-      expect(panel.getByText(/too high/i)).toBeInTheDocument();
+      expect(panel.getByText(/too many held/i)).toBeInTheDocument();
       expect(explore.getByRole("button", { name: "1W" })).toHaveAttribute("aria-pressed", "true");
     });
 

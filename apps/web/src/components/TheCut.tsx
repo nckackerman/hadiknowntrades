@@ -146,10 +146,19 @@ const RANKED_TICKERS = [...SP500_CONSTITUENTS].sort((a, b) => b.weight - a.weigh
  * WCAG-1.4.1-compliant glyph system for the directional half of each
  * guess's feedback -- a glyph and visible label, never color alone, the
  * same convention TheOrder.tsx's own OUTCOME_STYLES already establishes.
+ *
+ * Labels say "held"/"hold", not "higher"/"lower" (a direct user request,
+ * not a filed issue -- see apps/web/CLAUDE.md's "The Cut" section for the
+ * dated writeup of the alternatives considered): N is a *count* of
+ * companies to hold, not a price level, so "guess higher"/"guess lower"
+ * read like a stock-price-direction hint rather than "hold more/fewer of
+ * the 500." Mirrors this component's own already-established "held"/
+ * "hold" vocabulary (`SUBTITLE` above, and the in-progress instruction
+ * copy's "Holding companies #1..N").
  */
 const DIRECTION_STYLES: Record<CutDirection, { glyph: string; label: string }> = {
-  "too-high": { glyph: "▼", label: "Too high -- guess lower" },
-  "too-low": { glyph: "▲", label: "Too low -- guess higher" },
+  "too-high": { glyph: "▼", label: "Too many held -- hold fewer" },
+  "too-low": { glyph: "▲", label: "Too few held -- hold more" },
 };
 
 /** The four named closeness bands (docs/design/the-cut-2026-09/README.md's own "ice cold"/"cold"/"warm"/"hot" wording), each with its own visible label -- never color alone. */

@@ -11341,6 +11341,78 @@ gap-1` row (needed for `AnimatedFigure`'s internal `display: grid`,
   model, The Cut), so a page-wide `celebration-burst` query is no longer
   a reliable proxy for "did _this_ mechanic's burst fire."
 
+### The Cut: guess feedback re-worded from "higher/lower" to "held/hold" (2026-09-11, direct user request, not a filed issue)
+
+`DIRECTION_STYLES`' two labels (`TheCut.tsx`) used to read "Too high --
+guess lower" / "Too low -- guess higher". Flagged as misleading: N is a
+_count_ of companies to hold (prefix length, per this section's own
+"mechanic" writeup), not a price level, so "guess higher"/"guess lower"
+reads like a stock-price-direction hint rather than what it actually
+means -- hold more or fewer of the 500.
+
+**Options considered** (per `docs/design/the-cut-2026-09/README.md`'s own
+"cut line"/"held" vocabulary and this component's own already-established
+copy -- `SUBTITLE` = "How many of the market's biggest names should you
+have held?", and the in-progress instruction paragraph's "Holding
+companies #1..N"):
+
+1. **"Too many held -- hold fewer" / "Too few held -- hold more"** --
+   direction half states the count problem in plain terms ("too many/few
+   held"), action half reuses this component's own already-established
+   "hold" verb verbatim. Picked.
+2. **"Held too many -- cut some" / "Held too few -- add more"** --
+   reaches for "cut" as wordplay on the game's own name for one direction,
+   but "add"/"cut" aren't parallel verbs and neither is the "hold"
+   language this component already uses everywhere else (`SUBTITLE`, the
+   instruction paragraph). Rejected: asymmetric, and "cut" already means
+   something specific and different elsewhere in this same component (the
+   reveal's own "✂️ CUT" divider chip, `CutRevealStrip`) -- reusing it here
+   for a different meaning risked overloading the word mid-game.
+3. **"N is too high -- hold fewer companies" / "N is too low -- hold more
+   companies"** -- the most explicit option, but redundant: `N={guess}`
+   already renders as its own span immediately to the left of this label
+   (see the feedback `<li>` in `TheCut.tsx`), so restating "N is" and
+   spelling out "companies" a second time added length for a small badge
+   label with no new information. Rejected on brevity.
+
+Option 1 won on all three of the stated criteria: clarity at a glance (no
+new vocabulary to learn -- "held"/"hold" already appear twice above it on
+the same screen), brevity (comparable length to the original: 28/26
+characters vs. the original 23/24), and consistency (reuses this
+component's own established verb instead of introducing a new metaphor).
+
+**`CutDirection` (`the-cut-scoring.ts`, `"too-high" | "too-low"`) was
+deliberately left unrenamed** -- it's an internal grading-logic type, not
+user-visible text, and the scoring tests/doc comments that already say
+"too high"/"too low" describe the same real concept (the guess is a
+number that's numerically too high or too low relative to `bestN`) that
+this fix's user-visible copy no longer states in those exact words.
+Renaming it would have touched `the-cut-scoring.ts`/`the-cut-scoring.test.ts`
+for a purely internal identifier with no reader-facing benefit; only
+`DIRECTION_STYLES`' two `label` strings in `TheCut.tsx` changed.
+
+**Test updates**: `TheCut.test.tsx`'s several `findByText`/`getByText`/
+`queryByText` regexes on `/too high/i`/`/too low/i` (and the one
+`/too high|too low/i` idle-state negative check) were updated to
+`/too many held/i`/`/too few held/i` to match the new copy -- the
+`it(...)` names themselves ("grades a too-high guess...") were left
+alone, since those describe the internal `CutDirection` concept the test
+is exercising, not the rendered string.
+
+**Live-verified** via a real local pipeline run
+(`LOCAL_TICKER_COUNT=25 LOCAL_RESULTS_DIR=... pnpm --filter
+@hadiknowntrades/pipeline run local-run`, real Yahoo network calls) plus
+`next build`/`next start` and this file's own documented no-root
+headless-Chromium technique (`apt-get download`/`dpkg-deb -x` for
+`libnspr4`/`libnss3`/`libasound2t64`, `LD_LIBRARY_PATH` pointed at the
+extracted libs; `pnpm add -D -w playwright` for the session, reverted
+afterward -- confirmed via `git status`/`git diff --stat` on
+`package.json`/`pnpm-lock.yaml` showing no trace afterward). The real 1D
+result's own curve (`bestN=4`) drove both real feedback rows on screen:
+guessing N=400 rendered "N=400 ▼ Too many held -- hold fewer Ice cold",
+and guessing N=1 rendered "N=1 ▲ Too few held -- hold more Hot" -- both
+at 480px width, with zero console errors or `pageerror` events.
+
 ## Game-tile column simplified to always single-width (direct user request, not a filed issue)
 
 The reported bug: "the card layout is attractive, but opening them
