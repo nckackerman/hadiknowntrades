@@ -233,20 +233,14 @@ describe("BeatTheBench", () => {
     });
   });
 
-  it("carries no data-bench-expanded marker while collapsed, and gains one once expanded (issue #178)", async () => {
+  it("renders no expanded panel while collapsed, and mounts one once expanded", async () => {
     render(<BeatTheBench />);
 
-    // The 2-up grid wrapping this card and The Call Board (ResultsPage.tsx,
-    // issue #178) collapses itself to one column via a `:has()` selector
-    // keyed on this exact attribute -- see BeatTheBenchFrame's own doc
-    // comment for why it's a data attribute here rather than a native
-    // disclosure element the grid could key off directly.
     expect(screen.queryByTestId("beat-the-bench-panel")).not.toBeInTheDocument();
 
     clickCompactCard();
 
-    const panel = await screen.findByTestId("beat-the-bench-panel");
-    expect(panel).toHaveAttribute("data-bench-expanded", "true");
+    await screen.findByTestId("beat-the-bench-panel");
   });
 
   it("renders the compact card as a solid amber tile, not the old bordered-card treatment (issue #176)", async () => {

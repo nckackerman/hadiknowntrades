@@ -371,20 +371,18 @@ export function BeatTheBench() {
  * `BeatTheBench`'s own `handleToggle`), is what closes this again,
  * exactly like The Call Board's `<summary>`.
  *
- * `data-bench-expanded` (issue #178) is what the 2-up grid wrapping this
- * card and The Call Board keys its own `:has()` selector off of, to
- * collapse itself to one column whenever either game's full content is
- * showing, without lifting `expanded` state up into the parent. CallBoard
- * needs no equivalent marker -- its own expanded state is already a
- * native `<details open>`, directly selectable on its own. Placed here
- * (not on the tile) since this panel is exactly what's conditionally
- * mounted.
+ * Used to also carry a `data-bench-expanded` marker attribute (issue
+ * #178) that ResultsPage.tsx's game-tile column keyed a `:has()`
+ * selector off of, to collapse that column to one width whenever this
+ * (or any other) game's full content was showing. A later direct user
+ * request made that column always one column, unconditionally -- there
+ * is no longer any `:has()` mechanism left for this attribute to feed,
+ * so it was removed outright rather than left as an inert marker.
  */
 function BeatTheBenchFrame({ panelId, children }: { panelId: string; children?: ReactNode }) {
   return (
     <div
       id={panelId}
-      data-bench-expanded="true"
       data-testid="beat-the-bench-panel"
       className="flex flex-col gap-4 rounded-t-none rounded-b-2xl border-x border-b border-t-4 border-[var(--gridline)] bg-[var(--surface-1)] px-4 pt-4 pb-5"
       style={{ borderTopColor: CONNECTOR_ACCENT }}

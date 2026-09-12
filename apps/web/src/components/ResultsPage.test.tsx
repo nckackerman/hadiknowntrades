@@ -506,17 +506,18 @@ describe("ResultsPage", () => {
       ).toBeInTheDocument();
     });
 
-    it("mounts exactly once, inside the 2-up grid (issue #178), ahead of The Call Board", () => {
+    it("mounts exactly once, inside the game-tile grid (issue #178), ahead of The Call Board", () => {
       const { container } = render(<ResultsPage />);
       const column = container.firstElementChild!;
       const cards = screen.getAllByRole("button", { name: /can you do better\?/i });
 
       expect(cards).toHaveLength(1);
       const section = cards[0]!.closest("section")!;
-      // Issue #178 wrapped both game cards in a two-column grid container
-      // -- this section's own immediate parent is that grid, not the page
-      // column directly any more, but the grid itself is still a direct
-      // child of the column.
+      // Issue #178 wrapped every game card in one grid container (always
+      // one column, unconditionally, per a later direct user request --
+      // see ResultsPage.tsx's own doc comment) -- this section's own
+      // immediate parent is that grid, not the page column directly any
+      // more, but the grid itself is still a direct child of the column.
       const grid = section.parentElement!;
       expect(grid.parentElement).toBe(column);
       // level: 2 (issue #195): see the comment on the earlier test above.
@@ -524,7 +525,8 @@ describe("ResultsPage", () => {
         .getByRole("heading", { name: "The Call Board", level: 2 })
         .closest("section")!;
       // Both game cards share the same grid parent -- confirming this is
-      // genuinely the 2-up wrapper, not some other intervening element.
+      // genuinely the game-tile wrapper, not some other intervening
+      // element.
       expect(board.parentElement).toBe(grid);
       // Issue #163 moved this section ahead of the header/range explorer/
       // ResultsPanel entirely (directly after DailyHero) -- still ahead
@@ -536,7 +538,7 @@ describe("ResultsPage", () => {
   });
 
   describe("The Order (issue #207): a real game, positioned after Beat the Bench and The Call Board", () => {
-    it("mounts as its own section in the 2x2 grid, ahead of The Lineup's own real tile", async () => {
+    it("mounts as its own section in the game-tile grid, ahead of The Lineup's own real tile", async () => {
       render(<ResultsPage />);
 
       const bench = screen.getByRole("button", { name: /can you do better\?/i });
@@ -549,8 +551,8 @@ describe("ResultsPage", () => {
       const lineupSummary = await screen.findByTestId("the-lineup-summary");
 
       // Same grid parent as the two real, playable tiles -- the full
-      // 2x2 grid the daily-hub-condensed mockup was originally sketched
-      // with, not a second, separate grid.
+      // game-tile grid the daily-hub-condensed mockup was originally
+      // sketched with, not a second, separate grid.
       const grid = bench.closest("section")!.parentElement!;
       expect(order.parentElement).toBe(grid);
       // The Lineup's own real tile shares that exact same grid parent
@@ -579,7 +581,7 @@ describe("ResultsPage", () => {
   });
 
   describe("The Lineup (issue #208)", () => {
-    it("renders after The Order in the same 2x2 grid, and is a real, interactive tile", async () => {
+    it("renders after The Order in the same game-tile grid, and is a real, interactive tile", async () => {
       render(<ResultsPage />);
 
       const order = screen
